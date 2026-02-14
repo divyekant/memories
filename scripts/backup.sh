@@ -159,7 +159,7 @@ main() {
 
         # Upload to Google Drive if configured (optional, non-blocking)
         if [ -f "$SCRIPT_DIR/backup-gdrive.sh" ] && [ -n "$GDRIVE_ACCOUNT" ]; then
-            "$SCRIPT_DIR/backup-gdrive.sh" >> "$LOG_FILE" 2>&1 || log "ERROR" "Google Drive upload failed (local backup OK)"
+            bash "$SCRIPT_DIR/backup-gdrive.sh" >> "$LOG_FILE" 2>&1 || log "ERROR" "Google Drive upload failed (local backup OK)"
         fi
 
         exit 0
