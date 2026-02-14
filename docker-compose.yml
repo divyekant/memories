@@ -1,0 +1,32 @@
+services:
+  faiss-memory:
+    build: .
+    image: faiss-memory:latest
+    container_name: faiss-memory
+    restart: unless-stopped
+    ports:
+      - "8900:8000"
+    volumes:
+      - ./data:/data
+      # Optional: Mount a directory containing text files to index
+      # - /path/to/your/documents:/workspace:ro
+    environment:
+      - DATA_DIR=/data
+      # - WORKSPACE_DIR=/workspace  # Uncomment if mounting documents
+      - API_KEY=your-secret-key-here
+      - MODEL_NAME=all-MiniLM-L6-v2
+      - MAX_BACKUPS=10
+      # Cloud Sync (optional - uncomment to enable)
+      # - CLOUD_SYNC_ENABLED=true
+      # - CLOUD_SYNC_BUCKET=my-faiss-memory
+      # - CLOUD_SYNC_REGION=us-east-1
+      # - CLOUD_SYNC_PREFIX=faiss-memory/
+      # - CLOUD_SYNC_ACCESS_KEY=AKIA...
+      # - CLOUD_SYNC_SECRET_KEY=...
+      # - CLOUD_SYNC_ENDPOINT=  # Optional: for MinIO, B2, etc.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

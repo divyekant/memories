@@ -1,10 +1,18 @@
 # ---- Build stage: install deps + download model ----
 FROM python:3.11-slim AS builder
 
+ARG ENABLE_CLOUD_SYNC=false
+
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Optionally install cloud sync dependencies (adds ~80MB)
+COPY requirements-cloud.txt .
+RUN if [ "$ENABLE_CLOUD_SYNC" = "true" ]; then \
+        pip install --no-cache-dir -r requirements-cloud.txt; \
+    fi
 
 # Copy embedder so we can pre-download the ONNX model
 COPY onnx_embedder.py .
@@ -38,6 +46,7 @@ COPY --from=builder /root/.cache/huggingface /root/.cache/huggingface
 # Copy application code
 COPY onnx_embedder.py .
 COPY memory_engine.py .
+COPY cloud_sync.py .
 COPY app.py .
 
 RUN mkdir -p /data/backups

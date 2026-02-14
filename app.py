@@ -324,7 +324,7 @@ async def list_backups():
     """List available backups"""
     try:
         backups = sorted(
-            memory.backup_dir.glob("*_*"), key=lambda p: p.name, reverse=True
+            memory.get_backup_dir().glob("*_*"), key=lambda p: p.name, reverse=True
         )
         return {
             "backups": [
@@ -341,7 +341,7 @@ async def list_backups():
 async def create_backup(prefix: str = Query("manual", max_length=50)):
     """Create manual backup"""
     try:
-        backup_path = memory._backup(prefix=prefix)
+        backup_path = memory.create_backup(prefix=prefix)
         return {
             "success": True,
             "backup_path": str(backup_path),
@@ -363,6 +363,136 @@ async def restore_backup(request: RestoreRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Restore failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# -- Cloud Sync ---------------------------------------------------------------
+
+@app.get("/sync/status")
+async def sync_status():
+    """Get cloud sync status"""
+    if not memory.get_cloud_sync():
+        return {"enabled": False, "message": "Cloud sync not configured"}
+
+    try:
+        remote_snapshots = memory.get_cloud_sync().list_remote_snapshots()
+        latest_remote = remote_snapshots[0]["name"] if remote_snapshots else None
+
+        local_backups = sorted(
+            memory.get_backup_dir().glob("*_*"), key=lambda p: p.name, reverse=True
+        )
+        latest_local = local_backups[0].name if local_backups else None
+
+        return {
+            "enabled": True,
+            "latest_remote": latest_remote,
+            "latest_local": latest_local,
+            "remote_count": len(remote_snapshots),
+            "local_count": len(local_backups),
+        }
+    except Exception as e:
+        logger.exception("Sync status check failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sync/upload")
+async def sync_upload():
+    """Manually trigger backup upload to cloud"""
+    if not memory.get_cloud_sync():
+        raise HTTPException(status_code=400, detail="Cloud sync not configured")
+
+    logger.info("Manual cloud upload triggered")
+    try:
+        # Create a backup first
+        backup_path = memory.create_backup(prefix="manual")
+        backup_name = backup_path.name
+
+        # Upload happens automatically in create_backup now, but we return the result
+        return {
+            "success": True,
+            "backup_name": backup_name,
+            "message": "Backup created and uploaded to cloud",
+        }
+    except Exception as e:
+        logger.exception("Manual upload failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sync/download")
+async def sync_download(backup_name: Optional[str] = None, confirm: bool = False):
+    """Download a backup from cloud (requires confirmation)"""
+    if not memory.get_cloud_sync():
+        raise HTTPException(status_code=400, detail="Cloud sync not configured")
+
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation required. Set confirm=true to proceed. WARNING: This will download from cloud."
+        )
+
+    try:
+        # Get latest if not specified
+        if not backup_name:
+            backup_name = memory.get_cloud_sync().get_latest_snapshot()
+            if not backup_name:
+                raise HTTPException(status_code=404, detail="No backups found in cloud")
+
+        logger.info("Downloading backup from cloud: %s", backup_name)
+        result = memory.get_cloud_sync().download_backup(backup_name, memory.get_backup_dir())
+
+        return {
+            "success": True,
+            **result,
+            "message": f"Downloaded {backup_name} from cloud. Use /restore to apply it."
+        }
+    except Exception as e:
+        logger.exception("Cloud download failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sync/snapshots")
+async def sync_snapshots():
+    """List remote snapshots in cloud storage"""
+    if not memory.get_cloud_sync():
+        raise HTTPException(status_code=400, detail="Cloud sync not configured")
+
+    try:
+        snapshots = memory.get_cloud_sync().list_remote_snapshots()
+        return {"snapshots": snapshots, "count": len(snapshots)}
+    except Exception as e:
+        logger.exception("List remote snapshots failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sync/restore/{backup_name}")
+async def sync_restore(backup_name: str, confirm: bool = False):
+    """Download and restore a backup from cloud in one step"""
+    if not memory.get_cloud_sync():
+        raise HTTPException(status_code=400, detail="Cloud sync not configured")
+
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation required. Set confirm=true to proceed. WARNING: This will overwrite local data."
+        )
+
+    try:
+        logger.info("Downloading and restoring from cloud: %s", backup_name)
+
+        # Download from cloud
+        download_result = memory.get_cloud_sync().download_backup(backup_name, memory.get_backup_dir())
+
+        # Restore locally
+        restore_result = memory.restore_from_backup(backup_name)
+
+        return {
+            "success": True,
+            "downloaded": download_result,
+            "restored": restore_result,
+            "message": f"Successfully restored {backup_name} from cloud"
+        }
+    except Exception as e:
+        logger.exception("Cloud restore failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -19,6 +19,14 @@ from rank_bm25 import BM25Okapi
 
 logger = logging.getLogger("faiss-memory")
 
+# Cloud sync (optional dependency)
+try:
+    from cloud_sync import CloudSync
+    CLOUD_SYNC_AVAILABLE = True
+except ImportError:
+    CLOUD_SYNC_AVAILABLE = False
+    logger.info("Cloud sync not available (cloud_sync.py not found or boto3 not installed)")
+
 
 class MemoryEngine:
     """FAISS-based semantic memory with hybrid search and backup support"""
@@ -64,6 +72,25 @@ class MemoryEngine:
         # BM25 index for hybrid search
         self.bm25_index: Optional[BM25Okapi] = None
 
+        # Cloud sync (optional)
+        self.cloud_sync: Optional[CloudSync] = None
+        if CLOUD_SYNC_AVAILABLE:
+            self.cloud_sync = CloudSync.from_env()
+
+        # Auto-download from cloud if local is empty
+        if self.cloud_sync and not self.index_path.exists():
+            try:
+                latest = self.cloud_sync.get_latest_snapshot()
+                if latest:
+                    logger.info("Local index empty - downloading latest backup from cloud: %s", latest)
+                    result = self.cloud_sync.download_backup(latest, self.backup_dir)
+                    # Restore from downloaded backup
+                    self.restore_from_backup(latest)
+                    logger.info("Restored from cloud: %s", result)
+            except Exception as e:
+                logger.error("Auto-download from cloud failed: %s", e)
+
+        # Load existing index if present
         if self.index_path.exists():
             self.load()
 
@@ -188,6 +215,16 @@ class MemoryEngine:
             shutil.copy2(self.config_path, backup_path / "config.json")
 
         self._cleanup_old_backups(keep=self._max_backups)
+
+        # Upload to cloud if enabled
+        if self.cloud_sync:
+            try:
+                logger.info("Uploading backup to cloud: %s", backup_name)
+                self.cloud_sync.upload_backup(backup_path)
+                logger.info("Cloud upload complete: %s", backup_name)
+            except Exception as e:
+                logger.error("Cloud upload failed: %s", e)
+
         return backup_path
 
     def _cleanup_old_backups(self, keep: int = 10):
@@ -677,3 +714,26 @@ class MemoryEngine:
             "dimension": self.dim,
             "model": self.config.get("model"),
         }
+
+    # ------------------------------------------------------------------
+    # Public API methods (for API endpoints)
+    # ------------------------------------------------------------------
+
+    def create_backup(self, prefix: str = "manual") -> Path:
+        """Create a manual backup with optional prefix
+        
+        Args:
+            prefix: Prefix for backup name (e.g., "manual" creates "manual_20260214_120000")
+        
+        Returns:
+            Path to the created backup directory
+        """
+        return self._backup(prefix=prefix)
+
+    def get_cloud_sync(self) -> Optional["CloudSync"]:
+        """Get cloud sync client (None if not available/enabled)"""
+        return self.cloud_sync
+
+    def get_backup_dir(self) -> Path:
+        """Get backup directory path"""
+        return self.backup_dir
