@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
-from sentence_transformers import SentenceTransformer
+from onnx_embedder import OnnxEmbedder
 from rank_bm25 import BM25Okapi
 
 logger = logging.getLogger("faiss-memory")
@@ -45,7 +45,7 @@ class MemoryEngine:
         self._max_backups = max_backups or int(os.getenv("MAX_BACKUPS", "10"))
 
         # Load sentence transformer
-        self.model = SentenceTransformer(self._model_name)
+        self.model = OnnxEmbedder(self._model_name)
         self.dim = self.model.get_sentence_embedding_dimension()
 
         # Concurrency lock for write operations
