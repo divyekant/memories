@@ -534,6 +534,106 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 
 ---
 
+## Backup & Recovery
+
+FAISS Memory has three layers of backup protection:
+
+### 1. Auto-backup (built-in)
+
+The service automatically saves a snapshot after every write operation. The 10 most recent auto-backups are kept in the Docker volume under `data/backups/`.
+
+```bash
+# List backups
+curl -H "X-API-Key: $FAISS_API_KEY" http://localhost:8900/backups
+
+# Create manual backup
+curl -X POST -H "X-API-Key: $FAISS_API_KEY" http://localhost:8900/backup?prefix=manual
+
+# Restore from backup
+curl -X POST -H "X-API-Key: $FAISS_API_KEY" http://localhost:8900/restore \
+  -H "Content-Type: application/json" \
+  -d '{"backup_name": "manual_20260214_120000"}'
+```
+
+### 2. Scheduled local snapshots (cron)
+
+A cron job creates timestamped copies of the FAISS index every 30 minutes. Snapshots are stored outside the Docker volume (default: `~/backups/faiss-memory/`) with 30-day retention.
+
+```bash
+# Install the cron job
+./scripts/install-cron.sh install
+
+# Check status
+./scripts/install-cron.sh status
+
+# Run a backup manually
+./scripts/backup.sh
+
+# Dry run (no changes)
+./scripts/backup.sh --test
+```
+
+**Environment variables** (all optional, sensible defaults):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FAISS_URL` | `http://localhost:8900` | Service URL |
+| `FAISS_API_KEY` | (empty) | API key if auth is enabled |
+| `FAISS_DATA_DIR` | `./data` (relative to repo) | Docker volume data path |
+| `BACKUP_DIR` | `~/backups/faiss-memory` | Where to store snapshots |
+| `RETENTION_DAYS` | `30` | Days to keep local snapshots |
+
+### 3. Off-site backup to Google Drive (optional)
+
+If you set `GDRIVE_ACCOUNT`, each backup automatically uploads the latest snapshot to Google Drive as a compressed tar.gz. Uploads are throttled to once per hour. 7-day retention on Drive.
+
+**Prerequisites:**
+
+1. Install [gog CLI](https://github.com/skratchdot/gog)
+2. Authenticate: `gog auth add your-email@gmail.com --services drive`
+3. Set env var in your shell profile:
+
+```bash
+export GDRIVE_ACCOUNT="your-email@gmail.com"
+```
+
+**Environment variables** (all optional):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GDRIVE_ACCOUNT` | (none) | Google account email. **Required to enable GDrive.** |
+| `GDRIVE_FOLDER_NAME` | `faiss-memory-backups` | Folder name on Drive |
+| `UPLOAD_INTERVAL_MIN` | `55` | Minimum minutes between uploads |
+| `GDRIVE_RETENTION_DAYS` | `7` | Days to keep backups on Drive |
+
+**Manual usage:**
+
+```bash
+# Setup (create Drive folder + test auth)
+./scripts/backup-gdrive.sh --setup
+
+# Upload now (skip throttle)
+./scripts/backup-gdrive.sh --force
+
+# Dry run
+./scripts/backup-gdrive.sh --test
+
+# Only clean up old backups on Drive
+./scripts/backup-gdrive.sh --cleanup
+```
+
+### Alternative: S3-compatible cloud sync
+
+For S3/MinIO/R2 backends, build with cloud sync enabled:
+
+```bash
+docker compose build --build-arg ENABLE_CLOUD_SYNC=true faiss-memory
+```
+
+See [CLOUD_SYNC_README.md](CLOUD_SYNC_README.md) for configuration details.
+
+---
+
 ## Project Structure
 
 ```
@@ -547,6 +647,10 @@ memories/
   mcp-server/
     index.js              # MCP server (wraps REST API as tools)
     package.json
+  scripts/
+    backup.sh             # Cron backup (local snapshots)
+    backup-gdrive.sh      # Optional Google Drive upload
+    install-cron.sh       # Cron job installer
   tests/
     test_memory_engine.py # 25 tests
   integrations/

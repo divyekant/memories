@@ -3,17 +3,27 @@
 # Install/uninstall cron jobs for FAISS Memory backups
 #
 # Jobs:
-#   - Backup: snapshot every 30 minutes + hourly Google Drive upload
+#   - Local snapshot every 30 minutes
+#   - Google Drive upload (optional, triggered by backup if GDRIVE_ACCOUNT is set)
 #
 # Usage:
 #   ./scripts/install-cron.sh install   # Add cron job
 #   ./scripts/install-cron.sh uninstall # Remove cron job
 #   ./scripts/install-cron.sh status    # Check if installed
 #
+# Prerequisites:
+#   - Docker running with faiss-memory container
+#   - FAISS_API_KEY set in shell profile (if auth enabled)
+#
+# Optional (for Google Drive off-site backups):
+#   - Install gog CLI: https://github.com/skratchdot/gog
+#   - Authenticate: gog auth add your-email@gmail.com --services drive
+#   - Set env var: export GDRIVE_ACCOUNT="your-email@gmail.com"
+#
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKUP_SCRIPT="$SCRIPT_DIR/backup.sh"
-LOG_DIR="$HOME/backups/faiss-memory"
+LOG_DIR="${BACKUP_DIR:-$HOME/backups/faiss-memory}"
 
 # Cron identifier
 CRON_COMMENT="# FAISS Memory backup"
@@ -26,7 +36,7 @@ case "$1" in
     install)
         # Ensure scripts are executable
         chmod +x "$SCRIPT_DIR/backup.sh"
-        chmod +x "$SCRIPT_DIR/backup-gdrive.sh"
+        [ -f "$SCRIPT_DIR/backup-gdrive.sh" ] && chmod +x "$SCRIPT_DIR/backup-gdrive.sh"
 
         # Ensure log directory exists
         mkdir -p "$LOG_DIR"
@@ -39,60 +49,75 @@ case "$1" in
             UPDATED="$CURRENT
 $BACKUP_LINE"
             echo "$UPDATED" | crontab -
-            echo "✅ FAISS Memory backup cron job installed"
+            echo "Installed FAISS Memory backup cron job"
         else
-            echo "⏭️  Cron job already installed"
+            echo "Cron job already installed"
         fi
 
         echo ""
-        echo "📋 Schedule:"
-        echo "   Backup: every 30 min (local snapshot)"
-        echo "   GDrive: hourly (throttled, triggered by backup)"
+        echo "Schedule:"
+        echo "  Backup: every 30 min (local snapshot)"
+        if [ -n "$GDRIVE_ACCOUNT" ]; then
+            echo "  GDrive: hourly (throttled, triggered by backup)"
+            echo "  GDrive account: $GDRIVE_ACCOUNT"
+        else
+            echo "  GDrive: not configured (set GDRIVE_ACCOUNT to enable)"
+        fi
         echo ""
-        echo "   Scripts: $SCRIPT_DIR/"
-        echo "   Logs:    $LOG_DIR/"
-        echo "   Retention: 30 days local, 7 days Google Drive"
+        echo "  Scripts:   $SCRIPT_DIR/"
+        echo "  Snapshots: $LOG_DIR/"
+        echo "  Retention: ${RETENTION_DAYS:-30} days local"
+        [ -n "$GDRIVE_ACCOUNT" ] && echo "             ${GDRIVE_RETENTION_DAYS:-7} days Google Drive"
         ;;
 
     uninstall)
         crontab -l 2>/dev/null | grep -v "FAISS Memory backup" | crontab -
-        echo "✅ Cron job removed"
+        echo "Cron job removed"
         ;;
 
     status)
-        echo "📋 FAISS Memory Backup Status:"
+        echo "FAISS Memory Backup Status"
+        echo "=========================="
         echo ""
 
         if crontab -l 2>/dev/null | grep -q "FAISS Memory backup"; then
-            echo "✅ Cron: INSTALLED"
-            crontab -l | grep "FAISS Memory backup" | sed 's/^/   /'
+            echo "Cron: INSTALLED"
+            crontab -l | grep "FAISS Memory backup" | sed 's/^/  /'
         else
-            echo "❌ Cron: NOT INSTALLED"
+            echo "Cron: NOT INSTALLED"
         fi
         echo ""
 
         # Check scripts
         if [ -f "$BACKUP_SCRIPT" ] && [ -x "$BACKUP_SCRIPT" ]; then
-            echo "✅ backup.sh: OK"
+            echo "backup.sh: OK"
         else
-            echo "⚠️  backup.sh: missing or not executable"
+            echo "backup.sh: missing or not executable"
         fi
 
         if [ -f "$SCRIPT_DIR/backup-gdrive.sh" ] && [ -x "$SCRIPT_DIR/backup-gdrive.sh" ]; then
-            echo "✅ backup-gdrive.sh: OK"
+            echo "backup-gdrive.sh: OK"
         else
-            echo "⚠️  backup-gdrive.sh: missing or not executable"
+            echo "backup-gdrive.sh: not found (optional)"
         fi
         echo ""
 
-        # Check logs
+        # GDrive status
+        if [ -n "$GDRIVE_ACCOUNT" ]; then
+            echo "Google Drive: CONFIGURED ($GDRIVE_ACCOUNT)"
+        else
+            echo "Google Drive: not configured (set GDRIVE_ACCOUNT to enable)"
+        fi
+        echo ""
+
+        # Check snapshots
         if [ -d "$LOG_DIR" ]; then
-            local_count=$(find "$LOG_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-            echo "📊 Local snapshots: $local_count"
+            local_count=$(find "$LOG_DIR" -maxdepth 1 -mindepth 1 -type d -name "20*" 2>/dev/null | wc -l | tr -d ' ')
+            echo "Local snapshots: $local_count"
 
             if [ -f "$LOG_DIR/gdrive.log" ]; then
                 last_gdrive=$(tail -1 "$LOG_DIR/gdrive.log" 2>/dev/null || echo "none")
-                echo "📊 Last GDrive log: $last_gdrive"
+                echo "Last GDrive log: $last_gdrive"
             fi
         fi
         ;;

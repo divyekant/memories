@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# FAISS Memory - Off-site Backup to Google Drive
+# FAISS Memory - Off-site Backup to Google Drive (Optional)
 # Uploads the latest snapshot hourly and maintains 7-day retention
 #
 # Usage:
@@ -10,8 +10,17 @@
 #   ./scripts/backup-gdrive.sh --setup      # Create Drive folder + test auth
 #   ./scripts/backup-gdrive.sh --cleanup    # Only run Drive cleanup
 #
-# Requires: gog CLI with drive auth for divyekantg@gmail.com
-#   gog auth add divyekantg@gmail.com --services drive
+# Prerequisites:
+#   1. Install gog CLI: https://github.com/skratchdot/gog
+#   2. Authenticate:    gog auth add your-email@gmail.com --services drive
+#   3. Set env var:     export GDRIVE_ACCOUNT="your-email@gmail.com"
+#
+# Environment:
+#   GDRIVE_ACCOUNT       - Google account email (required)
+#   GDRIVE_FOLDER_NAME   - Drive folder name (default: faiss-memory-backups)
+#   BACKUP_DIR           - Local backup dir (default: ~/backups/faiss-memory)
+#   UPLOAD_INTERVAL_MIN  - Min minutes between uploads (default: 55)
+#   GDRIVE_RETENTION_DAYS - Days to keep on Drive (default: 7)
 #
 
 set -e
@@ -19,15 +28,25 @@ set -e
 # Ensure tools are in PATH (cron has minimal PATH)
 export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 
-# Configuration
-BACKUP_DIR="$HOME/backups/faiss-memory"
+# Source env vars (cron doesn't load shell profile)
+[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" 2>/dev/null || true
+
+# Configuration (all overridable via env vars)
+BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/faiss-memory}"
 LOG_FILE="$BACKUP_DIR/gdrive.log"
-GDRIVE_ACCOUNT="divyekantg@gmail.com"
-GDRIVE_FOLDER_NAME="faiss-memory-backups"
+GDRIVE_ACCOUNT="${GDRIVE_ACCOUNT}"
+GDRIVE_FOLDER_NAME="${GDRIVE_FOLDER_NAME:-faiss-memory-backups}"
 FOLDER_ID_FILE="$BACKUP_DIR/.gdrive_folder_id"
 LAST_UPLOAD_FILE="$BACKUP_DIR/.gdrive_last_upload"
-UPLOAD_INTERVAL_MIN=55    # Upload at most once per ~hour
-RETENTION_DAYS=7          # Keep 7 days of backups on Drive
+UPLOAD_INTERVAL_MIN="${UPLOAD_INTERVAL_MIN:-55}"
+RETENTION_DAYS="${GDRIVE_RETENTION_DAYS:-7}"
+
+# Validate required config
+if [ -z "$GDRIVE_ACCOUNT" ]; then
+    echo "[ERROR] GDRIVE_ACCOUNT not set. Export it in your shell profile:"
+    echo "  export GDRIVE_ACCOUNT=\"your-email@gmail.com\""
+    exit 1
+fi
 
 # Parse arguments
 TEST_MODE=false

@@ -8,7 +8,12 @@
 #   ./scripts/backup.sh --test       # Dry run
 #   ./scripts/backup.sh --cleanup    # Only run cleanup
 #
-# Requires: FAISS_API_KEY env var (from ~/.zshrc)
+# Environment:
+#   FAISS_API_KEY     - API key for the FAISS service (required if auth enabled)
+#   FAISS_URL         - Service URL (default: http://localhost:8900)
+#   FAISS_DATA_DIR    - Path to Docker volume data dir (default: ./data relative to repo root)
+#   BACKUP_DIR        - Where to store snapshots (default: ~/backups/faiss-memory)
+#   RETENTION_DAYS    - Days to keep local snapshots (default: 30)
 #
 
 set -e
@@ -19,12 +24,17 @@ export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 # Source env vars (cron doesn't load shell profile)
 [ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" 2>/dev/null || true
 
-# Configuration
-BACKUP_DIR="$HOME/backups/faiss-memory"
+# Resolve paths
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Configuration (all overridable via env vars)
+BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/faiss-memory}"
 LOG_FILE="$BACKUP_DIR/backup.log"
 FAISS_URL="${FAISS_URL:-http://localhost:8900}"
 API_KEY="${FAISS_API_KEY}"
-RETENTION_DAYS=30
+FAISS_DATA_DIR="${FAISS_DATA_DIR:-$PROJECT_DIR/data}"
+RETENTION_DAYS="${RETENTION_DAYS:-30}"
 
 # Parse arguments
 TEST_MODE=false
@@ -72,16 +82,15 @@ create_local_snapshot() {
     fi
 
     # Copy the data files to our local snapshot
-    local data_dir="$HOME/projects/memories/data"
-    if [ ! -d "$data_dir" ]; then
-        log "ERROR" "Data directory not found: $data_dir"
+    if [ ! -d "$FAISS_DATA_DIR" ]; then
+        log "ERROR" "Data directory not found: $FAISS_DATA_DIR"
         return 1
     fi
 
     mkdir -p "$snapshot_dir"
-    cp -f "$data_dir/index.faiss" "$snapshot_dir/" 2>/dev/null || true
-    cp -f "$data_dir/metadata.json" "$snapshot_dir/" 2>/dev/null || true
-    cp -f "$data_dir/config.json" "$snapshot_dir/" 2>/dev/null || true
+    cp -f "$FAISS_DATA_DIR/index.faiss" "$snapshot_dir/" 2>/dev/null || true
+    cp -f "$FAISS_DATA_DIR/metadata.json" "$snapshot_dir/" 2>/dev/null || true
+    cp -f "$FAISS_DATA_DIR/config.json" "$snapshot_dir/" 2>/dev/null || true
 
     local size=$(du -sh "$snapshot_dir" 2>/dev/null | cut -f1)
     log "SUCCESS" "Snapshot created: $timestamp ($size)"
@@ -148,9 +157,8 @@ main() {
         local total=$(find "$BACKUP_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
         log "SUCCESS" "Backup complete. Total snapshots: $total"
 
-        # Upload to Google Drive (non-blocking)
-        SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-        if [ -f "$SCRIPT_DIR/backup-gdrive.sh" ]; then
+        # Upload to Google Drive if configured (optional, non-blocking)
+        if [ -f "$SCRIPT_DIR/backup-gdrive.sh" ] && [ -n "$GDRIVE_ACCOUNT" ]; then
             "$SCRIPT_DIR/backup-gdrive.sh" >> "$LOG_FILE" 2>&1 || log "ERROR" "Google Drive upload failed (local backup OK)"
         fi
 
