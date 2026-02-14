@@ -8,11 +8,12 @@ services:
       - "8900:8000"
     volumes:
       - ./data:/data
-      - /home/ubuntu/.openclaw/workspace/memory:/workspace:ro
+      # Optional: Mount a directory containing text files to index
+      # - /path/to/your/documents:/workspace:ro
     environment:
       - DATA_DIR=/data
-      - WORKSPACE_DIR=/workspace
-      - API_KEY=my-secret-key-123
+      # - WORKSPACE_DIR=/workspace  # Uncomment if mounting documents
+      - API_KEY=your-secret-key-here
       - MODEL_NAME=all-MiniLM-L6-v2
       - MAX_BACKUPS=10
       # Cloud Sync (optional - uncomment to enable)

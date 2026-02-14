@@ -5,6 +5,33 @@
 
 ---
 
+## Installation
+
+Cloud sync is **opt-in** to keep the Docker image lean (saves ~80MB).
+
+### Option 1: Docker Build with Cloud Sync
+
+Build the image with cloud sync enabled:
+
+```bash
+docker build --build-arg ENABLE_CLOUD_SYNC=true -t faiss-memory:latest .
+```
+
+### Option 2: Install Manually (if already running)
+
+```bash
+docker exec faiss-memory pip install boto3==1.35.36
+```
+
+### Option 3: Local Development
+
+```bash
+pip install -r requirements.txt
+pip install -r requirements-cloud.txt
+```
+
+---
+
 ## Overview
 
 Cloud Sync automatically backs up your FAISS memory index to S3-compatible cloud storage. This enables:

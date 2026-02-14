@@ -324,7 +324,7 @@ async def list_backups():
     """List available backups"""
     try:
         backups = sorted(
-            memory.backup_dir.glob("*_*"), key=lambda p: p.name, reverse=True
+            memory.get_backup_dir().glob("*_*"), key=lambda p: p.name, reverse=True
         )
         return {
             "backups": [
@@ -371,15 +371,15 @@ async def restore_backup(request: RestoreRequest):
 @app.get("/sync/status")
 async def sync_status():
     """Get cloud sync status"""
-    if not memory.cloud_sync:
+    if not memory.get_cloud_sync():
         return {"enabled": False, "message": "Cloud sync not configured"}
 
     try:
-        remote_snapshots = memory.cloud_sync.list_remote_snapshots()
+        remote_snapshots = memory.get_cloud_sync().list_remote_snapshots()
         latest_remote = remote_snapshots[0]["name"] if remote_snapshots else None
 
         local_backups = sorted(
-            memory.backup_dir.glob("*_*"), key=lambda p: p.name, reverse=True
+            memory.get_backup_dir().glob("*_*"), key=lambda p: p.name, reverse=True
         )
         latest_local = local_backups[0].name if local_backups else None
 
@@ -398,7 +398,7 @@ async def sync_status():
 @app.post("/sync/upload")
 async def sync_upload():
     """Manually trigger backup upload to cloud"""
-    if not memory.cloud_sync:
+    if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
     logger.info("Manual cloud upload triggered")
@@ -421,7 +421,7 @@ async def sync_upload():
 @app.post("/sync/download")
 async def sync_download(backup_name: Optional[str] = None, confirm: bool = False):
     """Download a backup from cloud (requires confirmation)"""
-    if not memory.cloud_sync:
+    if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
     if not confirm:
@@ -433,12 +433,12 @@ async def sync_download(backup_name: Optional[str] = None, confirm: bool = False
     try:
         # Get latest if not specified
         if not backup_name:
-            backup_name = memory.cloud_sync.get_latest_snapshot()
+            backup_name = memory.get_cloud_sync().get_latest_snapshot()
             if not backup_name:
                 raise HTTPException(status_code=404, detail="No backups found in cloud")
 
         logger.info("Downloading backup from cloud: %s", backup_name)
-        result = memory.cloud_sync.download_backup(backup_name, memory.backup_dir)
+        result = memory.get_cloud_sync().download_backup(backup_name, memory.get_backup_dir())
 
         return {
             "success": True,
@@ -453,11 +453,11 @@ async def sync_download(backup_name: Optional[str] = None, confirm: bool = False
 @app.get("/sync/snapshots")
 async def sync_snapshots():
     """List remote snapshots in cloud storage"""
-    if not memory.cloud_sync:
+    if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
     try:
-        snapshots = memory.cloud_sync.list_remote_snapshots()
+        snapshots = memory.get_cloud_sync().list_remote_snapshots()
         return {"snapshots": snapshots, "count": len(snapshots)}
     except Exception as e:
         logger.exception("List remote snapshots failed")
@@ -467,7 +467,7 @@ async def sync_snapshots():
 @app.post("/sync/restore/{backup_name}")
 async def sync_restore(backup_name: str, confirm: bool = False):
     """Download and restore a backup from cloud in one step"""
-    if not memory.cloud_sync:
+    if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
     if not confirm:
@@ -480,7 +480,7 @@ async def sync_restore(backup_name: str, confirm: bool = False):
         logger.info("Downloading and restoring from cloud: %s", backup_name)
 
         # Download from cloud
-        download_result = memory.cloud_sync.download_backup(backup_name, memory.backup_dir)
+        download_result = memory.get_cloud_sync().download_backup(backup_name, memory.get_backup_dir())
 
         # Restore locally
         restore_result = memory.restore_from_backup(backup_name)

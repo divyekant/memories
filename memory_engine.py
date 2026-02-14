@@ -714,3 +714,15 @@ class MemoryEngine:
             "dimension": self.dim,
             "model": self.config.get("model"),
         }
+
+    # ------------------------------------------------------------------
+    # Accessors (for API endpoints)
+    # ------------------------------------------------------------------
+
+    def get_cloud_sync(self) -> Optional["CloudSync"]:
+        """Get cloud sync client (None if not available/enabled)"""
+        return self.cloud_sync
+
+    def get_backup_dir(self) -> Path:
+        """Get backup directory path"""
+        return self.backup_dir
