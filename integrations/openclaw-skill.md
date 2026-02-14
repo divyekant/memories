@@ -29,6 +29,7 @@ Local semantic memory using FAISS vector search + BM25 hybrid retrieval (Docker 
 
 - Docker service running: `docker ps | grep faiss-memory`
 - If not running: `cd ~/web && docker-compose up -d faiss-memory`
+- `FAISS_API_KEY` env var must be set (loaded from shell profile)
 
 ## Commands
 
@@ -51,6 +52,7 @@ function memory_search_faiss() {
 
     curl -s -X POST http://localhost:8900/search \
         -H "Content-Type: application/json" \
+        -H "X-API-Key: $FAISS_API_KEY" \
         -d "$payload" \
     | jq -r '.results[] | "\(.similarity // .rrf_score | tonumber | . * 100 | floor)% | \(.source): \(.text[:200])"'
 }
@@ -79,6 +81,7 @@ function memory_add_faiss() {
 
     curl -s -X POST http://localhost:8900/memory/add \
         -H "Content-Type: application/json" \
+        -H "X-API-Key: $FAISS_API_KEY" \
         -d "$payload" \
     | jq -r '.message'
 }
@@ -104,6 +107,7 @@ function memory_is_novel() {
     local result
     result=$(curl -s -X POST http://localhost:8900/memory/is-novel \
         -H "Content-Type: application/json" \
+        -H "X-API-Key: $FAISS_API_KEY" \
         -d "$payload")
 
     local is_novel
@@ -129,6 +133,7 @@ memory_is_novel "New preference to check"
 function memory_delete_faiss() {
     local id="$1"
     curl -s -X DELETE "http://localhost:8900/memory/$id" \
+        -H "X-API-Key: $FAISS_API_KEY" \
     | jq -r '.deleted_text // .detail'
 }
 
@@ -147,6 +152,7 @@ function memory_delete_source_faiss() {
 
     curl -s -X POST http://localhost:8900/memory/delete-by-source \
         -H "Content-Type: application/json" \
+        -H "X-API-Key: $FAISS_API_KEY" \
         -d "$payload" \
     | jq -r '"Deleted \(.deleted_count) memories"'
 }
@@ -169,7 +175,7 @@ function memory_list_faiss() {
         url="${url}&source=$source"
     fi
 
-    curl -s "$url" | jq -r '.memories[] | "[\(.id)] \(.source): \(.text[:120])"'
+    curl -s "$url" -H "X-API-Key: $FAISS_API_KEY" | jq -r '.memories[] | "[\(.id)] \(.source): \(.text[:120])"'
 }
 
 # Usage
@@ -186,6 +192,7 @@ function memory_rebuild_index() {
 
     curl -s -X POST http://localhost:8900/index/build \
         -H "Content-Type: application/json" \
+        -H "X-API-Key: $FAISS_API_KEY" \
         -d '{}' \
     | jq -r '"✅ \(.message)\n   Files: \(.files_processed)\n   Memories: \(.memories_added)\n   Backup: \(.backup_location)"'
 }
@@ -209,6 +216,7 @@ function memory_dedup_faiss() {
 
     curl -s -X POST http://localhost:8900/memory/deduplicate \
         -H "Content-Type: application/json" \
+        -H "X-API-Key: $FAISS_API_KEY" \
         -d "$payload" \
     | jq '.'
 }
@@ -223,7 +231,7 @@ memory_dedup_faiss true 0.85  # Lower threshold = more aggressive
 
 ```bash
 function memory_stats() {
-    curl -s http://localhost:8900/stats | jq '
+    curl -s http://localhost:8900/stats -H "X-API-Key: $FAISS_API_KEY" | jq '
         "📊 FAISS Memory Stats",
         "━━━━━━━━━━━━━━━━━━━━━━",
         "Total memories: \(.total_memories)",
@@ -243,7 +251,7 @@ memory_stats
 
 ```bash
 function memory_backups() {
-    curl -s http://localhost:8900/backups \
+    curl -s http://localhost:8900/backups -H "X-API-Key: $FAISS_API_KEY" \
     | jq -r '.backups[] | "\(.name)"'
 }
 
@@ -258,6 +266,7 @@ function memory_backup() {
     local prefix="${1:-manual}"
 
     curl -s -X POST "http://localhost:8900/backup?prefix=$prefix" \
+        -H "X-API-Key: $FAISS_API_KEY" \
     | jq -r '"✅ \(.message)\n   Location: \(.backup_path)"'
 }
 
@@ -277,6 +286,7 @@ function memory_restore() {
 
     curl -s -X POST http://localhost:8900/restore \
         -H "Content-Type: application/json" \
+        -H "X-API-Key: $FAISS_API_KEY" \
         -d "$payload" \
     | jq -r '"✅ \(.message)\n   Memories: \(.total_memories)"'
 }
@@ -290,7 +300,7 @@ memory_restore "manual_20260213_120000"  # Restore specific backup
 
 ```bash
 function memory_health() {
-    curl -s http://localhost:8900/health | jq '
+    curl -s http://localhost:8900/health -H "X-API-Key: $FAISS_API_KEY" | jq '
         if .status == "ok" then
             "✅ FAISS Memory: HEALTHY (v\(.version // "?"))\n   Memories: \(.total_memories)\n   Model: \(.model)"
         else

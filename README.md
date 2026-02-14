@@ -81,7 +81,8 @@ npm install
       "command": "node",
       "args": ["/path/to/memories/mcp-server/index.js"],
       "env": {
-        "FAISS_URL": "http://localhost:8900"
+        "FAISS_URL": "http://localhost:8900",
+        "FAISS_API_KEY": "your-api-key-here"
       }
     }
   }
@@ -123,7 +124,8 @@ npm install
       "command": "node",
       "args": ["/path/to/memories/mcp-server/index.js"],
       "env": {
-        "FAISS_URL": "http://localhost:8900"
+        "FAISS_URL": "http://localhost:8900",
+        "FAISS_API_KEY": "your-api-key-here"
       }
     }
   }
@@ -179,7 +181,8 @@ npm install
       "command": "node",
       "args": ["/path/to/memories/mcp-server/index.js"],
       "env": {
-        "FAISS_URL": "http://localhost:8900"
+        "FAISS_URL": "http://localhost:8900",
+        "FAISS_API_KEY": "your-api-key-here"
       }
     }
   }
@@ -346,19 +349,22 @@ OpenClaw uses a **Skill** (SKILL.md) with shell helper functions that call the R
 
 **Setup:**
 
-1. Create the skill directory:
+1. Create the skill directory and copy the skill file:
 
 ```bash
 mkdir -p ~/.openclaw/skills/faiss-memory
-```
-
-2. Copy the skill file:
-
-```bash
 cp integrations/openclaw-skill.md ~/.openclaw/skills/faiss-memory/SKILL.md
 ```
 
 Or see the full SKILL.md in this repo at `integrations/openclaw-skill.md`.
+
+2. Set the API key in your shell profile (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+export FAISS_API_KEY="your-api-key-here"
+```
+
+The SKILL.md reads `$FAISS_API_KEY` from the environment — the key is never stored in the skill file itself.
 
 **Key commands available to OpenClaw agents:**
 
@@ -377,7 +383,7 @@ memory_backup [prefix]
 memory_restore "backup_name"
 ```
 
-All functions use `jq` for safe JSON construction (no string interpolation).
+All functions use `jq` for safe JSON construction and read auth from `$FAISS_API_KEY` env var (no hardcoded secrets).
 
 ---
 
