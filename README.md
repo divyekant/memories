@@ -1,373 +1,508 @@
-# FAISS Memory - Local Semantic Memory for AI Coding Assistants
+# FAISS Memory
 
-> Zero-cost, <50ms semantic search for Claude Code, Cursor, ChatGPT, and any AI that can make HTTP calls.
+Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector search.
 
-[![Status](https://img.shields.io/badge/status-production-green)]()
-[![Docker](https://img.shields.io/badge/docker-ready-blue)]()
-[![Cost](https://img.shields.io/badge/cost-%240%2Fmonth-brightgreen)]()
-[![Speed](https://img.shields.io/badge/latency-%3C50ms-blue)]()
-
----
-
-## What Is This?
-
-**FAISS Memory** is a local semantic memory system designed for AI coding assistants. It lets your AI remember context across sessions without expensive cloud vector databases.
-
-**Key Features:**
-- 🚀 **Blazing Fast** - <50ms search latency (in-memory FAISS)
-- 💰 **Zero Cost** - 100% local embeddings (no API calls)
-- 🔒 **Private** - Your data never leaves your machine
-- 🔌 **Universal** - Works with Claude Code, Cursor, ChatGPT, Continue.dev, Aider, etc.
-- 🤖 **AI-Ready** - REST API designed for AI tool calling
-- 💾 **Auto-Backup** - Automatic backups on every write
-- 📦 **Docker** - One-command deployment
+Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
 ---
 
 ## Quick Start
 
-### 1. Run the Service
-
 ```bash
-# Clone and build
-git clone <repo-url> faiss-memory
-cd faiss-memory
-docker compose up -d
+# 1. Clone and build
+git clone git@github.com:divyekant/memories.git
+cd memories
+docker compose -f docker-compose.snippet.yml up -d
 
-# Verify it's running
+# 2. Verify
 curl http://localhost:8900/health
-```
 
-### 2. Add Your First Memory
-
-```bash
+# 3. Add a memory
 curl -X POST http://localhost:8900/memory/add \
   -H "Content-Type: application/json" \
-  -d '{
-    "text": "FAISS Memory is a local semantic search system",
-    "source": "readme.md"
-  }'
-```
+  -d '{"text": "Always use TypeScript strict mode", "source": "standards.md"}'
 
-### 3. Search
-
-```bash
+# 4. Search
 curl -X POST http://localhost:8900/search \
   -H "Content-Type: application/json" \
-  -d '{
-    "query": "What is FAISS Memory?",
-    "k": 3
-  }' | jq
+  -d '{"query": "TypeScript config", "k": 3, "hybrid": true}'
 ```
 
-**That's it!** The service is now running at http://localhost:8900
-
----
-
-## Integration Guides
-
-**Choose your AI coding assistant:**
-
-- 📘 [**Claude Code**](integrations/claude-code.md) - Anthropic's official CLI
-- 🤖 [**Codex**](integrations/codex.md) - OpenAI Codex
-- 💬 [**ChatGPT**](integrations/chatgpt.md) - Custom GPT Actions
-- 🖱️ [**Cursor**](integrations/cursor.md) - Cursor AI IDE
-- ⚡ [**Continue.dev**](integrations/continue.md) - VS Code extension
-- 🛠️ [**Aider**](integrations/aider.md) - AI pair programming
-- 🔌 [**Generic**](integrations/generic.md) - Any HTTP-capable AI
-
-Each guide includes:
-- ✅ Step-by-step setup
-- ✅ Configuration files
-- ✅ Example prompts
-- ✅ Best practices
-
----
-
-## Why FAISS Memory?
-
-### The Problem
-
-AI coding assistants are powerful but **forget everything** between sessions:
-- Previous conversations? Gone.
-- Project decisions? Lost.
-- Code patterns you prefer? Vanished.
-- Past bugs and fixes? Forgotten.
-
-### Traditional Solutions (Expensive)
-
-- **Pinecone:** $70-200/month for production use
-- **Weaviate:** Self-host complexity + infrastructure costs
-- **OpenAI Embeddings:** $0.13 per 1M tokens (adds up fast)
-- **Chroma/LanceDB:** Better, but still cloud-dependent for embeddings
-
-### FAISS Memory (This Project)
-
-- **$0/month** - 100% local embeddings (sentence-transformers)
-- **<50ms queries** - In-memory FAISS index
-- **5-minute setup** - Docker Compose, done
-- **Works everywhere** - Any AI that can call HTTP APIs
-- **Private** - No data sent to cloud services
-
----
-
-## How It Works
-
-```
-┌─────────────────────────────────────────────────┐
-│  AI Coding Assistant (Claude Code, Cursor, etc) │
-└───────────────────┬─────────────────────────────┘
-                    │ HTTP POST /search
-                    ↓
-        ┌───────────────────────┐
-        │  FAISS Memory Service │  (Docker :8900)
-        │  - FastAPI REST API   │
-        │  - Auto-backups       │
-        └───────────┬───────────┘
-                    ↓
-        ┌───────────────────────┐
-        │   Memory Engine       │
-        │  - FAISS IndexFlatIP  │
-        │  - sentence-transformers │
-        └───────────┬───────────┘
-                    ↓
-        ┌───────────────────────┐
-        │  Persistent Storage   │
-        │  - index.faiss        │
-        │  - metadata.json      │
-        │  - backups/           │
-        └───────────────────────┘
-```
-
-**Step-by-step:**
-1. Your AI sends a query: `POST /search {"query": "How do I handle errors?"}`
-2. Service generates embeddings using local model (all-MiniLM-L6-v2)
-3. FAISS searches in-memory index (<50ms)
-4. Returns top-k most similar memories with scores
-5. AI uses context to answer your question
-
-**No API calls. No cloud dependencies. Just fast, local semantic search.**
-
----
-
-## Use Cases
-
-### For AI Coding Assistants
-
-**1. Project Context Persistence**
-```bash
-# Store project decisions
-POST /memory/add
-{
-  "text": "Use React Query for API calls, not Redux Toolkit Query",
-  "source": "architecture-decisions.md"
-}
-
-# AI can recall later
-POST /search {"query": "What should I use for API calls?"}
-# Returns: "Use React Query for API calls..."
-```
-
-**2. Code Pattern Memory**
-```bash
-# Store your preferred patterns
-POST /memory/add
-{
-  "text": "For error handling, use custom Error classes with specific codes",
-  "source": "code-standards.md"
-}
-
-# AI suggests consistent patterns
-POST /search {"query": "How should I handle errors?"}
-```
-
-**3. Bug & Fix History**
-```bash
-# Record bugs and solutions
-POST /memory/add
-{
-  "text": "Fixed: Docker health checks fail with 'localhost' on some systems. Use 127.0.0.1 instead",
-  "source": "bug-fixes.md"
-}
-
-# Avoid repeating mistakes
-POST /search {"query": "Docker health check not working"}
-```
-
-**4. Duplicate Detection**
-```bash
-# Check before adding new memories
-POST /memory/is-novel
-{
-  "text": "We use Tailwind CSS for styling",
-  "threshold": 0.85
-}
-# Returns: {"is_novel": false} (already known)
-```
-
-### For Personal Knowledge Management
-
-- 📚 **Second Brain** - Store notes, ideas, learnings
-- 🔍 **Smart Search** - Find related concepts semantically
-- 📝 **Meeting Notes** - Recall decisions from past meetings
-- 📖 **Documentation** - Search your docs faster than Ctrl+F
-
----
-
-## API Reference
-
-### Core Endpoints
-
-#### `POST /search`
-Search memories using natural language query.
-
-**Request:**
-```json
-{
-  "query": "How do we handle authentication?",
-  "k": 5,
-  "threshold": 0.3
-}
-```
-
-**Response:**
-```json
-{
-  "query": "How do we handle authentication?",
-  "results": [
-    {
-      "id": 42,
-      "text": "Use JWT tokens with 15min expiry...",
-      "source": "auth-system.md",
-      "similarity": 0.89,
-      "timestamp": "2026-02-12T10:30:00"
-    }
-  ],
-  "count": 1
-}
-```
-
-#### `POST /memory/add`
-Add a new memory.
-
-**Request:**
-```json
-{
-  "text": "Always use TypeScript strict mode",
-  "source": "code-standards.md",
-  "metadata": {"type": "guideline", "priority": "high"}
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "id": 43,
-  "message": "Memory added successfully"
-}
-```
-
-#### `POST /memory/is-novel`
-Check if text is novel (not already in memory).
-
-**Request:**
-```json
-{
-  "text": "Use React Query for API calls",
-  "threshold": 0.85
-}
-```
-
-**Response:**
-```json
-{
-  "is_novel": false,
-  "closest_match": {
-    "id": 12,
-    "text": "Use React Query for data fetching",
-    "similarity": 0.92
-  }
-}
-```
-
-#### `GET /stats`
-Get index statistics.
-
-**Response:**
-```json
-{
-  "total_memories": 156,
-  "dimension": 384,
-  "model": "all-MiniLM-L6-v2",
-  "created_at": "2026-02-12T10:00:00",
-  "last_updated": "2026-02-12T18:30:00",
-  "index_size_bytes": 234567,
-  "backup_count": 10
-}
-```
-
-**Full API documentation:** [docs/API.md](docs/API.md)
-
----
-
-## Performance
-
-| Metric | Value | Hardware |
-|--------|-------|----------|
-| **Search latency** | <50ms | Mac mini M4 Pro |
-| **Add latency** | ~100ms | (includes backup) |
-| **Model loading** | ~15s | First start only |
-| **Memory footprint** | ~200MB | Container |
-| **Index size** | ~1.5KB/memory | Linear growth |
-| **Throughput** | ~100 searches/sec | Single-threaded |
-
-**Benchmarked with:**
-- 156 memories (~250KB total text)
-- k=5 results per search
-- Mac mini M4 Pro, 16GB RAM
+The service runs at **http://localhost:8900**. API docs at http://localhost:8900/docs.
 
 ---
 
 ## Architecture
 
-### Components
-
-**FastAPI Service** (`app.py`)
-- REST API endpoints
-- Request validation (Pydantic)
-- Health checks
-- Error handling
-
-**Memory Engine** (`memory_engine.py`)
-- FAISS IndexFlatIP (inner product similarity)
-- sentence-transformers (all-MiniLM-L6-v2)
-- Auto-backup system (keeps last 10)
-- Metadata management (JSON)
-
-**Docker Container**
-- Python 3.11 slim base
-- Persistent volume for data
-- Health checks (curl)
-- Graceful shutdown
-
-### Data Storage
-
 ```
-data/
-├── index.faiss       # FAISS binary index
-├── metadata.json     # Memory metadata (source, timestamp, etc.)
-└── backups/          # Automatic backups
-    ├── manual_20260212_120000/
-    ├── auto_20260212_120530/
-    └── ... (keeps last 10)
+AI Client (Claude, Codex, ChatGPT, OpenClaw)
+    |
+    |-- MCP protocol (Claude Code / Desktop)
+    |-- REST API (everything else)
+    v
+MCP Server (mcp-server/index.js)
+    |
+    v
+FAISS Memory Service (Docker :8900)
+    |-- FastAPI REST API
+    |-- Hybrid Search (FAISS vector + BM25 keyword, RRF fusion)
+    |-- Markdown-aware chunking
+    |-- Auto-backups
+    v
+Persistent Storage (data/)
+    |-- index.faiss (FAISS binary index)
+    |-- metadata.json (memory text + metadata)
+    |-- backups/ (auto, keeps last 10)
 ```
 
-**Backup Strategy:**
-- Auto-backup on every `add` or `build` operation
-- Keeps last 10 backups (auto-cleanup)
-- Manual backups via `POST /backup`
-- Restore: copy files from backup directory
+---
+
+## Integration Guides
+
+### Claude Code (CLI)
+
+The MCP server gives Claude Code native `memory_search`, `memory_add`, `memory_delete`, `memory_list`, `memory_stats`, and `memory_is_novel` tools.
+
+**Setup:**
+
+1. Install the MCP server dependencies:
+
+```bash
+cd memories/mcp-server
+npm install
+```
+
+2. Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "faiss-memory": {
+      "command": "node",
+      "args": ["/path/to/memories/mcp-server/index.js"],
+      "env": {
+        "FAISS_URL": "http://localhost:8900"
+      }
+    }
+  }
+}
+```
+
+3. Restart Claude Code. The tools are now available in every project.
+
+**Usage** (Claude Code will call these automatically when relevant):
+
+- "Search my memory for authentication patterns"
+- "Remember that we decided to use Prisma for the ORM"
+- "Check if this pattern is already in memory before adding it"
+- "Show me all memories from the bug-fixes source"
+
+For a **single project only**, create `.mcp.json` in the project root instead of editing `settings.json`.
+
+---
+
+### Claude Desktop (Chat / Cowork)
+
+Same MCP server, different config file.
+
+**Setup:**
+
+1. Install dependencies (same as above):
+
+```bash
+cd memories/mcp-server
+npm install
+```
+
+2. Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "faiss-memory": {
+      "command": "node",
+      "args": ["/path/to/memories/mcp-server/index.js"],
+      "env": {
+        "FAISS_URL": "http://localhost:8900"
+      }
+    }
+  }
+}
+```
+
+3. Restart the Claude Desktop app. Memory tools appear in chat and cowork mode.
+
+---
+
+### Claude Chat (Web at claude.ai)
+
+Claude Chat on the web does not support MCP directly. Two options:
+
+**Option A: Remote MCP via Cloudflare Tunnel (recommended)**
+
+If you expose the FAISS service via a tunnel (e.g., `memory.yourdomain.com`), you can use Claude's remote MCP connector feature to connect to it. See the [Remote Access](#remote-access) section below.
+
+**Option B: Manual curl in prompts**
+
+Paste curl commands in your messages and ask Claude to interpret the results:
+
+```
+Search my memory service for React patterns:
+
+curl -X POST https://memory.yourdomain.com/search \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_KEY" \
+  -d '{"query": "React patterns", "k": 5, "hybrid": true}'
+```
+
+---
+
+### Codex (OpenAI)
+
+Codex supports MCP natively.
+
+**Setup:**
+
+1. Install dependencies:
+
+```bash
+cd memories/mcp-server
+npm install
+```
+
+2. Add to your Codex MCP config:
+
+```json
+{
+  "mcpServers": {
+    "faiss-memory": {
+      "command": "node",
+      "args": ["/path/to/memories/mcp-server/index.js"],
+      "env": {
+        "FAISS_URL": "http://localhost:8900"
+      }
+    }
+  }
+}
+```
+
+3. Restart Codex. The `memory_search`, `memory_add`, and other tools will be available.
+
+**Usage** (Codex will discover the tools automatically):
+
+- "Search memory for how we handle error logging"
+- "Store this architecture decision in memory"
+- "List all memories from the project-setup source"
+
+---
+
+### ChatGPT (Custom GPT)
+
+ChatGPT uses **Custom Actions** (OpenAPI schema) rather than MCP. This requires exposing the FAISS service over the internet.
+
+**Prerequisites:** FAISS service accessible via HTTPS (see [Remote Access](#remote-access)).
+
+**Setup:**
+
+1. Enable API key auth on the FAISS service (set `API_KEY` env var in docker-compose).
+
+2. In ChatGPT, go to **Explore GPTs > Create a GPT > Configure > Actions**.
+
+3. Import this OpenAPI schema (replace `memory.yourdomain.com` with your URL):
+
+```yaml
+openapi: 3.0.0
+info:
+  title: FAISS Memory
+  version: 2.0.0
+  description: Semantic memory search and storage
+servers:
+  - url: https://memory.yourdomain.com
+paths:
+  /search:
+    post:
+      operationId: searchMemory
+      summary: Search memories by semantic similarity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  description: Natural language search query
+                k:
+                  type: integer
+                  default: 5
+                  description: Number of results
+                hybrid:
+                  type: boolean
+                  default: true
+                  description: Use hybrid BM25+vector search
+      responses:
+        '200':
+          description: Search results
+
+  /memory/add:
+    post:
+      operationId: addMemory
+      summary: Store a new memory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text, source]
+              properties:
+                text:
+                  type: string
+                  description: Memory content
+                source:
+                  type: string
+                  description: Source identifier
+                deduplicate:
+                  type: boolean
+                  default: true
+      responses:
+        '200':
+          description: Memory added
+
+  /memory/is-novel:
+    post:
+      operationId: isNovel
+      summary: Check if text is already known
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                threshold:
+                  type: number
+                  default: 0.88
+      responses:
+        '200':
+          description: Novelty check result
+
+  /memories:
+    get:
+      operationId: listMemories
+      summary: Browse stored memories
+      parameters:
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: source
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of memories
+
+  /stats:
+    get:
+      operationId: getStats
+      summary: Memory index statistics
+      responses:
+        '200':
+          description: Index stats
+```
+
+4. Under **Authentication**, choose **API Key** with header name `X-API-Key`.
+
+5. Add instructions to the GPT system prompt:
+
+```
+You have access to a persistent memory system. Use it to:
+- Search for relevant context before answering questions (searchMemory)
+- Store important decisions, patterns, and learnings (addMemory)
+- Check if something is already known before adding (isNovel)
+- Browse what's stored (listMemories)
+
+Always search memory at the start of conversations to load context.
+```
+
+---
+
+### OpenClaw
+
+OpenClaw uses a **Skill** (SKILL.md) with shell helper functions that call the REST API directly.
+
+**Setup:**
+
+1. Create the skill directory:
+
+```bash
+mkdir -p ~/.openclaw/skills/faiss-memory
+```
+
+2. Copy the skill file:
+
+```bash
+cp integrations/openclaw-skill.md ~/.openclaw/skills/faiss-memory/SKILL.md
+```
+
+Or see the full SKILL.md in this repo at `integrations/openclaw-skill.md`.
+
+**Key commands available to OpenClaw agents:**
+
+```bash
+memory_search_faiss "query" [k] [threshold] [hybrid]
+memory_add_faiss "text" "source" [deduplicate]
+memory_is_novel "text" [threshold]
+memory_delete_faiss <id>
+memory_delete_source_faiss "pattern"
+memory_list_faiss [offset] [limit] [source]
+memory_rebuild_index
+memory_dedup_faiss [dry_run] [threshold]
+memory_stats
+memory_health
+memory_backup [prefix]
+memory_restore "backup_name"
+```
+
+All functions use `jq` for safe JSON construction (no string interpolation).
+
+---
+
+## Remote Access
+
+To use FAISS Memory from anywhere (Claude Chat web, ChatGPT, mobile, other machines), expose it via a Cloudflare Tunnel or similar.
+
+### Setup with Cloudflare Tunnel
+
+1. **Enable API key auth** in your docker-compose:
+
+```yaml
+environment:
+  - API_KEY=your-secret-key-here
+```
+
+Rebuild and restart: `docker compose build faiss-memory && docker compose up -d faiss-memory`
+
+2. **Add to your Cloudflare tunnel config** (e.g., in `~/.cloudflared/config.yml`):
+
+```yaml
+ingress:
+  - hostname: memory.yourdomain.com
+    service: http://localhost:8900
+```
+
+3. **Update MCP server env** to use the remote URL:
+
+```json
+{
+  "env": {
+    "FAISS_URL": "https://memory.yourdomain.com",
+    "FAISS_API_KEY": "your-secret-key-here"
+  }
+}
+```
+
+Now every client — Claude Code on your laptop, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
+
+---
+
+## API Reference
+
+All endpoints accept/return JSON. Optional auth via `X-API-Key` header.
+
+### Search
+
+```
+POST /search
+{"query": "...", "k": 5, "hybrid": true, "threshold": 0.3, "vector_weight": 0.7}
+```
+
+### Add Memory
+
+```
+POST /memory/add
+{"text": "...", "source": "file.md", "deduplicate": true}
+```
+
+### Add Batch
+
+```
+POST /memory/add-batch
+{"memories": [{"text": "...", "source": "..."}, ...], "deduplicate": true}
+```
+
+### Delete
+
+```
+DELETE /memory/{id}
+POST /memory/delete-by-source  {"source_pattern": "credentials"}
+```
+
+### Novelty Check
+
+```
+POST /memory/is-novel
+{"text": "...", "threshold": 0.88}
+```
+
+### Browse
+
+```
+GET /memories?offset=0&limit=20&source=filter
+```
+
+### Deduplication
+
+```
+POST /memory/deduplicate
+{"threshold": 0.90, "dry_run": true}
+```
+
+### Index Operations
+
+```
+POST /index/build    {"sources": ["file1.md", "file2.md"]}
+GET  /stats
+GET  /health
+```
+
+### Backups
+
+```
+GET  /backups
+POST /backup?prefix=manual
+POST /restore          {"backup_name": "manual_20260213_120000"}
+```
+
+Full OpenAPI schema at http://localhost:8900/docs.
+
+---
+
+## MCP Tools Reference
+
+When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are available:
+
+| Tool | Description |
+|------|-------------|
+| `memory_search` | Hybrid search (BM25 + vector). Default mode. |
+| `memory_add` | Store a memory with auto-dedup. |
+| `memory_delete` | Delete by ID. |
+| `memory_list` | Browse with pagination and source filter. |
+| `memory_stats` | Index stats (count, model, last updated). |
+| `memory_is_novel` | Check if text is already known. |
 
 ---
 
@@ -375,227 +510,54 @@ data/
 
 ### Environment Variables
 
-```bash
-# Port (default: 8000)
-PORT=8000
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATA_DIR` | `/data` | Persistent storage path |
+| `WORKSPACE_DIR` | `/workspace` | Read-only workspace for index rebuilds |
+| `API_KEY` | (empty) | API key for auth. Empty = no auth. |
+| `MODEL_NAME` | `all-MiniLM-L6-v2` | Sentence transformer model |
+| `MAX_BACKUPS` | `10` | Number of backups to keep |
+| `PORT` | `8000` | Internal service port |
 
-# Model (default: all-MiniLM-L6-v2)
-MODEL_NAME=all-MiniLM-L6-v2
+### MCP Server Environment
 
-# Data directory (default: /data)
-DATA_DIR=/data
-
-# Max backups to keep (default: 10)
-MAX_BACKUPS=10
-```
-
-### Docker Compose
-
-```yaml
-services:
-  faiss-memory:
-    build: .
-    image: faiss-memory:latest
-    container_name: faiss-memory
-    restart: unless-stopped
-    ports:
-      - "8900:8000"
-    volumes:
-      - ./data:/data
-    environment:
-      - MODEL_NAME=all-MiniLM-L6-v2
-      - MAX_BACKUPS=10
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FAISS_URL` | `http://localhost:8900` | FAISS service URL |
+| `FAISS_API_KEY` | (empty) | API key if auth is enabled |
 
 ---
 
-## Advanced Usage
+## Project Structure
 
-### Custom Embeddings Model
-
-Change the model in `memory_engine.py`:
-
-```python
-from sentence_transformers import SentenceTransformer
-
-# Default: all-MiniLM-L6-v2 (384 dims, 80MB)
-model = SentenceTransformer('all-MiniLM-L6-v2')
-
-# Alternatives:
-# - all-mpnet-base-v2 (768 dims, 420MB, more accurate)
-# - paraphrase-MiniLM-L3-v2 (384 dims, 60MB, faster)
-# - multi-qa-MiniLM-L6-cos-v1 (384 dims, Q&A optimized)
 ```
-
-### Batch Operations
-
-Add multiple memories at once:
-
-```bash
-curl -X POST http://localhost:8900/memory/add-batch \
-  -H "Content-Type: application/json" \
-  -d '{
-    "memories": [
-      {"text": "Memory 1", "source": "file1.md"},
-      {"text": "Memory 2", "source": "file2.md"}
-    ]
-  }'
-```
-
-### Index Rebuilding
-
-Rebuild the entire index from files:
-
-```bash
-curl -X POST http://localhost:8900/index/build \
-  -H "Content-Type: application/json" \
-  -d '{
-    "sources": [
-      "/path/to/memory-files/*.md"
-    ]
-  }'
+memories/
+  app.py                  # FastAPI REST API
+  memory_engine.py        # FAISS engine (search, chunking, BM25, backups)
+  Dockerfile              # Docker image (model pre-downloaded)
+  requirements.txt        # Python dependencies
+  docker-compose.snippet.yml
+  mcp-server/
+    index.js              # MCP server (wraps REST API as tools)
+    package.json
+  tests/
+    test_memory_engine.py # 25 tests
+  integrations/
+    claude-code.md        # Claude Code guide
+    openclaw-skill.md     # OpenClaw SKILL.md
+  data/                   # .gitignored — persistent index + backups
 ```
 
 ---
 
-## Troubleshooting
+## Performance
 
-### Service won't start
+| Metric | Value |
+|--------|-------|
+| Search latency | <50ms |
+| Add latency | ~100ms (includes backup) |
+| Model loading | ~2s (pre-downloaded in image) |
+| Memory footprint | ~200MB (container) |
+| Index size | ~1.5KB per memory |
 
-```bash
-# Check logs
-docker logs faiss-memory
-
-# Common issues:
-# 1. Port 8900 in use → change port in docker-compose.yml
-# 2. Model download failed → check internet connection
-# 3. Permissions → ensure data/ directory is writable
-```
-
-### Search returns no results
-
-```bash
-# Check if index is built
-curl http://localhost:8900/stats | jq '.total_memories'
-
-# If 0, index is empty - add memories or rebuild
-```
-
-### Slow searches (>100ms)
-
-```bash
-# Check container resources
-docker stats faiss-memory
-
-# If CPU/memory constrained:
-# 1. Increase Docker resource limits
-# 2. Use smaller model (paraphrase-MiniLM-L3-v2)
-# 3. Reduce k value (fewer results)
-```
-
-### Unhealthy container
-
-```bash
-# Check health
-docker inspect faiss-memory | grep -A 10 Health
-
-# Manual health check
-docker exec faiss-memory curl -f http://localhost:8000/health
-
-# If fails:
-# 1. Check port in Dockerfile (should be 8000)
-# 2. Verify model loaded (check logs)
-# 3. Restart: docker compose restart faiss-memory
-```
-
-**More troubleshooting:** [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-
----
-
-## Roadmap
-
-### v1.0 (Current - Feb 2026)
-- ✅ Core FAISS semantic search
-- ✅ REST API (FastAPI)
-- ✅ Auto-backups
-- ✅ Docker deployment
-- ✅ Basic integrations (Claude Code, Cursor, etc.)
-
-### v1.1 (Q1 2026)
-- [ ] Web UI for browsing/managing memories
-- [ ] Auto-rebuild on file changes (watch mode)
-- [ ] MCP server implementation
-- [ ] Memory deduplication tool
-- [ ] Export formats (JSON, Markdown, CSV)
-
-### v1.2 (Q2 2026)
-- [ ] Multi-index support (separate indexes per project)
-- [ ] Hybrid search (semantic + keyword)
-- [ ] Memory tagging and filtering
-- [ ] Analytics dashboard
-- [ ] Scheduled rebuilds via cron
-- [ ] Advanced similarity metrics
-
-**Suggest features:** Open an issue!
-
----
-
-## Contributing
-
-**Status:** Not yet accepting contributions (public release pending)
-
-**When public:**
-1. Fork the repo
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-**Guidelines:**
-- Follow existing code style (black, flake8)
-- Add tests for new features
-- Update documentation
-- Keep commits atomic and well-described
-
-**See:** [CONTRIBUTING.md](CONTRIBUTING.md) (when available)
-
----
-
-## License
-
-**To be determined** (pending public release)
-
-Likely: MIT or Apache 2.0
-
----
-
-## Credits
-
-**Built by:** Jack (OpenClaw AI agent)  
-**For:** DK  
-**Date:** February 2026
-
-**Technologies:**
-- [FAISS](https://github.com/facebookresearch/faiss) - Facebook AI Similarity Search
-- [sentence-transformers](https://www.sbert.net/) - UKPLab, Sentence-BERT models
-- [FastAPI](https://fastapi.tiangolo.com/) - Modern Python web framework
-- [Docker](https://www.docker.com/) - Containerization
-
----
-
-## Support
-
-- 📖 **Documentation:** [docs/](docs/)
-- 💡 **Examples:** [examples/](examples/)
-- 🐛 **Issues:** GitHub Issues (when public)
-- 💬 **Discussions:** GitHub Discussions (when public)
-
----
-
-## Star History
-
-⭐ If you find this useful, give it a star!
-
----
-
-**Built with ❤️ for the AI coding assistant community**
+Tested on Mac mini M4 Pro, 16GB RAM.
