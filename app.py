@@ -35,9 +35,11 @@ PORT = int(os.getenv("PORT", "8000"))
 # -- Auth ---------------------------------------------------------------------
 
 async def verify_api_key(request: Request):
-    """Check X-API-Key header if API_KEY is configured"""
+    """Check X-API-Key header if API_KEY is configured. Skips /health for Docker healthchecks."""
     if not API_KEY:
         return  # No auth configured
+    if request.url.path == "/health":
+        return  # Allow unauthenticated health checks
     key = request.headers.get("X-API-Key", "")
     if key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
