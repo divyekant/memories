@@ -1,0 +1,42 @@
+# Data (contains sensitive info + binary index)
+data/
+*.faiss
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.local
+.env.production
+
+# Docker
+docker-compose.override.yml
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

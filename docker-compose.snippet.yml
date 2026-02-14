@@ -1,0 +1,30 @@
+# Add this to your existing ~/web/docker-compose.yml
+
+services:
+  faiss-memory:
+    build: ../clawd/faiss-memory
+    container_name: faiss-memory
+    restart: unless-stopped
+    ports:
+      - "8900:8900"  # Only accessible locally (127.0.0.1)
+    volumes:
+      - faiss-data:/data                      # Persistent index + backups
+      - ~/clawd/memory:/workspace:ro          # Read-only access to memory files
+    environment:
+      - DATA_DIR=/data
+      - WORKSPACE_DIR=/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8900/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - default
+
+volumes:
+  faiss-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /Users/dk/clawd/faiss-memory/data  # Backup-friendly location
