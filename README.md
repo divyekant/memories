@@ -1,4 +1,4 @@
-# FAISS Memory
+# Memories
 
 [![Docker](https://img.shields.io/badge/docker-ready-blue)](https://github.com/divyekant/memories)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -25,7 +25,7 @@ Your AI assistant:
 
 ## ✅ The Solution
 
-FAISS Memory gives your AI a **persistent semantic search index** that:
+Memories gives your AI a **persistent semantic search index** that:
 - ✅ Remembers conversations across sessions
 - ✅ Finds relevant context in <50ms (semantic + keyword hybrid search)
 - ✅ Works locally (your data stays on your machine)
@@ -140,7 +140,7 @@ AI Client (Claude, Codex, ChatGPT, OpenClaw)
 MCP Server (mcp-server/index.js)
     |
     v
-FAISS Memory Service (Docker :8900)
+Memories Service (Docker :8900)
     |-- FastAPI REST API
     |-- Hybrid Search (FAISS vector + BM25 keyword, RRF fusion)
     |-- Markdown-aware chunking
@@ -313,7 +313,7 @@ ChatGPT uses **Custom Actions** (OpenAPI schema) rather than MCP. This requires 
 ```yaml
 openapi: 3.0.0
 info:
-  title: FAISS Memory
+  title: Memories
   version: 2.0.0
   description: Semantic memory search and storage
 servers:
@@ -486,7 +486,7 @@ All functions use `jq` for safe JSON construction and read auth from `$FAISS_API
 
 ## 🌐 Remote Access
 
-To use FAISS Memory from anywhere (Claude Chat web, ChatGPT, mobile, other machines), expose it via a Cloudflare Tunnel or similar.
+To use Memories from anywhere (Claude Chat web, ChatGPT, mobile, other machines), expose it via a Cloudflare Tunnel or similar.
 
 ### Setup with Cloudflare Tunnel
 
@@ -633,7 +633,7 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 
 ## 💾 Backup & Recovery
 
-FAISS Memory has three layers of backup protection:
+Memories has three layers of backup protection:
 
 ### 1. Auto-backup (built-in)
 
