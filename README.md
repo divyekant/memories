@@ -1,12 +1,41 @@
 # FAISS Memory
 
-Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector search.
+[![Docker](https://img.shields.io/badge/docker-ready-blue)](https://github.com/divyekant/memories)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11-blue)](https://python.org)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/divyekant/memories/pulls)
 
-Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
+**Give your AI persistent memory that actually works.**
+
+Local semantic memory for AI assistants. Zero-cost, <50ms search, hybrid BM25+vector retrieval.
+
+Works with **Claude Code**, **Claude Desktop**, **ChatGPT**, **Codex**, **OpenClaw**, and anything that can call HTTP or MCP.
 
 ---
 
-## Quick Start
+## 🎯 The Problem
+
+Your AI assistant:
+- ❌ Forgets everything between sessions
+- ❌ Can't find context it needs from your notes
+- ❌ Keeps asking the same questions over and over
+- ❌ Loses important decisions and patterns you've discussed
+
+**Result:** You spend time re-explaining context instead of making progress.
+
+## ✅ The Solution
+
+FAISS Memory gives your AI a **persistent semantic search index** that:
+- ✅ Remembers conversations across sessions
+- ✅ Finds relevant context in <50ms (semantic + keyword hybrid search)
+- ✅ Works locally (your data stays on your machine)
+- ✅ Costs $0 to run
+- ✅ Syncs across machines (optional S3/Google Drive backup)
+- ✅ Integrates with any AI tool via REST API or MCP protocol
+
+---
+
+## 🚀 Quick Start
 
 ```bash
 # 1. Clone and build
@@ -32,7 +61,75 @@ The service runs at **http://localhost:8900**. API docs at http://localhost:8900
 
 ---
 
-## Architecture
+## 💡 Use Cases
+
+### 1. **AI Agent Memory**
+Give Claude Code or ChatGPT persistent memory of your project decisions, coding standards, and architecture choices.
+
+```bash
+# Store a decision
+curl -X POST localhost:8900/memory/add \
+  -d '{"text": "We decided to use Prisma for ORM because...", "source": "decisions.md"}'
+
+# Later, AI searches and finds it
+curl -X POST localhost:8900/search \
+  -d '{"query": "database ORM choice"}'
+```
+
+### 2. **Personal Knowledge Base**
+Search your notes semantically, not just by keyword.
+
+```bash
+# Add all your markdown notes
+curl -X POST localhost:8900/index/build \
+  -d '{"sources": ["notes/", "docs/", "journal/"]}'
+
+# Find anything by meaning
+curl -X POST localhost:8900/search \
+  -d '{"query": "how to fix auth issues"}'
+```
+
+### 3. **RAG Pipeline**
+Drop-in semantic search for your documents. Works with any AI tool.
+
+```bash
+# Build index from your docs
+docker run -v /path/to/docs:/workspace faiss-memory
+
+# Query from your app
+fetch('http://localhost:8900/search', {
+  method: 'POST',
+  body: JSON.stringify({query: userQuestion, k: 5})
+})
+```
+
+### 4. **Multi-Machine Sync**
+Work from laptop, deploy on server — your AI's memory follows you via S3 cloud sync.
+
+```bash
+# Enable cloud backup
+docker compose build --build-arg ENABLE_CLOUD_SYNC=true
+docker compose up -d
+
+# Automatic upload after every change
+# Auto-download on new machine if local index is empty
+```
+
+### 5. **Coding Assistant Context**
+Claude Code remembers your project patterns, bug fixes, and refactoring decisions.
+
+```
+You: "Remember we fixed the race condition by using a mutex in the UserService"
+Claude Code: [stores in memory via MCP]
+
+Later...
+You: "How did we handle concurrency in UserService?"
+Claude Code: [searches memory, finds the fix]
+```
+
+---
+
+## 🏗️ Architecture
 
 ```
 AI Client (Claude, Codex, ChatGPT, OpenClaw)
@@ -57,7 +154,7 @@ Persistent Storage (data/)
 
 ---
 
-## Integration Guides
+## 🔌 Integration Guides
 
 ### Claude Code (CLI)
 
@@ -387,7 +484,7 @@ All functions use `jq` for safe JSON construction and read auth from `$FAISS_API
 
 ---
 
-## Remote Access
+## 🌐 Remote Access
 
 To use FAISS Memory from anywhere (Claude Chat web, ChatGPT, mobile, other machines), expose it via a Cloudflare Tunnel or similar.
 
@@ -421,11 +518,11 @@ ingress:
 }
 ```
 
-Now every client — Claude Code on your laptop, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
+Now every client — Claude Code on your laptop, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store.
 
 ---
 
-## API Reference
+## 📚 API Reference
 
 All endpoints accept/return JSON. Optional auth via `X-API-Key` header.
 
@@ -497,7 +594,7 @@ Full OpenAPI schema at http://localhost:8900/docs.
 
 ---
 
-## MCP Tools Reference
+## 🛠️ MCP Tools Reference
 
 When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are available:
 
@@ -512,7 +609,7 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 
 ---
 
-## Configuration
+## ⚙️ Configuration
 
 ### Environment Variables
 
@@ -534,7 +631,7 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 
 ---
 
-## Backup & Recovery
+## 💾 Backup & Recovery
 
 FAISS Memory has three layers of backup protection:
 
@@ -634,7 +731,7 @@ See [CLOUD_SYNC_README.md](CLOUD_SYNC_README.md) for configuration details.
 
 ---
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 memories/
@@ -661,7 +758,7 @@ memories/
 
 ---
 
-## Performance
+## ⚡ Performance
 
 | Metric | Value |
 |--------|-------|
@@ -675,3 +772,34 @@ memories/
 Uses **ONNX Runtime** for inference instead of PyTorch — same model (all-MiniLM-L6-v2), same embeddings, 68% smaller image.
 
 Tested on Mac mini M4 Pro, 16GB RAM.
+
+---
+
+## 🤝 Contributing
+
+PRs welcome! Please:
+- Add tests for new features
+- Follow existing code style
+- Update docs if adding new endpoints or features
+
+---
+
+## 📄 License
+
+MIT © [Divyekant Singh](https://github.com/divyekant)
+
+---
+
+## 🙏 Credits
+
+Built with:
+- [FAISS](https://github.com/facebookresearch/faiss) by Facebook AI
+- [FastAPI](https://fastapi.tiangolo.com/)
+- [ONNX Runtime](https://onnxruntime.ai/)
+- [sentence-transformers](https://www.sbert.net/) models
+
+---
+
+## 📸 Screenshots & Demo
+
+_Coming soon: Screenshots and demo video will be added here_
