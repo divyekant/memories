@@ -11,6 +11,7 @@ services:
     image: faiss-memory:${FAISS_IMAGE_TARGET:-core}
     container_name: faiss-memory
     restart: unless-stopped
+    mem_limit: ${FAISS_MEM_LIMIT:-3g}
     ports:
       - "8900:8000"
     volumes:
@@ -22,11 +23,16 @@ services:
       - API_KEY=              # Set to enable auth (e.g. API_KEY=my-secret-key)
       - MODEL_NAME=all-MiniLM-L6-v2
       - MAX_BACKUPS=10
+      # Allocator guardrails for lower steady-state RSS under bursty workloads
+      - MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}
+      - MALLOC_TRIM_THRESHOLD_=${MALLOC_TRIM_THRESHOLD_:-131072}
+      - MALLOC_MMAP_THRESHOLD_=${MALLOC_MMAP_THRESHOLD_:-131072}
       # Extraction/runtime tuning (optional)
       # - MAX_EXTRACT_MESSAGE_CHARS=120000
       # - EXTRACT_MAX_INFLIGHT=2
       # - MEMORY_TRIM_ENABLED=true
       # - MEMORY_TRIM_COOLDOWN_SEC=15
+      # - MEMORY_TRIM_PERIODIC_SEC=5
     healthcheck:
       test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if 200 <= urllib.request.urlopen('http://localhost:8000/health', timeout=3).getcode() < 400 else 1)"]
       interval: 30s

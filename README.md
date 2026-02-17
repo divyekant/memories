@@ -546,9 +546,17 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 | `EXTRACT_MAX_INFLIGHT` | `2` | Max concurrent extraction jobs |
 | `MEMORY_TRIM_ENABLED` | `true` | Run post-extract GC/allocator trim |
 | `MEMORY_TRIM_COOLDOWN_SEC` | `15` | Minimum seconds between trim attempts |
+| `MEMORY_TRIM_PERIODIC_SEC` | `5` | Periodic trim probe interval (seconds). Set `0` to disable background trim loop. |
 | `METRICS_LATENCY_SAMPLES` | `200` | Per-route latency sample window for `/metrics` percentiles |
 | `METRICS_TREND_SAMPLES` | `120` | Memory trend sample window exposed by `/metrics` |
 | `PORT` | `8000` | Internal service port |
+
+### Docker Compose guardrails
+
+Default compose files now include:
+- `mem_limit: ${FAISS_MEM_LIMIT:-3g}` to bound container memory growth
+- `MALLOC_ARENA_MAX=2` to reduce glibc arena fragmentation in multithreaded workloads
+- `MALLOC_TRIM_THRESHOLD_=131072` and `MALLOC_MMAP_THRESHOLD_=131072` to encourage earlier allocator release
 
 ### MCP Server Environment
 
@@ -703,7 +711,7 @@ Extraction can create short-lived allocation spikes (large transcripts, large LL
 Mitigations built in:
 - `/memory/extract` request size limit (`MAX_EXTRACT_MESSAGE_CHARS`)
 - bounded in-flight extraction (`EXTRACT_MAX_INFLIGHT`)
-- post-extract memory reclamation (`MEMORY_TRIM_ENABLED`, `MEMORY_TRIM_COOLDOWN_SEC`)
+- post-extract + periodic memory reclamation (`MEMORY_TRIM_ENABLED`, `MEMORY_TRIM_COOLDOWN_SEC`, `MEMORY_TRIM_PERIODIC_SEC`)
 - bounded AUDN payload sizes (`EXTRACT_MAX_FACTS`, `EXTRACT_MAX_FACT_CHARS`, `EXTRACT_SIMILAR_TEXT_CHARS`)
 
 Reference benchmark: `docs/benchmarks/2026-02-17-memory-reclamation.md`
