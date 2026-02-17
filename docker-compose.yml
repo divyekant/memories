@@ -16,6 +16,11 @@ services:
       - API_KEY=your-secret-key-here
       - MODEL_NAME=all-MiniLM-L6-v2
       - MAX_BACKUPS=10
+      # Extraction/runtime tuning (optional)
+      # - MAX_EXTRACT_MESSAGE_CHARS=120000
+      # - EXTRACT_MAX_INFLIGHT=2
+      # - MEMORY_TRIM_ENABLED=true
+      # - MEMORY_TRIM_COOLDOWN_SEC=15
       # Cloud Sync (optional - uncomment to enable)
       # - CLOUD_SYNC_ENABLED=true
       # - CLOUD_SYNC_BUCKET=my-faiss-memory

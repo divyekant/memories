@@ -351,7 +351,7 @@ FAISS Memory — Automatic Memory Layer Setup
 
   Env vars added to ~/.zshrc:
     FAISS_URL=http://localhost:8900
-    FAISS_API_KEY=god-is-an-astronaut
+    FAISS_API_KEY=your-api-key-here
     EXTRACT_PROVIDER=anthropic
     ANTHROPIC_API_KEY=sk-ant-...
 ```

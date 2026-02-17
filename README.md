@@ -55,6 +55,10 @@ Persistent Storage (data/)
     |-- backups/ (auto, keeps last 10)
 ```
 
+Detailed docs:
+- [Architecture deep dive](docs/architecture.md)
+- [Engineering decisions and tradeoffs](docs/decisions.md)
+
 ---
 
 ## Integration Guides
@@ -523,6 +527,10 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 | `API_KEY` | (empty) | API key for auth. Empty = no auth. |
 | `MODEL_NAME` | `all-MiniLM-L6-v2` | Embedding model (ONNX Runtime) |
 | `MAX_BACKUPS` | `10` | Number of backups to keep |
+| `MAX_EXTRACT_MESSAGE_CHARS` | `120000` | Max characters accepted by `/memory/extract` |
+| `EXTRACT_MAX_INFLIGHT` | `2` | Max concurrent extraction jobs |
+| `MEMORY_TRIM_ENABLED` | `true` | Run post-extract GC/allocator trim |
+| `MEMORY_TRIM_COOLDOWN_SEC` | `15` | Minimum seconds between trim attempts |
 | `PORT` | `8000` | Internal service port |
 
 ### MCP Server Environment
@@ -595,6 +603,22 @@ Ollama uses HTTP directly and does not need the SDKs — it works with the defau
 | `ANTHROPIC_API_KEY` | (none) | Required for Anthropic provider |
 | `OPENAI_API_KEY` | (none) | Required for OpenAI provider |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
+| `EXTRACT_MAX_FACTS` | `30` | Maximum facts kept from a single extraction |
+| `EXTRACT_MAX_FACT_CHARS` | `500` | Max length per extracted fact |
+| `EXTRACT_SIMILAR_TEXT_CHARS` | `280` | Max similar-memory text length passed into AUDN |
+| `EXTRACT_SIMILAR_PER_FACT` | `5` | Similar memories included per fact during AUDN |
+
+### Burst memory behavior
+
+Extraction can create short-lived allocation spikes (large transcripts, large LLM JSON payloads, concurrent requests).
+
+Mitigations built in:
+- `/memory/extract` request size limit (`MAX_EXTRACT_MESSAGE_CHARS`)
+- bounded in-flight extraction (`EXTRACT_MAX_INFLIGHT`)
+- post-extract memory reclamation (`MEMORY_TRIM_ENABLED`, `MEMORY_TRIM_COOLDOWN_SEC`)
+- bounded AUDN payload sizes (`EXTRACT_MAX_FACTS`, `EXTRACT_MAX_FACT_CHARS`, `EXTRACT_SIMILAR_TEXT_CHARS`)
+
+Reference benchmark: `docs/benchmarks/2026-02-17-memory-reclamation.md`
 
 ### Uninstall
 
@@ -717,6 +741,10 @@ memories/
   requirements.txt        # Python dependencies
   requirements-extract.txt # Optional extraction deps (Anthropic/OpenAI SDKs)
   docker-compose.snippet.yml
+  docs/
+    architecture.md       # System architecture and runtime flows
+    decisions.md          # Key design decisions and tradeoffs
+    benchmarks/           # Reproducible benchmark notes
   mcp-server/
     index.js              # MCP server (wraps REST API as tools)
     package.json
@@ -749,7 +777,7 @@ memories/
 | Search latency | <50ms |
 | Add latency | ~100ms (includes backup) |
 | Model loading | ~3s (pre-downloaded in image) |
-| Memory footprint | ~200MB (container) |
+| Memory footprint | ~180-260MB baseline; higher during extraction bursts |
 | Index size | ~1.5KB per memory |
 
 Uses **ONNX Runtime** for inference instead of PyTorch — same model (all-MiniLM-L6-v2), same embeddings, 68% smaller image.

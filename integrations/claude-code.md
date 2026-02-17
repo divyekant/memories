@@ -70,31 +70,47 @@ Then use those patterns to refactor src/components/UserProfile.tsx"
 
 ---
 
-### Method 2: MCP Server (Coming Soon)
+### Method 2: MCP Server (Recommended for Daily Use)
 
-**Status:** 🚧 In development (v1.1)
+The MCP server is available and exposes typed memory tools directly to Claude Code.
 
-The Model Context Protocol (MCP) server will provide:
-- ✅ Auto-discovery by Claude Code
-- ✅ Typed function signatures
-- ✅ Better error handling
-- ✅ Tool descriptions for Claude
+**Setup:**
 
-**When available:**
+1. Install dependencies:
+
+```bash
+cd /path/to/memories/mcp-server
+npm install
+```
+
+2. Add server config:
+
 ```json
-// ~/.config/claude/mcp.json
+// ~/.claude/settings.json
 {
-  "servers": {
+  "mcpServers": {
     "faiss-memory": {
       "command": "node",
-      "args": ["/path/to/faiss-memory-mcp-server/index.js"],
+      "args": ["/path/to/memories/mcp-server/index.js"],
       "env": {
-        "FAISS_URL": "http://localhost:8900"
+        "FAISS_URL": "http://localhost:8900",
+        "FAISS_API_KEY": "your-api-key-here"
       }
     }
   }
 }
 ```
+
+3. Restart Claude Code.
+
+**Tools exposed through MCP:**
+
+- `memory_search`
+- `memory_add`
+- `memory_delete`
+- `memory_list`
+- `memory_stats`
+- `memory_is_novel`
 
 ---
 
@@ -406,16 +422,19 @@ curl -X POST http://localhost:8900/memory/add \
 ### Issue: Claude Code says "Tool not available"
 
 **Solution:**
-Claude Code doesn't have built-in FAISS Memory tools (yet). Use direct HTTP calls:
+This usually means MCP is not loaded or config path is wrong.
 
 ```bash
-claude "Use curl to call http://localhost:8900/search with:
-- Method: POST
-- Headers: Content-Type: application/json
-- Body: {\"query\": \"...\", \"k\": 5}
+# 1) Confirm MCP config contains the faiss-memory server
+cat ~/.claude/settings.json
 
-Execute that command and use the results."
+# 2) Verify node deps exist
+cd /path/to/memories/mcp-server && npm install
+
+# 3) Restart Claude Code
 ```
+
+If you intentionally do not use MCP, fallback to direct HTTP calls still works.
 
 ### Issue: Slow responses
 

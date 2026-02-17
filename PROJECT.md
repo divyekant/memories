@@ -1,329 +1,112 @@
-# PROJECT.md - FAISS Memory
+# PROJECT.md - FAISS Memory Maintainer Notes
 
-**Status:** ✅ Production  
-**Type:** Infrastructure / AI Tool  
-**Created:** 2026-02-12  
-**Public:** Yes (open source ready)
+High-level maintainer-facing snapshot for the `memories` repository.
 
 ---
 
-## Quick Summary
+## What This Project Is
 
-Local semantic memory search for AI coding assistants. Zero-cost alternative to cloud vector databases. Works with Claude Code, Codex, ChatGPT, Cursor, Continue.dev, and any AI that can call HTTP APIs.
+FAISS Memory is a local-first memory service for AI assistants. It provides:
 
-**Tech:** FAISS + sentence-transformers + FastAPI + Docker  
-**Cost:** $0/month (100% local)  
-**Latency:** <50ms per search  
-**Security:** 100% local (no data leaves your machine)
+- semantic and hybrid retrieval over stored memories
+- HTTP API for broad client compatibility
+- MCP adapter for native tool-based assistants
+- optional LLM extraction pipeline for automatic memory capture
 
----
-
-## Ready Reckoner
-
-| **Item** | **Value** |
-|----------|-----------|
-| **Port** | 8900 (host) → 8000 (container) |
-| **Service URL** | http://localhost:8900 |
-| **Docker Container** | faiss-memory |
-| **Docker Image** | faiss-memory:latest |
-| **Data Volume** | `./data` (bind-mounted) |
-| **Docker Compose** | `docker-compose.snippet.yml` (faiss-memory service) |
-| **Model** | all-MiniLM-L6-v2 (384 dimensions) |
-| **Index Type** | FAISS IndexFlatIP (inner product similarity) |
-| **Health Check** | http://localhost:8900/health |
-| **Stats** | http://localhost:8900/stats |
-
-**Key Files:**
-- `app.py` - FastAPI REST API
-- `memory_engine.py` - FAISS core logic
-- `Dockerfile` - Container definition
-- `requirements.txt` - Python dependencies
-- `data/index.faiss` - FAISS index (binary)
-- `data/metadata.json` - Memory metadata
-- `data/backups/` - Auto-backups (keeps last 10)
-
-**Integrations:**
-- `integrations/claude-code.md` - Claude Code integration guide
-- `integrations/codex.md` - OpenAI Codex integration guide
-- `integrations/chatgpt.md` - ChatGPT integration guide
-- `integrations/cursor.md` - Cursor AI integration guide
-- `integrations/continue.md` - Continue.dev integration guide
-- `integrations/aider.md` - Aider integration guide
-
-**Examples:**
-- `examples/` - Sample configurations for each AI assistant
+Primary user profile: single-user to small-team workflows that value local control, low operational overhead, and straightforward recovery.
 
 ---
 
-## Current Status
+## Runtime Components
 
-**Production Ready:** ✅ Yes  
-**Current Index:** 38 memories (58KB)  
-**Last Updated:** 2026-02-12  
-**Docker Status:** Running, healthy
+- `app.py`: FastAPI API surface and lifecycle
+- `memory_engine.py`: core index/metadata operations
+- `onnx_embedder.py`: local embedding inference (ONNX Runtime)
+- `llm_extract.py`: extraction + AUDN pipeline
+- `llm_provider.py`: extraction provider abstraction
+- `mcp-server/index.js`: MCP wrapper exposing memory tools
 
-**Recent Activity:**
-- 2026-02-12: Initial build, 38 memories indexed
-- 2026-02-12: Docker deployment complete
-- 2026-02-12: Auto-backup system operational
-- 2026-02-12: Integration guides created
-
----
-
-## What This Does
-
-1. **Semantic Search:** Find relevant memories using natural language queries
-2. **Duplicate Detection:** Check if new information is novel or already known
-3. **Auto-Backups:** Automatic backups on every write (keeps last 10)
-4. **Fast Queries:** <50ms search latency (in-memory FAISS index)
-5. **Zero Cost:** 100% local embeddings (no API calls)
-6. **AI Integrations:** Works with Claude Code, Codex, ChatGPT, Cursor, etc.
+Detailed architecture: `docs/architecture.md`  
+Decision rationale: `docs/decisions.md`
 
 ---
 
-## Architecture
+## Storage Model
 
-```
-AI Coding Assistant (Claude Code, Cursor, etc.)
-    ↓ HTTP POST
-FAISS Memory Service (Docker)
-    ↓
-FastAPI REST API (:8900)
-    ↓
-Memory Engine (memory_engine.py)
-    ↓
-FAISS IndexFlatIP + sentence-transformers
-    ↓
-Persistent Storage (data/)
-```
+Persistent files under `DATA_DIR` (default `/data`):
 
-**Components:**
-- **FastAPI:** REST API server
-- **FAISS:** Facebook AI Similarity Search (IndexFlatIP)
-- **sentence-transformers:** Local embedding model (all-MiniLM-L6-v2)
-- **Docker:** Containerization + isolation
-- **Auto-backup:** Saves index+metadata on every write
+- `index.faiss`
+- `metadata.json`
+- `config.json`
+- `backups/` (rolling backups; controlled by `MAX_BACKUPS`)
+
+Key invariant: FAISS vector count must match metadata entry count.
 
 ---
 
-## Dependencies
+## Operational Defaults
 
-**Runtime:**
-- Docker (container runtime)
-- Python 3.11 (in container)
+- API bind: `0.0.0.0:8000` inside container
+- Recommended host mapping: `8900:8000`
+- Auth: optional API key via `API_KEY`
+- Embedding model: `all-MiniLM-L6-v2` (ONNX)
+- Backup retention: `MAX_BACKUPS=10`
 
-**Python packages (in container):**
-- fastapi==0.109.0
-- uvicorn[standard]==0.27.0
-- pydantic==2.5.3
-- sentence-transformers==2.3.1
-- faiss-cpu==1.7.4
-- numpy==1.24.4
-
-**AI Assistant (choose one or more):**
-- Claude Code (Anthropic)
-- Codex (OpenAI)
-- ChatGPT (OpenAI)
-- Cursor AI
-- Continue.dev
-- Aider
-- Any AI that can make HTTP requests
+Extraction is optional and disabled by default unless `EXTRACT_PROVIDER` is configured.
 
 ---
 
-## Deployment
+## Performance Envelope (Guidance, Not SLA)
 
-**Current Setup:**
-```yaml
-# In docker-compose.snippet.yml
-services:
-  faiss-memory:
-    build: ../projects/faiss-memory
-    image: faiss-memory:latest
-    container_name: faiss-memory
-    restart: unless-stopped
-    ports:
-      - "8900:8000"
-    volumes:
-      - ../projects/faiss-memory/data:/data
-    networks: [tunnel]
-```
+- Search latency: typically sub-50ms for small/medium local indexes
+- Write latency: higher due to persistence + backup behavior
+- Baseline memory: typically ~180-260MiB container RSS
+- Extraction bursts: can temporarily exceed baseline depending transcript/provider payload size and concurrency
 
-**Start/Stop:**
-```bash
-docker compose -f docker-compose.snippet.yml up -d faiss-memory    # Start
-docker compose -f docker-compose.snippet.yml stop faiss-memory     # Stop
-docker compose -f docker-compose.snippet.yml restart faiss-memory  # Restart
-docker compose -f docker-compose.snippet.yml logs -f faiss-memory  # View logs
-```
+Memory controls:
+
+- `MAX_EXTRACT_MESSAGE_CHARS`
+- `EXTRACT_MAX_INFLIGHT`
+- `MEMORY_TRIM_ENABLED`
+- `MEMORY_TRIM_COOLDOWN_SEC`
 
 ---
 
-## API Endpoints
+## Development Workflow
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/health` | GET | Health check |
-| `/stats` | GET | Index statistics |
-| `/search` | POST | Semantic search |
-| `/memory/add` | POST | Add single memory |
-| `/memory/add-batch` | POST | Add multiple memories |
-| `/memory/is-novel` | POST | Check if text is novel |
-| `/index/build` | POST | Rebuild index from files |
-| `/backup` | POST | Create manual backup |
-| `/backups` | GET | List available backups |
+- Tests: `./.venv/bin/python -m pytest -q`
+- Local run: `./.venv/bin/python -m uvicorn app:app --reload`
+- Docker build: `docker build -t faiss-memory:dev .`
 
-**Full API docs:** See `docs/API.md`
+When changing memory/index behavior:
+
+1. Add or update tests.
+2. Validate backup/restore still works.
+3. Validate extraction behavior if touching extraction paths.
+4. Update `README.md` and/or `docs/architecture.md` if behavior changed.
 
 ---
 
-## Integrations
+## Integration Surface
 
-**Supported AI Assistants:**
+Client entry points:
 
-1. **Claude Code** - `integrations/claude-code.md`
-   - MCP server pattern
-   - Direct HTTP calls
-   - OpenClaw skill integration
+- REST API (all clients)
+- MCP tools (Claude Code/Desktop, Codex, MCP-capable clients)
+- Hook scripts (automatic retrieval/extraction flows)
 
-2. **Codex (OpenAI)** - `integrations/codex.md`
-   - Function calling
-   - API key setup
-   - Example prompts
+Integration docs:
 
-3. **ChatGPT** - `integrations/chatgpt.md`
-   - Custom GPT configuration
-   - Action schema
-   - Quick-start guide
-
-4. **Cursor AI** - `integrations/cursor.md`
-   - .cursorrules configuration
-   - API integration
-   - Memory search commands
-
-5. **Continue.dev** - `integrations/continue.md`
-   - config.json setup
-   - Custom tools
-   - Slash commands
-
-6. **Aider** - `integrations/aider.md`
-   - .aider.conf.yml configuration
-   - Custom commands
-   - Memory integration
-
-**See `integrations/` directory for full guides.**
+- `README.md` (primary entry)
+- `integrations/claude-code.md`
+- `integrations/openclaw-skill.md`
+- `integrations/QUICKSTART-LLM.md`
 
 ---
 
-## Performance Benchmarks
+## Release Hygiene Checklist
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Search latency | <50ms | k=5 results |
-| Add latency | ~100ms | Includes embedding + save + backup |
-| Model loading | ~15s | On first container start |
-| Memory footprint | ~200MB | Model + dependencies |
-| Index size | ~1.5KB per memory | Linear growth |
-| Embedding generation | ~10ms | all-MiniLM-L6-v2 |
-
-**Tested on:** Mac mini M4 Pro (16GB RAM)
-
----
-
-## Roadmap
-
-### v1.0 (Current)
-- ✅ Core FAISS search
-- ✅ Auto-backups
-- ✅ Docker deployment
-- ✅ REST API
-- ✅ Basic integrations
-
-### v1.1 (Next)
-- [ ] Web UI for browsing memories
-- [ ] Auto-rebuild on file changes (watch mode)
-- [ ] Memory deduplication tool
-- [ ] Export formats (JSON, Markdown, CSV)
-- [ ] MCP server implementation
-- [ ] OpenClaw memory_search integration
-
-### v1.2 (Future)
-- [ ] Multi-index support (different projects)
-- [ ] Hybrid search (semantic + keyword)
-- [ ] Memory tagging system
-- [ ] Search filters (by source, date, type)
-- [ ] Scheduled index rebuilds via cron
-- [ ] Memory analytics dashboard
-
----
-
-## Known Issues
-
-**None currently.**
-
-**Resolved:**
-- ✅ Port mismatch (8900 vs 8000) - Fixed in Dockerfile
-- ✅ API schema (source field location) - Fixed in app.py
-- ✅ Index building script (payload format) - Fixed in build script
-
----
-
-## Security
-
-**Threat Model:**
-- Service binds to localhost only (no external exposure)
-- No authentication required (local-only access)
-- Data never leaves the machine (100% local)
-- No cloud API calls (zero external dependencies)
-
-**If exposing externally:**
-- Add authentication (API key, OAuth, etc.)
-- Use HTTPS (reverse proxy)
-- Rate limiting (prevent abuse)
-- Input validation (prevent injection)
-
-**See `docs/SECURITY.md` for deployment guidelines.**
-
----
-
-## License
-
-**To be determined** (suggest MIT or Apache 2.0 for public release)
-
----
-
-## Contributing
-
-**Not yet accepting contributions** (public release pending)
-
-When public:
-- See `CONTRIBUTING.md` for guidelines
-- Issues/PRs welcome
-- Follow existing code style
-- Add tests for new features
-- Update documentation
-
----
-
-## Support
-
-- GitHub Issues
-- Documentation: `docs/`
-- Integration guides: `integrations/`
-
----
-
-## Credits
-
-**Date:** 2026-02-12
-**Built with:** Claude AI
-
-**Technologies:**
-- FAISS (Meta)
-- sentence-transformers (UKPLab)
-- FastAPI (Sebastián Ramírez)
-- Docker
-
----
-
-**Last Updated:** 2026-02-12 18:00
+- No hardcoded credentials in docs/examples
+- Public docs avoid product-specific assumptions unless the file is intentionally integration-specific
+- Benchmarks describe workload profile and caveats
+- Versioned behavior changes documented in `README.md`
