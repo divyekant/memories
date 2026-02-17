@@ -34,7 +34,7 @@ pip install -r requirements-cloud.txt
 
 ## Overview
 
-Cloud Sync automatically backs up your FAISS memory index to S3-compatible cloud storage. This enables:
+Cloud Sync automatically backs up your Memories index to S3-compatible cloud storage. This enables:
 
 - **Cross-machine sync** - Use the same memories on multiple machines
 - **Disaster recovery** - Never lose your memories if a machine fails

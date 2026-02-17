@@ -270,7 +270,7 @@ for f in files:
 
 # Setup: create folder and test auth
 setup() {
-    log "INFO" "=== Setting up Google Drive backup for FAISS Memory ==="
+    log "INFO" "=== Setting up Google Drive backup for Memories ==="
 
     # Test auth
     if ! gog drive ls --account="$GDRIVE_ACCOUNT" --json --results-only 2>/dev/null | head -1 >/dev/null; then
@@ -317,7 +317,7 @@ main() {
     if upload_latest; then
         exit 0
     else
-        osascript -e "display notification \"FAISS Memory Google Drive backup failed! Check gdrive.log\" with title \"FAISS Memory Backup Alert\"" 2>/dev/null || true
+        osascript -e "display notification \"Memories Google Drive backup failed! Check gdrive.log\" with title \"Memories Backup Alert\"" 2>/dev/null || true
         exit 1
     fi
 }

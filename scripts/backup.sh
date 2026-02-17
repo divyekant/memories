@@ -9,7 +9,7 @@
 #   ./scripts/backup.sh --cleanup    # Only run cleanup
 #
 # Environment:
-#   FAISS_API_KEY     - API key for the FAISS service (required if auth enabled)
+#   FAISS_API_KEY     - API key for the Memories service (required if auth enabled)
 #   FAISS_URL         - Service URL (default: http://localhost:8900)
 #   FAISS_DATA_DIR    - Path to Docker volume data dir (default: ./data relative to repo root)
 #   BACKUP_DIR        - Where to store snapshots (default: ~/backups/faiss-memory)
@@ -137,7 +137,7 @@ record_failure() {
     # Alert after 3 consecutive failures
     if [ "$count" -ge 3 ]; then
         log "ERROR" "ALERT: $count consecutive backup failures!"
-        osascript -e "display notification \"$count consecutive FAISS backup failures! Check backup.log\" with title \"FAISS Memory Backup Alert\"" 2>/dev/null || true
+        osascript -e "display notification \"$count consecutive Memories backup failures! Check backup.log\" with title \"Memories Backup Alert\"" 2>/dev/null || true
     fi
 }
 

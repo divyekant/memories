@@ -11,7 +11,7 @@ metadata:
         - jq
 ---
 
-# FAISS Memory
+# Memories
 
 Local semantic memory using FAISS vector search + BM25 hybrid retrieval (Docker service).
 
@@ -232,7 +232,7 @@ memory_dedup_faiss true 0.85  # Lower threshold = more aggressive
 ```bash
 function memory_stats() {
     curl -s http://localhost:8900/stats -H "X-API-Key: $FAISS_API_KEY" | jq '
-        "📊 FAISS Memory Stats",
+        "📊 Memories Stats",
         "━━━━━━━━━━━━━━━━━━━━━━",
         "Total memories: \(.total_memories)",
         "Dimensions: \(.dimension)",
@@ -302,9 +302,9 @@ memory_restore "manual_20260213_120000"  # Restore specific backup
 function memory_health() {
     curl -s http://localhost:8900/health -H "X-API-Key: $FAISS_API_KEY" | jq '
         if .status == "ok" then
-            "✅ FAISS Memory: HEALTHY (v\(.version // "?"))\n   Memories: \(.total_memories)\n   Model: \(.model)"
+            "✅ Memories: HEALTHY (v\(.version // "?"))\n   Memories: \(.total_memories)\n   Model: \(.model)"
         else
-            "❌ FAISS Memory: UNHEALTHY"
+            "❌ Memories: UNHEALTHY"
         end
     ' -r
 }

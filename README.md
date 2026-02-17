@@ -4,6 +4,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11-blue)](https://python.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/divyekant/memories/pulls)
+[![Powered by FAISS](https://img.shields.io/badge/Powered%20by-FAISS-blue)](https://github.com/facebookresearch/faiss)
 
 **Give your AI persistent memory that actually works.**
 
@@ -239,7 +240,7 @@ Claude Chat on the web does not support MCP directly. Two options:
 
 **Option A: Remote MCP via Cloudflare Tunnel (recommended)**
 
-If you expose the FAISS service via a tunnel (e.g., `memory.yourdomain.com`), you can use Claude's remote MCP connector feature to connect to it. See the [Remote Access](#remote-access) section below.
+If you expose the Memories service via a tunnel (e.g., `memory.yourdomain.com`), you can use Claude's remote MCP connector feature to connect to it. See the [Remote Access](#remote-access) section below.
 
 **Option B: Manual curl in prompts**
 
@@ -298,13 +299,13 @@ npm install
 
 ### ChatGPT (Custom GPT)
 
-ChatGPT uses **Custom Actions** (OpenAPI schema) rather than MCP. This requires exposing the FAISS service over the internet.
+ChatGPT uses **Custom Actions** (OpenAPI schema) rather than MCP. This requires exposing the Memories service over the internet.
 
-**Prerequisites:** FAISS service accessible via HTTPS (see [Remote Access](#remote-access)).
+**Prerequisites:** Memories service accessible via HTTPS (see [Remote Access](#remote-access)).
 
 **Setup:**
 
-1. Enable API key auth on the FAISS service (set `API_KEY` env var in docker-compose).
+1. Enable API key auth on the Memories service (set `API_KEY` env var in docker-compose).
 
 2. In ChatGPT, go to **Explore GPTs > Create a GPT > Configure > Actions**.
 
@@ -626,7 +627,7 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FAISS_URL` | `http://localhost:8900` | FAISS service URL |
+| `FAISS_URL` | `http://localhost:8900` | Service URL |
 | `FAISS_API_KEY` | (empty) | API key if auth is enabled |
 
 ---

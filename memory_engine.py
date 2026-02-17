@@ -1,5 +1,5 @@
 """
-FAISS Memory Engine
+Memories Engine
 Local semantic search with hybrid BM25+vector retrieval, markdown-aware
 chunking, automatic backups, and concurrency safety.
 """

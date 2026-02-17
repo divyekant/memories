@@ -1,6 +1,6 @@
 """
 Cloud Sync Module
-S3-compatible backup sync for FAISS Memory
+S3-compatible backup sync for Memories
 """
 
 import os

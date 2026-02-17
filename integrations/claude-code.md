@@ -1,12 +1,12 @@
 # Claude Code Integration
 
-> Use FAISS Memory with [Claude Code](https://docs.anthropic.com/claude/docs/claude-code) for persistent semantic memory across sessions.
+> Use Memories with [Claude Code](https://docs.anthropic.com/claude/docs/claude-code) for persistent semantic memory across sessions.
 
 ---
 
 ## Quick Start
 
-### 1. Ensure FAISS Memory is Running
+### 1. Ensure Memories is Running
 
 ```bash
 # Check service health
@@ -329,7 +329,7 @@ Then review the code against those standards."
 Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-# FAISS Memory shortcuts
+# Memories shortcuts
 alias fmem-search='curl -X POST http://localhost:8900/search -H "Content-Type: application/json" -d'
 alias fmem-add='curl -X POST http://localhost:8900/memory/add -H "Content-Type: application/json" -d'
 alias fmem-novel='curl -X POST http://localhost:8900/memory/is-novel -H "Content-Type: application/json" -d'
@@ -406,7 +406,7 @@ curl -X POST http://localhost:8900/memory/add \
 ### Issue: Claude Code says "Tool not available"
 
 **Solution:**
-Claude Code doesn't have built-in FAISS Memory tools (yet). Use direct HTTP calls:
+Claude Code doesn't have built-in Memories tools (yet). Use direct HTTP calls:
 
 ```bash
 claude "Use curl to call http://localhost:8900/search with:
@@ -472,7 +472,7 @@ Adjust novelty detection sensitivity:
 
 ## Integration Checklist
 
-- [ ] FAISS Memory service running (`docker ps | grep faiss-memory`)
+- [ ] Memories service running (`docker ps | grep faiss-memory`)
 - [ ] Health check passing (`curl http://localhost:8900/health`)
 - [ ] Initial memories loaded (project docs, standards, decisions)
 - [ ] Tested search with sample query
@@ -495,7 +495,7 @@ Adjust novelty detection sensitivity:
 
 ## Resources
 
-- 📖 [FAISS Memory API Docs](../docs/API.md)
+- 📖 [Memories API Docs](../docs/API.md)
 - 💡 [Example Prompts](../examples/claude-code/)
 - 🐛 [Troubleshooting](../docs/TROUBLESHOOTING.md)
 - 🚀 [Advanced Usage](../docs/ADVANCED.md)

@@ -1,6 +1,6 @@
 """
-FAISS Memory API Service
-FastAPI wrapper for FAISS memory engine with auth, hybrid search,
+Memories API Service
+FastAPI wrapper for Memories engine with auth, hybrid search,
 CRUD operations, and structured logging.
 """
 
@@ -53,7 +53,7 @@ memory: MemoryEngine = None  # type: ignore
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global memory
-    logger.info("Starting FAISS Memory service...")
+    logger.info("Starting Memories service...")
     memory = MemoryEngine(data_dir=DATA_DIR)
     logger.info(
         "Loaded %d memories (%s model, %d dims)",
@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="FAISS Memory API",
+    title="Memories API",
     version="2.0.0",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],

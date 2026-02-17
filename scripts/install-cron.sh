@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Install/uninstall cron jobs for FAISS Memory backups
+# Install/uninstall cron jobs for Memories backups
 #
 # Jobs:
 #   - Local snapshot every 30 minutes
@@ -26,7 +26,7 @@ BACKUP_SCRIPT="$SCRIPT_DIR/backup.sh"
 LOG_DIR="${BACKUP_DIR:-$HOME/backups/faiss-memory}"
 
 # Cron identifier
-CRON_COMMENT="# FAISS Memory backup"
+CRON_COMMENT="# Memories backup"
 
 # Run every 30 minutes
 BACKUP_SCHEDULE="*/30 * * * *"
@@ -45,7 +45,7 @@ case "$1" in
         CURRENT=$(crontab -l 2>/dev/null || true)
 
         # Add backup job if not present
-        if ! echo "$CURRENT" | grep -q "FAISS Memory backup"; then
+        if ! echo "$CURRENT" | grep -q "Memories backup"; then
             UPDATED="$CURRENT
 $BACKUP_LINE"
             echo "$UPDATED" | crontab -
@@ -71,18 +71,18 @@ $BACKUP_LINE"
         ;;
 
     uninstall)
-        crontab -l 2>/dev/null | grep -v "FAISS Memory backup" | crontab -
+        crontab -l 2>/dev/null | grep -v "Memories backup" | crontab -
         echo "Cron job removed"
         ;;
 
     status)
-        echo "FAISS Memory Backup Status"
+        echo "Memories Backup Status"
         echo "=========================="
         echo ""
 
-        if crontab -l 2>/dev/null | grep -q "FAISS Memory backup"; then
+        if crontab -l 2>/dev/null | grep -q "Memories backup"; then
             echo "Cron: INSTALLED"
-            crontab -l | grep "FAISS Memory backup" | sed 's/^/  /'
+            crontab -l | grep "Memories backup" | sed 's/^/  /'
         else
             echo "Cron: NOT INSTALLED"
         fi

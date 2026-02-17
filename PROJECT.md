@@ -1,4 +1,4 @@
-# PROJECT.md - FAISS Memory
+# PROJECT.md - Memories
 
 **Status:** ✅ Production  
 **Type:** Infrastructure / AI Tool  
@@ -86,7 +86,7 @@ Local semantic memory search for AI coding assistants. Zero-cost alternative to 
 ```
 AI Coding Assistant (Claude Code, Cursor, etc.)
     ↓ HTTP POST
-FAISS Memory Service (Docker)
+Memories Service (Docker)
     ↓
 FastAPI REST API (:8900)
     ↓
