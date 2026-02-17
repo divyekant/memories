@@ -59,6 +59,32 @@ class TestExtractEndpoint:
             data = response.json()
             assert data["extracted_count"] == 1
 
+    def test_extract_triggers_memory_trim(self, client):
+        test_client, _ = client
+        with patch("app.extract_provider", MagicMock()), \
+             patch("app.run_extraction", return_value={"actions": [], "extracted_count": 0, "stored_count": 0, "updated_count": 0, "deleted_count": 0}), \
+             patch("app.memory_trimmer.maybe_trim", return_value={"trimmed": False, "reason": "cooldown"}) as trim_mock:
+            response = test_client.post(
+                "/memory/extract",
+                json={"messages": "test", "source": "test", "context": "stop"},
+                headers={"X-API-Key": "test-key"},
+            )
+            assert response.status_code == 200
+            trim_mock.assert_called_once()
+
+    def test_extract_rejects_oversized_payload(self, client):
+        test_client, _ = client
+        import app as app_module
+
+        oversized = "x" * (app_module.MAX_EXTRACT_MESSAGE_CHARS + 1)
+        with patch("app.extract_provider", MagicMock()):
+            response = test_client.post(
+                "/memory/extract",
+                json={"messages": oversized, "source": "test", "context": "stop"},
+                headers={"X-API-Key": "test-key"},
+            )
+        assert response.status_code == 422
+
 
 class TestSupersedeEndpoint:
     """Test POST /memory/supersede."""

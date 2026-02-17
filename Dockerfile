@@ -54,6 +54,7 @@ COPY --from=builder /root/.cache/huggingface /root/.cache/huggingface
 COPY onnx_embedder.py .
 COPY memory_engine.py .
 COPY cloud_sync.py .
+COPY runtime_memory.py .
 COPY llm_provider.py .
 COPY llm_extract.py .
 COPY app.py .

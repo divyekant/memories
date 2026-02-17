@@ -4,6 +4,7 @@ FastAPI wrapper for FAISS memory engine with auth, hybrid search,
 CRUD operations, and structured logging.
 """
 
+import asyncio
 import os
 import re
 import logging
@@ -14,7 +15,9 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 from memory_engine import MemoryEngine
+from runtime_memory import MemoryTrimmer
 
 # -- Logging ------------------------------------------------------------------
 
@@ -47,6 +50,47 @@ DATA_DIR = os.getenv("DATA_DIR", "/data")
 WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/workspace")
 API_KEY = os.getenv("API_KEY", "")  # Empty = no auth (local-only)
 PORT = int(os.getenv("PORT", "8000"))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return max(minimum, default)
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %d", name, raw, default)
+        return max(minimum, default)
+
+
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return max(minimum, default)
+    try:
+        return max(minimum, float(raw))
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %.2f", name, raw, default)
+        return max(minimum, default)
+
+
+MAX_EXTRACT_MESSAGE_CHARS = _env_int("MAX_EXTRACT_MESSAGE_CHARS", 120000)
+EXTRACT_MAX_INFLIGHT = _env_int("EXTRACT_MAX_INFLIGHT", 2)
+MEMORY_TRIM_ENABLED = _env_bool("MEMORY_TRIM_ENABLED", True)
+MEMORY_TRIM_COOLDOWN_SEC = _env_float("MEMORY_TRIM_COOLDOWN_SEC", 15.0)
+
+extract_semaphore = asyncio.Semaphore(EXTRACT_MAX_INFLIGHT)
+memory_trimmer = MemoryTrimmer(
+    enabled=MEMORY_TRIM_ENABLED,
+    cooldown_sec=MEMORY_TRIM_COOLDOWN_SEC,
+)
 
 
 # -- Auth ---------------------------------------------------------------------
@@ -144,7 +188,12 @@ class DeleteBySourceRequest(BaseModel):
 
 
 class ExtractRequest(BaseModel):
-    messages: str = Field(..., description="Conversation text to extract facts from")
+    messages: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_EXTRACT_MESSAGE_CHARS,
+        description="Conversation text to extract facts from",
+    )
     source: str = Field(default="", description="Source identifier (e.g., 'claude-code/my-project')")
     context: str = Field(default="stop", description="Extraction context: stop, pre_compact, session_end")
 
@@ -534,17 +583,26 @@ async def memory_extract(request: ExtractRequest):
         raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
     logger.info("Extract: source=%s, context=%s, message_length=%d", request.source, request.context, len(request.messages))
     try:
-        result = run_extraction(
-            provider=extract_provider,
-            engine=memory,
-            messages=request.messages,
-            source=request.source,
-            context=request.context,
-        )
+        async with extract_semaphore:
+            result = await run_in_threadpool(
+                run_extraction,
+                extract_provider,
+                memory,
+                request.messages,
+                request.source,
+                request.context,
+            )
         return result
     except Exception as e:
         logger.exception("Extraction failed")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        trim_result = memory_trimmer.maybe_trim(reason=f"extract:{request.context}")
+        if trim_result.get("trimmed"):
+            logger.debug(
+                "Post-extract memory trim complete: gc_collected=%s",
+                trim_result.get("gc_collected"),
+            )
 
 
 @app.post("/memory/supersede")

@@ -49,6 +49,18 @@ class TestFactExtraction:
         system_prompt = call_args[0][0] if call_args[0] else call_args[1].get("system", "")
         assert "everything" in system_prompt.lower() or "aggressive" in system_prompt.lower() or "thorough" in system_prompt.lower()
 
+    def test_caps_fact_count_and_length(self):
+        from llm_extract import extract_facts, EXTRACT_MAX_FACTS, EXTRACT_MAX_FACT_CHARS
+
+        mock_provider = MagicMock()
+        oversized_fact = "x" * (EXTRACT_MAX_FACT_CHARS + 300)
+        mock_provider.complete.return_value = json.dumps([oversized_fact] * (EXTRACT_MAX_FACTS + 10))
+
+        facts = extract_facts(mock_provider, "User: test")
+        assert len(facts) == EXTRACT_MAX_FACTS
+        assert all(len(f) <= EXTRACT_MAX_FACT_CHARS for f in facts)
+        assert all(f.endswith("...") for f in facts)
+
 
 class TestAUDNCycle:
     """Test run_audn() function."""
@@ -151,6 +163,32 @@ class TestAUDNCycle:
             source="test/project"
         )
         assert decisions[0]["action"] == "NOOP"
+
+    def test_audn_prompt_truncates_similar_memory_text(self):
+        from llm_extract import run_audn, EXTRACT_SIMILAR_TEXT_CHARS
+
+        long_memory = "m" * (EXTRACT_SIMILAR_TEXT_CHARS + 500)
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = json.dumps(
+            [{"action": "ADD", "fact_index": 0}]
+        )
+
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {"id": 42, "text": long_memory, "similarity": 0.95}
+        ]
+
+        run_audn(
+            mock_provider, mock_engine,
+            facts=["Uses Drizzle ORM"],
+            source="test/project"
+        )
+
+        prompt = mock_provider.complete.call_args[0][1]
+        assert "m" * (EXTRACT_SIMILAR_TEXT_CHARS + 50) not in prompt
+        assert "..." in prompt
 
 
 class TestExecuteActions:

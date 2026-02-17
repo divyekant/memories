@@ -9,9 +9,36 @@ Usage:
 """
 import json
 import logging
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    """Parse integer env var with fallback and lower bound."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return max(minimum, default)
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %d", name, raw, default)
+        return max(minimum, default)
+
+
+def _clip_text(text: str, max_chars: int) -> str:
+    """Normalize whitespace and cap text length to reduce prompt bloat."""
+    compact = " ".join(text.split())
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 3].rstrip() + "..."
+
+
+EXTRACT_MAX_FACTS = _env_int("EXTRACT_MAX_FACTS", 30)
+EXTRACT_MAX_FACT_CHARS = _env_int("EXTRACT_MAX_FACT_CHARS", 500, minimum=40)
+EXTRACT_SIMILAR_TEXT_CHARS = _env_int("EXTRACT_SIMILAR_TEXT_CHARS", 280, minimum=40)
+EXTRACT_SIMILAR_PER_FACT = _env_int("EXTRACT_SIMILAR_PER_FACT", 5)
 
 # --- Prompts ---
 
@@ -110,8 +137,21 @@ def extract_facts(provider, messages: str, context: str = "stop") -> list[str]:
     try:
         response = provider.complete(system, messages)
         facts = _parse_json_array(response)
-        # Filter to strings only
-        facts = [f for f in facts if isinstance(f, str) and f.strip()]
+        # Keep only non-empty strings; normalize + cap length.
+        facts = [
+            _clip_text(f, EXTRACT_MAX_FACT_CHARS)
+            for f in facts
+            if isinstance(f, str) and f.strip()
+        ]
+
+        if len(facts) > EXTRACT_MAX_FACTS:
+            logger.info(
+                "Extracted %d facts; keeping first %d to bound memory and latency",
+                len(facts),
+                EXTRACT_MAX_FACTS,
+            )
+            facts = facts[:EXTRACT_MAX_FACTS]
+
         logger.info("Extracted %d facts (context=%s)", len(facts), context)
         return facts
     except Exception as e:
@@ -145,23 +185,36 @@ def run_audn(provider, engine, facts: list[str], source: str) -> list[dict]:
     similar_per_fact = {}
     for i, fact in enumerate(facts):
         try:
-            results = engine.hybrid_search(fact, k=5)
+            results = engine.hybrid_search(fact, k=EXTRACT_SIMILAR_PER_FACT)
             similar_per_fact[i] = results
         except Exception:
             similar_per_fact[i] = []
 
-    facts_json = json.dumps([{"index": i, "text": f} for i, f in enumerate(facts)], indent=2)
-    similar_json = json.dumps({
-        str(i): [{"id": m.get("id"), "text": m.get("text"), "similarity": round(m.get("similarity", 0), 3)}
-                 for m in mems[:5]]
-        for i, mems in similar_per_fact.items()
-    }, indent=2)
+    facts_json = json.dumps(
+        [{"index": i, "text": _clip_text(f, EXTRACT_MAX_FACT_CHARS)} for i, f in enumerate(facts)],
+        separators=(",", ":"),
+    )
+    similar_json = json.dumps(
+        {
+            str(i): [
+                {
+                    "id": m.get("id"),
+                    "text": _clip_text(str(m.get("text", "")), EXTRACT_SIMILAR_TEXT_CHARS),
+                    "similarity": round(float(m.get("similarity", 0.0)), 3),
+                }
+                for m in mems[:EXTRACT_SIMILAR_PER_FACT]
+            ]
+            for i, mems in similar_per_fact.items()
+        },
+        separators=(",", ":"),
+    )
 
     prompt = AUDN_PROMPT.format(facts_json=facts_json, similar_json=similar_json)
 
     try:
         response = provider.complete("You are a memory manager. Output only valid JSON.", prompt)
         decisions = _parse_json_array(response)
+        del response, prompt, facts_json, similar_json, similar_per_fact
         valid = []
         for d in decisions:
             if isinstance(d, dict) and "action" in d:
