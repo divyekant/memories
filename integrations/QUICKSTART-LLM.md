@@ -216,7 +216,7 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 | `EXTRACT_MODEL` | (per provider) | Override model. Defaults: `claude-haiku-4-5-20251001`, `gpt-4.1-nano`, `gemma3:4b` |
 | `ANTHROPIC_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=anthropic` |
 | `OPENAI_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=openai` |
-| `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL |
+| `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
 | `FAISS_HOOKS_DIR` | `~/.claude/hooks/memory` | Override hooks location |
 
 ---

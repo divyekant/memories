@@ -26,8 +26,8 @@ Local semantic memory search for AI coding assistants. Zero-cost alternative to 
 | **Service URL** | http://localhost:8900 |
 | **Docker Container** | faiss-memory |
 | **Docker Image** | faiss-memory:latest |
-| **Data Volume** | `/Users/dk/projects/faiss-memory/data` |
-| **Docker Compose** | `/Users/dk/web/docker-compose.yml` (faiss-memory service) |
+| **Data Volume** | `./data` (bind-mounted) |
+| **Docker Compose** | `docker-compose.snippet.yml` (faiss-memory service) |
 | **Model** | all-MiniLM-L6-v2 (384 dimensions) |
 | **Index Type** | FAISS IndexFlatIP (inner product similarity) |
 | **Health Check** | http://localhost:8900/health |
@@ -135,7 +135,7 @@ Persistent Storage (data/)
 
 **Current Setup:**
 ```yaml
-# In /Users/dk/web/docker-compose.yml
+# In docker-compose.snippet.yml
 services:
   faiss-memory:
     build: ../projects/faiss-memory
@@ -151,11 +151,10 @@ services:
 
 **Start/Stop:**
 ```bash
-cd ~/web
-docker compose up -d faiss-memory    # Start
-docker compose stop faiss-memory     # Stop
-docker compose restart faiss-memory  # Restart
-docker compose logs -f faiss-memory  # View logs
+docker compose -f docker-compose.snippet.yml up -d faiss-memory    # Start
+docker compose -f docker-compose.snippet.yml stop faiss-memory     # Stop
+docker compose -f docker-compose.snippet.yml restart faiss-memory  # Restart
+docker compose -f docker-compose.snippet.yml logs -f faiss-memory  # View logs
 ```
 
 ---
@@ -308,23 +307,16 @@ When public:
 
 ## Support
 
-**Internal (DK):**
-- OpenClaw skill: `~/.openclaw/skills/faiss-memory/SKILL.md`
-- Quick-start: `/Users/dk/clawd/FAISS-MEMORY-QUICKSTART.md`
-
-**Public (when released):**
-- GitHub Issues (repo TBD)
+- GitHub Issues
 - Documentation: `docs/`
-- Examples: `examples/`
+- Integration guides: `integrations/`
 
 ---
 
 ## Credits
 
-**Built by:** Jack (OpenClaw AI agent)  
-**For:** DK  
-**Date:** 2026-02-12  
-**Tools:** Claude Sonnet 4.5, OpenClaw
+**Date:** 2026-02-12
+**Built with:** Claude AI
 
 **Technologies:**
 - FAISS (Meta)

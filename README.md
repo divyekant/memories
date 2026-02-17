@@ -575,6 +575,17 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 
 Extraction is optional. Without it, hooks still retrieve memories — they just don't learn new ones automatically.
 
+### Building with extraction support
+
+The Anthropic/OpenAI SDKs are not included in the default image. To enable extraction, rebuild with the `ENABLE_EXTRACT` flag:
+
+```bash
+docker compose build --build-arg ENABLE_EXTRACT=true faiss-memory
+docker compose up -d faiss-memory
+```
+
+Ollama uses HTTP directly and does not need the SDKs — it works with the default image.
+
 ### Extraction environment variables
 
 | Variable | Default | Description |
@@ -583,7 +594,7 @@ Extraction is optional. Without it, hooks still retrieve memories — they just 
 | `EXTRACT_MODEL` | (per provider) | Model override |
 | `ANTHROPIC_API_KEY` | (none) | Required for Anthropic provider |
 | `OPENAI_API_KEY` | (none) | Required for OpenAI provider |
-| `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL |
+| `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
 
 ### Uninstall
 

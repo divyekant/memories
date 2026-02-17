@@ -1,6 +1,6 @@
 # Automatic Memory Layer Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> Implementation plan for the automatic memory layer feature. See the [design doc](./2026-02-16-automatic-memory-layer-design.md) for architecture rationale.
 
 **Goal:** Add automatic memory retrieval and extraction to FAISS Memory so Claude Code, Codex, and OpenClaw inject/store memories without the agent choosing to.
 
@@ -147,7 +147,7 @@ class TestProviderInterface:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/dk/projects/memories && python -m pytest tests/test_llm_provider.py -v`
+Run: `cd /path/to/memories &&python -m pytest tests/test_llm_provider.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'llm_provider'`
 
 ---
@@ -341,7 +341,7 @@ def get_provider() -> LLMProvider | None:
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/dk/projects/memories && python -m pytest tests/test_llm_provider.py -v`
+Run: `cd /path/to/memories &&python -m pytest tests/test_llm_provider.py -v`
 Expected: All 12 tests PASS
 
 **Step 5: Commit**
@@ -618,7 +618,7 @@ class TestFullPipeline:
 
 **Step 7: Run tests to verify they fail**
 
-Run: `cd /Users/dk/projects/memories && python -m pytest tests/test_llm_extract.py -v`
+Run: `cd /path/to/memories &&python -m pytest tests/test_llm_extract.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'llm_extract'`
 
 ---
@@ -924,7 +924,7 @@ def run_extraction(
 
 **Step 9: Run tests to verify they pass**
 
-Run: `cd /Users/dk/projects/memories && python -m pytest tests/test_llm_extract.py -v`
+Run: `cd /path/to/memories &&python -m pytest tests/test_llm_extract.py -v`
 Expected: All 13 tests PASS
 
 **Step 10: Commit**
@@ -976,7 +976,7 @@ class TestSupersede:
 
 **Step 12: Run test to verify it fails**
 
-Run: `cd /Users/dk/projects/memories && python -m pytest tests/test_memory_engine.py::TestSupersede -v`
+Run: `cd /path/to/memories &&python -m pytest tests/test_memory_engine.py::TestSupersede -v`
 Expected: FAIL — `AttributeError: 'MemoryEngine' object has no attribute 'supersede'`
 
 ---
@@ -1032,12 +1032,12 @@ def supersede(self, old_id: int, new_text: str, source: str = "") -> dict:
 
 **Step 14: Run test to verify it passes**
 
-Run: `cd /Users/dk/projects/memories && python -m pytest tests/test_memory_engine.py::TestSupersede -v`
+Run: `cd /path/to/memories &&python -m pytest tests/test_memory_engine.py::TestSupersede -v`
 Expected: PASS
 
 **Step 15: Run all existing tests to check for regressions**
 
-Run: `cd /Users/dk/projects/memories && python -m pytest tests/test_memory_engine.py -v`
+Run: `cd /path/to/memories &&python -m pytest tests/test_memory_engine.py -v`
 Expected: All tests PASS (31 existing + 2 new = 33)
 
 **Step 16: Commit**
@@ -1171,7 +1171,7 @@ class TestExtractStatusEndpoint:
 
 **Step 18: Run tests to verify they fail**
 
-Run: `cd /Users/dk/projects/memories && python -m pytest tests/test_extract_api.py -v`
+Run: `cd /path/to/memories &&python -m pytest tests/test_extract_api.py -v`
 Expected: FAIL — endpoints don't exist yet
 
 ---
@@ -1282,12 +1282,12 @@ async def extract_status():
 
 **Step 20: Run API tests to verify they pass**
 
-Run: `cd /Users/dk/projects/memories && python -m pytest tests/test_extract_api.py -v`
+Run: `cd /path/to/memories &&python -m pytest tests/test_extract_api.py -v`
 Expected: All 6 tests PASS
 
 **Step 21: Run all tests to check for regressions**
 
-Run: `cd /Users/dk/projects/memories && python -m pytest tests/ -v`
+Run: `cd /path/to/memories &&python -m pytest tests/ -v`
 Expected: All tests PASS
 
 **Step 22: Commit**
@@ -1334,7 +1334,7 @@ COPY llm_extract.py .
 
 **Step 25: Verify Docker build succeeds**
 
-Run: `cd /Users/dk/projects/memories && docker compose build faiss-memory`
+Run: `cd /path/to/memories &&docker compose build faiss-memory`
 Expected: Build succeeds. Image size should be similar to before (~650MB) since extraction deps not included by default.
 
 **Step 26: Commit**
@@ -1640,7 +1640,7 @@ Full implementation: ~120 lines of bash with read prompts, curl validation, jq c
 
 **Step 37: Test installer manually**
 
-Run: `cd /Users/dk/projects/memories && bash integrations/claude-code/install.sh`
+Run: `cd /path/to/memories &&bash integrations/claude-code/install.sh`
 Expected: Interactive prompts, successful hook installation
 
 **Step 38: Commit**
@@ -1738,17 +1738,17 @@ git commit -m "docs: add Automatic Memory Layer documentation to README"
 
 **Step 45: Run all tests**
 
-Run: `cd /Users/dk/projects/memories && python -m pytest tests/ -v`
+Run: `cd /path/to/memories &&python -m pytest tests/ -v`
 Expected: All tests PASS (31 existing + 2 supersede + 12 provider + 13 extract + 6 API = 64 tests)
 
 **Step 46: Docker build test**
 
-Run: `cd /Users/dk/projects/memories && docker compose build faiss-memory`
+Run: `cd /path/to/memories &&docker compose build faiss-memory`
 Expected: Build succeeds, image size ~650MB (no extraction deps)
 
 **Step 47: Docker build with extraction**
 
-Run: `cd /Users/dk/projects/memories && docker compose build --build-arg ENABLE_EXTRACT=true faiss-memory`
+Run: `cd /path/to/memories &&docker compose build --build-arg ENABLE_EXTRACT=true faiss-memory`
 Expected: Build succeeds with anthropic + openai SDKs installed
 
 **Step 48: Start container and verify health**

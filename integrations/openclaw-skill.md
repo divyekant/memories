@@ -28,7 +28,7 @@ Local semantic memory using FAISS vector search + BM25 hybrid retrieval (Docker 
 ## Prerequisites
 
 - Docker service running: `docker ps | grep faiss-memory`
-- If not running: `cd ~/web && docker-compose up -d faiss-memory`
+- If not running: `cd /path/to/memories && docker compose up -d faiss-memory`
 - `FAISS_API_KEY` env var must be set (loaded from shell profile)
 
 ## Commands
@@ -387,7 +387,7 @@ At the start of every task, recall relevant project context:
 memory_recall_faiss
 ```
 
-When I (Jack) need to search for something specific:
+When you need to search for something specific:
 ```bash
 memory_search_faiss "your query" 5
 ```
@@ -437,7 +437,7 @@ During heartbeats, I can:
 ```bash
 docker ps | grep faiss-memory
 docker logs -f faiss-memory
-cd ~/web && docker-compose restart faiss-memory
+cd /path/to/memories && docker compose restart faiss-memory
 ```
 
 ### Empty search results
@@ -458,5 +458,5 @@ memory_restore "BACKUP_NAME"
 - Survives OpenClaw restarts/upgrades
 - Backups created automatically before destructive ops
 - Read-only access to workspace files
-- All data persists in bind mount: `/Users/dk/projects/memories/data/`
+- All data persists in the bind-mounted `./data/` directory (configured in `docker-compose.yml`)
 - API docs available at http://localhost:8900/docs
