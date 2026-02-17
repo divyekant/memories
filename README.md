@@ -557,6 +557,7 @@ Default compose files now include:
 - `mem_limit: ${FAISS_MEM_LIMIT:-3g}` to bound container memory growth
 - `MALLOC_ARENA_MAX=2` to reduce glibc arena fragmentation in multithreaded workloads
 - `MALLOC_TRIM_THRESHOLD_=131072` and `MALLOC_MMAP_THRESHOLD_=131072` to encourage earlier allocator release
+- extraction env passthrough (`EXTRACT_PROVIDER`, `EXTRACT_MODEL`, provider keys/URL) so deploys keep extraction enabled when set in shell or `.env`
 
 ### MCP Server Environment
 

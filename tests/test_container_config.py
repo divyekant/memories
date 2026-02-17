@@ -71,3 +71,13 @@ def test_compose_sets_memory_and_allocator_guardrails() -> None:
         assert "MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}" in contents
         assert "MALLOC_TRIM_THRESHOLD_=${MALLOC_TRIM_THRESHOLD_:-131072}" in contents
         assert "MALLOC_MMAP_THRESHOLD_=${MALLOC_MMAP_THRESHOLD_:-131072}" in contents
+
+
+def test_compose_supports_extraction_env_passthrough() -> None:
+    for compose_file in ("docker-compose.yml", "docker-compose.snippet.yml"):
+        contents = _read(compose_file)
+        assert "EXTRACT_PROVIDER=${EXTRACT_PROVIDER:-}" in contents
+        assert "EXTRACT_MODEL=${EXTRACT_MODEL:-}" in contents
+        assert "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}" in contents
+        assert "OPENAI_API_KEY=${OPENAI_API_KEY:-}" in contents
+        assert "OLLAMA_URL=${OLLAMA_URL:-}" in contents

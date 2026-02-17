@@ -22,6 +22,12 @@ services:
       - API_KEY=${API_KEY:-}
       - MODEL_NAME=all-MiniLM-L6-v2
       - MAX_BACKUPS=10
+      # Optional extraction provider pass-through
+      - EXTRACT_PROVIDER=${EXTRACT_PROVIDER:-}
+      - EXTRACT_MODEL=${EXTRACT_MODEL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_URL=${OLLAMA_URL:-}
       # Allocator guardrails for lower steady-state RSS under bursty workloads
       - MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}
       - MALLOC_TRIM_THRESHOLD_=${MALLOC_TRIM_THRESHOLD_:-131072}
