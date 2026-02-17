@@ -64,16 +64,18 @@ class TestAnthropicOAuth:
                 mock_anthropic.Anthropic.assert_called_once_with(api_key="sk-ant-api03-fake")
 
     def test_oauth_token_creates_oauth_state(self):
-        """OAuth token (sk-ant-oat01-) should use auth_token and create OAuth state."""
+        """OAuth token (sk-ant-oat01-) should use custom transport and create OAuth state."""
         env = {"EXTRACT_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "sk-ant-oat01-faketoken"}
         with patch.dict(os.environ, env):
             mock_anthropic = MagicMock()
-            with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
+            with patch.dict("sys.modules", {"anthropic": mock_anthropic, "httpx": MagicMock()}):
                 from llm_provider import get_provider
                 provider = get_provider()
                 assert provider._oauth is not None
                 assert provider._oauth.access_token == "sk-ant-oat01-faketoken"
-                mock_anthropic.Anthropic.assert_called_once_with(auth_token="sk-ant-oat01-faketoken")
+                call_kwargs = mock_anthropic.Anthropic.call_args
+                assert call_kwargs.kwargs.get("api_key") == "placeholder"
+                assert "http_client" in call_kwargs.kwargs
 
     def test_oauth_token_detection(self):
         """Verify the OAuth token detection helper."""
@@ -138,36 +140,31 @@ class TestAnthropicOAuth:
 
         assert result is False
 
-    def test_ensure_fresh_token_refreshes_when_expired(self):
-        """AnthropicProvider should refresh the client when OAuth token expires."""
-        env = {"EXTRACT_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "sk-ant-oat01-faketoken"}
-        with patch.dict(os.environ, env):
-            mock_anthropic = MagicMock()
-            with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
-                from llm_provider import get_provider
-                provider = get_provider()
+    def test_oauth_state_refresh_updates_access_token_used_by_transport(self):
+        """When OAuth token expires, refresh should update access_token in state."""
+        from llm_provider import _OAuthState
+        state = _OAuthState(access_token="old-token")
+        state.refresh_token = "refresh-token"
+        state.expires_at = time.time() - 10  # expired
 
-                # Simulate expiry
-                provider._oauth.expires_at = time.time() - 10
-                provider._oauth.refresh_token = "refresh-token"
+        refresh_response = json.dumps({
+            "access_token": "refreshed-token",
+            "refresh_token": "new-refresh",
+            "expires_in": 3600,
+        }).encode()
 
-                refresh_response = json.dumps({
-                    "access_token": "refreshed-token",
-                    "refresh_token": "new-refresh",
-                    "expires_in": 3600,
-                }).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = refresh_response
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
 
-                mock_resp = MagicMock()
-                mock_resp.read.return_value = refresh_response
-                mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-                mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("llm_provider.urllib.request.urlopen", return_value=mock_resp):
+            assert state.is_expired() is True
+            result = state.refresh()
 
-                with patch("llm_provider.urllib.request.urlopen", return_value=mock_resp):
-                    provider._ensure_fresh_token()
-
-                # Client should have been rebuilt with new token
-                assert mock_anthropic.Anthropic.call_count == 2  # initial + refresh
-                mock_anthropic.Anthropic.assert_called_with(auth_token="refreshed-token")
+        assert result is True
+        assert state.access_token == "refreshed-token"
+        # Transport reads state.access_token directly, so it will use the refreshed token
 
 
 class TestOllamaProvider:

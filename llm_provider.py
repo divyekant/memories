@@ -93,11 +93,57 @@ class _OAuthState:
             return False
 
 
+REQUIRED_BETAS = ["oauth-2025-04-20", "interleaved-thinking-2025-05-14"]
+
+
+def _make_oauth_httpx_client(oauth_state: "_OAuthState"):
+    """Build an httpx.Client that intercepts requests to inject OAuth auth.
+
+    Matches the pattern from WebChat/llm.js:
+    - Sets Authorization: Bearer <token>
+    - Removes x-api-key header
+    - Adds anthropic-beta: oauth-2025-04-20 header
+    - Appends ?beta=true to /v1/messages URL
+    """
+    import httpx
+
+    class _OAuthTransport(httpx.BaseTransport):
+        def __init__(self, transport: httpx.BaseTransport, state: "_OAuthState"):
+            self._transport = transport
+            self._state = state
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            # Refresh if expired
+            if self._state.is_expired():
+                self._state.refresh()
+
+            # Set Bearer auth, remove x-api-key
+            request.headers["authorization"] = f"Bearer {self._state.access_token}"
+            if "x-api-key" in request.headers:
+                del request.headers["x-api-key"]
+
+            # Merge beta headers
+            existing = request.headers.get("anthropic-beta", "")
+            existing_list = [b.strip() for b in existing.split(",") if b.strip()]
+            all_betas = list(dict.fromkeys(existing_list + REQUIRED_BETAS))
+            request.headers["anthropic-beta"] = ",".join(all_betas)
+
+            # Add ?beta=true for /v1/messages
+            if request.url.path == "/v1/messages":
+                request.url = request.url.copy_merge_params({"beta": "true"})
+
+            return self._transport.handle_request(request)
+
+    base_transport = httpx.HTTPTransport()
+    return httpx.Client(transport=_OAuthTransport(base_transport, oauth_state))
+
+
 class AnthropicProvider(LLMProvider):
     """Anthropic API provider (Claude models).
 
     Supports both standard API keys and OAuth subscription tokens (sk-ant-oat01-).
-    OAuth tokens use Bearer auth via the SDK's auth_token parameter and auto-refresh.
+    OAuth tokens use a custom HTTP transport that injects Bearer auth, removes
+    x-api-key, adds required beta headers, and appends ?beta=true to the URL.
     """
 
     provider_name = "anthropic"
@@ -115,36 +161,18 @@ class AnthropicProvider(LLMProvider):
 
         if _is_oauth_token(api_key):
             self._oauth = _OAuthState(access_token=api_key)
-            # Temporarily clear ANTHROPIC_API_KEY so the SDK doesn't
-            # auto-read it and send both X-Api-Key and Authorization headers.
-            # The server rejects OAuth tokens in the X-Api-Key header.
-            saved_key = os.environ.pop("ANTHROPIC_API_KEY", None)
-            try:
-                self.client = anthropic.Anthropic(auth_token=api_key)
-            finally:
-                if saved_key is not None:
-                    os.environ["ANTHROPIC_API_KEY"] = saved_key
-            logger.info("Using OAuth subscription token (sk-ant-oat01-)")
+            http_client = _make_oauth_httpx_client(self._oauth)
+            # Use placeholder api_key to satisfy SDK constructor;
+            # the custom transport replaces it with Bearer auth.
+            self.client = anthropic.Anthropic(
+                api_key="placeholder",
+                http_client=http_client,
+            )
+            logger.info("Using OAuth subscription token (sk-ant-oat01-) with custom transport")
         else:
             self.client = anthropic.Anthropic(api_key=api_key)
 
-    def _ensure_fresh_token(self) -> None:
-        """Refresh the OAuth token if expired and rebuild the client."""
-        if self._oauth is None or not self._oauth.is_expired():
-            return
-        if self._oauth.refresh():
-            import anthropic
-            saved_key = os.environ.pop("ANTHROPIC_API_KEY", None)
-            try:
-                self.client = anthropic.Anthropic(
-                    auth_token=self._oauth.access_token
-                )
-            finally:
-                if saved_key is not None:
-                    os.environ["ANTHROPIC_API_KEY"] = saved_key
-
     def complete(self, system: str, user: str) -> str:
-        self._ensure_fresh_token()
         response = self.client.messages.create(
             model=self.model,
             max_tokens=1024,
