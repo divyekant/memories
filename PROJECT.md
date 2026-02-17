@@ -122,7 +122,7 @@ Integration docs:
 - [x] Publish two Docker targets/images:
   - core (`search/add/list`, no extraction SDKs)
   - extract (includes extraction provider SDKs)
-- [ ] Optionally move model download to first-run volume cache for smaller image pulls.
+- [x] Optionally move model download to first-run volume cache for smaller image pulls.
 - [ ] Make `/memory/extract` async-first (accept + queue, return `202`).
 - [ ] Add extraction backpressure with `429` and retry hints when queue is full.
 - [ ] Ship one-command installer that auto-detects Claude Code/Codex/OpenClaw config targets.

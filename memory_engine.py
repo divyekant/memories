@@ -51,9 +51,43 @@ class MemoryEngine:
         import os
         self._model_name = model_name or os.getenv("MODEL_NAME", "all-MiniLM-L6-v2")
         self._max_backups = max_backups or int(os.getenv("MAX_BACKUPS", "10"))
+        self._model_cache_dir = os.getenv("MODEL_CACHE_DIR", "").strip()
+        self._preloaded_model_cache_dir = os.getenv("PRELOADED_MODEL_CACHE_DIR", "").strip()
+
+        embedder_cache_dir: Optional[str] = None
+        if self._model_cache_dir:
+            cache_path = Path(self._model_cache_dir)
+            cache_path.mkdir(parents=True, exist_ok=True)
+
+            # If a preloaded cache exists in the image and the writable cache is empty,
+            # seed it once so downloads are avoided on first boot.
+            if self._preloaded_model_cache_dir:
+                preload_path = Path(self._preloaded_model_cache_dir)
+                try:
+                    cache_is_empty = not any(cache_path.iterdir())
+                except OSError:
+                    cache_is_empty = False
+
+                if cache_is_empty and preload_path.exists():
+                    try:
+                        if any(preload_path.iterdir()):
+                            shutil.copytree(preload_path, cache_path, dirs_exist_ok=True)
+                            logger.info(
+                                "Seeded model cache from preloaded assets: %s -> %s",
+                                preload_path,
+                                cache_path,
+                            )
+                    except OSError as exc:
+                        logger.warning(
+                            "Failed to seed model cache from %s: %s",
+                            preload_path,
+                            exc,
+                        )
+
+            embedder_cache_dir = str(cache_path)
 
         # Load ONNX embedder (drop-in replacement for SentenceTransformer)
-        self.model = OnnxEmbedder(self._model_name)
+        self.model = OnnxEmbedder(self._model_name, cache_dir=embedder_cache_dir)
         self.dim = self.model.get_sentence_embedding_dimension()
 
         # Concurrency lock for write operations

@@ -2,6 +2,7 @@
 FROM python:3.11-slim AS builder-core
 
 ARG ENABLE_CLOUD_SYNC=false
+ARG PRELOAD_MODEL=false
 
 WORKDIR /app
 
@@ -14,11 +15,14 @@ RUN if [ "$ENABLE_CLOUD_SYNC" = "true" ]; then \
         pip install --no-cache-dir -r requirements-cloud.txt; \
     fi
 
-# Copy embedder so we can pre-download the ONNX model
+# Copy embedder so we can optionally pre-download the ONNX model
 COPY onnx_embedder.py .
 
-# Pre-download the ONNX model + tokenizer so first startup is fast
-RUN python -c "from onnx_embedder import OnnxEmbedder; OnnxEmbedder('all-MiniLM-L6-v2')"
+# Optional: bake model files into image cache. Default keeps image smaller.
+RUN mkdir -p /opt/model-cache && \
+    if [ "$PRELOAD_MODEL" = "true" ]; then \
+        python -c "from onnx_embedder import OnnxEmbedder; OnnxEmbedder('all-MiniLM-L6-v2', cache_dir='/opt/model-cache')"; \
+    fi
 
 # Strip test/doc bloat from installed packages
 RUN find /usr/local/lib/python3.11/site-packages \
@@ -45,6 +49,9 @@ FROM python:3.11-slim AS runtime-base
 
 WORKDIR /app
 
+ENV MODEL_CACHE_DIR=/data/model-cache \
+    PRELOADED_MODEL_CACHE_DIR=/opt/model-cache
+
 # Copy application code
 COPY onnx_embedder.py .
 COPY memory_engine.py .
@@ -54,7 +61,7 @@ COPY llm_provider.py .
 COPY llm_extract.py .
 COPY app.py .
 
-RUN mkdir -p /data/backups
+RUN mkdir -p /data/backups /data/model-cache
 
 EXPOSE 8000
 
@@ -68,11 +75,11 @@ FROM runtime-base AS extract
 
 COPY --from=builder-extract /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder-extract /usr/local/bin /usr/local/bin
-COPY --from=builder-extract /root/.cache/huggingface /root/.cache/huggingface
+COPY --from=builder-extract /opt/model-cache /opt/model-cache
 
 # ---- Runtime target: core (default, no extraction SDKs) ----
 FROM runtime-base AS core
 
 COPY --from=builder-core /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder-core /usr/local/bin /usr/local/bin
-COPY --from=builder-core /root/.cache/huggingface /root/.cache/huggingface
+COPY --from=builder-core /opt/model-cache /opt/model-cache

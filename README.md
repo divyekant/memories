@@ -526,6 +526,8 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 | `WORKSPACE_DIR` | `/workspace` | Read-only workspace for index rebuilds |
 | `API_KEY` | (empty) | API key for auth. Empty = no auth. |
 | `MODEL_NAME` | `all-MiniLM-L6-v2` | Embedding model (ONNX Runtime) |
+| `MODEL_CACHE_DIR` | (unset; Docker image sets `/data/model-cache`) | Optional writable cache path for downloaded model files |
+| `PRELOADED_MODEL_CACHE_DIR` | (unset; Docker image sets `/opt/model-cache`) | Optional read-only cache to seed `MODEL_CACHE_DIR` when empty |
 | `MAX_BACKUPS` | `10` | Number of backups to keep |
 | `MAX_EXTRACT_MESSAGE_CHARS` | `120000` | Max characters accepted by `/memory/extract` |
 | `EXTRACT_MAX_INFLIGHT` | `2` | Max concurrent extraction jobs |
@@ -605,6 +607,16 @@ docker compose up -d --build faiss-memory
 
 # Extraction-ready target
 FAISS_IMAGE_TARGET=extract docker compose up -d --build faiss-memory
+```
+
+By default, images do **not** bake model weights. On first run, the service downloads them into
+`MODEL_CACHE_DIR` (`/data/model-cache` in Docker), so later restarts reuse the volume cache.
+
+If you want a fully preloaded image (faster first boot, larger pull), set `PRELOAD_MODEL=true`:
+
+```bash
+docker build --target core --build-arg PRELOAD_MODEL=true -t faiss-memory:core .
+docker build --target extract --build-arg PRELOAD_MODEL=true -t faiss-memory:extract .
 ```
 
 Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough for Ollama extraction.
@@ -752,7 +764,7 @@ memories/
   onnx_embedder.py        # ONNX Runtime embedder (replaces PyTorch)
   llm_provider.py         # LLM provider abstraction (Anthropic/OpenAI/Ollama)
   llm_extract.py          # Extraction pipeline with AUDN
-  Dockerfile              # Multi-stage Docker build (model pre-downloaded)
+  Dockerfile              # Multi-stage Docker build (core/extract targets)
   requirements.txt        # Python dependencies
   requirements-extract.txt # Optional extraction deps (Anthropic/OpenAI SDKs)
   docker-compose.snippet.yml
@@ -788,10 +800,10 @@ memories/
 
 | Metric | Value |
 |--------|-------|
-| Docker image size | ~650MB (ONNX Runtime, multi-stage build) |
+| Docker image size | ~430MB core / ~436MB extract (no baked model cache by default) |
 | Search latency | <50ms |
 | Add latency | ~100ms (includes backup) |
-| Model loading | ~3s (pre-downloaded in image) |
+| Model loading | Cold boot downloads model once; warm boots reuse `/data/model-cache` |
 | Memory footprint | ~180-260MB baseline; higher during extraction bursts |
 | Index size | ~1.5KB per memory |
 

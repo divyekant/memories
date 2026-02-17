@@ -33,6 +33,16 @@ def test_dockerfile_has_core_and_extract_targets() -> None:
     assert core_idx > extract_idx
 
 
+def test_dockerfile_uses_first_run_model_cache_defaults() -> None:
+    dockerfile = _read("Dockerfile")
+    assert "ARG PRELOAD_MODEL=false" in dockerfile
+    assert "ENV MODEL_CACHE_DIR=/data/model-cache" in dockerfile
+    assert "PRELOADED_MODEL_CACHE_DIR=/opt/model-cache" in dockerfile
+    assert "COPY --from=builder-core /opt/model-cache /opt/model-cache" in dockerfile
+    assert "COPY --from=builder-extract /opt/model-cache /opt/model-cache" in dockerfile
+    assert "/root/.cache/huggingface" not in dockerfile
+
+
 def test_compose_healthchecks_use_python_probe() -> None:
     for compose_file in ("docker-compose.yml", "docker-compose.snippet.yml"):
         contents = _read(compose_file)
@@ -46,3 +56,4 @@ def test_compose_defaults_to_core_target() -> None:
         contents = _read(compose_file)
         assert "target: ${FAISS_IMAGE_TARGET:-core}" in contents
         assert "image: faiss-memory:${FAISS_IMAGE_TARGET:-core}" in contents
+        assert "PRELOAD_MODEL: ${PRELOAD_MODEL:-false}" in contents

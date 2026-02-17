@@ -212,6 +212,58 @@ class TestPersistence:
             MemoryEngine(data_dir=str(tmp_path))
 
 
+class TestModelCache:
+    def test_model_cache_dir_env_is_forwarded_to_embedder(self, tmp_path, monkeypatch):
+        import memory_engine as memory_engine_module
+
+        captured = {}
+
+        class DummyEmbedder:
+            def __init__(self, model_name="all-MiniLM-L6-v2", cache_dir=None):
+                captured["model_name"] = model_name
+                captured["cache_dir"] = cache_dir
+
+            def get_sentence_embedding_dimension(self):
+                return 384
+
+        cache_dir = tmp_path / "model-cache"
+        monkeypatch.setattr(memory_engine_module, "OnnxEmbedder", DummyEmbedder)
+        monkeypatch.setenv("MODEL_CACHE_DIR", str(cache_dir))
+        monkeypatch.delenv("PRELOADED_MODEL_CACHE_DIR", raising=False)
+
+        memory_engine_module.MemoryEngine(data_dir=str(tmp_path / "data"))
+
+        assert captured["cache_dir"] == str(cache_dir)
+        assert cache_dir.exists()
+
+    def test_preloaded_cache_seeds_empty_model_cache(self, tmp_path, monkeypatch):
+        import memory_engine as memory_engine_module
+
+        captured = {}
+
+        class DummyEmbedder:
+            def __init__(self, model_name="all-MiniLM-L6-v2", cache_dir=None):
+                captured["cache_dir"] = cache_dir
+
+            def get_sentence_embedding_dimension(self):
+                return 384
+
+        model_cache = tmp_path / "model-cache"
+        preload_cache = tmp_path / "preloaded-cache"
+        preload_file = preload_cache / "models--seed" / "blob.bin"
+        preload_file.parent.mkdir(parents=True, exist_ok=True)
+        preload_file.write_text("seeded", encoding="utf-8")
+
+        monkeypatch.setattr(memory_engine_module, "OnnxEmbedder", DummyEmbedder)
+        monkeypatch.setenv("MODEL_CACHE_DIR", str(model_cache))
+        monkeypatch.setenv("PRELOADED_MODEL_CACHE_DIR", str(preload_cache))
+
+        memory_engine_module.MemoryEngine(data_dir=str(tmp_path / "data"))
+
+        assert captured["cache_dir"] == str(model_cache)
+        assert (model_cache / "models--seed" / "blob.bin").read_text(encoding="utf-8") == "seeded"
+
+
 class TestRebuildFromFiles:
     def test_rebuild(self, engine, tmp_path):
         md_file = tmp_path / "test_source.md"
