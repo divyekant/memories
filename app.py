@@ -24,6 +24,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("faiss-memory")
 
+# Optional extraction support
+try:
+    from llm_provider import get_provider
+    from llm_extract import run_extraction
+    extract_provider = get_provider()
+    if extract_provider:
+        logger.info(
+            "Extraction enabled: provider=%s, model=%s",
+            extract_provider.provider_name, extract_provider.model,
+        )
+    else:
+        logger.info("Extraction disabled (EXTRACT_PROVIDER not set)")
+except Exception as e:
+    logger.warning("Extraction setup failed: %s", e)
+    extract_provider = None
+    run_extraction = None
+
 # -- Config -------------------------------------------------------------------
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
@@ -124,6 +141,18 @@ class DeduplicateRequest(BaseModel):
 
 class DeleteBySourceRequest(BaseModel):
     source_pattern: str = Field(..., min_length=1, max_length=500)
+
+
+class ExtractRequest(BaseModel):
+    messages: str = Field(..., description="Conversation text to extract facts from")
+    source: str = Field(default="", description="Source identifier (e.g., 'claude-code/my-project')")
+    context: str = Field(default="stop", description="Extraction context: stop, pre_compact, session_end")
+
+
+class SupersedeRequest(BaseModel):
+    old_id: int = Field(..., description="ID of memory to supersede")
+    new_text: str = Field(..., description="Updated memory text")
+    source: str = Field(default="", description="Source identifier")
 
 
 # -- Endpoints ----------------------------------------------------------------
@@ -494,6 +523,68 @@ async def sync_restore(backup_name: str, confirm: bool = False):
     except Exception as e:
         logger.exception("Cloud restore failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# -- Extraction endpoints -----------------------------------------------------
+
+@app.post("/memory/extract")
+async def memory_extract(request: ExtractRequest):
+    """Extract facts from conversation and store via AUDN pipeline."""
+    if extract_provider is None:
+        raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
+    logger.info("Extract: source=%s, context=%s, message_length=%d", request.source, request.context, len(request.messages))
+    try:
+        result = run_extraction(
+            provider=extract_provider,
+            engine=memory,
+            messages=request.messages,
+            source=request.source,
+            context=request.context,
+        )
+        return result
+    except Exception as e:
+        logger.exception("Extraction failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/memory/supersede")
+async def memory_supersede(request: SupersedeRequest):
+    """Replace a memory with an updated version (audit trail preserved)."""
+    logger.info("Supersede: old_id=%d, source=%s", request.old_id, request.source)
+    try:
+        result = memory.supersede(
+            old_id=request.old_id,
+            new_text=request.new_text,
+            source=request.source,
+        )
+        return {"success": True, **result}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Supersede failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/extract/status")
+async def extract_status():
+    """Check extraction provider health and configuration."""
+    if extract_provider is None:
+        return {"enabled": False}
+    try:
+        healthy = extract_provider.health_check()
+        return {
+            "enabled": True,
+            "provider": extract_provider.provider_name,
+            "model": extract_provider.model,
+            "status": "healthy" if healthy else "unhealthy",
+        }
+    except Exception as e:
+        return {
+            "enabled": True,
+            "provider": extract_provider.provider_name,
+            "model": extract_provider.model,
+            "status": f"error: {e}",
+        }
 
 
 # -- Main ---------------------------------------------------------------------
