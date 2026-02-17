@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Memory Observatory</title>
+  <link rel="stylesheet" href="/ui/static/styles.css">
+</head>
+<body>
+  <div class="backdrop"></div>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">FAISS MEMORY</p>
+      <h1>Memory Observatory</h1>
+      <p class="subtitle">Browse, filter, and inspect stored memories without leaving the browser.</p>
+    </header>
+
+    <section class="panel controls">
+      <div class="control-row">
+        <label>
+          API key
+          <input id="apiKey" type="password" placeholder="Optional if auth is disabled">
+        </label>
+        <label>
+          Source filter
+          <input id="source" type="text" placeholder="e.g. bug-fixes">
+        </label>
+      </div>
+
+      <div class="control-row">
+        <label>
+          Page size
+          <select id="limit">
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+          </select>
+        </label>
+
+        <div class="buttons">
+          <button id="refresh" class="btn primary">Refresh</button>
+          <button id="prev" class="btn" disabled>Previous</button>
+          <button id="next" class="btn" disabled>Next</button>
+        </div>
+      </div>
+
+      <div id="status" class="status">Ready.</div>
+    </section>
+
+    <section class="panel summary">
+      <div class="metric">
+        <span class="metric-label">Visible</span>
+        <span id="visibleCount" class="metric-value">0</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Total</span>
+        <span id="totalCount" class="metric-value">0</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Offset</span>
+        <span id="offsetValue" class="metric-value">0</span>
+      </div>
+    </section>
+
+    <section id="memoryList" class="memory-grid"></section>
+  </main>
+
+  <template id="memoryCardTemplate">
+    <article class="memory-card">
+      <div class="card-head">
+        <span class="memory-id"></span>
+        <span class="memory-source"></span>
+      </div>
+      <p class="memory-text"></p>
+    </article>
+  </template>
+
+  <script src="/ui/static/app.js" defer></script>
+</body>
+</html>

@@ -20,6 +20,8 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from memory_engine import MemoryEngine
@@ -56,6 +58,8 @@ DATA_DIR = os.getenv("DATA_DIR", "/data")
 WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/workspace")
 API_KEY = os.getenv("API_KEY", "")  # Empty = no auth (local-only)
 PORT = int(os.getenv("PORT", "8000"))
+BASE_DIR = Path(__file__).resolve().parent
+UI_DIR = BASE_DIR / "webui"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -112,11 +116,12 @@ memory_trend: deque[Dict[str, Any]] = deque(maxlen=METRICS_TREND_SAMPLES)
 # -- Auth ---------------------------------------------------------------------
 
 async def verify_api_key(request: Request):
-    """Check X-API-Key header if API_KEY is configured. Skips /health for Docker healthchecks."""
+    """Check X-API-Key header if API_KEY is configured."""
     if not API_KEY:
         return  # No auth configured
-    if request.url.path == "/health":
-        return  # Allow unauthenticated health checks
+    path = request.url.path
+    if path == "/health" or path.startswith("/ui"):
+        return  # Allow unauthenticated health checks + UI shell/static files
     key = request.headers.get("X-API-Key", "")
     if key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
@@ -330,6 +335,9 @@ app = FastAPI(
     dependencies=[Depends(verify_api_key)],
 )
 
+if UI_DIR.exists():
+    app.mount("/ui/static", StaticFiles(directory=str(UI_DIR)), name="ui-static")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -420,6 +428,15 @@ async def health():
     """Lightweight health check (no filesystem I/O)"""
     stats = memory.stats_light()
     return {"status": "ok", "service": "faiss-memory", "version": "2.0.0", **stats}
+
+
+@app.get("/ui", include_in_schema=False)
+async def ui():
+    """Serve the memory browser UI."""
+    index_path = UI_DIR / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="UI not found")
+    return FileResponse(index_path)
 
 
 @app.get("/stats")

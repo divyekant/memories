@@ -130,7 +130,7 @@ Integration docs:
 
 ### v1.1 (Next)
 
-- [ ] Web UI for browsing memories.
+- [x] Web UI for browsing memories.
 - [ ] Auto-rebuild on file changes (watch mode).
 - [x] Memory deduplication tool (`/memory/deduplicate`) is implemented.
 - [ ] Export formats (JSON, Markdown, CSV).

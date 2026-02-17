@@ -28,7 +28,7 @@ curl -X POST http://localhost:8900/search \
   -d '{"query": "TypeScript config", "k": 3, "hybrid": true}'
 ```
 
-The service runs at **http://localhost:8900**. API docs at http://localhost:8900/docs.
+The service runs at **http://localhost:8900**. API docs at http://localhost:8900/docs. Memory browser UI at http://localhost:8900/ui.
 
 ---
 
@@ -807,9 +807,13 @@ memories/
     backup.sh             # Cron backup (local snapshots)
     backup-gdrive.sh      # Optional Google Drive upload
     install-cron.sh       # Cron job installer
+  webui/
+    index.html            # Memory browser entry page (/ui)
+    styles.css            # UI styling
+    app.js                # Browser-side pagination/filter logic
   integrations/
     claude-code/
-      install.sh          # Interactive installer for hooks
+      install.sh          # Auto-detect installer (Claude/Codex/OpenClaw)
       hooks/              # 5 hook scripts + hooks.json
     claude-code.md        # Claude Code guide
     openclaw-skill.md     # OpenClaw SKILL.md
@@ -819,6 +823,7 @@ memories/
     test_llm_provider.py  # LLM provider tests
     test_llm_extract.py   # Extraction pipeline tests
     test_extract_api.py   # API endpoint tests
+    test_web_ui.py        # Web UI route/static tests
   data/                   # .gitignored — persistent index + backups
 ```
 
