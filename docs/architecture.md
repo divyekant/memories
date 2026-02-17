@@ -1,4 +1,4 @@
-# FAISS Memory Architecture
+# Memories Architecture
 
 This document describes the runtime architecture of `memories` and the reasoning behind the main component boundaries.
 
@@ -6,14 +6,14 @@ This document describes the runtime architecture of `memories` and the reasoning
 
 ## 1) System Overview
 
-FAISS Memory is a local-first semantic memory service for AI assistants. It exposes:
+Memories is a local-first semantic memory service for AI assistants. It exposes:
 
 - HTTP API (`app.py`) for direct integration
 - MCP wrapper (`mcp-server/index.js`) for MCP-capable clients
 
 Core storage and retrieval are handled by `MemoryEngine` (`memory_engine.py`) using:
 
-- vector similarity search (FAISS `IndexFlatIP`)
+- vector similarity search (Memories `IndexFlatIP`)
 - lexical ranking (BM25)
 - reciprocal-rank fusion (RRF) for hybrid search
 
@@ -23,7 +23,7 @@ Core storage and retrieval are handled by `MemoryEngine` (`memory_engine.py`) us
 Client (HTTP or MCP)
   -> FastAPI API (app.py)
   -> MemoryEngine (memory_engine.py)
-  -> ONNX Embedder (onnx_embedder.py) + FAISS + BM25
+  -> ONNX Embedder (onnx_embedder.py) + Memories + BM25
   -> Persistent files (/data/index.faiss, /data/metadata.json, /data/backups)
 ```
 
@@ -39,7 +39,7 @@ Client (HTTP or MCP)
 
 ### `memory_engine.py` (stateful core)
 
-- In-memory FAISS index and metadata lifecycle
+- In-memory Memories index and metadata lifecycle
 - CRUD operations and index rebuilds
 - Hybrid search (vector + BM25)
 - Backup/restore and optional cloud sync hooks
@@ -83,7 +83,7 @@ This prioritizes recoverability and correctness over maximal write throughput.
 ### Search (`POST /search`)
 
 1. Embed query via ONNX model
-2. Vector search over FAISS index
+2. Vector search over Memories index
 3. Optional BM25 rank over tokenized corpus
 4. Fuse with RRF and return top-k results
 

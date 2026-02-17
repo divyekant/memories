@@ -1,15 +1,15 @@
 services:
-  faiss-memory:
+  memories:
     build:
       context: .
-      target: ${FAISS_IMAGE_TARGET:-core}
+      target: ${MEMORIES_IMAGE_TARGET:-core}
       args:
         ENABLE_CLOUD_SYNC: ${ENABLE_CLOUD_SYNC:-false}
         PRELOAD_MODEL: ${PRELOAD_MODEL:-false}
-    image: faiss-memory:${FAISS_IMAGE_TARGET:-core}
-    container_name: faiss-memory
+    image: memories:${MEMORIES_IMAGE_TARGET:-core}
+    container_name: memories
     restart: unless-stopped
-    mem_limit: ${FAISS_MEM_LIMIT:-3g}
+    mem_limit: ${MEMORIES_MEM_LIMIT:-3g}
     ports:
       - "8900:8000"
     volumes:
@@ -40,9 +40,9 @@ services:
       # - MEMORY_TRIM_PERIODIC_SEC=5
       # Cloud Sync (optional - uncomment to enable)
       # - CLOUD_SYNC_ENABLED=true
-      # - CLOUD_SYNC_BUCKET=my-faiss-memory
+      # - CLOUD_SYNC_BUCKET=my-memories
       # - CLOUD_SYNC_REGION=us-east-1
-      # - CLOUD_SYNC_PREFIX=faiss-memory/
+      # - CLOUD_SYNC_PREFIX=memories/
       # - CLOUD_SYNC_ACCESS_KEY=AKIA...
       # - CLOUD_SYNC_SECRET_KEY=...
       # - CLOUD_SYNC_ENDPOINT=  # Optional: for MinIO, B2, etc.

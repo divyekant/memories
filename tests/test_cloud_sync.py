@@ -70,7 +70,7 @@ class TestCloudSyncInit(unittest.TestCase):
         }
         with patch.dict(os.environ, env, clear=True):
             sync = CloudSync.from_env()
-            self.assertEqual(sync.prefix, "faiss-memory/")
+            self.assertEqual(sync.prefix, "memories/")
 
 
 class TestCloudSyncOperations(unittest.TestCase):

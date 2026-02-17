@@ -10,7 +10,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-logger = logging.getLogger("faiss-memory.runtime")
+logger = logging.getLogger("memories.runtime")
 
 
 def _load_malloc_trim() -> Optional[Callable[[int], int]]:

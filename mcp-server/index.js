@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * FAISS Memory MCP Server
+ * Memories MCP Server
  *
- * Exposes the FAISS memory service (localhost:8900) as MCP tools
+ * Exposes the Memories service (localhost:8900) as MCP tools
  * for Claude Code, Claude Desktop, Codex, and any MCP client.
  */
 
@@ -11,13 +11,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const FAISS_URL = process.env.FAISS_URL || "http://localhost:8900";
-const API_KEY = process.env.FAISS_API_KEY || "";
+const MEMORIES_URL = process.env.MEMORIES_URL || "http://localhost:8900";
+const API_KEY = process.env.MEMORIES_API_KEY || "";
 
 // -- HTTP helper -------------------------------------------------------------
 
-async function faissRequest(path, options = {}) {
-  const url = `${FAISS_URL}${path}`;
+async function memoriesRequest(path, options = {}) {
+  const url = `${MEMORIES_URL}${path}`;
   const headers = { "Content-Type": "application/json" };
   if (API_KEY) headers["X-API-Key"] = API_KEY;
 
@@ -25,7 +25,7 @@ async function faissRequest(path, options = {}) {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`FAISS API error ${response.status}: ${body}`);
+    throw new Error(`Memories API error ${response.status}: ${body}`);
   }
 
   return response.json();
@@ -34,7 +34,7 @@ async function faissRequest(path, options = {}) {
 // -- Server ------------------------------------------------------------------
 
 const server = new McpServer({
-  name: "faiss-memory",
+  name: "memories",
   version: "2.0.0",
 });
 
@@ -53,7 +53,7 @@ server.tool(
     const body = { query, k, hybrid };
     if (threshold !== undefined) body.threshold = threshold;
 
-    const data = await faissRequest("/search", {
+    const data = await memoriesRequest("/search", {
       method: "POST",
       body: JSON.stringify(body),
     });
@@ -86,7 +86,7 @@ server.tool(
     deduplicate: z.boolean().default(true).describe("Skip if a very similar memory already exists"),
   },
   async ({ text, source, deduplicate = true }) => {
-    const data = await faissRequest("/memory/add", {
+    const data = await memoriesRequest("/memory/add", {
       method: "POST",
       body: JSON.stringify({ text, source, deduplicate }),
     });
@@ -109,7 +109,7 @@ server.tool(
     id: z.number().int().min(0).describe("Memory ID to delete"),
   },
   async ({ id }) => {
-    const data = await faissRequest(`/memory/${id}`, { method: "DELETE" });
+    const data = await memoriesRequest(`/memory/${id}`, { method: "DELETE" });
     return {
       content: [{
         type: "text",
@@ -131,7 +131,7 @@ server.tool(
     let url = `/memories?offset=${offset}&limit=${limit}`;
     if (source) url += `&source=${encodeURIComponent(source)}`;
 
-    const data = await faissRequest(url);
+    const data = await memoriesRequest(url);
 
     if (data.total === 0) {
       return { content: [{ type: "text", text: "No memories found." }] };
@@ -155,7 +155,7 @@ server.tool(
   "Get statistics about the memory index — total count, model, last updated.",
   {},
   async () => {
-    const data = await faissRequest("/stats");
+    const data = await memoriesRequest("/stats");
     return {
       content: [{
         type: "text",
@@ -180,7 +180,7 @@ server.tool(
     threshold: z.number().min(0).max(1).default(0.88).describe("Similarity threshold (higher = stricter)"),
   },
   async ({ text, threshold = 0.88 }) => {
-    const data = await faissRequest("/memory/is-novel", {
+    const data = await memoriesRequest("/memory/is-novel", {
       method: "POST",
       body: JSON.stringify({ text, threshold }),
     });

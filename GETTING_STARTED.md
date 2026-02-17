@@ -1,6 +1,6 @@
 # Getting Started
 
-This is the fastest path to a working FAISS Memory setup with optional automatic extraction.
+This is the fastest path to a working Memories setup with optional automatic extraction.
 
 ## 1) Start the service
 
@@ -22,7 +22,7 @@ If `/ui` shows 404, rebuild to pick up current web assets:
 
 ```bash
 docker compose down
-docker compose up -d --build faiss-memory
+docker compose up -d --build memories
 ```
 
 ## 3) Choose your memory mode

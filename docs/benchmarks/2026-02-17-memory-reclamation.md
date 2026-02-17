@@ -5,7 +5,7 @@ Goal: verify that memory usage trends down after extraction bursts instead of st
 
 ## Setup
 
-- Image: `faiss-memory:codex-memtrim`
+- Image: `memories:codex-memtrim`
 - Two containers, same code, only one config difference:
   - `faiss-mem-notrim`: `MEMORY_TRIM_ENABLED=false`
   - `faiss-mem-trim`: `MEMORY_TRIM_ENABLED=true` + `MEMORY_TRIM_COOLDOWN_SEC=1`

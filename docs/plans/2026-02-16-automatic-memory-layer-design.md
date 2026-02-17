@@ -6,7 +6,7 @@
 
 ## Problem
 
-FAISS Memory works, but relies on the AI agent choosing to call `memory_search` and `memory_add`. In practice, agents frequently skip these calls — they forget to search for context at session start, they don't store decisions made during conversation, and they never update stale memories.
+Memories works, but relies on the AI agent choosing to call `memory_search` and `memory_add`. In practice, agents frequently skip these calls — they forget to search for context at session start, they don't store decisions made during conversation, and they never update stale memories.
 
 Mem0 and Supermemory solve this by making memory **automatic**: retrieve on every prompt, extract and store after every response. We can achieve the same using Claude Code's hooks system, Codex's compatible hooks, and OpenClaw's skill system — no new dependencies, no cloud services beyond what the user already has.
 
@@ -15,7 +15,7 @@ Mem0 and Supermemory solve this by making memory **automatic**: retrieve on ever
 1. **Automatic retrieval** — inject relevant memories into every prompt without the agent deciding to search
 2. **Automatic extraction** — extract facts from every conversation turn without the agent deciding to store
 3. **AUDN (Add/Update/Delete/Noop)** — when a new fact arrives, compare against existing memories and decide the right action (not just dedup by similarity)
-4. **Optional** — the entire feature is opt-in; the base FAISS service works exactly as before without it
+4. **Optional** — the entire feature is opt-in; the base Memories service works exactly as before without it
 5. **Multi-client** — works with Claude Code, Codex, and OpenClaw from day one
 6. **Configurable LLM provider** — Anthropic, OpenAI, or Ollama for extraction
 
@@ -51,7 +51,7 @@ Mem0 and Supermemory solve this by making memory **automatic**: retrieve on ever
          │                    ▲
          ▼                    │
 ┌─────────────────────────────────────────────────┐
-│         FAISS Memory Service (:8900)             │
+│         Memories Service (:8900)             │
 │                                                  │
 │  Existing:                                       │
 │    POST /search        (hybrid BM25+vector)      │
@@ -65,7 +65,7 @@ Mem0 and Supermemory solve this by making memory **automatic**: retrieve on ever
 │                                                  │
 │  Extraction Pipeline (inside /memory/extract):   │
 │    1. Call LLM → extract atomic facts            │
-│    2. Per fact: search FAISS for top-5 similar   │
+│    2. Per fact: search Memories for top-5 similar   │
 │    3. Call LLM → AUDN decision per fact          │
 │    4. Execute: add / update / delete / noop      │
 └─────────────────────────────────────────────────┘
@@ -112,7 +112,7 @@ Implemented as a new module `llm_extract.py`:
 1. **Fact extraction** — Single LLM call with extraction prompt. Input: conversation messages. Output: JSON array of atomic facts. The prompt focuses on: decisions made, preferences expressed, bugs found + fixes, architectural choices, tool/library selections.
 
 2. **AUDN cycle** — For each extracted fact:
-   a. Embed and search FAISS for top-5 similar existing memories
+   a. Embed and search Memories for top-5 similar existing memories
    b. Single LLM call with AUDN prompt: present the new fact + existing similar memories, ask the LLM to choose ADD / UPDATE / DELETE / NOOP
    c. Execute the chosen action
 
@@ -231,7 +231,7 @@ Five shell scripts in `integrations/claude-code/hooks/`:
 
 ```bash
 # Reads: cwd from stdin JSON
-# Searches FAISS for project-specific memories
+# Searches Memories for project-specific memories
 # Returns additionalContext with relevant memories
 PROJECT=$(basename "$CWD")
 RESULTS=$(curl -s POST /search with "project $PROJECT" query)
@@ -245,7 +245,7 @@ Token cost: ~500-1500 tokens, once per session.
 ```bash
 # Reads: prompt from stdin JSON
 # Skips prompts shorter than 20 chars
-# Searches FAISS for memories relevant to this prompt
+# Searches Memories for memories relevant to this prompt
 # Returns additionalContext
 ```
 
@@ -279,21 +279,21 @@ Same as extract with `"context": "session_end"`.
       "matcher": "startup|resume",
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-recall.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-recall.sh",
         "timeout": 3
       }]
     }],
     "UserPromptSubmit": [{
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-query.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-query.sh",
         "timeout": 2
       }]
     }],
     "Stop": [{
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-extract.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-extract.sh",
         "timeout": 30,
         "async": true
       }]
@@ -301,7 +301,7 @@ Same as extract with `"context": "session_end"`.
     "PreCompact": [{
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-flush.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-flush.sh",
         "timeout": 30,
         "async": true
       }]
@@ -309,7 +309,7 @@ Same as extract with `"context": "session_end"`.
     "SessionEnd": [{
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-commit.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-commit.sh",
         "timeout": 30,
         "async": true
       }]
@@ -325,10 +325,10 @@ Interactive installer:
 ```
 $ ./integrations/claude-code/install.sh
 
-FAISS Memory — Automatic Memory Layer Setup
+Memories — Automatic Memory Layer Setup
 ============================================
 
-[1/4] Checking FAISS service... ✓ (120 memories, healthy)
+[1/4] Checking Memories service... ✓ (120 memories, healthy)
 
 [2/4] Extraction provider (for automatic learning):
   1. Anthropic (recommended, ~$0.001/turn)
@@ -350,8 +350,8 @@ FAISS Memory — Automatic Memory Layer Setup
   ✓ After responses: extracts and stores new facts (Anthropic)
 
   Env vars added to ~/.zshrc:
-    FAISS_URL=http://localhost:8900
-    FAISS_API_KEY=your-api-key-here
+    MEMORIES_URL=http://localhost:8900
+    MEMORIES_API_KEY=your-api-key-here
     EXTRACT_PROVIDER=anthropic
     ANTHROPIC_API_KEY=sk-ant-...
 ```
@@ -374,9 +374,9 @@ The `--codex` flag writes to Codex's config location instead of Claude Code's.
 
 The existing `integrations/openclaw-skill.md` gets updated with:
 
-1. A `memory_extract_faiss` function that POSTs conversation text to `/memory/extract`
+1. A `memory_extract_memories` function that POSTs conversation text to `/memory/extract`
 2. Instructions in the skill to call this after completing significant tasks
-3. A `memory_recall_faiss` function called at task start to load project context
+3. A `memory_recall_memories` function called at task start to load project context
 
 OpenClaw doesn't have hooks, so extraction is agent-initiated (the skill instructs the agent when to call it). This is less automatic than hooks but better than nothing.
 

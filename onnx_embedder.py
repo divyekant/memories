@@ -12,7 +12,7 @@ from typing import List, Union
 from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer
 
-logger = logging.getLogger("faiss-memory")
+logger = logging.getLogger("memories")
 
 # Map of short names to HuggingFace repo IDs
 MODEL_MAP = {

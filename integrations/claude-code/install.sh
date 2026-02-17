@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh — installer for FAISS Memory automatic integrations
+# install.sh — installer for Memories automatic integrations
 # Usage: ./install.sh [--auto] [--claude] [--codex] [--openclaw] [--uninstall] [--dry-run]
 set -euo pipefail
 
@@ -25,7 +25,7 @@ DRY_RUN=false
 
 usage() {
   cat <<'EOF'
-FAISS Memory installer
+Memories installer
 
 Usage:
   ./integrations/claude-code/install.sh [options]
@@ -145,7 +145,7 @@ else
 fi
 
 echo ""
-echo -e "${BLUE}FAISS Memory — Automatic Memory Layer Setup${NC}"
+echo -e "${BLUE}Memories — Automatic Memory Layer Setup${NC}"
 echo -e "${BLUE}============================================${NC}"
 echo -e "Targets: ${GREEN}$TARGETS_CSV${NC}"
 echo ""
@@ -170,30 +170,30 @@ if [ "$UNINSTALL" = true ]; then
 
   if [ "$TARGET_CLAUDE" = true ]; then
     remove_target "Claude hooks" "$HOME/.claude/hooks/memory"
-    echo "  Manual cleanup: remove FAISS hook entries from $HOME/.claude/settings.json"
+    echo "  Manual cleanup: remove Memories hook entries from $HOME/.claude/settings.json"
   fi
 
   if [ "$TARGET_CODEX" = true ]; then
     remove_target "Codex hooks" "$HOME/.codex/hooks/memory"
-    echo "  Manual cleanup: remove FAISS hook entries from $HOME/.codex/settings.json"
+    echo "  Manual cleanup: remove Memories hook entries from $HOME/.codex/settings.json"
   fi
 
   if [ "$TARGET_OPENCLAW" = true ]; then
-    remove_target "OpenClaw skill" "$HOME/.openclaw/skills/faiss-memory"
+    remove_target "OpenClaw skill" "$HOME/.openclaw/skills/memories"
   fi
 
   echo ""
-  echo "Manual cleanup (optional): remove FAISS_* and EXTRACT_* vars from $SHELL_PROFILE"
+  echo "Manual cleanup (optional): remove MEMORIES_* and EXTRACT_* vars from $SHELL_PROFILE"
   exit 0
 fi
 
-FAISS_URL="${FAISS_URL:-http://localhost:8900}"
+MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 
-echo -e "[1/4] Checking FAISS service at ${BLUE}$FAISS_URL${NC}..."
-HEALTH=$(curl -sf "$FAISS_URL/health" 2>/dev/null || echo "FAIL")
+echo -e "[1/4] Checking Memories service at ${BLUE}$MEMORIES_URL${NC}..."
+HEALTH=$(curl -sf "$MEMORIES_URL/health" 2>/dev/null || echo "FAIL")
 if [ "$HEALTH" = "FAIL" ]; then
-  echo -e "  ${RED}[FAIL]${NC} FAISS service not reachable at $FAISS_URL"
-  echo "  Start it with: docker compose up -d faiss-memory"
+  echo -e "  ${RED}[FAIL]${NC} Memories service not reachable at $MEMORIES_URL"
+  echo "  Start it with: docker compose up -d memories"
   exit 1
 fi
 TOTAL=$(echo "$HEALTH" | jq -r '.total_memories // 0')
@@ -307,7 +307,7 @@ install_hooks_target() {
 }
 
 install_openclaw_target() {
-  local skill_dir="$HOME/.openclaw/skills/faiss-memory"
+  local skill_dir="$HOME/.openclaw/skills/memories"
   mkdir -p "$skill_dir"
   cp "$OPENCLAW_SKILL_SRC" "$skill_dir/SKILL.md"
   echo -e "  ${GREEN}[OK]${NC} Installed OpenClaw skill: $skill_dir/SKILL.md"
@@ -339,11 +339,11 @@ add_env_if_missing() {
   fi
 }
 
-add_env_if_missing "FAISS_URL" "$FAISS_URL"
+add_env_if_missing "MEMORIES_URL" "$MEMORIES_URL"
 
-FAISS_API_KEY="${FAISS_API_KEY:-}"
-if [ -n "$FAISS_API_KEY" ]; then
-  add_env_if_missing "FAISS_API_KEY" "$FAISS_API_KEY"
+MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
+if [ -n "$MEMORIES_API_KEY" ]; then
+  add_env_if_missing "MEMORIES_API_KEY" "$MEMORIES_API_KEY"
 fi
 
 if [ -n "$EXTRACT_PROVIDER" ]; then

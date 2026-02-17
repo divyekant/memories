@@ -1,6 +1,6 @@
 """
-FAISS Memory API Service
-FastAPI wrapper for FAISS memory engine with auth, hybrid search,
+Memories API Service
+FastAPI wrapper for the Memories engine with auth, hybrid search,
 CRUD operations, and structured logging.
 """
 
@@ -33,7 +33,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("faiss-memory")
+logger = logging.getLogger("memories")
 
 # Optional extraction support
 try:
@@ -384,7 +384,7 @@ async def _periodic_memory_trim() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global memory
-    logger.info("Starting FAISS Memory service...")
+    logger.info("Starting Memories service...")
     memory = MemoryEngine(data_dir=DATA_DIR)
     logger.info(
         "Loaded %d memories (%s model, %d dims)",
@@ -416,7 +416,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="FAISS Memory API",
+    title="Memories API",
     version="2.0.0",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
@@ -514,7 +514,7 @@ class SupersedeRequest(BaseModel):
 async def health():
     """Lightweight health check (no filesystem I/O)"""
     stats = memory.stats_light()
-    return {"status": "ok", "service": "faiss-memory", "version": "2.0.0", **stats}
+    return {"status": "ok", "service": "memories", "version": "2.0.0", **stats}
 
 
 @app.get("/ui", include_in_schema=False)

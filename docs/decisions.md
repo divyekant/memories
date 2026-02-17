@@ -1,6 +1,6 @@
 # Engineering Decisions and Tradeoffs
 
-This document captures key architecture decisions for FAISS Memory and the tradeoffs behind each one.
+This document captures key architecture decisions for Memories and the tradeoffs behind each one.
 
 ---
 
@@ -16,7 +16,7 @@ This document captures key architecture decisions for FAISS Memory and the trade
   - custom embedder wrapper adds maintenance surface
   - less out-of-the-box flexibility than full PyTorch stack
 
-## D2: Use FAISS `IndexFlatIP` for Vector Search
+## D2: Use Memories `IndexFlatIP` for Vector Search
 
 - Status: accepted
 - Decision: use exact inner-product search with normalized embeddings.
@@ -40,7 +40,7 @@ This document captures key architecture decisions for FAISS Memory and the trade
   - extra compute and index maintenance (BM25 rebuilds on writes)
   - introduces fusion parameters to tune
 
-## D4: Keep Metadata in JSON Alongside FAISS Index
+## D4: Keep Metadata in JSON Alongside Memories Index
 
 - Status: accepted
 - Decision: persist metadata in `metadata.json` and vectors in `index.faiss`.

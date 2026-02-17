@@ -29,6 +29,7 @@ def test_metrics_includes_latency_error_queue_and_memory_sections(client):
     # Successful request
     health_response = test_client.get("/health")
     assert health_response.status_code == 200
+    assert health_response.json()["service"] == "memories"
 
     # Error request (validation failure)
     bad_search = test_client.post(

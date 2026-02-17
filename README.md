@@ -1,4 +1,4 @@
-# FAISS Memory
+# Memories
 
 Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector search.
 
@@ -47,14 +47,14 @@ AI Client (Claude, Codex, ChatGPT, OpenClaw)
 MCP Server (mcp-server/index.js)
     |
     v
-FAISS Memory Service (Docker :8900)
+Memories Service (Docker :8900)
     |-- FastAPI REST API
-    |-- Hybrid Search (FAISS vector + BM25 keyword, RRF fusion)
+    |-- Hybrid Search (Memories vector + BM25 keyword, RRF fusion)
     |-- Markdown-aware chunking
     |-- Auto-backups
     v
 Persistent Storage (data/)
-    |-- index.faiss (FAISS binary index)
+    |-- index.faiss (Memories binary index)
     |-- metadata.json (memory text + metadata)
     |-- backups/ (auto, keeps last 10)
 ```
@@ -85,12 +85,12 @@ npm install
 ```json
 {
   "mcpServers": {
-    "faiss-memory": {
+    "memories": {
       "command": "node",
       "args": ["/path/to/memories/mcp-server/index.js"],
       "env": {
-        "FAISS_URL": "http://localhost:8900",
-        "FAISS_API_KEY": "your-api-key-here"
+        "MEMORIES_URL": "http://localhost:8900",
+        "MEMORIES_API_KEY": "your-api-key-here"
       }
     }
   }
@@ -128,12 +128,12 @@ npm install
 ```json
 {
   "mcpServers": {
-    "faiss-memory": {
+    "memories": {
       "command": "node",
       "args": ["/path/to/memories/mcp-server/index.js"],
       "env": {
-        "FAISS_URL": "http://localhost:8900",
-        "FAISS_API_KEY": "your-api-key-here"
+        "MEMORIES_URL": "http://localhost:8900",
+        "MEMORIES_API_KEY": "your-api-key-here"
       }
     }
   }
@@ -150,7 +150,7 @@ Claude Chat on the web does not support MCP directly. Two options:
 
 **Option A: Remote MCP via Cloudflare Tunnel (recommended)**
 
-If you expose the FAISS service via a tunnel (e.g., `memory.yourdomain.com`), you can use Claude's remote MCP connector feature to connect to it. See the [Remote Access](#remote-access) section below.
+If you expose the Memories service via a tunnel (e.g., `memory.yourdomain.com`), you can use Claude's remote MCP connector feature to connect to it. See the [Remote Access](#remote-access) section below.
 
 **Option B: Manual curl in prompts**
 
@@ -185,12 +185,12 @@ npm install
 ```json
 {
   "mcpServers": {
-    "faiss-memory": {
+    "memories": {
       "command": "node",
       "args": ["/path/to/memories/mcp-server/index.js"],
       "env": {
-        "FAISS_URL": "http://localhost:8900",
-        "FAISS_API_KEY": "your-api-key-here"
+        "MEMORIES_URL": "http://localhost:8900",
+        "MEMORIES_API_KEY": "your-api-key-here"
       }
     }
   }
@@ -209,13 +209,13 @@ npm install
 
 ### ChatGPT (Custom GPT)
 
-ChatGPT uses **Custom Actions** (OpenAPI schema) rather than MCP. This requires exposing the FAISS service over the internet.
+ChatGPT uses **Custom Actions** (OpenAPI schema) rather than MCP. This requires exposing the Memories service over the internet.
 
-**Prerequisites:** FAISS service accessible via HTTPS (see [Remote Access](#remote-access)).
+**Prerequisites:** Memories service accessible via HTTPS (see [Remote Access](#remote-access)).
 
 **Setup:**
 
-1. Enable API key auth on the FAISS service (set `API_KEY` env var in docker-compose).
+1. Enable API key auth on the Memories service (set `API_KEY` env var in docker-compose).
 
 2. In ChatGPT, go to **Explore GPTs > Create a GPT > Configure > Actions**.
 
@@ -224,7 +224,7 @@ ChatGPT uses **Custom Actions** (OpenAPI schema) rather than MCP. This requires 
 ```yaml
 openapi: 3.0.0
 info:
-  title: FAISS Memory
+  title: Memories
   version: 2.0.0
   description: Semantic memory search and storage
 servers:
@@ -360,8 +360,8 @@ OpenClaw uses a **Skill** (SKILL.md) with shell helper functions that call the R
 1. Create the skill directory and copy the skill file:
 
 ```bash
-mkdir -p ~/.openclaw/skills/faiss-memory
-cp integrations/openclaw-skill.md ~/.openclaw/skills/faiss-memory/SKILL.md
+mkdir -p ~/.openclaw/skills/memories
+cp integrations/openclaw-skill.md ~/.openclaw/skills/memories/SKILL.md
 ```
 
 Or see the full SKILL.md in this repo at `integrations/openclaw-skill.md`.
@@ -369,35 +369,35 @@ Or see the full SKILL.md in this repo at `integrations/openclaw-skill.md`.
 2. Set the API key in your shell profile (`~/.zshrc` or `~/.bashrc`):
 
 ```bash
-export FAISS_API_KEY="your-api-key-here"
+export MEMORIES_API_KEY="your-api-key-here"
 ```
 
-The SKILL.md reads `$FAISS_API_KEY` from the environment — the key is never stored in the skill file itself.
+The SKILL.md reads `$MEMORIES_API_KEY` from the environment — the key is never stored in the skill file itself.
 
 **Key commands available to OpenClaw agents:**
 
 ```bash
-memory_search_faiss "query" [k] [threshold] [hybrid]
-memory_add_faiss "text" "source" [deduplicate]
+memory_search_memories "query" [k] [threshold] [hybrid]
+memory_add_memories "text" "source" [deduplicate]
 memory_is_novel "text" [threshold]
-memory_delete_faiss <id>
-memory_delete_source_faiss "pattern"
-memory_list_faiss [offset] [limit] [source]
+memory_delete_memories <id>
+memory_delete_source_memories "pattern"
+memory_list_memories [offset] [limit] [source]
 memory_rebuild_index
-memory_dedup_faiss [dry_run] [threshold]
+memory_dedup_memories [dry_run] [threshold]
 memory_stats
 memory_health
 memory_backup [prefix]
 memory_restore "backup_name"
 ```
 
-All functions use `jq` for safe JSON construction and read auth from `$FAISS_API_KEY` env var (no hardcoded secrets).
+All functions use `jq` for safe JSON construction and read auth from `$MEMORIES_API_KEY` env var (no hardcoded secrets).
 
 ---
 
 ## Remote Access
 
-To use FAISS Memory from anywhere (Claude Chat web, ChatGPT, mobile, other machines), expose it via a Cloudflare Tunnel or similar.
+To use Memories from anywhere (Claude Chat web, ChatGPT, mobile, other machines), expose it via a Cloudflare Tunnel or similar.
 
 ### Setup with Cloudflare Tunnel
 
@@ -408,7 +408,7 @@ environment:
   - API_KEY=your-secret-key-here
 ```
 
-Rebuild and restart: `docker compose build faiss-memory && docker compose up -d faiss-memory`
+Rebuild and restart: `docker compose build memories && docker compose up -d memories`
 
 2. **Add to your Cloudflare tunnel config** (e.g., in `~/.cloudflared/config.yml`):
 
@@ -423,8 +423,8 @@ ingress:
 ```json
 {
   "env": {
-    "FAISS_URL": "https://memory.yourdomain.com",
-    "FAISS_API_KEY": "your-secret-key-here"
+    "MEMORIES_URL": "https://memory.yourdomain.com",
+    "MEMORIES_API_KEY": "your-secret-key-here"
   }
 }
 ```
@@ -554,7 +554,7 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 ### Docker Compose guardrails
 
 Default compose files now include:
-- `mem_limit: ${FAISS_MEM_LIMIT:-3g}` to bound container memory growth
+- `mem_limit: ${MEMORIES_MEM_LIMIT:-3g}` to bound container memory growth
 - `MALLOC_ARENA_MAX=2` to reduce glibc arena fragmentation in multithreaded workloads
 - `MALLOC_TRIM_THRESHOLD_=131072` and `MALLOC_MMAP_THRESHOLD_=131072` to encourage earlier allocator release
 - extraction env passthrough (`EXTRACT_PROVIDER`, `EXTRACT_MODEL`, provider keys/URL) so deploys keep extraction enabled when set in shell or `.env`
@@ -563,8 +563,8 @@ Default compose files now include:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FAISS_URL` | `http://localhost:8900` | FAISS service URL |
-| `FAISS_API_KEY` | (empty) | API key if auth is enabled |
+| `MEMORIES_URL` | `http://localhost:8900` | Memories service URL |
+| `MEMORIES_API_KEY` | (empty) | API key if auth is enabled |
 
 ---
 
@@ -592,7 +592,7 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 This detects and configures any available targets on your machine:
 - Claude Code hooks (`~/.claude/settings.json`)
 - Codex hooks (`~/.codex/settings.json`)
-- OpenClaw skill (`~/.openclaw/skills/faiss-memory/SKILL.md`)
+- OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
 
 **Target only Claude or Codex:**
 ```bash
@@ -662,18 +662,18 @@ The Dockerfile publishes two runtime targets:
 Build both images directly:
 
 ```bash
-docker build --target core -t faiss-memory:core .
-docker build --target extract -t faiss-memory:extract .
+docker build --target core -t memories:core .
+docker build --target extract -t memories:extract .
 ```
 
 Use compose with either target:
 
 ```bash
 # Default (core target)
-docker compose up -d --build faiss-memory
+docker compose up -d --build memories
 
 # Extraction-ready target
-FAISS_IMAGE_TARGET=extract docker compose up -d --build faiss-memory
+MEMORIES_IMAGE_TARGET=extract docker compose up -d --build memories
 ```
 
 By default, images do **not** bake model weights. On first run, the service downloads them into
@@ -682,8 +682,8 @@ By default, images do **not** bake model weights. On first run, the service down
 If you want a fully preloaded image (faster first boot, larger pull), set `PRELOAD_MODEL=true`:
 
 ```bash
-docker build --target core --build-arg PRELOAD_MODEL=true -t faiss-memory:core .
-docker build --target extract --build-arg PRELOAD_MODEL=true -t faiss-memory:extract .
+docker build --target core --build-arg PRELOAD_MODEL=true -t memories:core .
+docker build --target extract --build-arg PRELOAD_MODEL=true -t memories:extract .
 ```
 
 Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough for Ollama extraction.
@@ -727,7 +727,7 @@ Reference benchmark: `docs/benchmarks/2026-02-17-memory-reclamation.md`
 
 ## Backup & Recovery
 
-FAISS Memory has three layers of backup protection:
+Memories has three layers of backup protection:
 
 ### 1. Auto-backup (built-in)
 
@@ -735,20 +735,20 @@ The service automatically saves a snapshot after every write operation. The 10 m
 
 ```bash
 # List backups
-curl -H "X-API-Key: $FAISS_API_KEY" http://localhost:8900/backups
+curl -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/backups
 
 # Create manual backup
-curl -X POST -H "X-API-Key: $FAISS_API_KEY" http://localhost:8900/backup?prefix=manual
+curl -X POST -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/backup?prefix=manual
 
 # Restore from backup
-curl -X POST -H "X-API-Key: $FAISS_API_KEY" http://localhost:8900/restore \
+curl -X POST -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/restore \
   -H "Content-Type: application/json" \
   -d '{"backup_name": "manual_20260214_120000"}'
 ```
 
 ### 2. Scheduled local snapshots (cron)
 
-A cron job creates timestamped copies of the FAISS index every 30 minutes. Snapshots are stored outside the Docker volume (default: `~/backups/faiss-memory/`) with 30-day retention.
+A cron job creates timestamped copies of the Memories index every 30 minutes. Snapshots are stored outside the Docker volume (default: `~/backups/memories/`) with 30-day retention.
 
 ```bash
 # Install the cron job
@@ -768,10 +768,10 @@ A cron job creates timestamped copies of the FAISS index every 30 minutes. Snaps
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FAISS_URL` | `http://localhost:8900` | Service URL |
-| `FAISS_API_KEY` | (empty) | API key if auth is enabled |
-| `FAISS_DATA_DIR` | `./data` (relative to repo) | Docker volume data path |
-| `BACKUP_DIR` | `~/backups/faiss-memory` | Where to store snapshots |
+| `MEMORIES_URL` | `http://localhost:8900` | Service URL |
+| `MEMORIES_API_KEY` | (empty) | API key if auth is enabled |
+| `MEMORIES_DATA_DIR` | `./data` (relative to repo) | Docker volume data path |
+| `BACKUP_DIR` | `~/backups/memories` | Where to store snapshots |
 | `RETENTION_DAYS` | `30` | Days to keep local snapshots |
 
 ### 3. Off-site backup to Google Drive (optional)
@@ -793,7 +793,7 @@ export GDRIVE_ACCOUNT="your-email@gmail.com"
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GDRIVE_ACCOUNT` | (none) | Google account email. **Required to enable GDrive.** |
-| `GDRIVE_FOLDER_NAME` | `faiss-memory-backups` | Folder name on Drive |
+| `GDRIVE_FOLDER_NAME` | `memories-backups` | Folder name on Drive |
 | `UPLOAD_INTERVAL_MIN` | `55` | Minimum minutes between uploads |
 | `GDRIVE_RETENTION_DAYS` | `7` | Days to keep backups on Drive |
 
@@ -818,7 +818,7 @@ export GDRIVE_ACCOUNT="your-email@gmail.com"
 For S3/MinIO/R2 backends, build with cloud sync enabled:
 
 ```bash
-ENABLE_CLOUD_SYNC=true docker compose up -d --build faiss-memory
+ENABLE_CLOUD_SYNC=true docker compose up -d --build memories
 ```
 
 See [CLOUD_SYNC_README.md](CLOUD_SYNC_README.md) for configuration details.
@@ -830,7 +830,7 @@ See [CLOUD_SYNC_README.md](CLOUD_SYNC_README.md) for configuration details.
 ```
 memories/
   app.py                  # FastAPI REST API
-  memory_engine.py        # FAISS engine (search, chunking, BM25, backups)
+  memory_engine.py        # Memories engine (search, chunking, BM25, backups)
   onnx_embedder.py        # ONNX Runtime embedder (replaces PyTorch)
   llm_provider.py         # LLM provider abstraction (Anthropic/OpenAI/Ollama)
   llm_extract.py          # Extraction pipeline with AUDN

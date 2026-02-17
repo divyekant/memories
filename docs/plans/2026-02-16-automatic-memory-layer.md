@@ -2,7 +2,7 @@
 
 > Implementation plan for the automatic memory layer feature. See the [design doc](./2026-02-16-automatic-memory-layer-design.md) for architecture rationale.
 
-**Goal:** Add automatic memory retrieval and extraction to FAISS Memory so Claude Code, Codex, and OpenClaw inject/store memories without the agent choosing to.
+**Goal:** Add automatic memory retrieval and extraction to Memories so Claude Code, Codex, and OpenClaw inject/store memories without the agent choosing to.
 
 **Architecture:** Server-side LLM extraction pipeline (Anthropic/OpenAI/Ollama) behind `POST /memory/extract`. Client hooks (5 shell scripts) fire on SessionStart, UserPromptSubmit, Stop, PreCompact, SessionEnd. Extraction is opt-in via `EXTRACT_PROVIDER` env var.
 
@@ -1334,7 +1334,7 @@ COPY llm_extract.py .
 
 **Step 25: Verify Docker build succeeds**
 
-Run: `cd /path/to/memories &&docker compose build faiss-memory`
+Run: `cd /path/to/memories &&docker compose build memories`
 Expected: Build succeeds. Image size should be similar to before (~650MB) since extraction deps not included by default.
 
 **Step 26: Commit**
@@ -1362,8 +1362,8 @@ git commit -m "feat: add optional extraction deps and Dockerfile build arg"
 
 set -euo pipefail
 
-FAISS_URL="${FAISS_URL:-http://localhost:8900}"
-FAISS_API_KEY="${FAISS_API_KEY:-}"
+MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
+MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 INPUT=$(cat)
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
@@ -1373,9 +1373,9 @@ fi
 
 PROJECT=$(basename "$CWD")
 
-RESULTS=$(curl -sf -X POST "$FAISS_URL/search" \
+RESULTS=$(curl -sf -X POST "$MEMORIES_URL/search" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $FAISS_API_KEY" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
   -d "{\"query\": \"project $PROJECT conventions decisions patterns\", \"k\": 10, \"hybrid\": true}" \
   2>/dev/null \
   | jq -r '[.results[] | select(.similarity > 0.3)] | .[0:8] | map("- \(.text)") | join("\n")' 2>/dev/null) || true
@@ -1397,13 +1397,13 @@ jq -n --arg memories "$RESULTS" '{
 ```bash
 #!/bin/bash
 # memory-query.sh — UserPromptSubmit hook
-# Searches FAISS for memories relevant to the current prompt.
+# Searches Memories for memories relevant to the current prompt.
 # Sync hook: blocks until done, injects additionalContext.
 
 set -euo pipefail
 
-FAISS_URL="${FAISS_URL:-http://localhost:8900}"
-FAISS_API_KEY="${FAISS_API_KEY:-}"
+MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
+MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 INPUT=$(cat)
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
@@ -1413,9 +1413,9 @@ if [ ${#PROMPT} -lt 20 ]; then
   exit 0
 fi
 
-RESULTS=$(curl -sf -X POST "$FAISS_URL/search" \
+RESULTS=$(curl -sf -X POST "$MEMORIES_URL/search" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $FAISS_API_KEY" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
   -d "{\"query\": $(echo "$PROMPT" | jq -Rs), \"k\": 5, \"hybrid\": true, \"threshold\": 0.4}" \
   2>/dev/null \
   | jq -r '[.results[] | select(.similarity > 0.4)] | .[0:5] | map("- [\(.source)] \(.text)") | join("\n")' 2>/dev/null) || true
@@ -1456,12 +1456,12 @@ git commit -m "feat: add retrieval hooks (memory-recall, memory-query)"
 #!/bin/bash
 # memory-extract.sh — Stop hook (async)
 # Extracts facts from the last exchange and stores via AUDN pipeline.
-# Requires FAISS service with extraction enabled (EXTRACT_PROVIDER set).
+# Requires Memories service with extraction enabled (EXTRACT_PROVIDER set).
 
 set -euo pipefail
 
-FAISS_URL="${FAISS_URL:-http://localhost:8900}"
-FAISS_API_KEY="${FAISS_API_KEY:-}"
+MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
+MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 INPUT=$(cat)
 STOP_REASON=$(echo "$INPUT" | jq -r '.stop_reason // "end_turn"')
@@ -1480,9 +1480,9 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
 PROJECT=$(basename "$CWD")
 
 # POST to extraction endpoint (fire-and-forget, async hook)
-curl -sf -X POST "$FAISS_URL/memory/extract" \
+curl -sf -X POST "$MEMORIES_URL/memory/extract" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $FAISS_API_KEY" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
   -d "{\"messages\": $(echo "$MESSAGES" | jq -Rs), \"source\": \"claude-code/$PROJECT\", \"context\": \"stop\"}" \
   > /dev/null 2>&1 || true
 ```
@@ -1497,8 +1497,8 @@ curl -sf -X POST "$FAISS_URL/memory/extract" \
 
 set -euo pipefail
 
-FAISS_URL="${FAISS_URL:-http://localhost:8900}"
-FAISS_API_KEY="${FAISS_API_KEY:-}"
+MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
+MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 INPUT=$(cat)
 MESSAGES=$(echo "$INPUT" | jq -r '.messages // empty')
@@ -1509,9 +1509,9 @@ fi
 CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
 PROJECT=$(basename "$CWD")
 
-curl -sf -X POST "$FAISS_URL/memory/extract" \
+curl -sf -X POST "$MEMORIES_URL/memory/extract" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $FAISS_API_KEY" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
   -d "{\"messages\": $(echo "$MESSAGES" | jq -Rs), \"source\": \"claude-code/$PROJECT\", \"context\": \"pre_compact\"}" \
   > /dev/null 2>&1 || true
 ```
@@ -1525,8 +1525,8 @@ curl -sf -X POST "$FAISS_URL/memory/extract" \
 
 set -euo pipefail
 
-FAISS_URL="${FAISS_URL:-http://localhost:8900}"
-FAISS_API_KEY="${FAISS_API_KEY:-}"
+MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
+MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 INPUT=$(cat)
 MESSAGES=$(echo "$INPUT" | jq -r '.messages // empty')
@@ -1537,9 +1537,9 @@ fi
 CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
 PROJECT=$(basename "$CWD")
 
-curl -sf -X POST "$FAISS_URL/memory/extract" \
+curl -sf -X POST "$MEMORIES_URL/memory/extract" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $FAISS_API_KEY" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
   -d "{\"messages\": $(echo "$MESSAGES" | jq -Rs), \"source\": \"claude-code/$PROJECT\", \"context\": \"session_end\"}" \
   > /dev/null 2>&1 || true
 ```
@@ -1570,7 +1570,7 @@ git commit -m "feat: add extraction hooks (memory-extract, memory-flush, memory-
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-recall.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-recall.sh",
         "timeout": 5
       }]
     }],
@@ -1578,7 +1578,7 @@ git commit -m "feat: add extraction hooks (memory-extract, memory-flush, memory-
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-query.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-query.sh",
         "timeout": 3
       }]
     }],
@@ -1586,7 +1586,7 @@ git commit -m "feat: add extraction hooks (memory-extract, memory-flush, memory-
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-extract.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-extract.sh",
         "timeout": 30
       }]
     }],
@@ -1594,7 +1594,7 @@ git commit -m "feat: add extraction hooks (memory-extract, memory-flush, memory-
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-flush.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-flush.sh",
         "timeout": 30
       }]
     }],
@@ -1602,7 +1602,7 @@ git commit -m "feat: add extraction hooks (memory-extract, memory-flush, memory-
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-commit.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-commit.sh",
         "timeout": 30
       }]
     }]
@@ -1627,7 +1627,7 @@ git commit -m "feat: add hooks.json configuration for Claude Code/Codex"
 **Step 36: Write install.sh**
 
 Interactive installer that:
-1. Checks FAISS service health
+1. Checks Memories service health
 2. Prompts for extraction provider choice
 3. Validates API key / Ollama connectivity
 4. Copies hooks to `~/.claude/hooks/memory/`
@@ -1661,8 +1661,8 @@ git commit -m "feat: add interactive installer for Claude Code/Codex hooks"
 **Step 39: Add extraction functions to OpenClaw skill**
 
 Add two new functions to the skill:
-- `memory_recall_faiss`: called at task start, searches for project context
-- `memory_extract_faiss`: called after completing tasks, POSTs conversation to `/memory/extract`
+- `memory_recall_memories`: called at task start, searches for project context
+- `memory_extract_memories`: called after completing tasks, POSTs conversation to `/memory/extract`
 
 Add instructions in the skill telling the agent when to call these functions.
 
@@ -1743,22 +1743,22 @@ Expected: All tests PASS (31 existing + 2 supersede + 12 provider + 13 extract +
 
 **Step 46: Docker build test**
 
-Run: `cd /path/to/memories &&docker compose build faiss-memory`
+Run: `cd /path/to/memories &&docker compose build memories`
 Expected: Build succeeds, image size ~650MB (no extraction deps)
 
 **Step 47: Docker build with extraction**
 
-Run: `cd /path/to/memories &&docker compose build --build-arg ENABLE_EXTRACT=true faiss-memory`
+Run: `cd /path/to/memories &&docker compose build --build-arg ENABLE_EXTRACT=true memories`
 Expected: Build succeeds with anthropic + openai SDKs installed
 
 **Step 48: Start container and verify health**
 
-Run: `docker compose up -d faiss-memory && sleep 3 && curl -s http://localhost:8900/health`
+Run: `docker compose up -d memories && sleep 3 && curl -s http://localhost:8900/health`
 Expected: `{"status":"healthy",...}`
 
 **Step 49: Verify extract status endpoint**
 
-Run: `curl -s -H "X-API-Key: $FAISS_API_KEY" http://localhost:8900/extract/status`
+Run: `curl -s -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/extract/status`
 Expected: `{"enabled": false}` (since EXTRACT_PROVIDER not set in container)
 
 **Step 50: Push and update PR**

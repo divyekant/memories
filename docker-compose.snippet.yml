@@ -1,17 +1,17 @@
 # Add this to your existing ~/web/docker-compose.yml
 
 services:
-  faiss-memory:
+  memories:
     build:
       context: ../projects/memories
-      target: ${FAISS_IMAGE_TARGET:-core}
+      target: ${MEMORIES_IMAGE_TARGET:-core}
       args:
         ENABLE_CLOUD_SYNC: ${ENABLE_CLOUD_SYNC:-false}
         PRELOAD_MODEL: ${PRELOAD_MODEL:-false}
-    image: faiss-memory:${FAISS_IMAGE_TARGET:-core}
-    container_name: faiss-memory
+    image: memories:${MEMORIES_IMAGE_TARGET:-core}
+    container_name: memories
     restart: unless-stopped
-    mem_limit: ${FAISS_MEM_LIMIT:-3g}
+    mem_limit: ${MEMORIES_MEM_LIMIT:-3g}
     ports:
       - "8900:8000"
     volumes:

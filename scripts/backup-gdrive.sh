@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# FAISS Memory - Off-site Backup to Google Drive (Optional)
+# Memories - Off-site Backup to Google Drive (Optional)
 # Uploads the latest snapshot hourly and maintains 7-day retention
 #
 # Usage:
@@ -17,8 +17,8 @@
 #
 # Environment:
 #   GDRIVE_ACCOUNT       - Google account email (required)
-#   GDRIVE_FOLDER_NAME   - Drive folder name (default: faiss-memory-backups)
-#   BACKUP_DIR           - Local backup dir (default: ~/backups/faiss-memory)
+#   GDRIVE_FOLDER_NAME   - Drive folder name (default: memories-backups)
+#   BACKUP_DIR           - Local backup dir (default: ~/backups/memories)
 #   UPLOAD_INTERVAL_MIN  - Min minutes between uploads (default: 55)
 #   GDRIVE_RETENTION_DAYS - Days to keep on Drive (default: 7)
 #
@@ -32,10 +32,10 @@ export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 [ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" 2>/dev/null || true
 
 # Configuration (all overridable via env vars)
-BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/faiss-memory}"
+BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/memories}"
 LOG_FILE="$BACKUP_DIR/gdrive.log"
 GDRIVE_ACCOUNT="${GDRIVE_ACCOUNT}"
-GDRIVE_FOLDER_NAME="${GDRIVE_FOLDER_NAME:-faiss-memory-backups}"
+GDRIVE_FOLDER_NAME="${GDRIVE_FOLDER_NAME:-memories-backups}"
 FOLDER_ID_FILE="$BACKUP_DIR/.gdrive_folder_id"
 LAST_UPLOAD_FILE="$BACKUP_DIR/.gdrive_last_upload"
 UPLOAD_INTERVAL_MIN="${UPLOAD_INTERVAL_MIN:-55}"
@@ -270,7 +270,7 @@ for f in files:
 
 # Setup: create folder and test auth
 setup() {
-    log "INFO" "=== Setting up Google Drive backup for FAISS Memory ==="
+    log "INFO" "=== Setting up Google Drive backup for Memories ==="
 
     # Test auth
     if ! gog drive ls --account="$GDRIVE_ACCOUNT" --json --results-only 2>/dev/null | head -1 >/dev/null; then
@@ -317,7 +317,7 @@ main() {
     if upload_latest; then
         exit 0
     else
-        osascript -e "display notification \"FAISS Memory Google Drive backup failed! Check gdrive.log\" with title \"FAISS Memory Backup Alert\"" 2>/dev/null || true
+        osascript -e "display notification \"Memories Google Drive backup failed! Check gdrive.log\" with title \"Memories Backup Alert\"" 2>/dev/null || true
         exit 1
     fi
 }

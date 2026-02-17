@@ -1,4 +1,4 @@
-# PROJECT.md - FAISS Memory Maintainer Notes
+# PROJECT.md - Memories Maintainer Notes
 
 High-level maintainer-facing snapshot for the `memories` repository.
 
@@ -6,7 +6,7 @@ High-level maintainer-facing snapshot for the `memories` repository.
 
 ## What This Project Is
 
-FAISS Memory is a local-first memory service for AI assistants. It provides:
+Memories is a local-first memory service for AI assistants. It provides:
 
 - semantic and hybrid retrieval over stored memories
 - HTTP API for broad client compatibility
@@ -40,7 +40,7 @@ Persistent files under `DATA_DIR` (default `/data`):
 - `config.json`
 - `backups/` (rolling backups; controlled by `MAX_BACKUPS`)
 
-Key invariant: FAISS vector count must match metadata entry count.
+Key invariant: Memories vector count must match metadata entry count.
 
 ---
 
@@ -76,8 +76,8 @@ Memory controls:
 
 - Tests: `./.venv/bin/python -m pytest -q`
 - Local run: `./.venv/bin/python -m uvicorn app:app --reload`
-- Docker build (core): `docker build --target core -t faiss-memory:core .`
-- Docker build (extract): `docker build --target extract -t faiss-memory:extract .`
+- Docker build (core): `docker build --target core -t memories:core .`
+- Docker build (extract): `docker build --target extract -t memories:extract .`
 
 When changing memory/index behavior:
 
@@ -140,7 +140,7 @@ Integration docs:
 ### v1.2 (Future)
 
 - [ ] Multi-index support (different projects).
-- [x] Hybrid search (semantic + keyword) is implemented (FAISS + BM25 + RRF).
+- [x] Hybrid search (semantic + keyword) is implemented (Memories + BM25 + RRF).
 - [ ] Memory tagging system.
 - [ ] Search filters by source/date/type (source exists; date/type pending).
 - [ ] Scheduled index rebuilds via cron.

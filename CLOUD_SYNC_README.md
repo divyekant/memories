@@ -14,14 +14,14 @@ Cloud sync is **opt-in** to keep the Docker image lean (saves ~80MB).
 Build the image with cloud sync enabled:
 
 ```bash
-docker build --target core --build-arg ENABLE_CLOUD_SYNC=true -t faiss-memory:core .
-# or: docker build --target extract --build-arg ENABLE_CLOUD_SYNC=true -t faiss-memory:extract .
+docker build --target core --build-arg ENABLE_CLOUD_SYNC=true -t memories:core .
+# or: docker build --target extract --build-arg ENABLE_CLOUD_SYNC=true -t memories:extract .
 ```
 
 ### Option 2: Install Manually (if already running)
 
 ```bash
-docker exec faiss-memory pip install boto3==1.35.36
+docker exec memories pip install boto3==1.35.36
 ```
 
 ### Option 3: Local Development
@@ -35,7 +35,7 @@ pip install -r requirements-cloud.txt
 
 ## Overview
 
-Cloud Sync automatically backs up your FAISS memory index to S3-compatible cloud storage. This enables:
+Cloud Sync automatically backs up your Memories memory index to S3-compatible cloud storage. This enables:
 
 - **Cross-machine sync** - Use the same memories on multiple machines
 - **Disaster recovery** - Never lose your memories if a machine fails
@@ -52,7 +52,7 @@ Add these environment variables to your `docker-compose.yml`:
 ```yaml
 environment:
   - CLOUD_SYNC_ENABLED=true
-  - CLOUD_SYNC_BUCKET=my-faiss-memory
+  - CLOUD_SYNC_BUCKET=my-memories
   - CLOUD_SYNC_REGION=us-east-1
   - CLOUD_SYNC_ACCESS_KEY=AKIA...
   - CLOUD_SYNC_SECRET_KEY=...
@@ -82,7 +82,7 @@ curl http://localhost:8900/sync/status
 | `CLOUD_SYNC_ENABLED` | No | `false` | Enable cloud sync |
 | `CLOUD_SYNC_BUCKET` | Yes* | - | S3 bucket name |
 | `CLOUD_SYNC_REGION` | No | `us-east-1` | AWS region |
-| `CLOUD_SYNC_PREFIX` | No | `faiss-memory/` | Path prefix in bucket |
+| `CLOUD_SYNC_PREFIX` | No | `memories/` | Path prefix in bucket |
 | `CLOUD_SYNC_ACCESS_KEY` | No** | - | S3 access key |
 | `CLOUD_SYNC_SECRET_KEY` | No** | - | S3 secret key |
 | `CLOUD_SYNC_ENDPOINT` | No | - | Custom endpoint (for MinIO, B2, etc.) |
@@ -162,11 +162,11 @@ curl http://localhost:8900/sync/snapshots \
   "snapshots": [
     {
       "name": "manual_20260214_120000",
-      "s3_prefix": "faiss-memory/manual_20260214_120000/"
+      "s3_prefix": "memories/manual_20260214_120000/"
     },
     {
       "name": "auto_20260213_020000",
-      "s3_prefix": "faiss-memory/auto_20260213_020000/"
+      "s3_prefix": "memories/auto_20260213_020000/"
     }
   ],
   "count": 2
@@ -218,7 +218,7 @@ environment:
 
 **Create bucket:**
 ```bash
-aws s3 mb s3://my-faiss-memory --region us-east-1
+aws s3 mb s3://my-memories --region us-east-1
 ```
 
 ---
@@ -242,7 +242,7 @@ environment:
 ```yaml
 environment:
   - CLOUD_SYNC_ENABLED=true
-  - CLOUD_SYNC_BUCKET=faiss-memory
+  - CLOUD_SYNC_BUCKET=memories
   - CLOUD_SYNC_REGION=us-east-1
   - CLOUD_SYNC_ENDPOINT=http://minio.local:9000
   - CLOUD_SYNC_ACCESS_KEY=minioadmin
@@ -281,8 +281,8 @@ environment:
            "s3:ListBucket"
          ],
          "Resource": [
-           "arn:aws:s3:::my-faiss-memory",
-           "arn:aws:s3:::my-faiss-memory/*"
+           "arn:aws:s3:::my-memories",
+           "arn:aws:s3:::my-memories/*"
          ]
        }
      ]
@@ -311,7 +311,7 @@ environment:
 **Solutions:**
 1. Check `CLOUD_SYNC_ENABLED=true` is set
 2. Verify `CLOUD_SYNC_BUCKET` is configured
-3. Check container logs: `docker compose logs faiss-memory`
+3. Check container logs: `docker compose logs memories`
 
 ---
 
@@ -322,7 +322,7 @@ environment:
 **Solutions:**
 1. Check credentials are correct
 2. Verify bucket exists: `aws s3 ls s3://my-bucket`
-3. Test connectivity: `docker compose exec faiss-memory ping s3.amazonaws.com`
+3. Test connectivity: `docker compose exec memories ping s3.amazonaws.com`
 4. Check IAM permissions
 
 ---

@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-FAISS_URL="${FAISS_URL:-http://localhost:8900}"
-FAISS_API_KEY="${FAISS_API_KEY:-}"
+MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
+MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 INPUT=$(cat)
 MESSAGES=$(echo "$INPUT" | jq -r '.messages // empty')
@@ -16,8 +16,8 @@ fi
 CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
 PROJECT=$(basename "$CWD")
 
-curl -sf -X POST "$FAISS_URL/memory/extract" \
+curl -sf -X POST "$MEMORIES_URL/memory/extract" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $FAISS_API_KEY" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
   -d "{\"messages\": $(echo "$MESSAGES" | jq -Rs), \"source\": \"claude-code/$PROJECT\", \"context\": \"session_end\"}" \
   > /dev/null 2>&1 || true

@@ -23,7 +23,7 @@ def populated_engine(engine):
             "JavaScript runs in the browser and on Node.js",
             "Docker containers package applications with their dependencies",
             "FastAPI is a modern Python web framework",
-            "FAISS is a library for efficient similarity search",
+            "Memories uses a library for efficient similarity search",
         ],
         sources=["lang.md", "lang.md", "devops.md", "python.md", "ml.md"],
     )
@@ -70,8 +70,8 @@ class TestHybridSearch:
 
     def test_bm25_exact_match_boost(self, populated_engine):
         """BM25 should boost exact keyword matches"""
-        results = populated_engine.hybrid_search("FAISS", k=3)
-        assert any("FAISS" in r["text"] for r in results)
+        results = populated_engine.hybrid_search("Memories", k=3)
+        assert any("Memories" in r["text"] for r in results)
 
 
 class TestDelete:

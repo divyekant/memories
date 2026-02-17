@@ -27,13 +27,13 @@
 ```yaml
 CLOUD_SYNC_ENABLED=true              # Enable cloud sync feature
 CLOUD_SYNC_PROVIDER=s3               # Always "s3" for Phase 1
-CLOUD_SYNC_BUCKET=my-faiss-memory    # S3 bucket name
+CLOUD_SYNC_BUCKET=my-memories    # S3 bucket name
 CLOUD_SYNC_ENDPOINT=                 # Optional: custom endpoint (for MinIO, B2, etc.)
 CLOUD_SYNC_REGION=us-east-1          # AWS region
 CLOUD_SYNC_ACCESS_KEY=AKIA...        # S3 access key
 CLOUD_SYNC_SECRET_KEY=...            # S3 secret key
 CLOUD_SYNC_SCHEDULE=0 2 * * *        # Cron format (default: 2am daily)
-CLOUD_SYNC_PREFIX=faiss-memory/      # Optional: prefix path in bucket
+CLOUD_SYNC_PREFIX=memories/      # Optional: prefix path in bucket
 ```
 
 ---

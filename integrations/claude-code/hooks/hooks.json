@@ -4,7 +4,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-recall.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-recall.sh",
         "timeout": 5
       }]
     }],
@@ -12,7 +12,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-query.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-query.sh",
         "timeout": 3
       }]
     }],
@@ -20,7 +20,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-extract.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-extract.sh",
         "timeout": 30
       }]
     }],
@@ -28,7 +28,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-flush.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-flush.sh",
         "timeout": 30
       }]
     }],
@@ -36,7 +36,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-commit.sh",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-commit.sh",
         "timeout": 30
       }]
     }]

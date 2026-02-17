@@ -1,5 +1,5 @@
 """
-FAISS Memory Engine
+Memories Engine
 Local semantic search with hybrid BM25+vector retrieval, markdown-aware
 chunking, automatic backups, and concurrency safety.
 """
@@ -17,7 +17,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from onnx_embedder import OnnxEmbedder
 from rank_bm25 import BM25Okapi
 
-logger = logging.getLogger("faiss-memory")
+logger = logging.getLogger("memories")
 
 # Cloud sync (optional dependency)
 try:
@@ -29,7 +29,7 @@ except ImportError:
 
 
 class MemoryEngine:
-    """FAISS-based semantic memory with hybrid search and backup support"""
+    """Memories engine with hybrid search and backup support"""
 
     def __init__(
         self,

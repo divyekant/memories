@@ -1,19 +1,19 @@
 # Claude Code Integration
 
-> Use FAISS Memory with [Claude Code](https://docs.anthropic.com/claude/docs/claude-code) for persistent semantic memory across sessions.
+> Use Memories with [Claude Code](https://docs.anthropic.com/claude/docs/claude-code) for persistent semantic memory across sessions.
 
 ---
 
 ## Quick Start
 
-### 1. Ensure FAISS Memory is Running
+### 1. Ensure Memories is Running
 
 ```bash
 # Check service health
 curl http://localhost:8900/health
 
 # If not running, start it:
-cd /path/to/faiss-memory
+cd /path/to/memories
 docker compose up -d
 ```
 
@@ -89,12 +89,12 @@ npm install
 // ~/.claude/settings.json
 {
   "mcpServers": {
-    "faiss-memory": {
+    "memories": {
       "command": "node",
       "args": ["/path/to/memories/mcp-server/index.js"],
       "env": {
-        "FAISS_URL": "http://localhost:8900",
-        "FAISS_API_KEY": "your-api-key-here"
+        "MEMORIES_URL": "http://localhost:8900",
+        "MEMORIES_API_KEY": "your-api-key-here"
       }
     }
   }
@@ -120,7 +120,7 @@ npm install
 
 ```bash
 # Source the helper functions
-source ~/.openclaw/skills/faiss-memory/helpers.sh
+source ~/.openclaw/skills/memories/helpers.sh
 
 # Claude Code can call these functions
 fmem-search "authentication patterns" 5
@@ -345,7 +345,7 @@ Then review the code against those standards."
 Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-# FAISS Memory shortcuts
+# Memories shortcuts
 alias fmem-search='curl -X POST http://localhost:8900/search -H "Content-Type: application/json" -d'
 alias fmem-add='curl -X POST http://localhost:8900/memory/add -H "Content-Type: application/json" -d'
 alias fmem-novel='curl -X POST http://localhost:8900/memory/is-novel -H "Content-Type: application/json" -d'
@@ -396,10 +396,10 @@ Source in your shell: `source ~/.config/claude/tools.sh`
 **Solution:**
 ```bash
 # Check if service is running
-docker ps | grep faiss-memory
+docker ps | grep memories
 
 # If not running:
-cd /path/to/faiss-memory
+cd /path/to/memories
 docker compose up -d
 
 # Check health
@@ -425,7 +425,7 @@ curl -X POST http://localhost:8900/memory/add \
 This usually means MCP is not loaded or config path is wrong.
 
 ```bash
-# 1) Confirm MCP config contains the faiss-memory server
+# 1) Confirm MCP config contains the memories server
 cat ~/.claude/settings.json
 
 # 2) Verify node deps exist
@@ -491,7 +491,7 @@ Adjust novelty detection sensitivity:
 
 ## Integration Checklist
 
-- [ ] FAISS Memory service running (`docker ps | grep faiss-memory`)
+- [ ] Memories service running (`docker ps | grep memories`)
 - [ ] Health check passing (`curl http://localhost:8900/health`)
 - [ ] Initial memories loaded (project docs, standards, decisions)
 - [ ] Tested search with sample query
@@ -514,7 +514,7 @@ Adjust novelty detection sensitivity:
 
 ## Resources
 
-- 📖 [FAISS Memory API Docs](../docs/API.md)
+- 📖 [Memories API Docs](../docs/API.md)
 - 💡 [Example Prompts](../examples/claude-code/)
 - 🐛 [Troubleshooting](../docs/TROUBLESHOOTING.md)
 - 🚀 [Advanced Usage](../docs/ADVANCED.md)

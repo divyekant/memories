@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# FAISS Memory - Periodic Backup
+# Memories - Periodic Backup
 # Triggers a backup via the API and saves a local snapshot
 #
 # Usage:
@@ -9,10 +9,10 @@
 #   ./scripts/backup.sh --cleanup    # Only run cleanup
 #
 # Environment:
-#   FAISS_API_KEY     - API key for the FAISS service (required if auth enabled)
-#   FAISS_URL         - Service URL (default: http://localhost:8900)
-#   FAISS_DATA_DIR    - Path to Docker volume data dir (default: ./data relative to repo root)
-#   BACKUP_DIR        - Where to store snapshots (default: ~/backups/faiss-memory)
+#   MEMORIES_API_KEY     - API key for the Memories service (required if auth enabled)
+#   MEMORIES_URL         - Service URL (default: http://localhost:8900)
+#   MEMORIES_DATA_DIR    - Path to Docker volume data dir (default: ./data relative to repo root)
+#   BACKUP_DIR        - Where to store snapshots (default: ~/backups/memories)
 #   RETENTION_DAYS    - Days to keep local snapshots (default: 30)
 #
 
@@ -29,11 +29,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Configuration (all overridable via env vars)
-BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/faiss-memory}"
+BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/memories}"
 LOG_FILE="$BACKUP_DIR/backup.log"
-FAISS_URL="${FAISS_URL:-http://localhost:8900}"
-API_KEY="${FAISS_API_KEY}"
-FAISS_DATA_DIR="${FAISS_DATA_DIR:-$PROJECT_DIR/data}"
+MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
+API_KEY="${MEMORIES_API_KEY}"
+MEMORIES_DATA_DIR="${MEMORIES_DATA_DIR:-$PROJECT_DIR/data}"
 RETENTION_DAYS="${RETENTION_DAYS:-30}"
 
 # Parse arguments
@@ -70,7 +70,7 @@ create_local_snapshot() {
 
     # Trigger backup via API
     local response=$(curl -s -w "\n%{http_code}" \
-        -X POST "$FAISS_URL/backup?prefix=scheduled" \
+        -X POST "$MEMORIES_URL/backup?prefix=scheduled" \
         -H "X-API-Key: $API_KEY" 2>/dev/null)
 
     local http_code=$(echo "$response" | tail -1)
@@ -82,15 +82,15 @@ create_local_snapshot() {
     fi
 
     # Copy the data files to our local snapshot
-    if [ ! -d "$FAISS_DATA_DIR" ]; then
-        log "ERROR" "Data directory not found: $FAISS_DATA_DIR"
+    if [ ! -d "$MEMORIES_DATA_DIR" ]; then
+        log "ERROR" "Data directory not found: $MEMORIES_DATA_DIR"
         return 1
     fi
 
     mkdir -p "$snapshot_dir"
-    cp -f "$FAISS_DATA_DIR/index.faiss" "$snapshot_dir/" 2>/dev/null || true
-    cp -f "$FAISS_DATA_DIR/metadata.json" "$snapshot_dir/" 2>/dev/null || true
-    cp -f "$FAISS_DATA_DIR/config.json" "$snapshot_dir/" 2>/dev/null || true
+    cp -f "$MEMORIES_DATA_DIR/index.faiss" "$snapshot_dir/" 2>/dev/null || true
+    cp -f "$MEMORIES_DATA_DIR/metadata.json" "$snapshot_dir/" 2>/dev/null || true
+    cp -f "$MEMORIES_DATA_DIR/config.json" "$snapshot_dir/" 2>/dev/null || true
 
     local size=$(du -sh "$snapshot_dir" 2>/dev/null | cut -f1)
     log "SUCCESS" "Snapshot created: $timestamp ($size)"
@@ -137,7 +137,7 @@ record_failure() {
     # Alert after 3 consecutive failures
     if [ "$count" -ge 3 ]; then
         log "ERROR" "ALERT: $count consecutive backup failures!"
-        osascript -e "display notification \"$count consecutive FAISS backup failures! Check backup.log\" with title \"FAISS Memory Backup Alert\"" 2>/dev/null || true
+        osascript -e "display notification \"$count consecutive Memories backup failures! Check backup.log\" with title \"Memories Backup Alert\"" 2>/dev/null || true
     fi
 }
 

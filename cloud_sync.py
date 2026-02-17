@@ -1,6 +1,6 @@
 """
 Cloud Sync Module
-S3-compatible backup sync for FAISS Memory
+S3-compatible backup sync for Memories
 """
 
 import os
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
 
-logger = logging.getLogger("faiss-memory.cloud-sync")
+logger = logging.getLogger("memories.cloud-sync")
 
 try:
     import boto3
@@ -26,7 +26,7 @@ class CloudSync:
     def __init__(
         self,
         bucket: str,
-        prefix: str = "faiss-memory/",
+        prefix: str = "memories/",
         region: str = "us-east-1",
         endpoint_url: Optional[str] = None,
         access_key: Optional[str] = None,
@@ -171,7 +171,7 @@ class CloudSync:
 
         return cls(
             bucket=bucket,
-            prefix=os.getenv("CLOUD_SYNC_PREFIX", "faiss-memory/"),
+            prefix=os.getenv("CLOUD_SYNC_PREFIX", "memories/"),
             region=os.getenv("CLOUD_SYNC_REGION", "us-east-1"),
             endpoint_url=os.getenv("CLOUD_SYNC_ENDPOINT"),
             access_key=os.getenv("CLOUD_SYNC_ACCESS_KEY"),

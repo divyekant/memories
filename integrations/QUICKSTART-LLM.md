@@ -1,10 +1,10 @@
-# FAISS Memory — Automatic Memory Layer Setup
+# Memories — Automatic Memory Layer Setup
 
 > **This document is designed to be fed directly to an LLM (Claude Code, Codex, OpenClaw, or any AI coding assistant) so it can set up automatic memory hooks for you.**
 
 ## What This Does
 
-FAISS Memory is a local semantic memory service running at `http://localhost:8900`. This guide sets up **automatic hooks** so your AI assistant:
+Memories is a local semantic memory service running at `http://localhost:8900`. This guide sets up **automatic hooks** so your AI assistant:
 
 1. **Retrieves** relevant memories at session start and on every prompt (no manual search)
 2. **Extracts** facts from conversations and stores them automatically (no manual save)
@@ -19,11 +19,11 @@ After setup, memory works invisibly — the assistant gets context from past ses
 Before starting, verify:
 
 ```bash
-# 1. FAISS Memory service is running
+# 1. Memories service is running
 curl -s http://localhost:8900/health | jq .
 
 # 2. API key is set (check your shell profile)
-echo $FAISS_API_KEY
+echo $MEMORIES_API_KEY
 
 # 3. jq is installed
 jq --version
@@ -32,7 +32,7 @@ jq --version
 If the service isn't running:
 ```bash
 cd ~/projects/memories  # or wherever the repo lives
-docker compose up -d faiss-memory
+docker compose up -d memories
 ```
 
 ---
@@ -47,7 +47,7 @@ cd ~/projects/memories
 ```
 
 The installer will:
-1. Check FAISS service health
+1. Check Memories service health
 2. Ask which extraction provider to use (Anthropic, OpenAI, Ollama, or skip)
 3. Copy hook scripts to `~/.claude/hooks/memory/`
 4. Merge hook configuration into `~/.claude/settings.json`
@@ -66,9 +66,9 @@ chmod +x ~/.claude/hooks/memory/*.sh
 **Step 2: Add environment variables to `~/.zshrc` (or `~/.bashrc`)**
 
 ```bash
-# FAISS Memory hooks
-export FAISS_URL="http://localhost:8900"
-export FAISS_API_KEY="your-api-key-here"
+# Memories hooks
+export MEMORIES_URL="http://localhost:8900"
+export MEMORIES_API_KEY="your-api-key-here"
 
 # Extraction provider (choose one, or omit to disable extraction)
 # Option 1: Anthropic (recommended, ~$0.001/turn, full AUDN)
@@ -172,7 +172,7 @@ This writes hooks to `~/.codex/` instead of `~/.claude/`.
 OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update the skill file:
 
 1. Copy `integrations/openclaw-skill.md` to your OpenClaw skills directory
-2. The skill includes `memory_recall_faiss` (called at task start) and `memory_extract_faiss` (called after completing tasks)
+2. The skill includes `memory_recall_memories` (called at task start) and `memory_extract_memories` (called after completing tasks)
 3. The agent is instructed when to call these automatically
 
 ---
@@ -181,8 +181,8 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 
 | Hook | Event | Sync? | What It Does |
 |------|-------|-------|-------------|
-| `memory-recall.sh` | SessionStart | Sync | Searches FAISS for project-specific memories, injects top 8 as context |
-| `memory-query.sh` | UserPromptSubmit | Sync | Searches FAISS for memories relevant to the current prompt (skips short prompts) |
+| `memory-recall.sh` | SessionStart | Sync | Searches Memories for project-specific memories, injects top 8 as context |
+| `memory-query.sh` | UserPromptSubmit | Sync | Searches Memories for memories relevant to the current prompt (skips short prompts) |
 | `memory-extract.sh` | Stop | Async | POSTs the last exchange to `/memory/extract` for fact extraction |
 | `memory-flush.sh` | PreCompact | Async | Same as extract but with `context=pre_compact` (more aggressive before context loss) |
 | `memory-commit.sh` | SessionEnd | Async | Final extraction pass when session ends |
@@ -210,14 +210,14 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FAISS_URL` | `http://localhost:8900` | FAISS service URL |
-| `FAISS_API_KEY` | (empty) | API key for FAISS service auth |
+| `MEMORIES_URL` | `http://localhost:8900` | Memories service URL |
+| `MEMORIES_API_KEY` | (empty) | API key for Memories service auth |
 | `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `ollama`, or empty to disable |
 | `EXTRACT_MODEL` | (per provider) | Override model. Defaults: `claude-haiku-4-5-20251001`, `gpt-4.1-nano`, `gemma3:4b` |
 | `ANTHROPIC_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=anthropic` |
 | `OPENAI_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=openai` |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
-| `FAISS_HOOKS_DIR` | `~/.claude/hooks/memory` | Override hooks location |
+| `MEMORIES_HOOKS_DIR` | `~/.claude/hooks/memory` | Override hooks location |
 
 ---
 
@@ -229,7 +229,7 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 # Add a test memory
 curl -s -X POST http://localhost:8900/memory/add \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $FAISS_API_KEY" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
   -d '{"text": "This project uses TypeScript strict mode", "source": "test/setup"}'
 
 # Start a new Claude Code session in a project directory
@@ -240,7 +240,7 @@ curl -s -X POST http://localhost:8900/memory/add \
 
 ```bash
 # Check extraction status
-curl -s -H "X-API-Key: $FAISS_API_KEY" http://localhost:8900/extract/status | jq .
+curl -s -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/extract/status | jq .
 
 # Expected (if configured):
 # {"enabled": true, "provider": "anthropic", "model": "claude-haiku-4-5-20251001", "status": "healthy"}
@@ -248,7 +248,7 @@ curl -s -H "X-API-Key: $FAISS_API_KEY" http://localhost:8900/extract/status | jq
 # Test extraction manually (async-first: returns 202 + job_id)
 JOB_ID=$(curl -s -X POST http://localhost:8900/memory/extract \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $FAISS_API_KEY" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
   -d '{
     "messages": "User: We should use Drizzle instead of Prisma for the ORM.\nAssistant: Good call, Drizzle is lighter and has better TypeScript inference.",
     "source": "test/extraction",
@@ -256,7 +256,7 @@ JOB_ID=$(curl -s -X POST http://localhost:8900/memory/extract \
   }' | jq -r '.job_id')
 
 # Poll job status/result
-curl -s -H "X-API-Key: $FAISS_API_KEY" "http://localhost:8900/memory/extract/$JOB_ID" | jq .
+curl -s -H "X-API-Key: $MEMORIES_API_KEY" "http://localhost:8900/memory/extract/$JOB_ID" | jq .
 
 # Expected terminal payload includes:
 # {"status":"completed", "result":{"actions":[...], "extracted_count":N, "stored_count":N, ...}}
@@ -273,7 +273,7 @@ Remove or comment out `EXTRACT_PROVIDER` from your shell profile:
 # export EXTRACT_PROVIDER="anthropic"  # commented out
 ```
 
-The retrieval hooks will still work. Extraction hooks will silently skip (the FAISS endpoint returns 501 when extraction is not configured).
+The retrieval hooks will still work. Extraction hooks will silently skip (the Memories endpoint returns 501 when extraction is not configured).
 
 ### Remove all hooks
 
@@ -286,7 +286,7 @@ rm -rf ~/.claude/hooks/memory/
 # Stop, PreCompact, and SessionEnd entries that reference memory-*.sh
 
 # Remove env vars from shell profile
-# Edit ~/.zshrc and remove FAISS_URL, EXTRACT_PROVIDER, etc.
+# Edit ~/.zshrc and remove MEMORIES_URL, EXTRACT_PROVIDER, etc.
 ```
 
 ---
@@ -314,10 +314,10 @@ export EXTRACT_PROVIDER="anthropic"  # or openai, ollama
 ### Slow retrieval hooks
 
 ```bash
-# Check FAISS service latency
+# Check Memories service latency
 time curl -s -X POST http://localhost:8900/search \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $FAISS_API_KEY" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
   -d '{"query": "test", "k": 5, "hybrid": true}'
 
 # Should be <50ms. If slow, check Docker resources.
@@ -327,7 +327,7 @@ time curl -s -X POST http://localhost:8900/search \
 
 ```bash
 # Check you have memories stored
-curl -s -H "X-API-Key: $FAISS_API_KEY" http://localhost:8900/stats | jq '.total_memories'
+curl -s -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/stats | jq '.total_memories'
 
 # Check the similarity threshold isn't too high
 # The recall hook uses 0.3 threshold, query hook uses 0.4
