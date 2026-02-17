@@ -2,6 +2,7 @@
 FROM python:3.11-slim AS builder
 
 ARG ENABLE_CLOUD_SYNC=false
+ARG ENABLE_EXTRACT=false
 
 WORKDIR /app
 
@@ -12,6 +13,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY requirements-cloud.txt .
 RUN if [ "$ENABLE_CLOUD_SYNC" = "true" ]; then \
         pip install --no-cache-dir -r requirements-cloud.txt; \
+    fi
+
+# Optionally install LLM extraction dependencies (Anthropic/OpenAI SDKs)
+COPY requirements-extract.txt .
+RUN if [ "$ENABLE_EXTRACT" = "true" ]; then \
+        pip install --no-cache-dir -r requirements-extract.txt; \
     fi
 
 # Copy embedder so we can pre-download the ONNX model
@@ -47,6 +54,8 @@ COPY --from=builder /root/.cache/huggingface /root/.cache/huggingface
 COPY onnx_embedder.py .
 COPY memory_engine.py .
 COPY cloud_sync.py .
+COPY llm_provider.py .
+COPY llm_extract.py .
 COPY app.py .
 
 RUN mkdir -p /data/backups
