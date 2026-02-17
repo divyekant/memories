@@ -38,3 +38,5 @@ def test_ui_static_assets_are_served(client):
 
     assert js_response.status_code == 200
     assert "loadMemories" in js_response.text
+    assert "syncApiKeyFromInput" in js_response.text
+    assert "addEventListener(\"input\"" in js_response.text

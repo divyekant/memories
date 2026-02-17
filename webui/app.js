@@ -30,6 +30,30 @@ function authHeaders() {
   return state.apiKey ? { "X-API-Key": state.apiKey } : {};
 }
 
+function syncApiKeyFromInput() {
+  state.apiKey = (els.apiKey.value || "").trim();
+  localStorage.setItem("faiss_ui_api_key", state.apiKey);
+}
+
+async function parseErrorDetail(resp) {
+  const contentType = resp.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    try {
+      const data = await resp.json();
+      if (typeof data.detail === "string") {
+        return data.detail;
+      }
+      if (data.detail && typeof data.detail.message === "string") {
+        return data.detail.message;
+      }
+      return JSON.stringify(data);
+    } catch (_) {
+      return `HTTP ${resp.status}`;
+    }
+  }
+  return resp.text();
+}
+
 function renderMemories(memories) {
   els.memoryList.innerHTML = "";
 
@@ -63,6 +87,8 @@ function updatePagingState(visibleCount) {
 }
 
 async function loadMemories() {
+  syncApiKeyFromInput();
+
   const params = new URLSearchParams({
     offset: String(state.offset),
     limit: String(state.limit),
@@ -82,7 +108,7 @@ async function loadMemories() {
     });
 
     if (!resp.ok) {
-      const detail = await resp.text();
+      const detail = await parseErrorDetail(resp);
       throw new Error(`Request failed (${resp.status}): ${detail}`);
     }
 
@@ -103,9 +129,14 @@ async function loadMemories() {
 function bindEvents() {
   els.apiKey.value = state.apiKey;
 
-  els.apiKey.addEventListener("change", () => {
-    state.apiKey = els.apiKey.value.trim();
-    localStorage.setItem("faiss_ui_api_key", state.apiKey);
+  els.apiKey.addEventListener("input", () => {
+    syncApiKeyFromInput();
+  });
+
+  els.apiKey.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
     state.offset = 0;
     loadMemories();
   });
