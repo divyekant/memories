@@ -110,3 +110,37 @@ Integration docs:
 - Public docs avoid product-specific assumptions unless the file is intentionally integration-specific
 - Benchmarks describe workload profile and caveats
 - Versioned behavior changes documented in `README.md`
+
+---
+
+## Roadmap / TODO
+
+### Immediate (Seamless + Efficiency)
+
+- [ ] Remove `curl` from runtime image and switch to Python healthcheck to shrink image.
+- [ ] Publish two Docker targets/images:
+  - core (`search/add/list`, no extraction SDKs)
+  - extract (includes extraction provider SDKs)
+- [ ] Optionally move model download to first-run volume cache for smaller image pulls.
+- [ ] Make `/memory/extract` async-first (accept + queue, return `202`).
+- [ ] Add extraction backpressure with `429` and retry hints when queue is full.
+- [ ] Ship one-command installer that auto-detects Claude Code/Codex/OpenClaw config targets.
+- [ ] Add `/metrics` endpoint (latency, queue depth, error rates, memory trend).
+
+### v1.1 (Next)
+
+- [ ] Web UI for browsing memories.
+- [ ] Auto-rebuild on file changes (watch mode).
+- [x] Memory deduplication tool (`/memory/deduplicate`) is implemented.
+- [ ] Export formats (JSON, Markdown, CSV).
+- [x] MCP server implementation is shipped (`mcp-server/index.js`).
+- [x] OpenClaw `memory_search` integration is available (`integrations/openclaw-skill.md`).
+
+### v1.2 (Future)
+
+- [ ] Multi-index support (different projects).
+- [x] Hybrid search (semantic + keyword) is implemented (FAISS + BM25 + RRF).
+- [ ] Memory tagging system.
+- [ ] Search filters by source/date/type (source exists; date/type pending).
+- [ ] Scheduled index rebuilds via cron.
+- [ ] Memory analytics dashboard.

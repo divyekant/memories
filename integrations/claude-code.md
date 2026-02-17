@@ -508,7 +508,7 @@ Adjust novelty detection sensitivity:
 2. **Start using in sessions** - Begin every Claude Code session with memory search
 3. **Store new learnings** - Add memories after solving problems
 4. **Refine queries** - Experiment with different search queries
-5. **Upgrade to MCP** - When available (v1.1)
+5. **Use MCP by default** - Prefer MCP tools over manual curl once configured
 
 ---
 
