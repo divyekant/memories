@@ -18,7 +18,7 @@ services:
     environment:
       - DATA_DIR=/data
       # - WORKSPACE_DIR=/workspace  # Uncomment if mounting documents
-      - API_KEY=your-secret-key-here
+      - API_KEY=${API_KEY:-}
       - MODEL_NAME=all-MiniLM-L6-v2
       - MAX_BACKUPS=10
       # Extraction/runtime tuning (optional)
