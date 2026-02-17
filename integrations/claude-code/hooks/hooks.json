@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-recall.sh",
+        "timeout": 5
+      }]
+    }],
+    "UserPromptSubmit": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-query.sh",
+        "timeout": 3
+      }]
+    }],
+    "Stop": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-extract.sh",
+        "timeout": 30
+      }]
+    }],
+    "PreCompact": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-flush.sh",
+        "timeout": 30
+      }]
+    }],
+    "SessionEnd": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${FAISS_HOOKS_DIR:-~/.claude/hooks/memory}/memory-commit.sh",
+        "timeout": 30
+      }]
+    }]
+  }
+}
