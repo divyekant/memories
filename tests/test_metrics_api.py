@@ -50,6 +50,12 @@ def test_metrics_includes_latency_error_queue_and_memory_sections(client):
 
     assert data["memory"]["current_total"] == 5
     assert data["memory"]["trend"]["samples"]
+    process = data["memory"]["process"]
+    assert process["rss_kb"] >= 0
+    assert process["rss_anon_kb"] >= 0
+    assert process["rss_file_kb"] >= 0
+    assert process["rss_high_water_kb"] >= 0
+    assert process["vmsize_kb"] >= 0
 
     assert data["requests"]["total_count"] >= 2
     assert data["requests"]["error_count"] >= 1

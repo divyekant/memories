@@ -98,6 +98,7 @@ EXTRACT_JOB_RETENTION_SEC = _env_int("EXTRACT_JOB_RETENTION_SEC", 300, minimum=6
 EXTRACT_JOBS_MAX = _env_int("EXTRACT_JOBS_MAX", 200, minimum=10)
 MEMORY_TRIM_ENABLED = _env_bool("MEMORY_TRIM_ENABLED", True)
 MEMORY_TRIM_COOLDOWN_SEC = _env_float("MEMORY_TRIM_COOLDOWN_SEC", 15.0)
+MEMORY_TRIM_PERIODIC_SEC = _env_float("MEMORY_TRIM_PERIODIC_SEC", 5.0, minimum=0.0)
 METRICS_LATENCY_SAMPLES = _env_int("METRICS_LATENCY_SAMPLES", 200, minimum=20)
 METRICS_TREND_SAMPLES = _env_int("METRICS_TREND_SAMPLES", 120, minimum=5)
 
@@ -177,6 +178,41 @@ def _record_memory_sample(total_memories: int) -> None:
     sample = {"timestamp": _utc_now_iso(), "total_memories": total_memories}
     with metrics_lock:
         memory_trend.append(sample)
+
+
+def _read_process_memory_kb() -> Dict[str, int]:
+    """Read lightweight process memory stats from /proc/self/status."""
+    stats = {
+        "rss_kb": 0,
+        "rss_anon_kb": 0,
+        "rss_file_kb": 0,
+        "rss_high_water_kb": 0,
+        "vmsize_kb": 0,
+    }
+    field_map = {
+        "VmRSS": "rss_kb",
+        "RssAnon": "rss_anon_kb",
+        "RssFile": "rss_file_kb",
+        "VmHWM": "rss_high_water_kb",
+        "VmSize": "vmsize_kb",
+    }
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as status_file:
+            for line in status_file:
+                if ":" not in line:
+                    continue
+                field, raw = line.split(":", 1)
+                key = field_map.get(field.strip())
+                if not key:
+                    continue
+                value_token = raw.strip().split(" ", 1)[0]
+                try:
+                    stats[key] = int(value_token)
+                except ValueError:
+                    continue
+    except OSError:
+        return stats
+    return stats
 
 
 def _build_metrics_snapshot() -> Dict[str, Any]:
@@ -328,6 +364,23 @@ async def _periodic_job_cleanup() -> None:
             logger.debug("Periodic job cleanup error", exc_info=True)
 
 
+async def _periodic_memory_trim() -> None:
+    """Attempt periodic memory trim to reclaim allocator high-water marks."""
+    while True:
+        try:
+            await asyncio.sleep(MEMORY_TRIM_PERIODIC_SEC)
+            trim_result = memory_trimmer.maybe_trim(reason="periodic")
+            if trim_result.get("trimmed"):
+                logger.debug(
+                    "Periodic memory trim complete: gc_collected=%s",
+                    trim_result.get("gc_collected"),
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.debug("Periodic memory trim error", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global memory
@@ -340,10 +393,17 @@ async def lifespan(app: FastAPI):
         memory.dim,
     )
     _ensure_extract_workers_started()
-    cleanup_task = asyncio.create_task(_periodic_job_cleanup(), name="job-cleanup")
+    background_tasks: List[asyncio.Task] = [
+        asyncio.create_task(_periodic_job_cleanup(), name="job-cleanup"),
+    ]
+    if MEMORY_TRIM_ENABLED and MEMORY_TRIM_PERIODIC_SEC > 0:
+        background_tasks.append(
+            asyncio.create_task(_periodic_memory_trim(), name="memory-trim")
+        )
     yield
-    cleanup_task.cancel()
-    await asyncio.gather(cleanup_task, return_exceptions=True)
+    for task in background_tasks:
+        task.cancel()
+    await asyncio.gather(*background_tasks, return_exceptions=True)
     if extract_workers:
         logger.info("Stopping extraction workers...")
         for task in extract_workers:
@@ -474,7 +534,7 @@ async def stats():
 
 @app.get("/metrics")
 async def metrics():
-    """Service-level metrics (latency, errors, queue depth, memory trend)."""
+    """Service-level metrics (latency, errors, queue depth, memory trend, process RSS)."""
     light = memory.stats_light()
     current_total = int(light.get("total_memories", 0))
     _record_memory_sample(current_total)
@@ -492,6 +552,7 @@ async def metrics():
         "memory": {
             "current_total": current_total,
             "trend": snapshot["memory_trend"],
+            "process": _read_process_memory_kb(),
         },
         "requests": snapshot["requests"],
         "routes": snapshot["routes"],
