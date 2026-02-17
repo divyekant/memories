@@ -4,9 +4,13 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
+Start here:
+- [Getting Started (10-15 min)](GETTING_STARTED.md)
+- [LLM-assisted setup guide](integrations/QUICKSTART-LLM.md)
+
 ---
 
-## Quick Start
+## API Quick Start
 
 ```bash
 # 1. Clone and build
