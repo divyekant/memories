@@ -568,17 +568,26 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 
 ### Quick setup
 
-**Claude Code:**
+**One-command auto-detect installer (recommended):**
 ```bash
-./integrations/claude-code/install.sh
+./integrations/claude-code/install.sh --auto
 ```
 
-**Codex:**
+This detects and configures any available targets on your machine:
+- Claude Code hooks (`~/.claude/settings.json`)
+- Codex hooks (`~/.codex/settings.json`)
+- OpenClaw skill (`~/.openclaw/skills/faiss-memory/SKILL.md`)
+
+**Target only Claude or Codex:**
 ```bash
+./integrations/claude-code/install.sh --claude
 ./integrations/claude-code/install.sh --codex
 ```
 
-**OpenClaw:** Use the updated skill at `integrations/openclaw-skill.md`
+**Target only OpenClaw:**
+```bash
+./integrations/claude-code/install.sh --openclaw
+```
 
 **LLM-assisted setup:** Feed [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md) to your AI assistant and it will configure everything automatically.
 

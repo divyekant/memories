@@ -125,7 +125,7 @@ Integration docs:
 - [x] Optionally move model download to first-run volume cache for smaller image pulls.
 - [x] Make `/memory/extract` async-first (accept + queue, return `202`).
 - [x] Add extraction backpressure with `429` and retry hints when queue is full.
-- [ ] Ship one-command installer that auto-detects Claude Code/Codex/OpenClaw config targets.
+- [x] Ship one-command installer that auto-detects Claude Code/Codex/OpenClaw config targets.
 - [ ] Add `/metrics` endpoint (latency, queue depth, error rates, memory trend).
 
 ### v1.1 (Next)
