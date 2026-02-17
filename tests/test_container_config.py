@@ -43,6 +43,11 @@ def test_dockerfile_uses_first_run_model_cache_defaults() -> None:
     assert "/root/.cache/huggingface" not in dockerfile
 
 
+def test_dockerfile_copies_web_ui_assets() -> None:
+    dockerfile = _read("Dockerfile")
+    assert "COPY webui ./webui" in dockerfile
+
+
 def test_compose_healthchecks_use_python_probe() -> None:
     for compose_file in ("docker-compose.yml", "docker-compose.snippet.yml"):
         contents = _read(compose_file)

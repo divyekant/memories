@@ -60,6 +60,7 @@ COPY runtime_memory.py .
 COPY llm_provider.py .
 COPY llm_extract.py .
 COPY app.py .
+COPY webui ./webui
 
 RUN mkdir -p /data/backups /data/model-cache
 
