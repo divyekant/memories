@@ -245,17 +245,21 @@ curl -s -H "X-API-Key: $FAISS_API_KEY" http://localhost:8900/extract/status | jq
 # Expected (if configured):
 # {"enabled": true, "provider": "anthropic", "model": "claude-haiku-4-5-20251001", "status": "healthy"}
 
-# Test extraction manually
-curl -s -X POST http://localhost:8900/memory/extract \
+# Test extraction manually (async-first: returns 202 + job_id)
+JOB_ID=$(curl -s -X POST http://localhost:8900/memory/extract \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $FAISS_API_KEY" \
   -d '{
     "messages": "User: We should use Drizzle instead of Prisma for the ORM.\nAssistant: Good call, Drizzle is lighter and has better TypeScript inference.",
     "source": "test/extraction",
     "context": "stop"
-  }' | jq .
+  }' | jq -r '.job_id')
 
-# Expected: {"actions": [...], "extracted_count": N, "stored_count": N, ...}
+# Poll job status/result
+curl -s -H "X-API-Key: $FAISS_API_KEY" "http://localhost:8900/memory/extract/$JOB_ID" | jq .
+
+# Expected terminal payload includes:
+# {"status":"completed", "result":{"actions":[...], "extracted_count":N, "stored_count":N, ...}}
 ```
 
 ---

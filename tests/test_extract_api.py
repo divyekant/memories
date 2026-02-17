@@ -1,5 +1,6 @@
 """Tests for extraction API endpoints in app.py."""
 import os
+import time
 import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
@@ -9,7 +10,7 @@ from fastapi.testclient import TestClient
 def client():
     """Create a test client with mocked memory engine and auth."""
     # Set test API key (app.py reads API_KEY env var)
-    with patch.dict(os.environ, {"API_KEY": "test-key", "EXTRACT_PROVIDER": ""}):
+    with patch.dict(os.environ, {"API_KEY": "test-key", "EXTRACT_PROVIDER": "ollama"}):
         # Need to reimport app to pick up env changes
         import importlib
         import app as app_module
@@ -24,6 +25,22 @@ def client():
 
 class TestExtractEndpoint:
     """Test POST /memory/extract."""
+
+    @staticmethod
+    def _wait_for_terminal_job(test_client, job_id: str, timeout_sec: float = 2.0):
+        deadline = time.time() + timeout_sec
+        last_state = None
+        while time.time() < deadline:
+            response = test_client.get(
+                f"/memory/extract/{job_id}",
+                headers={"X-API-Key": "test-key"},
+            )
+            assert response.status_code == 200
+            last_state = response.json()
+            if last_state["status"] in {"completed", "failed"}:
+                return last_state
+            time.sleep(0.02)
+        pytest.fail(f"Extraction job {job_id} did not finish in time; last_state={last_state}")
 
     def test_extract_returns_501_when_disabled(self, client):
         test_client, mock_engine = client
@@ -55,9 +72,14 @@ class TestExtractEndpoint:
                 },
                 headers={"X-API-Key": "test-key"},
             )
-            assert response.status_code == 200
+            assert response.status_code == 202
             data = response.json()
-            assert data["extracted_count"] == 1
+            assert data["status"] == "queued"
+            assert "job_id" in data
+
+            job_state = self._wait_for_terminal_job(test_client, data["job_id"])
+            assert job_state["status"] == "completed"
+            assert job_state["result"]["extracted_count"] == 1
 
     def test_extract_triggers_memory_trim(self, client):
         test_client, _ = client
@@ -69,7 +91,9 @@ class TestExtractEndpoint:
                 json={"messages": "test", "source": "test", "context": "stop"},
                 headers={"X-API-Key": "test-key"},
             )
-            assert response.status_code == 200
+            assert response.status_code == 202
+            job_id = response.json()["job_id"]
+            self._wait_for_terminal_job(test_client, job_id)
             trim_mock.assert_called_once()
 
     def test_extract_rejects_oversized_payload(self, client):
@@ -84,6 +108,14 @@ class TestExtractEndpoint:
                 headers={"X-API-Key": "test-key"},
             )
         assert response.status_code == 422
+
+    def test_extract_job_not_found(self, client):
+        test_client, _ = client
+        response = test_client.get(
+            "/memory/extract/not-a-real-job",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert response.status_code == 404
 
 
 class TestSupersedeEndpoint:
@@ -126,7 +158,10 @@ class TestExtractStatusEndpoint:
                 headers={"X-API-Key": "test-key"},
             )
             assert response.status_code == 200
-            assert response.json()["enabled"] is False
+            data = response.json()
+            assert data["enabled"] is False
+            assert "queue_depth" in data
+            assert "workers" in data
 
     def test_status_when_enabled(self, client):
         test_client, _ = client
@@ -145,3 +180,5 @@ class TestExtractStatusEndpoint:
             assert data["enabled"] is True
             assert data["provider"] == "anthropic"
             assert data["status"] == "healthy"
+            assert "queue_depth" in data
+            assert "workers" in data

@@ -9,8 +9,10 @@ import os
 import re
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -83,10 +85,13 @@ def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
 
 MAX_EXTRACT_MESSAGE_CHARS = _env_int("MAX_EXTRACT_MESSAGE_CHARS", 120000)
 EXTRACT_MAX_INFLIGHT = _env_int("EXTRACT_MAX_INFLIGHT", 2)
+EXTRACT_JOB_RETENTION_SEC = _env_int("EXTRACT_JOB_RETENTION_SEC", 3600, minimum=60)
 MEMORY_TRIM_ENABLED = _env_bool("MEMORY_TRIM_ENABLED", True)
 MEMORY_TRIM_COOLDOWN_SEC = _env_float("MEMORY_TRIM_COOLDOWN_SEC", 15.0)
 
-extract_semaphore = asyncio.Semaphore(EXTRACT_MAX_INFLIGHT)
+extract_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+extract_jobs: Dict[str, Dict[str, Any]] = {}
+extract_workers: List[asyncio.Task] = []
 memory_trimmer = MemoryTrimmer(
     enabled=MEMORY_TRIM_ENABLED,
     cooldown_sec=MEMORY_TRIM_COOLDOWN_SEC,
@@ -111,6 +116,94 @@ async def verify_api_key(request: Request):
 memory: MemoryEngine = None  # type: ignore
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _trim_finished_extract_jobs() -> None:
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=EXTRACT_JOB_RETENTION_SEC)
+    stale_job_ids: List[str] = []
+    for job_id, job in extract_jobs.items():
+        completed_at = job.get("completed_at")
+        if not completed_at:
+            continue
+        try:
+            completed_dt = datetime.fromisoformat(completed_at)
+        except ValueError:
+            continue
+        if completed_dt < cutoff:
+            stale_job_ids.append(job_id)
+
+    for job_id in stale_job_ids:
+        extract_jobs.pop(job_id, None)
+
+
+def _ensure_extract_workers_started() -> None:
+    if extract_provider is None or run_extraction is None:
+        return
+    alive_workers = [task for task in extract_workers if not task.done()]
+    if alive_workers:
+        if len(alive_workers) != len(extract_workers):
+            extract_workers[:] = alive_workers
+        return
+
+    extract_workers.clear()
+    for worker_id in range(EXTRACT_MAX_INFLIGHT):
+        task = asyncio.create_task(
+            _extract_worker(worker_id + 1),
+            name=f"extract-worker-{worker_id + 1}",
+        )
+        extract_workers.append(task)
+    logger.info("Extraction queue enabled with %d worker(s)", len(extract_workers))
+
+
+async def _extract_worker(worker_id: int) -> None:
+    logger.info("Extraction worker started: id=%d", worker_id)
+    while True:
+        try:
+            job = await extract_queue.get()
+        except asyncio.CancelledError:
+            logger.info("Extraction worker stopped: id=%d", worker_id)
+            break
+
+        job_id = job["job_id"]
+        request_data = job["request"]
+        job_state = extract_jobs.get(job_id)
+        if job_state:
+            job_state["status"] = "running"
+            job_state["started_at"] = _utc_now_iso()
+            job_state["queue_depth"] = extract_queue.qsize()
+
+        try:
+            result = await run_in_threadpool(
+                run_extraction,
+                extract_provider,
+                memory,
+                request_data["messages"],
+                request_data["source"],
+                request_data["context"],
+            )
+            if job_state is not None:
+                job_state["status"] = "completed"
+                job_state["completed_at"] = _utc_now_iso()
+                job_state["result"] = result
+        except Exception as e:
+            logger.exception("Extraction failed: job_id=%s", job_id)
+            if job_state is not None:
+                job_state["status"] = "failed"
+                job_state["completed_at"] = _utc_now_iso()
+                job_state["error"] = str(e)
+        finally:
+            trim_result = memory_trimmer.maybe_trim(reason=f"extract:{request_data['context']}")
+            if trim_result.get("trimmed"):
+                logger.debug(
+                    "Post-extract memory trim complete: gc_collected=%s",
+                    trim_result.get("gc_collected"),
+                )
+            extract_queue.task_done()
+            _trim_finished_extract_jobs()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global memory
@@ -122,7 +215,14 @@ async def lifespan(app: FastAPI):
         memory.config.get("model"),
         memory.dim,
     )
+    _ensure_extract_workers_started()
     yield
+    if extract_workers:
+        logger.info("Stopping extraction workers...")
+        for task in extract_workers:
+            task.cancel()
+        await asyncio.gather(*extract_workers, return_exceptions=True)
+        extract_workers.clear()
     logger.info("Shutting down — saving index...")
     memory.save()
     logger.info("Shutdown complete.")
@@ -576,33 +676,54 @@ async def sync_restore(backup_name: str, confirm: bool = False):
 
 # -- Extraction endpoints -----------------------------------------------------
 
-@app.post("/memory/extract")
+@app.post("/memory/extract", status_code=202)
 async def memory_extract(request: ExtractRequest):
-    """Extract facts from conversation and store via AUDN pipeline."""
-    if extract_provider is None:
+    """Queue extraction and return immediately."""
+    if extract_provider is None or run_extraction is None:
         raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
-    logger.info("Extract: source=%s, context=%s, message_length=%d", request.source, request.context, len(request.messages))
-    try:
-        async with extract_semaphore:
-            result = await run_in_threadpool(
-                run_extraction,
-                extract_provider,
-                memory,
-                request.messages,
-                request.source,
-                request.context,
-            )
-        return result
-    except Exception as e:
-        logger.exception("Extraction failed")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        trim_result = memory_trimmer.maybe_trim(reason=f"extract:{request.context}")
-        if trim_result.get("trimmed"):
-            logger.debug(
-                "Post-extract memory trim complete: gc_collected=%s",
-                trim_result.get("gc_collected"),
-            )
+    _ensure_extract_workers_started()
+    job_id = uuid4().hex
+    extract_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "source": request.source,
+        "context": request.context,
+        "message_length": len(request.messages),
+        "created_at": _utc_now_iso(),
+    }
+    await extract_queue.put(
+        {
+            "job_id": job_id,
+            "request": {
+                "messages": request.messages,
+                "source": request.source,
+                "context": request.context,
+            },
+        }
+    )
+    _trim_finished_extract_jobs()
+    logger.info(
+        "Extract queued: job_id=%s source=%s context=%s queue_depth=%d",
+        job_id,
+        request.source,
+        request.context,
+        extract_queue.qsize(),
+    )
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "queue_depth": extract_queue.qsize(),
+        "result_url": f"/memory/extract/{job_id}",
+    }
+
+
+@app.get("/memory/extract/{job_id}")
+async def memory_extract_job(job_id: str):
+    """Get queued extraction job status/result."""
+    job = extract_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Extraction job not found: {job_id}")
+    return job
 
 
 @app.post("/memory/supersede")
@@ -626,8 +747,14 @@ async def memory_supersede(request: SupersedeRequest):
 @app.get("/extract/status")
 async def extract_status():
     """Check extraction provider health and configuration."""
+    status_payload: Dict[str, Any] = {
+        "queue_depth": extract_queue.qsize(),
+        "workers": EXTRACT_MAX_INFLIGHT,
+        "jobs_tracked": len(extract_jobs),
+    }
+
     if extract_provider is None:
-        return {"enabled": False}
+        return {"enabled": False, **status_payload}
     try:
         healthy = extract_provider.health_check()
         return {
@@ -635,6 +762,7 @@ async def extract_status():
             "provider": extract_provider.provider_name,
             "model": extract_provider.model,
             "status": "healthy" if healthy else "unhealthy",
+            **status_payload,
         }
     except Exception as e:
         return {
@@ -642,6 +770,7 @@ async def extract_status():
             "provider": extract_provider.provider_name,
             "model": extract_provider.model,
             "status": f"error: {e}",
+            **status_payload,
         }
 
 

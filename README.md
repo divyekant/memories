@@ -497,6 +497,14 @@ POST /backup?prefix=manual
 POST /restore          {"backup_name": "manual_20260213_120000"}
 ```
 
+### Extraction
+
+```
+POST /memory/extract    {"messages": "...", "source": "proj", "context": "stop"}  # 202 queued
+GET  /memory/extract/{job_id}
+GET  /extract/status
+```
+
 Full OpenAPI schema at http://localhost:8900/docs.
 
 ---
@@ -585,6 +593,11 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 
 Extraction is optional. Without it, hooks still retrieve memories — they just don't learn new ones automatically.
 
+### Async extraction API
+
+`POST /memory/extract` is async-first. It enqueues work and returns `202` with a `job_id`.
+Poll `GET /memory/extract/{job_id}` for `queued`, `running`, `completed`, or `failed`.
+
 ### Docker image targets (core / extract)
 
 The Dockerfile publishes two runtime targets:
@@ -630,6 +643,7 @@ Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough 
 | `ANTHROPIC_API_KEY` | (none) | Required for Anthropic provider |
 | `OPENAI_API_KEY` | (none) | Required for OpenAI provider |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
+| `EXTRACT_JOB_RETENTION_SEC` | `3600` | How long completed/failed extraction jobs stay queryable |
 | `EXTRACT_MAX_FACTS` | `30` | Maximum facts kept from a single extraction |
 | `EXTRACT_MAX_FACT_CHARS` | `500` | Max length per extracted fact |
 | `EXTRACT_SIMILAR_TEXT_CHARS` | `280` | Max similar-memory text length passed into AUDN |
