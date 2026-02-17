@@ -85,6 +85,7 @@ def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
 
 MAX_EXTRACT_MESSAGE_CHARS = _env_int("MAX_EXTRACT_MESSAGE_CHARS", 120000)
 EXTRACT_MAX_INFLIGHT = _env_int("EXTRACT_MAX_INFLIGHT", 2)
+EXTRACT_QUEUE_MAX = _env_int("EXTRACT_QUEUE_MAX", EXTRACT_MAX_INFLIGHT * 20, minimum=1)
 EXTRACT_JOB_RETENTION_SEC = _env_int("EXTRACT_JOB_RETENTION_SEC", 3600, minimum=60)
 MEMORY_TRIM_ENABLED = _env_bool("MEMORY_TRIM_ENABLED", True)
 MEMORY_TRIM_COOLDOWN_SEC = _env_float("MEMORY_TRIM_COOLDOWN_SEC", 15.0)
@@ -681,6 +682,26 @@ async def memory_extract(request: ExtractRequest):
     """Queue extraction and return immediately."""
     if extract_provider is None or run_extraction is None:
         raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
+    queue_depth = extract_queue.qsize()
+    if queue_depth >= EXTRACT_QUEUE_MAX:
+        retry_after_sec = max(1, min(30, (queue_depth // max(1, EXTRACT_MAX_INFLIGHT)) + 1))
+        logger.warning(
+            "Extract queue full: depth=%d max=%d",
+            queue_depth,
+            EXTRACT_QUEUE_MAX,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "extract_queue_full",
+                "message": "Extraction queue is full. Retry later.",
+                "queue_depth": queue_depth,
+                "queue_max": EXTRACT_QUEUE_MAX,
+                "retry_after_sec": retry_after_sec,
+            },
+            headers={"Retry-After": str(retry_after_sec)},
+        )
+
     _ensure_extract_workers_started()
     job_id = uuid4().hex
     extract_jobs[job_id] = {
@@ -749,6 +770,8 @@ async def extract_status():
     """Check extraction provider health and configuration."""
     status_payload: Dict[str, Any] = {
         "queue_depth": extract_queue.qsize(),
+        "queue_max": EXTRACT_QUEUE_MAX,
+        "queue_remaining": max(0, EXTRACT_QUEUE_MAX - extract_queue.qsize()),
         "workers": EXTRACT_MAX_INFLIGHT,
         "jobs_tracked": len(extract_jobs),
     }

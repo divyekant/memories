@@ -117,6 +117,22 @@ class TestExtractEndpoint:
         )
         assert response.status_code == 404
 
+    def test_extract_returns_429_when_queue_full(self, client):
+        test_client, _ = client
+        with patch("app.extract_provider", MagicMock()), \
+             patch("app.run_extraction", MagicMock()), \
+             patch("app.EXTRACT_QUEUE_MAX", 0):
+            response = test_client.post(
+                "/memory/extract",
+                json={"messages": "test", "source": "test", "context": "stop"},
+                headers={"X-API-Key": "test-key"},
+            )
+        assert response.status_code == 429
+        assert "Retry-After" in response.headers
+        detail = response.json()["detail"]
+        assert detail["error"] == "extract_queue_full"
+        assert detail["retry_after_sec"] >= 1
+
 
 class TestSupersedeEndpoint:
     """Test POST /memory/supersede."""
@@ -161,6 +177,7 @@ class TestExtractStatusEndpoint:
             data = response.json()
             assert data["enabled"] is False
             assert "queue_depth" in data
+            assert "queue_max" in data
             assert "workers" in data
 
     def test_status_when_enabled(self, client):
@@ -181,4 +198,5 @@ class TestExtractStatusEndpoint:
             assert data["provider"] == "anthropic"
             assert data["status"] == "healthy"
             assert "queue_depth" in data
+            assert "queue_max" in data
             assert "workers" in data
