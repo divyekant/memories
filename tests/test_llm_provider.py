@@ -77,14 +77,15 @@ class TestOllamaProvider:
             from llm_provider import get_provider
             provider = get_provider()
 
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {"response": "test output"}
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps({"response": "test output"}).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
 
-            with patch("llm_provider.requests.post", return_value=mock_response) as mock_post:
+            with patch("llm_provider.urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
                 result = provider.complete("system prompt", "user prompt")
                 assert result == "test output"
-                mock_post.assert_called_once()
+                mock_urlopen.assert_called_once()
 
     def test_health_check(self):
         env = {"EXTRACT_PROVIDER": "ollama"}
@@ -92,10 +93,12 @@ class TestOllamaProvider:
             from llm_provider import get_provider
             provider = get_provider()
 
-            mock_response = MagicMock()
-            mock_response.status_code = 200
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
 
-            with patch("llm_provider.requests.get", return_value=mock_response):
+            with patch("llm_provider.urllib.request.urlopen", return_value=mock_resp):
                 assert provider.health_check() is True
 
     def test_health_check_failure(self):
@@ -104,7 +107,7 @@ class TestOllamaProvider:
             from llm_provider import get_provider
             provider = get_provider()
 
-            with patch("llm_provider.requests.get", side_effect=Exception("conn refused")):
+            with patch("llm_provider.urllib.request.urlopen", side_effect=Exception("conn refused")):
                 assert provider.health_check() is False
 
 

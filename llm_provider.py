@@ -8,10 +8,11 @@ Supports Anthropic, OpenAI, and Ollama. Configured via environment variables:
   OLLAMA_URL: ollama server URL (default: http://host.docker.internal:11434)
 """
 import os
+import json
 import logging
+import urllib.request
+import urllib.error
 from abc import ABC, abstractmethod
-
-import requests
 
 logger = logging.getLogger(__name__)
 
@@ -122,23 +123,26 @@ class OllamaProvider(LLMProvider):
         self.model = model or DEFAULT_MODELS["ollama"]
 
     def complete(self, system: str, user: str) -> str:
-        response = requests.post(
+        payload = json.dumps({
+            "model": self.model,
+            "system": system,
+            "prompt": user,
+            "stream": False,
+        }).encode()
+        req = urllib.request.Request(
             f"{self.base_url}/api/generate",
-            json={
-                "model": self.model,
-                "system": system,
-                "prompt": user,
-                "stream": False,
-            },
-            timeout=60,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
-        response.raise_for_status()
-        return response.json()["response"]
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read())["response"]
 
     def health_check(self) -> bool:
         try:
-            resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
-            return resp.status_code == 200
+            req = urllib.request.Request(f"{self.base_url}/api/tags")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status == 200
         except Exception as e:
             logger.warning("Ollama health check failed: %s", e)
             return False
