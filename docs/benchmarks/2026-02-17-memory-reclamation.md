@@ -7,8 +7,8 @@ Goal: verify that memory usage trends down after extraction bursts instead of st
 
 - Image: `memories:codex-memtrim`
 - Two containers, same code, only one config difference:
-  - `faiss-mem-notrim`: `MEMORY_TRIM_ENABLED=false`
-  - `faiss-mem-trim`: `MEMORY_TRIM_ENABLED=true` + `MEMORY_TRIM_COOLDOWN_SEC=1`
+  - `mem-notrim`: `MEMORY_TRIM_ENABLED=false`
+  - `mem-trim`: `MEMORY_TRIM_ENABLED=true` + `MEMORY_TRIM_COOLDOWN_SEC=1`
 - Extraction provider: synthetic Ollama-compatible test server returning large payloads.
 - Load profile:
   - `40` extract calls

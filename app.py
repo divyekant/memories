@@ -122,7 +122,7 @@ async def verify_api_key(request: Request):
     if not API_KEY:
         return  # No auth configured
     path = request.url.path
-    if path == "/health" or path == "/ui" or path.startswith("/ui/"):
+    if path in {"/health", "/health/ready", "/ui"} or path.startswith("/ui/"):
         return  # Allow unauthenticated health checks + UI shell/static files
     key = request.headers.get("X-API-Key", "")
     if key != API_KEY:
@@ -455,6 +455,15 @@ class SearchRequest(BaseModel):
     threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
     hybrid: bool = Field(False, description="Use hybrid BM25+vector search")
     vector_weight: float = Field(0.7, ge=0.0, le=1.0)
+    source_prefix: Optional[str] = Field(
+        None,
+        max_length=500,
+        description="Optional source path prefix filter",
+    )
+
+
+class SearchBatchRequest(BaseModel):
+    queries: List[SearchRequest] = Field(..., min_length=1, max_length=200)
 
 
 class AddMemoryRequest(BaseModel):
@@ -491,6 +500,35 @@ class DeleteBySourceRequest(BaseModel):
     source_pattern: str = Field(..., min_length=1, max_length=500)
 
 
+class DeleteBatchRequest(BaseModel):
+    ids: List[int] = Field(..., min_length=1, max_length=1000)
+
+
+class MemoryGetBatchRequest(BaseModel):
+    ids: List[int] = Field(..., min_length=1, max_length=1000)
+
+
+class UpsertMemoryRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=50000)
+    source: str = Field(..., min_length=1, max_length=500)
+    key: str = Field(..., min_length=1, max_length=500)
+    metadata: Optional[dict] = None
+
+
+class UpsertBatchRequest(BaseModel):
+    memories: List[UpsertMemoryRequest] = Field(..., min_length=1, max_length=1000)
+
+
+class DeleteByPrefixRequest(BaseModel):
+    source_prefix: str = Field(..., min_length=1, max_length=500)
+
+
+class PatchMemoryRequest(BaseModel):
+    text: Optional[str] = Field(None, min_length=1, max_length=50000)
+    source: Optional[str] = Field(None, min_length=1, max_length=500)
+    metadata_patch: Optional[dict] = None
+
+
 class ExtractRequest(BaseModel):
     messages: str = Field(
         ...,
@@ -515,6 +553,15 @@ async def health():
     """Lightweight health check (no filesystem I/O)"""
     stats = memory.stats_light()
     return {"status": "ok", "service": "memories", "version": "2.0.0", **stats}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness check for orchestrators/cutover automation."""
+    status = memory.is_ready()
+    if not status.get("ready", False):
+        raise HTTPException(status_code=503, detail=status)
+    return status
 
 
 @app.get("/ui", include_in_schema=False)
@@ -572,16 +619,46 @@ async def search(request: SearchRequest):
                 k=request.k,
                 threshold=request.threshold,
                 vector_weight=request.vector_weight,
+                source_prefix=request.source_prefix,
             )
         else:
             results = memory.search(
                 query=request.query,
                 k=request.k,
                 threshold=request.threshold,
+                source_prefix=request.source_prefix,
             )
         return {"query": request.query, "results": results, "count": len(results)}
     except Exception as e:
         logger.exception("Search failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/search/batch")
+async def search_batch(request: SearchBatchRequest):
+    """Run multiple searches in one request."""
+    try:
+        outputs = []
+        for item in request.queries:
+            if item.hybrid:
+                results = memory.hybrid_search(
+                    query=item.query,
+                    k=item.k,
+                    threshold=item.threshold,
+                    vector_weight=item.vector_weight,
+                    source_prefix=item.source_prefix,
+                )
+            else:
+                results = memory.search(
+                    query=item.query,
+                    k=item.k,
+                    threshold=item.threshold,
+                    source_prefix=item.source_prefix,
+                )
+            outputs.append({"query": item.query, "results": results, "count": len(results)})
+        return {"results": outputs, "count": len(outputs)}
+    except Exception as e:
+        logger.exception("Batch search failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -650,6 +727,29 @@ async def delete_memory(memory_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/memory/{memory_id}")
+async def get_memory(memory_id: int):
+    """Fetch a single memory by ID."""
+    try:
+        return memory.get_memory(memory_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Get memory failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/memory/get-batch")
+async def get_memory_batch(request: MemoryGetBatchRequest):
+    """Fetch multiple memories by IDs."""
+    try:
+        result = memory.get_memories(request.ids)
+        return {**result, "count": len(result["memories"])}
+    except Exception as e:
+        logger.exception("Get batch failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/memory/delete-by-source")
 async def delete_by_source(request: DeleteBySourceRequest):
     """Delete all memories matching a source pattern"""
@@ -659,6 +759,86 @@ async def delete_by_source(request: DeleteBySourceRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete by source failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/memory/delete-batch")
+async def delete_batch(request: DeleteBatchRequest):
+    """Delete multiple memories in one operation."""
+    logger.info("Delete batch: count=%d", len(request.ids))
+    try:
+        result = memory.delete_memories(request.ids)
+        return {"success": True, **result}
+    except Exception as e:
+        logger.exception("Delete batch failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/memory/delete-by-prefix")
+async def delete_by_prefix(request: DeleteByPrefixRequest):
+    """Delete all memories whose source starts with a prefix."""
+    logger.info("Delete by prefix: prefix=%s", request.source_prefix)
+    try:
+        result = memory.delete_by_prefix(request.source_prefix)
+        return {"success": True, **result}
+    except Exception as e:
+        logger.exception("Delete by prefix failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/memory/{memory_id}")
+async def patch_memory(memory_id: int, request: PatchMemoryRequest):
+    """Patch selected fields on an existing memory."""
+    if request.text is None and request.source is None and not request.metadata_patch:
+        raise HTTPException(status_code=400, detail="At least one field must be provided")
+    try:
+        result = memory.update_memory(
+            memory_id=memory_id,
+            text=request.text,
+            source=request.source,
+            metadata_patch=request.metadata_patch,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Patch memory failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/memory/upsert")
+async def upsert_memory(request: UpsertMemoryRequest):
+    """Upsert a memory by stable key + source."""
+    try:
+        result = memory.upsert_memory(
+            text=request.text,
+            source=request.source,
+            key=request.key,
+            metadata=request.metadata,
+        )
+        return {"success": True, **result}
+    except Exception as e:
+        logger.exception("Upsert memory failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/memory/upsert-batch")
+async def upsert_memory_batch(request: UpsertBatchRequest):
+    """Bulk upsert memories by stable keys."""
+    try:
+        entries = [
+            {
+                "text": item.text,
+                "source": item.source,
+                "key": item.key,
+                "metadata": item.metadata,
+            }
+            for item in request.memories
+        ]
+        result = memory.upsert_memories(entries)
+        return {"success": True, **result}
+    except Exception as e:
+        logger.exception("Upsert batch failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -4,17 +4,21 @@ Local semantic search with hybrid BM25+vector retrieval, markdown-aware
 chunking, automatic backups, and concurrency safety.
 """
 
-import faiss
-import numpy as np
 import json
+import logging
+import os
 import re
 import shutil
-import logging
 import threading
-from pathlib import Path
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+from entity_locks import EntityLockManager
 from onnx_embedder import OnnxEmbedder
+from qdrant_config import QdrantSettings
+from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
 
 logger = logging.getLogger("memories")
@@ -22,6 +26,7 @@ logger = logging.getLogger("memories")
 # Cloud sync (optional dependency)
 try:
     from cloud_sync import CloudSync
+
     CLOUD_SYNC_AVAILABLE = True
 except ImportError:
     CLOUD_SYNC_AVAILABLE = False
@@ -29,7 +34,7 @@ except ImportError:
 
 
 class MemoryEngine:
-    """Memories engine with hybrid search and backup support"""
+    """Memories engine with hybrid search and backup support."""
 
     def __init__(
         self,
@@ -43,24 +48,28 @@ class MemoryEngine:
         self.backup_dir = self.data_dir / "backups"
         self.backup_dir.mkdir(exist_ok=True)
 
+        # Legacy FAISS path is kept only for backup compatibility and migration.
         self.index_path = self.data_dir / "index.faiss"
         self.metadata_path = self.data_dir / "metadata.json"
         self.config_path = self.data_dir / "config.json"
+        self.migration_dir = self.data_dir / "migrations"
+        self.faiss_migration_marker = self.migration_dir / "faiss_to_qdrant.done"
 
-        # Read env with fallbacks
-        import os
         self._model_name = model_name or os.getenv("MODEL_NAME", "all-MiniLM-L6-v2")
         self._max_backups = max_backups or int(os.getenv("MAX_BACKUPS", "10"))
         self._model_cache_dir = os.getenv("MODEL_CACHE_DIR", "").strip()
         self._preloaded_model_cache_dir = os.getenv("PRELOADED_MODEL_CACHE_DIR", "").strip()
+
+        requested_backend = os.getenv("STORAGE_BACKEND", "qdrant").strip().lower() or "qdrant"
+        if requested_backend != "qdrant":
+            logger.info("Hard cutover active: ignoring STORAGE_BACKEND=%s and using qdrant", requested_backend)
+        self._storage_backend = "qdrant"
 
         embedder_cache_dir: Optional[str] = None
         if self._model_cache_dir:
             cache_path = Path(self._model_cache_dir)
             cache_path.mkdir(parents=True, exist_ok=True)
 
-            # If a preloaded cache exists in the image and the writable cache is empty,
-            # seed it once so downloads are avoided on first boot.
             if self._preloaded_model_cache_dir:
                 preload_path = Path(self._preloaded_model_cache_dir)
                 try:
@@ -86,62 +95,66 @@ class MemoryEngine:
 
             embedder_cache_dir = str(cache_path)
 
-        # Load ONNX embedder (drop-in replacement for SentenceTransformer)
         self.model = OnnxEmbedder(self._model_name, cache_dir=embedder_cache_dir)
         self.dim = self.model.get_sentence_embedding_dimension()
 
-        # Concurrency lock for write operations
         self._write_lock = threading.Lock()
+        self._entity_locks = EntityLockManager()
 
-        # Initialize or load index
-        self.index = faiss.IndexFlatIP(self.dim)
         self.metadata: List[Dict[str, Any]] = []
         self.config = {
             "model": self._model_name,
             "dimension": self.dim,
+            "storage_backend": self._storage_backend,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_updated": None,
         }
 
-        # BM25 index for hybrid search
         self.bm25_index: Optional[BM25Okapi] = None
 
-        # Cloud sync (optional)
+        self.qdrant_settings = QdrantSettings.from_env()
+        self._qdrant_local_path = self.data_dir / "qdrant"
+        self._qdrant_local_path.mkdir(parents=True, exist_ok=True)
+        self.qdrant_store = QdrantStore(
+            self.qdrant_settings,
+            local_path=str(self._qdrant_local_path),
+        )
+        self.qdrant_store.ensure_collection(self.dim)
+
         self.cloud_sync: Optional[CloudSync] = None
         if CLOUD_SYNC_AVAILABLE:
             self.cloud_sync = CloudSync.from_env()
 
-        # Auto-download from cloud if local is empty
-        if self.cloud_sync and not self.index_path.exists():
+        if self.cloud_sync and not self.metadata_path.exists():
             try:
                 latest = self.cloud_sync.get_latest_snapshot()
                 if latest:
-                    logger.info("Local index empty - downloading latest backup from cloud: %s", latest)
+                    logger.info("Local metadata empty - downloading latest backup from cloud: %s", latest)
                     result = self.cloud_sync.download_backup(latest, self.backup_dir)
-                    # Restore from downloaded backup
                     self.restore_from_backup(latest)
                     logger.info("Restored from cloud: %s", result)
             except Exception as e:
                 logger.error("Auto-download from cloud failed: %s", e)
 
-        # Load existing index if present
-        if self.index_path.exists():
+        if self.metadata_path.exists():
             self.load()
+            self._finalize_legacy_faiss_cutover()
 
     # ------------------------------------------------------------------
     # Integrity
     # ------------------------------------------------------------------
 
     def _check_integrity(self):
-        """Verify index and metadata are in sync"""
-        if self.index.ntotal != len(self.metadata):
+        """Verify store and metadata are in sync."""
+        total_points = self.qdrant_store.count()
+        if total_points != len(self.metadata):
             logger.error(
-                "Integrity mismatch: index has %d vectors, metadata has %d entries",
-                self.index.ntotal,
+                "Integrity mismatch: qdrant has %d vectors, metadata has %d entries",
+                total_points,
                 len(self.metadata),
             )
             raise RuntimeError(
-                f"Index/metadata mismatch: {self.index.ntotal} vectors vs {len(self.metadata)} metadata entries. "
+                f"Index/metadata mismatch: {total_points} vectors vs {len(self.metadata)} metadata entries. "
                 "Restore from backup or rebuild the index."
             )
 
@@ -150,12 +163,49 @@ class MemoryEngine:
     # ------------------------------------------------------------------
 
     def _rebuild_bm25(self):
-        """Rebuild BM25 index from current metadata"""
+        """Rebuild BM25 index from current metadata."""
         if not self.metadata:
             self.bm25_index = None
             return
         corpus = [m["text"].lower().split() for m in self.metadata]
         self.bm25_index = BM25Okapi(corpus)
+
+    def _normalize_ids(self):
+        for i, meta in enumerate(self.metadata):
+            meta["id"] = i
+
+    def _entity_key(self, source: str) -> str:
+        scoped = source.strip() if source else "__unknown__"
+        return f"default:{scoped}"
+
+    def _point_payload(self, meta: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: v for k, v in meta.items() if k != "id"}
+
+    def _reindex_store_from_metadata(self):
+        self.qdrant_store.recreate_collection(self.dim)
+        if not self.metadata:
+            return
+
+        texts = [m["text"] for m in self.metadata]
+        embeddings = self.model.encode(
+            texts,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+
+        batch_size = 256
+        for start in range(0, len(self.metadata), batch_size):
+            end = min(start + batch_size, len(self.metadata))
+            points = []
+            for i in range(start, end):
+                points.append(
+                    {
+                        "id": self.metadata[i]["id"],
+                        "vector": embeddings[i].astype("float32").tolist(),
+                        "payload": self._point_payload(self.metadata[i]),
+                    }
+                )
+            self.qdrant_store.upsert_points(points)
 
     # ------------------------------------------------------------------
     # Chunking
@@ -168,15 +218,9 @@ class MemoryEngine:
         max_chunk_size: int = 1500,
         overlap_size: int = 200,
     ) -> List[Tuple[str, str]]:
-        """Split markdown into semantically meaningful chunks.
-
-        Splits on headers first, then paragraphs, with overlap between chunks.
-        Each chunk carries its section header for context.
-        Returns list of (text, source) tuples.
-        """
+        """Split markdown into semantically meaningful chunks."""
         chunks: List[Tuple[str, str]] = []
 
-        # Split on markdown headers (##, ###, etc.)
         parts = re.split(r"(^#{1,4}\s+.+$)", content, flags=re.MULTILINE)
 
         current_header = ""
@@ -188,9 +232,7 @@ class MemoryEngine:
             if not part:
                 continue
 
-            # Detect header lines
             if re.match(r"^#{1,4}\s+", part):
-                # Flush buffer before switching sections
                 if buffer.strip() and len(buffer.strip()) > 30:
                     chunk_text = f"{current_header}\n\n{buffer.strip()}" if current_header else buffer.strip()
                     chunks.append((chunk_text, f"{source_name}:chunk_{chunk_idx}"))
@@ -199,7 +241,6 @@ class MemoryEngine:
                 current_header = part
                 continue
 
-            # Split section content by paragraphs
             paragraphs = re.split(r"\n\s*\n", part)
             for para in paragraphs:
                 para = para.strip()
@@ -208,11 +249,9 @@ class MemoryEngine:
 
                 candidate = f"{buffer}\n\n{para}".strip() if buffer else para
                 if len(candidate) > max_chunk_size and buffer:
-                    # Flush current buffer as a chunk
                     chunk_text = f"{current_header}\n\n{buffer.strip()}" if current_header else buffer.strip()
                     chunks.append((chunk_text, f"{source_name}:chunk_{chunk_idx}"))
                     chunk_idx += 1
-                    # Overlap: keep the tail of the previous buffer
                     if len(buffer) > overlap_size:
                         buffer = buffer[-overlap_size:] + "\n\n" + para
                     else:
@@ -220,7 +259,6 @@ class MemoryEngine:
                 else:
                     buffer = candidate
 
-        # Flush remaining
         if buffer.strip() and len(buffer.strip()) > 30:
             chunk_text = f"{current_header}\n\n{buffer.strip()}" if current_header else buffer.strip()
             chunks.append((chunk_text, f"{source_name}:chunk_{chunk_idx}"))
@@ -232,8 +270,7 @@ class MemoryEngine:
     # ------------------------------------------------------------------
 
     def _backup(self, prefix: str = "auto") -> Path:
-        """Create timestamped backup of index and metadata"""
-        # Sanitize prefix to prevent path traversal
+        """Create timestamped backup of state files."""
         prefix = re.sub(r"[^a-zA-Z0-9_-]", "_", prefix)
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -241,16 +278,15 @@ class MemoryEngine:
         backup_path = self.backup_dir / backup_name
         backup_path.mkdir(exist_ok=True)
 
-        if self.index_path.exists():
-            shutil.copy2(self.index_path, backup_path / "index.faiss")
         if self.metadata_path.exists():
             shutil.copy2(self.metadata_path, backup_path / "metadata.json")
         if self.config_path.exists():
             shutil.copy2(self.config_path, backup_path / "config.json")
+        if self.index_path.exists():
+            shutil.copy2(self.index_path, backup_path / "index.faiss")
 
         self._cleanup_old_backups(keep=self._max_backups)
 
-        # Upload to cloud if enabled
         if self.cloud_sync:
             try:
                 logger.info("Uploading backup to cloud: %s", backup_name)
@@ -262,39 +298,69 @@ class MemoryEngine:
         return backup_path
 
     def _cleanup_old_backups(self, keep: int = 10):
-        """Keep only N most recent backups"""
-        backups = sorted(
-            self.backup_dir.glob("*_*"), key=lambda p: p.name, reverse=True
-        )
+        """Keep only N most recent backups."""
+        backups = sorted(self.backup_dir.glob("*_*"), key=lambda p: p.name, reverse=True)
         for old_backup in backups[keep:]:
             shutil.rmtree(old_backup, ignore_errors=True)
 
+    def _finalize_legacy_faiss_cutover(self) -> bool:
+        """Archive legacy index.faiss and write one-time cutover marker."""
+        if self.faiss_migration_marker.exists():
+            return False
+        if not self.index_path.exists():
+            return False
+
+        total_points = self.qdrant_store.count()
+        if total_points != len(self.metadata):
+            logger.warning(
+                "Skipping FAISS finalization: qdrant=%d metadata=%d",
+                total_points,
+                len(self.metadata),
+            )
+            return False
+
+        self.migration_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        archived_path = self.migration_dir / f"index.faiss.legacy_{timestamp}"
+        shutil.move(str(self.index_path), str(archived_path))
+
+        marker_payload = {
+            "migration": "faiss_to_qdrant",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "metadata_count": len(self.metadata),
+            "qdrant_count": total_points,
+            "archived_index_path": str(archived_path),
+        }
+        self.faiss_migration_marker.write_text(
+            json.dumps(marker_payload, indent=2),
+            encoding="utf-8",
+        )
+        return True
+
     def restore_from_backup(self, backup_name: str) -> Dict[str, Any]:
-        """Restore index and metadata from a named backup"""
+        """Restore metadata/config and rebuild Qdrant vectors."""
         backup_path = self.backup_dir / backup_name
         if not backup_path.exists():
             raise FileNotFoundError(f"Backup '{backup_name}' not found")
 
-        index_file = backup_path / "index.faiss"
         meta_file = backup_path / "metadata.json"
-        if not index_file.exists() or not meta_file.exists():
+        if not meta_file.exists():
             raise FileNotFoundError(f"Backup '{backup_name}' is incomplete")
 
-        with self._write_lock:
-            # Create safety backup of current state first
-            self._backup(prefix="pre_restore")
+        with self._entity_locks.acquire_many(["__all__"]):
+            with self._write_lock:
+                self._backup(prefix="pre_restore")
 
-            shutil.copy2(index_file, self.index_path)
-            shutil.copy2(meta_file, self.metadata_path)
-            config_file = backup_path / "config.json"
-            if config_file.exists():
-                shutil.copy2(config_file, self.config_path)
+                shutil.copy2(meta_file, self.metadata_path)
+                config_file = backup_path / "config.json"
+                if config_file.exists():
+                    shutil.copy2(config_file, self.config_path)
 
-            self.load()
+                self.load(rebuild_on_mismatch=True)
 
         return {
             "restored_from": backup_name,
-            "total_memories": self.index.ntotal,
+            "total_memories": len(self.metadata),
         }
 
     # ------------------------------------------------------------------
@@ -309,16 +375,13 @@ class MemoryEngine:
         deduplicate: bool = False,
         dedup_threshold: float = 0.90,
     ) -> List[int]:
-        """Add new memories to index (thread-safe)"""
+        """Add new memories to Qdrant + metadata (thread-safe)."""
         if not texts:
             return []
 
-        with self._write_lock:
-            if len(texts) > 10:
-                self._backup(prefix="pre_add")
-
-            # Optional deduplication
-            if deduplicate and self.index.ntotal > 0:
+        keys = [self._entity_key(source) for source in sources]
+        with self._entity_locks.acquire_many(keys):
+            if deduplicate and self.metadata:
                 novel_texts = []
                 novel_sources = []
                 novel_meta = []
@@ -337,93 +400,113 @@ class MemoryEngine:
                 return []
 
             embeddings = self.model.encode(
-                texts, normalize_embeddings=True, show_progress_bar=False
+                texts,
+                normalize_embeddings=True,
+                show_progress_bar=False,
             )
 
-            start_id = len(self.metadata)
-            self.index.add(embeddings.astype("float32"))
+            with self._write_lock:
+                if len(texts) > 10:
+                    self._backup(prefix="pre_add")
 
-            added_ids = []
-            for i, (text, source) in enumerate(zip(texts, sources)):
-                mem_id = start_id + i
-                meta = {
-                    "id": mem_id,
-                    "text": text,
-                    "source": source,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    **(
-                        metadata_list[i]
-                        if metadata_list and i < len(metadata_list)
-                        else {}
-                    ),
-                }
-                self.metadata.append(meta)
-                added_ids.append(mem_id)
+                start_id = len(self.metadata)
+                points = []
+                added_ids = []
+                for i, (text, source) in enumerate(zip(texts, sources)):
+                    mem_id = start_id + i
+                    meta = {
+                        "id": mem_id,
+                        "text": text,
+                        "source": source,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        **(metadata_list[i] if metadata_list and i < len(metadata_list) else {}),
+                    }
+                    self.metadata.append(meta)
+                    points.append(
+                        {
+                            "id": mem_id,
+                            "vector": embeddings[i].astype("float32").tolist(),
+                            "payload": self._point_payload(meta),
+                        }
+                    )
+                    added_ids.append(mem_id)
 
-            self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
-            self.save()
-            self._rebuild_bm25()
+                self.qdrant_store.upsert_points(points)
+                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self.save()
+                self._rebuild_bm25()
 
         return added_ids
 
     def delete_memory(self, memory_id: int) -> Dict[str, Any]:
-        """Delete a single memory by ID. Requires index rebuild."""
-        with self._write_lock:
-            if memory_id < 0 or memory_id >= len(self.metadata):
-                raise ValueError(f"Memory ID {memory_id} not found")
+        """Delete a single memory by ID and keep IDs compact."""
+        if memory_id < 0 or memory_id >= len(self.metadata):
+            raise ValueError(f"Memory ID {memory_id} not found")
+        key = self._entity_key(self.metadata[memory_id].get("source", ""))
+        with self._entity_locks.acquire_many([key]):
+            with self._write_lock:
+                if memory_id < 0 or memory_id >= len(self.metadata):
+                    raise ValueError(f"Memory ID {memory_id} not found")
 
-            self._backup(prefix="pre_delete")
+                self._backup(prefix="pre_delete")
 
-            deleted = self.metadata[memory_id]
-            remaining = [m for i, m in enumerate(self.metadata) if i != memory_id]
-
-            # Rebuild index without the deleted entry
-            self.index = faiss.IndexFlatIP(self.dim)
-            self.metadata = []
-
-            if remaining:
-                texts = [m["text"] for m in remaining]
-                embeddings = self.model.encode(
-                    texts, normalize_embeddings=True, show_progress_bar=False
-                )
-                self.index.add(embeddings.astype("float32"))
-                for i, m in enumerate(remaining):
-                    m["id"] = i
+                deleted = self.metadata[memory_id]
+                remaining = [m for i, m in enumerate(self.metadata) if i != memory_id]
                 self.metadata = remaining
+                self._normalize_ids()
+                self._reindex_store_from_metadata()
 
-            self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
-            self.save()
-            self._rebuild_bm25()
+                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self.save()
+                self._rebuild_bm25()
 
         return {"deleted_id": memory_id, "deleted_text": deleted["text"][:100]}
 
+    def delete_memories(self, memory_ids: List[int]) -> Dict[str, Any]:
+        """Delete multiple memories by IDs in one rebuild pass."""
+        unique_ids = sorted(set(memory_ids))
+        if not unique_ids:
+            return {"deleted_count": 0, "deleted_ids": [], "missing_ids": []}
+
+        existing = [mid for mid in unique_ids if 0 <= mid < len(self.metadata)]
+        existing_set = set(existing)
+        missing = [mid for mid in unique_ids if mid not in existing_set]
+        if not existing:
+            return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing}
+
+        keys = [self._entity_key(self.metadata[mid].get("source", "")) for mid in existing]
+        with self._entity_locks.acquire_many(keys):
+            with self._write_lock:
+                existing_now = [mid for mid in existing if 0 <= mid < len(self.metadata)]
+                if not existing_now:
+                    return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing}
+
+                self._backup(prefix="pre_delete_batch")
+
+                removed = set(existing_now)
+                self.metadata = [m for i, m in enumerate(self.metadata) if i not in removed]
+                self._normalize_ids()
+                self._reindex_store_from_metadata()
+
+                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self.save()
+                self._rebuild_bm25()
+
+        return {
+            "deleted_count": len(existing),
+            "deleted_ids": existing,
+            "missing_ids": missing,
+        }
+
     def supersede(self, old_id: int, new_text: str, source: str = "") -> dict:
-        """Replace a memory with an updated version, preserving audit trail.
-
-        Deletes the old memory and creates a new one with metadata linking
-        back to the original.
-
-        Args:
-            old_id: ID of the memory to supersede
-            new_text: Updated memory text
-            source: Source identifier for the new memory
-
-        Returns:
-            dict with old_id, new_id, and previous_text
-
-        Raises:
-            ValueError: if old_id doesn't exist
-        """
-        # Verify old memory exists
+        """Replace a memory with an updated version, preserving audit trail."""
         if old_id < 0 or old_id >= len(self.metadata):
             raise ValueError(f"Memory {old_id} not found")
 
         previous_text = self.metadata[old_id].get("text", "")
 
-        # Delete old
         self.delete_memory(old_id)
 
-        # Add new with supersede metadata
         added_ids = self.add_memories(
             texts=[new_text],
             sources=[source],
@@ -431,7 +514,6 @@ class MemoryEngine:
         )
         new_id = added_ids[0] if added_ids else None
 
-        # Store supersede info in metadata
         if new_id is not None and new_id < len(self.metadata) and self.metadata[new_id]:
             self.metadata[new_id]["supersedes"] = old_id
             self.metadata[new_id]["previous_text"] = previous_text
@@ -441,65 +523,234 @@ class MemoryEngine:
         return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text}
 
     def delete_by_source(self, source_pattern: str) -> Dict[str, Any]:
-        """Delete all memories matching a source pattern"""
-        with self._write_lock:
-            matching = [
-                m for m in self.metadata if source_pattern in m.get("source", "")
-            ]
-            if not matching:
-                return {"deleted_count": 0}
+        """Delete all memories matching a source pattern."""
+        # Prefix/source deletes are broad operations; lock whole write domain.
+        with self._entity_locks.acquire_many(["__all__"]):
+            with self._write_lock:
+                matching = [m for m in self.metadata if source_pattern in m.get("source", "")]
+                if not matching:
+                    return {"deleted_count": 0}
 
-            self._backup(prefix="pre_delete_source")
+                self._backup(prefix="pre_delete_source")
 
-            remaining = [
-                m for m in self.metadata if source_pattern not in m.get("source", "")
-            ]
+                self.metadata = [m for m in self.metadata if source_pattern not in m.get("source", "")]
+                self._normalize_ids()
+                self._reindex_store_from_metadata()
 
-            self.index = faiss.IndexFlatIP(self.dim)
-            self.metadata = []
-
-            if remaining:
-                texts = [m["text"] for m in remaining]
-                embeddings = self.model.encode(
-                    texts, normalize_embeddings=True, show_progress_bar=False
-                )
-                self.index.add(embeddings.astype("float32"))
-                for i, m in enumerate(remaining):
-                    m["id"] = i
-                self.metadata = remaining
-
-            self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
-            self.save()
-            self._rebuild_bm25()
+                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self.save()
+                self._rebuild_bm25()
 
         return {"deleted_count": len(matching)}
+
+    def delete_by_prefix(self, source_prefix: str) -> Dict[str, Any]:
+        """Delete all memories whose source starts with a prefix."""
+        with self._entity_locks.acquire_many(["__all__"]):
+            with self._write_lock:
+                matching = [m for m in self.metadata if m.get("source", "").startswith(source_prefix)]
+                if not matching:
+                    return {"deleted_count": 0}
+
+                self._backup(prefix="pre_delete_prefix")
+                self.metadata = [m for m in self.metadata if not m.get("source", "").startswith(source_prefix)]
+                self._normalize_ids()
+                self._reindex_store_from_metadata()
+                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self.save()
+                self._rebuild_bm25()
+
+        return {"deleted_count": len(matching)}
+
+    def get_memory(self, memory_id: int) -> Dict[str, Any]:
+        """Fetch a single memory by ID."""
+        if memory_id < 0 or memory_id >= len(self.metadata):
+            raise ValueError(f"Memory ID {memory_id} not found")
+        return dict(self.metadata[memory_id])
+
+    def get_memories(self, memory_ids: List[int]) -> Dict[str, Any]:
+        """Fetch multiple memories by ID."""
+        memories: List[Dict[str, Any]] = []
+        missing_ids: List[int] = []
+        for memory_id in memory_ids:
+            if 0 <= memory_id < len(self.metadata):
+                memories.append(dict(self.metadata[memory_id]))
+            else:
+                missing_ids.append(memory_id)
+        return {"memories": memories, "missing_ids": missing_ids}
+
+    def update_memory(
+        self,
+        memory_id: int,
+        text: Optional[str] = None,
+        source: Optional[str] = None,
+        metadata_patch: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Update fields on an existing memory without changing its ID."""
+        if memory_id < 0 or memory_id >= len(self.metadata):
+            raise ValueError(f"Memory ID {memory_id} not found")
+
+        current = self.metadata[memory_id]
+        old_key = self._entity_key(current.get("source", ""))
+        new_key = self._entity_key(source if source is not None else current.get("source", ""))
+        updated_fields: List[str] = []
+
+        with self._entity_locks.acquire_many([old_key, new_key]):
+            with self._write_lock:
+                if memory_id < 0 or memory_id >= len(self.metadata):
+                    raise ValueError(f"Memory ID {memory_id} not found")
+
+                self._backup(prefix="pre_update")
+                meta = self.metadata[memory_id]
+
+                if text is not None and text != meta.get("text"):
+                    meta["text"] = text
+                    updated_fields.append("text")
+
+                if source is not None and source != meta.get("source"):
+                    meta["source"] = source
+                    updated_fields.append("source")
+
+                if metadata_patch:
+                    for key, value in metadata_patch.items():
+                        if key == "id":
+                            continue
+                        meta[key] = value
+                    updated_fields.append("metadata")
+
+                meta["timestamp"] = datetime.now(timezone.utc).isoformat()
+
+                embedding = self.model.encode(
+                    [meta["text"]],
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )[0].astype("float32").tolist()
+                self.qdrant_store.upsert_points(
+                    [
+                        {
+                            "id": memory_id,
+                            "vector": embedding,
+                            "payload": self._point_payload(meta),
+                        }
+                    ]
+                )
+
+                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self.save()
+                if "text" in updated_fields:
+                    self._rebuild_bm25()
+
+        return {"id": memory_id, "updated_fields": updated_fields}
+
+    def upsert_memory(
+        self,
+        text: str,
+        source: str,
+        key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Upsert a memory by stable entity key + source."""
+        metadata = dict(metadata or {})
+        metadata["entity_key"] = key
+
+        existing_id: Optional[int] = None
+        for m in self.metadata:
+            if m.get("source") == source and m.get("entity_key") == key:
+                existing_id = int(m["id"])
+                break
+
+        if existing_id is None:
+            ids = self.add_memories(
+                texts=[text],
+                sources=[source],
+                metadata_list=[metadata],
+                deduplicate=False,
+            )
+            return {"id": ids[0], "action": "created"}
+
+        result = self.update_memory(
+            memory_id=existing_id,
+            text=text,
+            source=source,
+            metadata_patch=metadata,
+        )
+        return {"id": result["id"], "action": "updated"}
+
+    def upsert_memories(self, entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Upsert multiple memories by stable keys."""
+        created = 0
+        updated = 0
+        errors = 0
+        results: List[Dict[str, Any]] = []
+
+        for entry in entries:
+            try:
+                result = self.upsert_memory(
+                    text=entry["text"],
+                    source=entry["source"],
+                    key=entry["key"],
+                    metadata=entry.get("metadata"),
+                )
+                results.append(result)
+                if result["action"] == "created":
+                    created += 1
+                else:
+                    updated += 1
+            except Exception:
+                errors += 1
+
+        return {
+            "created": created,
+            "updated": updated,
+            "errors": errors,
+            "results": results,
+        }
 
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
 
     def search(
-        self, query: str, k: int = 5, threshold: Optional[float] = None
+        self,
+        query: str,
+        k: int = 5,
+        threshold: Optional[float] = None,
+        source_prefix: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Vector-only search for similar memories"""
-        if self.index.ntotal == 0:
+        """Vector-only search for similar memories."""
+        if not self.metadata:
             return []
 
-        k = min(k, self.index.ntotal, 100)
+        k = min(k, len(self.metadata), 100)
 
         query_vec = self.model.encode(
-            [query], normalize_embeddings=True, show_progress_bar=False
+            [query],
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )[0].astype("float32").tolist()
+
+        hits = self.qdrant_store.search(
+            query_vector=query_vec,
+            limit=k,
+            score_threshold=threshold,
+            consistency=self.qdrant_settings.read_consistency,
         )
 
-        distances, indices = self.index.search(query_vec.astype("float32"), k)
-
-        results = []
-        for dist, idx in zip(distances[0], indices[0]):
-            if idx == -1:
+        results: List[Dict[str, Any]] = []
+        for hit in hits:
+            idx = hit.get("id")
+            if not isinstance(idx, int):
                 continue
-            similarity = float(dist)
+            if idx < 0 or idx >= len(self.metadata):
+                continue
+
+            source = str(self.metadata[idx].get("source", ""))
+            if source_prefix and not source.startswith(source_prefix):
+                continue
+
+            similarity = float(hit.get("score", 0.0))
             if threshold is not None and similarity < threshold:
                 continue
+
             result = {**self.metadata[idx], "similarity": round(similarity, 6)}
             results.append(result)
 
@@ -511,65 +762,65 @@ class MemoryEngine:
         k: int = 5,
         threshold: Optional[float] = None,
         vector_weight: float = 0.7,
+        source_prefix: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Hybrid BM25 + vector search with Reciprocal Rank Fusion"""
-        if self.index.ntotal == 0:
+        """Hybrid BM25 + vector search with Reciprocal Rank Fusion."""
+        if not self.metadata:
             return []
 
-        k = min(k, self.index.ntotal, 100)
-        oversample = min(k * 3, self.index.ntotal)
+        k = min(k, len(self.metadata), 100)
+        oversample = min(k * 3, len(self.metadata))
 
-        # Vector search
-        vector_results = self.search(query, k=oversample)
+        vector_results = self.search(
+            query=query,
+            k=oversample,
+            threshold=threshold,
+            source_prefix=source_prefix,
+        )
 
-        # BM25 search
         bm25_ranked = []
         if self.bm25_index is not None:
             tokenized = query.lower().split()
             bm25_scores = self.bm25_index.get_scores(tokenized)
-            bm25_ranked = sorted(
-                enumerate(bm25_scores), key=lambda x: x[1], reverse=True
-            )[:oversample]
+            if source_prefix:
+                bm25_ranked = [
+                    (idx, score)
+                    for idx, score in enumerate(bm25_scores)
+                    if self.metadata[idx].get("source", "").startswith(source_prefix)
+                ]
+                bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
+            else:
+                bm25_ranked = sorted(enumerate(bm25_scores), key=lambda x: x[1], reverse=True)[:oversample]
 
-        # Reciprocal Rank Fusion
-        RRF_K = 60
+        rrf_k = 60
         rrf_scores: Dict[int, float] = {}
 
         for rank, result in enumerate(vector_results):
             doc_id = result["id"]
-            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + vector_weight * (
-                1.0 / (rank + RRF_K)
-            )
+            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + vector_weight * (1.0 / (rank + rrf_k))
 
         bm25_weight = 1.0 - vector_weight
         for rank, (idx, score) in enumerate(bm25_ranked):
             if score > 0 and idx < len(self.metadata):
                 doc_id = self.metadata[idx]["id"]
-                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + bm25_weight * (
-                    1.0 / (rank + RRF_K)
-                )
+                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + bm25_weight * (1.0 / (rank + rrf_k))
 
         sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
         results = []
         for doc_id, rrf_score in sorted_ids:
-            if doc_id < len(self.metadata):
+            if 0 <= doc_id < len(self.metadata):
                 result = {**self.metadata[doc_id], "rrf_score": round(rrf_score, 6)}
                 if threshold is not None:
-                    # Use vector similarity for threshold filtering
-                    vec_match = next(
-                        (r for r in vector_results if r["id"] == doc_id), None
-                    )
+                    vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
                     if vec_match and vec_match["similarity"] < threshold:
                         continue
                 results.append(result)
 
         return results
 
-    def is_novel(
-        self, text: str, threshold: float = 0.88
-    ) -> Tuple[bool, Optional[Dict]]:
-        """Check if text is novel (not too similar to existing memories)"""
+    def is_novel(self, text: str, threshold: float = 0.88) -> Tuple[bool, Optional[Dict]]:
+        """Check if text is novel (not too similar to existing memories)."""
         results = self.search(text, k=1)
         if not results:
             return True, None
@@ -580,51 +831,46 @@ class MemoryEngine:
     # Deduplication
     # ------------------------------------------------------------------
 
-    def find_duplicates(
-        self, threshold: float = 0.90
-    ) -> List[Dict[str, Any]]:
-        """Find all near-duplicate pairs in the index"""
-        if self.index.ntotal < 2:
+    def find_duplicates(self, threshold: float = 0.90) -> List[Dict[str, Any]]:
+        """Find all near-duplicate pairs in memory texts."""
+        if len(self.metadata) < 2:
             return []
 
         all_embeddings = self.model.encode(
             [m["text"] for m in self.metadata],
             normalize_embeddings=True,
             show_progress_bar=False,
-        )
+        ).astype("float32")
 
-        search_k = min(5, self.index.ntotal)
-        distances, indices = self.index.search(
-            all_embeddings.astype("float32"), search_k
-        )
+        similarities = np.matmul(all_embeddings, all_embeddings.T)
+        search_k = min(5, len(self.metadata))
 
-        duplicates = []
+        duplicates: List[Dict[str, Any]] = []
         seen = set()
+
         for i in range(len(self.metadata)):
-            for j_pos in range(1, distances.shape[1]):
-                j = int(indices[i][j_pos])
-                if j == -1:
-                    continue
-                sim = float(distances[i][j_pos])
-                pair_key = (min(i, j), max(i, j))
+            row = similarities[i]
+            nearest = np.argsort(row)[::-1]
+            neighbors = [j for j in nearest if j != i][:search_k]
+            for j in neighbors:
+                sim = float(row[j])
+                pair_key = (min(i, int(j)), max(i, int(j)))
                 if sim >= threshold and pair_key not in seen:
                     seen.add(pair_key)
                     duplicates.append(
                         {
-                            "id_a": i,
-                            "id_b": j,
+                            "id_a": pair_key[0],
+                            "id_b": pair_key[1],
                             "similarity": round(sim, 4),
-                            "text_a": self.metadata[i]["text"][:120],
-                            "text_b": self.metadata[j]["text"][:120],
+                            "text_a": self.metadata[pair_key[0]]["text"][:120],
+                            "text_b": self.metadata[pair_key[1]]["text"][:120],
                         }
                     )
 
         return sorted(duplicates, key=lambda x: x["similarity"], reverse=True)
 
-    def deduplicate(
-        self, threshold: float = 0.90, dry_run: bool = True
-    ) -> Dict[str, Any]:
-        """Remove near-duplicate memories, keeping the earliest entry"""
+    def deduplicate(self, threshold: float = 0.90, dry_run: bool = True) -> Dict[str, Any]:
+        """Remove near-duplicate memories, keeping the earliest entry."""
         pairs = self.find_duplicates(threshold)
         if not pairs:
             return {"duplicate_pairs": 0, "removed": 0, "dry_run": dry_run}
@@ -641,29 +887,17 @@ class MemoryEngine:
                 "pairs": pairs[:20],
             }
 
-        with self._write_lock:
-            self._backup(prefix="pre_dedup")
+        with self._entity_locks.acquire_many(["__all__"]):
+            with self._write_lock:
+                self._backup(prefix="pre_dedup")
 
-            remaining = [
-                m for i, m in enumerate(self.metadata) if i not in ids_to_remove
-            ]
+                self.metadata = [m for i, m in enumerate(self.metadata) if i not in ids_to_remove]
+                self._normalize_ids()
+                self._reindex_store_from_metadata()
 
-            self.index = faiss.IndexFlatIP(self.dim)
-            self.metadata = []
-
-            if remaining:
-                texts = [m["text"] for m in remaining]
-                embeddings = self.model.encode(
-                    texts, normalize_embeddings=True, show_progress_bar=False
-                )
-                self.index.add(embeddings.astype("float32"))
-                for i, m in enumerate(remaining):
-                    m["id"] = i
-                self.metadata = remaining
-
-            self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
-            self.save()
-            self._rebuild_bm25()
+                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self.save()
+                self._rebuild_bm25()
 
         return {
             "duplicate_pairs": len(pairs),
@@ -677,14 +911,15 @@ class MemoryEngine:
     # ------------------------------------------------------------------
 
     def list_memories(
-        self, offset: int = 0, limit: int = 20, source_filter: Optional[str] = None
+        self,
+        offset: int = 0,
+        limit: int = 20,
+        source_filter: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """List memories with pagination and optional source filter"""
+        """List memories with pagination and optional source filter."""
         filtered = self.metadata
         if source_filter:
-            filtered = [
-                m for m in filtered if source_filter in m.get("source", "")
-            ]
+            filtered = [m for m in filtered if source_filter in m.get("source", "")]
 
         total = len(filtered)
         page = filtered[offset : offset + limit]
@@ -701,68 +936,97 @@ class MemoryEngine:
     # ------------------------------------------------------------------
 
     def save(self):
-        """Persist index and metadata to disk"""
-        faiss.write_index(self.index, str(self.index_path))
-        with open(self.metadata_path, "w") as f:
+        """Persist metadata/config to disk."""
+        with open(self.metadata_path, "w", encoding="utf-8") as f:
             json.dump(self.metadata, f, indent=2)
-        with open(self.config_path, "w") as f:
+        with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(self.config, f, indent=2)
 
-    def load(self):
-        """Load index and metadata from disk"""
-        self.index = faiss.read_index(str(self.index_path))
-        with open(self.metadata_path) as f:
+    def load(self, rebuild_on_mismatch: bool = False):
+        """Load metadata/config and validate against Qdrant state."""
+        with open(self.metadata_path, encoding="utf-8") as f:
             self.metadata = json.load(f)
         if self.config_path.exists():
-            with open(self.config_path) as f:
+            with open(self.config_path, encoding="utf-8") as f:
                 self.config.update(json.load(f))
+
+        self._normalize_ids()
+
+        total_points = self.qdrant_store.count()
+        if total_points == 0 and self.metadata:
+            logger.info("Qdrant collection empty with existing metadata. Rebuilding vectors.")
+            self._reindex_store_from_metadata()
+        elif rebuild_on_mismatch and total_points != len(self.metadata):
+            logger.info(
+                "Qdrant mismatch during restore/load (%d vs %d). Rebuilding vectors.",
+                total_points,
+                len(self.metadata),
+            )
+            self._reindex_store_from_metadata()
+
         self._check_integrity()
         self._rebuild_bm25()
 
     def rebuild_from_files(self, file_paths: List[str]) -> Dict[str, Any]:
-        """Rebuild index from markdown files using proper chunking"""
-        with self._write_lock:
-            backup_path = self._backup(prefix="pre_rebuild")
+        """Rebuild index from markdown files using proper chunking."""
+        with self._entity_locks.acquire_many(["__all__"]):
+            with self._write_lock:
+                backup_path = self._backup(prefix="pre_rebuild")
 
-            self.index = faiss.IndexFlatIP(self.dim)
-            self.metadata = []
+                self.metadata = []
 
-            texts = []
-            sources = []
-            files_processed = 0
+                texts = []
+                sources = []
+                files_processed = 0
 
-            for file_path in file_paths:
-                path = Path(file_path)
-                if not path.exists():
-                    continue
-                try:
-                    content = path.read_text()
-                    chunks = self.chunk_markdown(content, path.name)
-                    for chunk_text, chunk_source in chunks:
-                        texts.append(chunk_text)
-                        sources.append(chunk_source)
-                    files_processed += 1
-                except Exception as e:
-                    logger.error("Error reading %s: %s", file_path, e)
+                for file_path in file_paths:
+                    path = Path(file_path)
+                    if not path.exists():
+                        continue
+                    try:
+                        content = path.read_text()
+                        chunks = self.chunk_markdown(content, path.name)
+                        for chunk_text, chunk_source in chunks:
+                            texts.append(chunk_text)
+                            sources.append(chunk_source)
+                        files_processed += 1
+                    except Exception as e:
+                        logger.error("Error reading %s: %s", file_path, e)
 
-            if texts:
-                # Bypass lock since we already hold it
-                embeddings = self.model.encode(
-                    texts, normalize_embeddings=True, show_progress_bar=False
-                )
-                self.index.add(embeddings.astype("float32"))
-                for i, (text, source) in enumerate(zip(texts, sources)):
-                    self.metadata.append(
-                        {
+                if texts:
+                    embeddings = self.model.encode(
+                        texts,
+                        normalize_embeddings=True,
+                        show_progress_bar=False,
+                    )
+
+                    self.qdrant_store.recreate_collection(self.dim)
+
+                    points = []
+                    for i, (text, source) in enumerate(zip(texts, sources)):
+                        meta = {
                             "id": i,
                             "text": text,
                             "source": source,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
-                    )
-                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
-                self.save()
-                self._rebuild_bm25()
+                        self.metadata.append(meta)
+                        points.append(
+                            {
+                                "id": i,
+                                "vector": embeddings[i].astype("float32").tolist(),
+                                "payload": self._point_payload(meta),
+                            }
+                        )
+
+                    self.qdrant_store.upsert_points(points)
+                    self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    self.save()
+                    self._rebuild_bm25()
+                else:
+                    self.qdrant_store.recreate_collection(self.dim)
+                    self.save()
+                    self._rebuild_bm25()
 
         return {
             "files_processed": files_processed,
@@ -771,46 +1035,62 @@ class MemoryEngine:
         }
 
     def stats(self) -> Dict[str, Any]:
-        """Get memory statistics"""
+        """Get memory statistics."""
+        qdrant_size = 0
+        if self._qdrant_local_path.exists():
+            for path in self._qdrant_local_path.rglob("*"):
+                if path.is_file():
+                    qdrant_size += path.stat().st_size
+
         return {
-            "total_memories": self.index.ntotal,
+            "total_memories": len(self.metadata),
             "dimension": self.dim,
             "model": self.config.get("model"),
             "created_at": self.config.get("created_at"),
             "last_updated": self.config.get("last_updated"),
-            "index_size_bytes": (
-                self.index_path.stat().st_size if self.index_path.exists() else 0
-            ),
+            "index_size_bytes": qdrant_size,
             "backup_count": len(list(self.backup_dir.glob("*_*"))),
         }
 
     def stats_light(self) -> Dict[str, Any]:
-        """Cheap stats for health checks (no filesystem I/O)"""
+        """Cheap stats for health checks (no filesystem I/O)."""
         return {
-            "total_memories": self.index.ntotal,
+            "total_memories": len(self.metadata),
             "dimension": self.dim,
             "model": self.config.get("model"),
         }
+
+    def is_ready(self) -> Dict[str, Any]:
+        """Readiness probe for cutover and orchestration."""
+        try:
+            qdrant_count = self.qdrant_store.count()
+            metadata_count = len(self.metadata)
+            ready = qdrant_count == metadata_count
+            return {
+                "ready": ready,
+                "status": "ready" if ready else "degraded",
+                "qdrant_count": qdrant_count,
+                "metadata_count": metadata_count,
+            }
+        except Exception as exc:
+            return {
+                "ready": False,
+                "status": "error",
+                "error": str(exc),
+            }
 
     # ------------------------------------------------------------------
     # Public API methods (for API endpoints)
     # ------------------------------------------------------------------
 
     def create_backup(self, prefix: str = "manual") -> Path:
-        """Create a manual backup with optional prefix
-        
-        Args:
-            prefix: Prefix for backup name (e.g., "manual" creates "manual_20260214_120000")
-        
-        Returns:
-            Path to the created backup directory
-        """
+        """Create a manual backup with optional prefix."""
         return self._backup(prefix=prefix)
 
     def get_cloud_sync(self) -> Optional["CloudSync"]:
-        """Get cloud sync client (None if not available/enabled)"""
+        """Get cloud sync client (None if not available/enabled)."""
         return self.cloud_sync
 
     def get_backup_dir(self) -> Path:
-        """Get backup directory path"""
+        """Get backup directory path."""
         return self.backup_dir

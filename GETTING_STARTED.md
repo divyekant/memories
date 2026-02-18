@@ -10,6 +10,19 @@ cd memories
 docker compose -f docker-compose.snippet.yml up -d
 ```
 
+### Optional: Start with a vector cluster (N nodes)
+
+```bash
+python scripts/render_cluster_compose.py \
+  --nodes 3 \
+  --output docker-compose.cluster.generated.yml
+
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.cluster.generated.yml \
+  up -d
+```
+
 ## 2) Verify API and UI
 
 ```bash

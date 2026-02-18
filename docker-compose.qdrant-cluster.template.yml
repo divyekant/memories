@@ -1,0 +1,20 @@
+# Template reference for generated cluster overlay.
+# Generate concrete file with:
+#   python scripts/render_qdrant_cluster_compose.py --nodes 3 --output docker-compose.qdrant-cluster.generated.yml
+
+services:
+  qdrant_node1:
+    image: qdrant/qdrant:v1.15.4
+    command:
+      - ./qdrant
+      - --uri
+      - http://qdrant_node1:6335
+
+  qdrant_nodeN:
+    image: qdrant/qdrant:v1.15.4
+    command:
+      - ./qdrant
+      - --bootstrap
+      - http://qdrant_node1:6335
+      - --uri
+      - http://qdrant_nodeN:6335
