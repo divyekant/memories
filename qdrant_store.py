@@ -57,6 +57,30 @@ class QdrantStore:
 
         self._create_collection(dim=dim)
 
+    def get_collection_dimension(self) -> Optional[int]:
+        try:
+            collection_info = self.client.get_collection(collection_name=self.collection)
+        except Exception:
+            return None
+
+        config = getattr(collection_info, "config", None)
+        params = getattr(config, "params", None) if config is not None else None
+        vectors = getattr(params, "vectors", None) if params is not None else None
+        if vectors is None:
+            return None
+
+        size = getattr(vectors, "size", None)
+        if size is not None:
+            return int(size)
+
+        if isinstance(vectors, dict):
+            for vector_cfg in vectors.values():
+                named_size = getattr(vector_cfg, "size", None)
+                if named_size is not None:
+                    return int(named_size)
+
+        return None
+
     def _create_collection(self, dim: int) -> None:
         self.client.create_collection(
             collection_name=self.collection,

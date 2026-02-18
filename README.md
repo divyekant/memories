@@ -574,7 +574,9 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 | `DATA_DIR` | `/data` | Persistent storage path |
 | `WORKSPACE_DIR` | `/workspace` | Read-only workspace for index rebuilds |
 | `API_KEY` | (empty) | API key for auth. Empty = no auth. |
-| `MODEL_NAME` | `all-MiniLM-L6-v2` | Embedding model (ONNX Runtime) |
+| `EMBED_PROVIDER` | `onnx` | Embedding provider: `onnx` (local) or `openai` (BYOK) |
+| `EMBED_MODEL` | (unset) | Provider-specific embedding model override |
+| `MODEL_NAME` | `all-MiniLM-L6-v2` | Default ONNX model used when `EMBED_PROVIDER=onnx` and `EMBED_MODEL` is unset |
 | `MODEL_CACHE_DIR` | (unset; Docker image sets `/data/model-cache`) | Optional writable cache path for downloaded model files |
 | `PRELOADED_MODEL_CACHE_DIR` | (unset; Docker image sets `/opt/model-cache`) | Optional read-only cache to seed `MODEL_CACHE_DIR` when empty |
 | `MAX_BACKUPS` | `10` | Number of backups to keep |

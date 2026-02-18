@@ -60,7 +60,7 @@ class MemoryEngine:
         self._model_cache_dir = os.getenv("MODEL_CACHE_DIR", "").strip()
         self._preloaded_model_cache_dir = os.getenv("PRELOADED_MODEL_CACHE_DIR", "").strip()
         self._embedder_cache_dir: Optional[str] = None
-        self._embed_provider = os.getenv("EMBED_PROVIDER", "openai").strip().lower()
+        self._embed_provider = os.getenv("EMBED_PROVIDER", "onnx").strip().lower()
         self._embed_model = os.getenv("EMBED_MODEL", "").strip()
 
         requested_backend = os.getenv("STORAGE_BACKEND", "qdrant").strip().lower() or "qdrant"
@@ -108,7 +108,8 @@ class MemoryEngine:
 
         self.metadata: List[Dict[str, Any]] = []
         self.config = {
-            "model": self._model_name,
+            "model": self._active_embed_model(),
+            "embed_provider": self._embed_provider,
             "dimension": self.dim,
             "storage_backend": self._storage_backend,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -968,7 +969,28 @@ class MemoryEngine:
             with open(self.config_path, encoding="utf-8") as f:
                 self.config.update(json.load(f))
 
+        self.config["model"] = self._active_embed_model()
+        self.config["embed_provider"] = self._embed_provider
+        self.config["dimension"] = self.dim
+
         self._normalize_ids()
+
+        collection_dim = self.qdrant_store.get_collection_dimension()
+        if collection_dim is not None and collection_dim != self.dim:
+            if self.metadata:
+                logger.info(
+                    "Embedding dimension changed (%d -> %d). Rebuilding vectors from metadata.",
+                    collection_dim,
+                    self.dim,
+                )
+                self._reindex_store_from_metadata()
+            else:
+                logger.info(
+                    "Embedding dimension changed (%d -> %d) with empty metadata. Recreating collection.",
+                    collection_dim,
+                    self.dim,
+                )
+                self.qdrant_store.recreate_collection(self.dim)
 
         total_points = self.qdrant_store.count()
         if total_points == 0 and self.metadata:
@@ -1105,18 +1127,25 @@ class MemoryEngine:
         """Create a manual backup with optional prefix."""
         return self._backup(prefix=prefix)
 
+    def _active_embed_model(self) -> str:
+        if self._embed_provider == "openai":
+            return self._embed_model or "text-embedding-3-small"
+        if self._embed_provider == "onnx":
+            return self._embed_model or self._model_name
+        return self._embed_model or self._model_name
+
     def _make_embedder(self):
         """Instantiate the configured embedding provider."""
         if self._embed_provider == "onnx":
             from onnx_embedder import OnnxEmbedder
-            model = self._embed_model or self._model_name
+            model = self._active_embed_model()
             logger.info("Embedder: provider=onnx, model=%s", model)
             return OnnxEmbedder(model, cache_dir=self._embedder_cache_dir)
 
         if self._embed_provider == "openai":
             from openai_embedder import OpenAIEmbedder
             import os as _os
-            model = self._embed_model or "text-embedding-3-small"
+            model = self._active_embed_model()
             api_key = _os.getenv("OPENAI_API_KEY", "").strip() or None
             if not api_key:
                 raise ValueError(
@@ -1148,6 +1177,8 @@ class MemoryEngine:
 
                     self.model = new_model
                     self.dim = new_dim
+                    self.config["model"] = self._active_embed_model()
+                    self.config["embed_provider"] = self._embed_provider
                     self.config["dimension"] = new_dim
                     self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                     self.save()

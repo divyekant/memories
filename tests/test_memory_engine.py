@@ -257,6 +257,69 @@ class TestPersistence:
         with pytest.raises(RuntimeError, match="mismatch"):
             MemoryEngine(data_dir=str(tmp_path))
 
+    def test_load_reindexes_when_embedding_dimension_changes(self, tmp_path, monkeypatch):
+        import memory_engine as memory_engine_module
+
+        class DummyEmbedder:
+            def get_sentence_embedding_dimension(self):
+                return 1536
+
+        class FakeQdrantStore:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def ensure_collection(self, dim):
+                return None
+
+            def count(self, exact=True):
+                return 1
+
+            def get_collection_dimension(self):
+                return 384
+
+        called = {"reindexed": False}
+
+        def fake_reindex(self):
+            called["reindexed"] = True
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "metadata.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "id": 0,
+                        "text": "persisted data",
+                        "source": "test.md",
+                        "timestamp": "2026-02-18T00:00:00+00:00",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (data_dir / "config.json").write_text(
+            json.dumps({"dimension": 384, "model": "all-MiniLM-L6-v2"}),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("EMBED_PROVIDER", "openai")
+        monkeypatch.setenv("EMBED_MODEL", "text-embedding-3-small")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setattr(memory_engine_module, "QdrantStore", FakeQdrantStore)
+        monkeypatch.setattr(
+            memory_engine_module.MemoryEngine,
+            "_make_embedder",
+            lambda self: DummyEmbedder(),
+        )
+        monkeypatch.setattr(
+            memory_engine_module.MemoryEngine,
+            "_reindex_store_from_metadata",
+            fake_reindex,
+        )
+
+        memory_engine_module.MemoryEngine(data_dir=str(data_dir))
+        assert called["reindexed"] is True
+
 
 class TestModelCache:
     def test_model_cache_dir_env_is_forwarded_to_embedder(self, tmp_path, monkeypatch):
@@ -265,15 +328,17 @@ class TestModelCache:
         captured = {}
 
         class DummyEmbedder:
-            def __init__(self, model_name="all-MiniLM-L6-v2", cache_dir=None):
-                captured["model_name"] = model_name
-                captured["cache_dir"] = cache_dir
-
             def get_sentence_embedding_dimension(self):
                 return 384
 
+        def fake_make_embedder(self):
+            captured["model_name"] = self._active_embed_model()
+            captured["cache_dir"] = self._embedder_cache_dir
+            return DummyEmbedder()
+
         cache_dir = tmp_path / "model-cache"
-        monkeypatch.setattr(memory_engine_module, "OnnxEmbedder", DummyEmbedder)
+        monkeypatch.setenv("EMBED_PROVIDER", "onnx")
+        monkeypatch.setattr(memory_engine_module.MemoryEngine, "_make_embedder", fake_make_embedder)
         monkeypatch.setenv("MODEL_CACHE_DIR", str(cache_dir))
         monkeypatch.delenv("PRELOADED_MODEL_CACHE_DIR", raising=False)
 
@@ -288,11 +353,12 @@ class TestModelCache:
         captured = {}
 
         class DummyEmbedder:
-            def __init__(self, model_name="all-MiniLM-L6-v2", cache_dir=None):
-                captured["cache_dir"] = cache_dir
-
             def get_sentence_embedding_dimension(self):
                 return 384
+
+        def fake_make_embedder(self):
+            captured["cache_dir"] = self._embedder_cache_dir
+            return DummyEmbedder()
 
         model_cache = tmp_path / "model-cache"
         preload_cache = tmp_path / "preloaded-cache"
@@ -300,7 +366,8 @@ class TestModelCache:
         preload_file.parent.mkdir(parents=True, exist_ok=True)
         preload_file.write_text("seeded", encoding="utf-8")
 
-        monkeypatch.setattr(memory_engine_module, "OnnxEmbedder", DummyEmbedder)
+        monkeypatch.setenv("EMBED_PROVIDER", "onnx")
+        monkeypatch.setattr(memory_engine_module.MemoryEngine, "_make_embedder", fake_make_embedder)
         monkeypatch.setenv("MODEL_CACHE_DIR", str(model_cache))
         monkeypatch.setenv("PRELOADED_MODEL_CACHE_DIR", str(preload_cache))
 
@@ -308,6 +375,35 @@ class TestModelCache:
 
         assert captured["cache_dir"] == str(model_cache)
         assert (model_cache / "models--seed" / "blob.bin").read_text(encoding="utf-8") == "seeded"
+
+    def test_embed_provider_defaults_to_onnx(self, tmp_path, monkeypatch):
+        import memory_engine as memory_engine_module
+
+        class DummyEmbedder:
+            def get_sentence_embedding_dimension(self):
+                return 384
+
+        monkeypatch.delenv("EMBED_PROVIDER", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(memory_engine_module.MemoryEngine, "_make_embedder", lambda self: DummyEmbedder())
+
+        engine = memory_engine_module.MemoryEngine(data_dir=str(tmp_path / "data"))
+        assert engine._embed_provider == "onnx"
+
+    def test_openai_provider_uses_embed_model_in_stats(self, tmp_path, monkeypatch):
+        import memory_engine as memory_engine_module
+
+        class DummyEmbedder:
+            def get_sentence_embedding_dimension(self):
+                return 1536
+
+        monkeypatch.setenv("EMBED_PROVIDER", "openai")
+        monkeypatch.setenv("EMBED_MODEL", "text-embedding-3-small")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setattr(memory_engine_module.MemoryEngine, "_make_embedder", lambda self: DummyEmbedder())
+
+        engine = memory_engine_module.MemoryEngine(data_dir=str(tmp_path / "data"))
+        assert engine.stats_light()["model"] == "text-embedding-3-small"
 
 
 class TestEmbedderReload:
@@ -317,9 +413,9 @@ class TestEmbedderReload:
         created = []
 
         class DummyEmbedder:
-            def __init__(self, model_name="all-MiniLM-L6-v2", cache_dir=None):
-                self.model_name = model_name
-                self.cache_dir = cache_dir
+            def __init__(self):
+                self.model_name = "all-MiniLM-L6-v2"
+                self.cache_dir = None
                 self.closed = False
                 created.append(self)
 
@@ -329,7 +425,12 @@ class TestEmbedderReload:
             def close(self):
                 self.closed = True
 
-        monkeypatch.setattr(memory_engine_module, "OnnxEmbedder", DummyEmbedder)
+        monkeypatch.setenv("EMBED_PROVIDER", "onnx")
+        monkeypatch.setattr(
+            memory_engine_module.MemoryEngine,
+            "_make_embedder",
+            lambda self: DummyEmbedder(),
+        )
 
         engine = memory_engine_module.MemoryEngine(data_dir=str(tmp_path / "data"))
         old_embedder = engine.model

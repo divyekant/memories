@@ -192,7 +192,7 @@ if [ "$UNINSTALL" = true ]; then
   fi
 
   echo ""
-  echo "Manual cleanup (optional): remove MEMORIES_* and EXTRACT_* vars from $SHELL_PROFILE"
+  echo "Manual cleanup (optional): remove MEMORIES_* from $HOME/.config/memories/env and EXTRACT_* from $REPO_ROOT/.env"
   exit 0
 fi
 

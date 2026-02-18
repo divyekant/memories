@@ -45,3 +45,11 @@ def test_explicit_target_flags_override_auto_detection(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "targets=codex,openclaw" in result.stdout
     assert "mode=uninstall" in result.stdout
+
+
+def test_uninstall_mode_does_not_require_shell_profile_variable(tmp_path: Path) -> None:
+    (tmp_path / ".claude").mkdir(parents=True)
+
+    result = _run_installer(tmp_path, "--claude", "--uninstall")
+    assert result.returncode == 0
+    assert "unbound variable" not in (result.stderr + result.stdout).lower()
