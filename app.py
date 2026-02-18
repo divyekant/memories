@@ -553,6 +553,21 @@ async def _periodic_embedder_reload() -> None:
 async def lifespan(app: FastAPI):
     global memory
     logger.info("Starting Memories service...")
+    _embed_provider = os.getenv("EMBED_PROVIDER", "openai").strip().lower()
+    _embed_model = os.getenv("EMBED_MODEL", "").strip()
+    if _embed_provider == "openai":
+        _openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not _openai_key:
+            raise RuntimeError(
+                "EMBED_PROVIDER=openai (default) requires OPENAI_API_KEY. "
+                "Set OPENAI_API_KEY or use EMBED_PROVIDER=onnx for local embeddings."
+            )
+        logger.info(
+            "Embedding: provider=openai, model=%s",
+            _embed_model or "text-embedding-3-small",
+        )
+    else:
+        logger.info("Embedding: provider=%s, model=%s", _embed_provider, _embed_model or "all-MiniLM-L6-v2")
     memory = MemoryEngine(data_dir=DATA_DIR)
     logger.info(
         "Loaded %d memories (%s model, %d dims)",

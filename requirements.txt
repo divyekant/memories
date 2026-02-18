@@ -8,3 +8,4 @@ qdrant-client==1.14.2
 numpy==1.26.4; python_version < "3.13"
 numpy>=2.1.0,<3; python_version >= "3.13"
 rank-bm25==0.2.2
+openai>=2.21.0

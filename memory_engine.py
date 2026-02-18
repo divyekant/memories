@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from entity_locks import EntityLockManager
-from onnx_embedder import OnnxEmbedder
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
@@ -61,6 +60,8 @@ class MemoryEngine:
         self._model_cache_dir = os.getenv("MODEL_CACHE_DIR", "").strip()
         self._preloaded_model_cache_dir = os.getenv("PRELOADED_MODEL_CACHE_DIR", "").strip()
         self._embedder_cache_dir: Optional[str] = None
+        self._embed_provider = os.getenv("EMBED_PROVIDER", "openai").strip().lower()
+        self._embed_model = os.getenv("EMBED_MODEL", "").strip()
 
         requested_backend = os.getenv("STORAGE_BACKEND", "qdrant").strip().lower() or "qdrant"
         if requested_backend != "qdrant":
@@ -99,7 +100,7 @@ class MemoryEngine:
 
         self._embedder_cache_dir = embedder_cache_dir
         self._embedder_lock = threading.RLock()
-        self.model = OnnxEmbedder(self._model_name, cache_dir=embedder_cache_dir)
+        self.model = self._make_embedder()
         self.dim = self.model.get_sentence_embedding_dimension()
 
         self._write_lock = threading.Lock()
@@ -1104,13 +1105,38 @@ class MemoryEngine:
         """Create a manual backup with optional prefix."""
         return self._backup(prefix=prefix)
 
+    def _make_embedder(self):
+        """Instantiate the configured embedding provider."""
+        if self._embed_provider == "onnx":
+            from onnx_embedder import OnnxEmbedder
+            model = self._embed_model or self._model_name
+            logger.info("Embedder: provider=onnx, model=%s", model)
+            return OnnxEmbedder(model, cache_dir=self._embedder_cache_dir)
+
+        if self._embed_provider == "openai":
+            from openai_embedder import OpenAIEmbedder
+            import os as _os
+            model = self._embed_model or "text-embedding-3-small"
+            api_key = _os.getenv("OPENAI_API_KEY", "").strip() or None
+            if not api_key:
+                raise ValueError(
+                    "EMBED_PROVIDER=openai requires OPENAI_API_KEY to be set"
+                )
+            logger.info("Embedder: provider=openai, model=%s", model)
+            return OpenAIEmbedder(model, api_key=api_key)
+
+        raise ValueError(
+            f"Unknown EMBED_PROVIDER={self._embed_provider!r}. "
+            "Valid values: openai, onnx"
+        )
+
     def reload_embedder(self) -> Dict[str, Any]:
         """Recreate embedder runtime and release old inference objects."""
         with self._entity_locks.acquire_many(["__all__"]):
             with self._write_lock:
                 with self._embedder_lock:
                     old_model = self.model
-                    new_model = OnnxEmbedder(self._model_name, cache_dir=self._embedder_cache_dir)
+                    new_model = self._make_embedder()
                     new_dim = new_model.get_sentence_embedding_dimension()
                     if new_dim != self.dim:
                         close_fn = getattr(new_model, "close", None)
