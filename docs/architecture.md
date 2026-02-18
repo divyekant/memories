@@ -24,7 +24,7 @@ Client (HTTP or MCP)
   -> FastAPI API (app.py)
   -> MemoryEngine (memory_engine.py)
   -> ONNX Embedder (onnx_embedder.py) + Memories + BM25
-  -> Persistent files (/data/index.faiss, /data/metadata.json, /data/backups)
+  -> Persistent files (/data/vector_index.bin, /data/metadata.json, /data/backups)
 ```
 
 ---
@@ -62,7 +62,7 @@ Client (HTTP or MCP)
 
 ### Primary state
 
-- `index.faiss`: dense vectors for semantic retrieval
+- `vector_index.bin`: dense vectors for semantic retrieval
 - `metadata.json`: memory text, source, timestamp, and optional metadata
 - `config.json`: model + index metadata
 

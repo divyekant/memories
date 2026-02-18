@@ -120,6 +120,27 @@ server.tool(
 );
 
 server.tool(
+  "memory_delete_batch",
+  "Delete multiple memories by ID in one operation.",
+  {
+    ids: z.array(z.number().int().min(0)).min(1).max(1000).describe("Memory IDs to delete"),
+  },
+  async ({ ids }) => {
+    const data = await memoriesRequest("/memory/delete-batch", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    });
+    return {
+      content: [{
+        type: "text",
+        text: `Deleted ${data.deleted_count} memories. IDs: ${data.deleted_ids.join(", ") || "none"}`
+          + (data.missing_ids?.length ? ` (missing: ${data.missing_ids.join(", ")})` : ""),
+      }],
+    };
+  }
+);
+
+server.tool(
   "memory_list",
   "Browse stored memories with pagination. Use to see what's in the memory index or filter by source.",
   {

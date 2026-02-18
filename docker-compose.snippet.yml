@@ -1,6 +1,18 @@
 # Add this to your existing ~/web/docker-compose.yml
 
 services:
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ../projects/memories/data/qdrant:/qdrant/storage
+    networks:
+      - tunnel
+
   memories:
     build:
       context: ../projects/memories
@@ -11,6 +23,8 @@ services:
     image: memories:${MEMORIES_IMAGE_TARGET:-core}
     container_name: memories
     restart: unless-stopped
+    depends_on:
+      - qdrant
     mem_limit: ${MEMORIES_MEM_LIMIT:-3g}
     ports:
       - "8900:8000"
@@ -23,6 +37,15 @@ services:
       - API_KEY=              # Set to enable auth (e.g. API_KEY=my-secret-key)
       - MODEL_NAME=all-MiniLM-L6-v2
       - MAX_BACKUPS=10
+      # Qdrant backend
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-memories}
+      - QDRANT_WAIT=${QDRANT_WAIT:-true}
+      - QDRANT_WRITE_ORDERING=${QDRANT_WRITE_ORDERING:-strong}
+      - QDRANT_READ_CONSISTENCY=${QDRANT_READ_CONSISTENCY:-majority}
+      - QDRANT_REPLICATION_FACTOR=${QDRANT_REPLICATION_FACTOR:-1}
+      - QDRANT_WRITE_CONSISTENCY_FACTOR=${QDRANT_WRITE_CONSISTENCY_FACTOR:-1}
       # Optional extraction provider pass-through
       - EXTRACT_PROVIDER=${EXTRACT_PROVIDER:-}
       - EXTRACT_MODEL=${EXTRACT_MODEL:-}

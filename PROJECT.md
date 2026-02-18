@@ -35,7 +35,7 @@ Decision rationale: `docs/decisions.md`
 
 Persistent files under `DATA_DIR` (default `/data`):
 
-- `index.faiss`
+- `vector_index.bin`
 - `metadata.json`
 - `config.json`
 - `backups/` (rolling backups; controlled by `MAX_BACKUPS`)

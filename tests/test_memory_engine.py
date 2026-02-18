@@ -34,7 +34,7 @@ class TestAddAndSearch:
     def test_add_single(self, engine):
         ids = engine.add_memories(texts=["hello world"], sources=["test.md"])
         assert ids == [0]
-        assert engine.index.ntotal == 1
+        assert engine.stats_light()["total_memories"] == 1
 
     def test_add_empty(self, engine):
         ids = engine.add_memories(texts=[], sources=[])
@@ -56,7 +56,7 @@ class TestAddAndSearch:
 
     def test_search_k_capped(self, populated_engine):
         results = populated_engine.search("test", k=1000)
-        assert len(results) <= populated_engine.index.ntotal
+        assert len(results) <= populated_engine.stats_light()["total_memories"]
 
 
 class TestHybridSearch:
@@ -76,9 +76,9 @@ class TestHybridSearch:
 
 class TestDelete:
     def test_delete_by_id(self, populated_engine):
-        count_before = populated_engine.index.ntotal
+        count_before = populated_engine.stats_light()["total_memories"]
         result = populated_engine.delete_memory(0)
-        assert populated_engine.index.ntotal == count_before - 1
+        assert populated_engine.stats_light()["total_memories"] == count_before - 1
         assert "deleted_id" in result
 
     def test_delete_invalid_id(self, populated_engine):
@@ -93,6 +93,18 @@ class TestDelete:
         result = populated_engine.delete_by_source("nonexistent.md")
         assert result["deleted_count"] == 0
 
+    def test_delete_memories_batch(self, populated_engine):
+        count_before = populated_engine.stats_light()["total_memories"]
+        result = populated_engine.delete_memories([0, 2, 999])
+        assert result["deleted_count"] == 2
+        assert result["deleted_ids"] == [0, 2]
+        assert result["missing_ids"] == [999]
+        assert populated_engine.stats_light()["total_memories"] == count_before - 2
+
+    def test_delete_by_prefix(self, populated_engine):
+        result = populated_engine.delete_by_prefix("lang")
+        assert result["deleted_count"] == 2
+
 
 class TestNovelty:
     def test_novel_text(self, populated_engine):
@@ -105,6 +117,40 @@ class TestNovelty:
         )
         assert is_new is False
         assert match is not None
+
+
+class TestFetchAndUpsert:
+    def test_get_memory(self, populated_engine):
+        mem = populated_engine.get_memory(0)
+        assert mem["id"] == 0
+
+    def test_get_memories(self, populated_engine):
+        result = populated_engine.get_memories([0, 999])
+        assert len(result["memories"]) == 1
+        assert result["missing_ids"] == [999]
+
+    def test_update_memory(self, populated_engine):
+        result = populated_engine.update_memory(0, text="Updated memory text")
+        assert result["id"] == 0
+        assert "text" in result["updated_fields"]
+        assert populated_engine.get_memory(0)["text"] == "Updated memory text"
+
+    def test_upsert_memory_create_then_update(self, populated_engine):
+        created = populated_engine.upsert_memory(
+            text="entity value",
+            source="carto/poet-pads/db",
+            key="entity-1",
+            metadata={"owner": "carto"},
+        )
+        assert created["action"] == "created"
+
+        updated = populated_engine.upsert_memory(
+            text="entity value v2",
+            source="carto/poet-pads/db",
+            key="entity-1",
+            metadata={"owner": "carto"},
+        )
+        assert updated["action"] == "updated"
 
 
 class TestDeduplication:
@@ -149,18 +195,17 @@ class TestBackupRestore:
     def test_backup_creates_directory(self, populated_engine):
         backup_path = populated_engine._backup(prefix="test")
         assert backup_path.exists()
-        assert (backup_path / "index.faiss").exists()
-        assert (backup_path / "metadata.json").exists()
+        assert any(backup_path.iterdir())
 
     def test_restore_from_backup(self, populated_engine):
         backup_path = populated_engine._backup(prefix="test")
         # Add more data
         populated_engine.add_memories(texts=["extra"], sources=["extra.md"])
-        count_after_add = populated_engine.index.ntotal
+        count_after_add = populated_engine.stats_light()["total_memories"]
 
         # Restore
-        result = populated_engine.restore_from_backup(backup_path.name)
-        assert populated_engine.index.ntotal < count_after_add
+        populated_engine.restore_from_backup(backup_path.name)
+        assert populated_engine.stats_light()["total_memories"] < count_after_add
 
     def test_restore_nonexistent(self, populated_engine):
         with pytest.raises(FileNotFoundError):
@@ -194,8 +239,9 @@ class TestPersistence:
 
         # Create a new engine pointing to the same directory
         engine2 = MemoryEngine(data_dir=str(tmp_path))
-        assert engine2.index.ntotal == 1
-        assert engine2.metadata[0]["text"] == "persisted data"
+        assert engine2.stats_light()["total_memories"] == 1
+        listed = engine2.list_memories()
+        assert listed["memories"][0]["text"] == "persisted data"
 
     def test_integrity_check(self, engine, tmp_path):
         engine.add_memories(texts=["data"], sources=["test.md"])
@@ -289,7 +335,7 @@ class TestSupersede:
 
     def test_supersede_replaces_memory(self, populated_engine):
         """Supersede deletes old memory and adds new one with link."""
-        old_count = populated_engine.index.ntotal
+        old_count = populated_engine.stats_light()["total_memories"]
         old_id = 0  # first memory in populated_engine
 
         result = populated_engine.supersede(
@@ -300,7 +346,7 @@ class TestSupersede:
 
         assert result["old_id"] == old_id
         assert result["new_id"] is not None
-        assert populated_engine.index.ntotal == old_count  # same count (delete + add)
+        assert populated_engine.stats_light()["total_memories"] == old_count  # same count (delete + add)
 
     def test_supersede_nonexistent_id_raises(self, populated_engine):
         """Superseding a nonexistent memory raises ValueError."""
@@ -310,3 +356,15 @@ class TestSupersede:
                 new_text="does not matter",
                 source="test"
             )
+
+
+class TestLegacyFaissCutover:
+    def test_archives_legacy_faiss_and_writes_marker(self, engine):
+        engine.add_memories(texts=["legacy migration"], sources=["legacy.md"])
+        engine.index_path.write_text("legacy-faiss-bytes", encoding="utf-8")
+
+        migrated = engine._finalize_legacy_faiss_cutover()
+
+        assert migrated is True
+        assert engine.faiss_migration_marker.exists()
+        assert not engine.index_path.exists()

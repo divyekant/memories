@@ -40,10 +40,10 @@ This document captures key architecture decisions for Memories and the tradeoffs
   - extra compute and index maintenance (BM25 rebuilds on writes)
   - introduces fusion parameters to tune
 
-## D4: Keep Metadata in JSON Alongside Memories Index
+## D4: Keep Metadata in JSON Alongside the Vector Index
 
 - Status: accepted
-- Decision: persist metadata in `metadata.json` and vectors in `index.faiss`.
+- Decision: persist metadata in `metadata.json` and vectors in `vector_index.bin`.
 - Why:
   - transparent, debuggable local files
   - easy backup/restore mechanics

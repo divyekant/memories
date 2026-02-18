@@ -54,7 +54,7 @@ Memories Service (Docker :8900)
     |-- Auto-backups
     v
 Persistent Storage (data/)
-    |-- index.faiss (Memories binary index)
+    |-- vector_index.bin (Memories vector index snapshot)
     |-- metadata.json (memory text + metadata)
     |-- backups/ (auto, keeps last 10)
 ```
@@ -69,7 +69,7 @@ Detailed docs:
 
 ### Claude Code (CLI)
 
-The MCP server gives Claude Code native `memory_search`, `memory_add`, `memory_delete`, `memory_list`, `memory_stats`, and `memory_is_novel` tools.
+The MCP server gives Claude Code native `memory_search`, `memory_add`, `memory_delete`, `memory_delete_batch`, `memory_list`, `memory_stats`, and `memory_is_novel` tools.
 
 **Setup:**
 
@@ -441,7 +441,10 @@ All endpoints accept/return JSON. Optional auth via `X-API-Key` header.
 
 ```
 POST /search
-{"query": "...", "k": 5, "hybrid": true, "threshold": 0.3, "vector_weight": 0.7}
+{"query": "...", "k": 5, "hybrid": true, "threshold": 0.3, "vector_weight": 0.7, "source_prefix": "team/project/"}
+
+POST /search/batch
+{"queries": [{"query": "...", "k": 5}, {"query": "...", "hybrid": true}]}
 ```
 
 ### Add Memory
@@ -462,7 +465,29 @@ POST /memory/add-batch
 
 ```
 DELETE /memory/{id}
+POST /memory/delete-batch     {"ids": [1, 2, 3]}
 POST /memory/delete-by-source  {"source_pattern": "credentials"}
+POST /memory/delete-by-prefix {"source_prefix": "team/project/"}
+```
+
+### Get
+
+```
+GET  /memory/{id}
+POST /memory/get-batch {"ids": [1, 2, 3]}
+```
+
+### Upsert / Patch
+
+```
+POST  /memory/upsert
+{"text":"...", "source":"team/project/file", "key":"entity-1", "metadata": {"owner":"team"}}
+
+POST  /memory/upsert-batch
+{"memories":[{"text":"...", "source":"...", "key":"..."}]}
+
+PATCH /memory/{id}
+{"text":"optional", "source":"optional", "metadata_patch":{"tag":"v2"}}
 ```
 
 ### Novelty Check
@@ -491,6 +516,7 @@ POST /memory/deduplicate
 POST /index/build    {"sources": ["file1.md", "file2.md"]}
 GET  /stats
 GET  /health
+GET  /health/ready
 GET  /metrics
 ```
 
@@ -512,6 +538,15 @@ GET  /extract/status
 
 Full OpenAPI schema at http://localhost:8900/docs.
 
+### Future API Candidates (Swarm Scale)
+
+- `POST /memory/compare` (pairwise conflict scoring for concurrent agent writes)
+- `POST /memory/resolve-conflicts` (policy-driven merge: latest/manual/model)
+- `POST /memory/lock` + `DELETE /memory/lock/{key}` (explicit lock reservation APIs)
+- `POST /memory/events` + `GET /memory/events/stream` (change feed for agent synchronization)
+- `POST /search/stream` (progressive search responses for very large corpora)
+- `POST /memory/ttl` (time-bound memories with auto-expiry)
+
 ---
 
 ## MCP Tools Reference
@@ -523,6 +558,7 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 | `memory_search` | Hybrid search (BM25 + vector). Default mode. |
 | `memory_add` | Store a memory with auto-dedup. |
 | `memory_delete` | Delete by ID. |
+| `memory_delete_batch` | Delete multiple IDs in one operation. |
 | `memory_list` | Browse with pagination and source filter. |
 | `memory_stats` | Index stats (count, model, last updated). |
 | `memory_is_novel` | Check if text is already known. |
