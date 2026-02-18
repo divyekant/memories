@@ -55,6 +55,9 @@ ENV MODEL_CACHE_DIR=/data/model-cache \
 # Copy application code
 COPY onnx_embedder.py .
 COPY memory_engine.py .
+COPY entity_locks.py .
+COPY qdrant_config.py .
+COPY qdrant_store.py .
 COPY cloud_sync.py .
 COPY runtime_memory.py .
 COPY llm_provider.py .

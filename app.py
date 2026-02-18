@@ -388,7 +388,7 @@ async def lifespan(app: FastAPI):
     memory = MemoryEngine(data_dir=DATA_DIR)
     logger.info(
         "Loaded %d memories (%s model, %d dims)",
-        memory.index.ntotal,
+        len(memory.metadata),
         memory.config.get("model"),
         memory.dim,
     )
