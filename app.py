@@ -1298,17 +1298,28 @@ async def rename_folder(request: RenameFolderRequest):
     """Batch-rename a folder by updating the source prefix on all matching memories."""
     old_prefix = request.old_name
     new_prefix = request.new_name
-    updated = 0
+
+    # Collect matching IDs first to avoid mutation during iteration
+    targets = []
     for i, m in enumerate(memory.metadata):
         source = m.get("source", "")
         if source == old_prefix or source.startswith(old_prefix + "/"):
             new_source = new_prefix + source[len(old_prefix):]
-            try:
-                memory.update_memory(memory_id=i, source=new_source)
-                updated += 1
-            except (ValueError, Exception):
-                continue
-    return {"success": True, "updated": updated, "old_name": old_prefix, "new_name": new_prefix}
+            targets.append((i, new_source))
+
+    if not targets:
+        raise HTTPException(status_code=404, detail=f"No memories found with folder prefix '{old_prefix}'")
+
+    updated = 0
+    errors = 0
+    for memory_id, new_source in targets:
+        try:
+            memory.update_memory(memory_id=memory_id, source=new_source)
+            updated += 1
+        except ValueError as e:
+            logger.warning("Folder rename skip id=%d: %s", memory_id, e)
+            errors += 1
+    return {"success": True, "updated": updated, "errors": errors, "old_name": old_prefix, "new_name": new_prefix}
 
 
 # -- Index operations ---------------------------------------------------------
