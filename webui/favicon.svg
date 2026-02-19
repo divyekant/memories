@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <circle cx="16" cy="16" r="14" fill="#0d1b2a" stroke="#37d5b4" stroke-width="2"/>
+  <g fill="none" stroke="#37d5b4" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Stylised brain / circuit node cluster -->
+    <circle cx="16" cy="12" r="2.5" fill="#37d5b4" opacity="0.9"/>
+    <circle cx="10" cy="19" r="2" fill="#37d5b4" opacity="0.7"/>
+    <circle cx="22" cy="19" r="2" fill="#37d5b4" opacity="0.7"/>
+    <circle cx="16" cy="23" r="1.5" fill="#37d5b4" opacity="0.5"/>
+    <!-- Connections -->
+    <line x1="16" y1="14.5" x2="10" y2="17"/>
+    <line x1="16" y1="14.5" x2="22" y2="17"/>
+    <line x1="10" y1="21" x2="16" y2="23"/>
+    <line x1="22" y1="21" x2="16" y2="23"/>
+    <line x1="10" y1="19" x2="22" y2="19" opacity="0.3"/>
+  </g>
+</svg>

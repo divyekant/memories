@@ -100,6 +100,16 @@ class QdrantStore:
         result = self.client.count(collection_name=self.collection, exact=exact)
         return int(getattr(result, "count", 0))
 
+    def set_payload(self, point_id: int, payload: Dict[str, Any]) -> None:
+        """Update only the payload of an existing point (no vector change)."""
+        self.client.set_payload(
+            collection_name=self.collection,
+            payload=payload,
+            points=[_normalize_point_id(point_id)],
+            wait=self.settings.wait,
+            ordering=self.settings.write_ordering,
+        )
+
     def upsert_points(self, points: List[Dict[str, Any]]) -> None:
         point_structs = [
             models.PointStruct(

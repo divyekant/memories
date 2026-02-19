@@ -60,7 +60,7 @@ def test_index_build_rejects_path_traversal(client):
 
 
 def test_restore_rejects_path_traversal(client):
-    """P1: /restore must reject backup names with traversal characters."""
+    """P1: /restore must reject backup names with traversal characters as 400."""
     test_client, mock_engine, _ = client
     mock_engine.restore_from_backup.side_effect = ValueError("Invalid backup name: ../etc")
     response = test_client.post(
@@ -68,9 +68,8 @@ def test_restore_rejects_path_traversal(client):
         json={"backup_name": "../etc"},
         headers={"X-API-Key": "test-key"},
     )
-    # restore_from_backup raises ValueError which becomes 404 for FileNotFoundError
-    # or the ValueError propagates — we expect a non-200 status
-    assert response.status_code != 200
+    assert response.status_code == 400
+    assert "Invalid backup name" in response.json()["detail"]
 
 
 def test_sync_download_rejects_traversal_backup_name(client):

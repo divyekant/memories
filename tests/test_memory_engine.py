@@ -135,6 +135,19 @@ class TestFetchAndUpsert:
         assert "text" in result["updated_fields"]
         assert populated_engine.get_memory(0)["text"] == "Updated memory text"
 
+    def test_update_memory_source_only_fast_path(self, populated_engine):
+        """Source-only update should skip backup and re-embedding."""
+        old_text = populated_engine.get_memory(0)["text"]
+        backup_count_before = len(list(Path(populated_engine.data_dir).glob("backups/*")))
+        result = populated_engine.update_memory(0, source="new-source/path")
+        assert result["updated_fields"] == ["source"]
+        mem = populated_engine.get_memory(0)
+        assert mem["source"] == "new-source/path"
+        assert mem["text"] == old_text  # text unchanged
+        # Source-only fast path should NOT create a backup
+        backup_count_after = len(list(Path(populated_engine.data_dir).glob("backups/*")))
+        assert backup_count_after == backup_count_before
+
     def test_upsert_memory_create_then_update(self, populated_engine):
         created = populated_engine.upsert_memory(
             text="entity value",

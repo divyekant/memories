@@ -617,13 +617,30 @@ class MemoryEngine:
         new_key = self._entity_key(source if source is not None else current.get("source", ""))
         updated_fields: List[str] = []
 
+        # Fast path: source-only change skips backup + re-embed
+        source_only = (
+            source is not None
+            and text is None
+            and not metadata_patch
+            and source != current.get("source", "")
+        )
+
         with self._entity_locks.acquire_many([old_key, new_key]):
             with self._write_lock:
                 if memory_id < 0 or memory_id >= len(self.metadata):
                     raise ValueError(f"Memory ID {memory_id} not found")
 
-                self._backup(prefix="pre_update")
                 meta = self.metadata[memory_id]
+
+                if source_only:
+                    meta["source"] = source
+                    meta["timestamp"] = datetime.now(timezone.utc).isoformat()
+                    self.qdrant_store.set_payload(memory_id, self._point_payload(meta))
+                    self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    self.save()
+                    return {"id": memory_id, "updated_fields": ["source"]}
+
+                self._backup(prefix="pre_update")
 
                 if text is not None and text != meta.get("text"):
                     meta["text"] = text

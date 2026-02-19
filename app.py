@@ -1414,6 +1414,10 @@ async def restore_backup(request: RestoreRequest):
     try:
         result = memory.restore_from_backup(request.backup_name)
         return {"success": True, **result, "message": "Restored successfully"}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
