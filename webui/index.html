@@ -62,8 +62,34 @@
       </div>
     </section>
 
-    <section id="memoryList" class="memory-grid"></section>
+    <div class="content-with-sidebar">
+      <aside id="folderSidebar" class="folder-sidebar panel">
+        <h3 class="folder-heading">Folders</h3>
+        <ul id="folderList" class="folder-list">
+          <li class="folder-item active" data-folder="">
+            <span class="folder-name">All Memories</span>
+            <span id="folderAllCount" class="folder-count">0</span>
+          </li>
+        </ul>
+      </aside>
+
+      <section id="memoryList" class="memory-grid"></section>
+    </div>
   </main>
+
+  <div id="renameFolderModal" class="modal-overlay" hidden>
+    <div class="modal panel">
+      <h3>Rename Folder</h3>
+      <label>
+        New name
+        <input id="renameFolderInput" type="text" placeholder="New folder name">
+      </label>
+      <div class="modal-actions">
+        <button id="renameFolderConfirm" class="btn primary">Rename</button>
+        <button id="renameFolderCancel" class="btn">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <template id="memoryCardTemplate">
     <article class="memory-card">
@@ -72,6 +98,11 @@
         <span class="memory-source"></span>
       </div>
       <p class="memory-text"></p>
+      <div class="card-actions">
+        <select class="move-folder-select" title="Move to folder">
+          <option value="">Move to...</option>
+        </select>
+      </div>
     </article>
   </template>
 

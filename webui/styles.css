@@ -9,6 +9,7 @@
   --accent: #37d5b4;
   --accent-deep: #1b9b84;
   --warn: #f0a94a;
+  --danger: #e0544a;
 }
 
 * {
@@ -136,6 +137,13 @@ button:focus {
   font-weight: 700;
 }
 
+.btn.danger {
+  background: var(--danger);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+
 .status {
   font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, monospace;
   font-size: 0.8rem;
@@ -169,6 +177,168 @@ button:focus {
   font-size: 1.3rem;
   font-weight: 700;
 }
+
+/* -- Sidebar + Content layout ------------------------------------------------ */
+
+.content-with-sidebar {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+.folder-sidebar {
+  position: sticky;
+  top: 18px;
+  max-height: calc(100vh - 36px);
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.folder-heading {
+  margin: 0 0 8px;
+  font-size: 0.82rem;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.folder-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.folder-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 120ms ease;
+  position: relative;
+}
+
+.folder-item:hover {
+  background: rgba(55, 213, 180, 0.08);
+}
+
+.folder-item.active {
+  background: rgba(55, 213, 180, 0.15);
+  border-left: 3px solid var(--accent);
+}
+
+.folder-name {
+  flex: 1;
+  font-size: 0.88rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.folder-count {
+  font-size: 0.75rem;
+  color: var(--text-soft);
+  background: rgba(148, 178, 221, 0.12);
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.folder-actions {
+  display: none;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.folder-item:hover .folder-actions {
+  display: flex;
+}
+
+.folder-item:hover .folder-count {
+  display: none;
+}
+
+.folder-action-btn {
+  background: none;
+  border: none;
+  color: var(--text-soft);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 0.75rem;
+  border-radius: 4px;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.folder-action-btn:hover {
+  color: var(--text);
+  background: rgba(148, 178, 221, 0.15);
+}
+
+.folder-action-btn.delete:hover {
+  color: var(--danger);
+}
+
+/* -- Memory card actions ----------------------------------------------------- */
+
+.card-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+}
+
+.move-folder-select {
+  font-size: 0.78rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #142238;
+  border: 1px solid var(--line);
+  color: var(--text-soft);
+  cursor: pointer;
+  max-width: 180px;
+}
+
+.move-folder-select:hover {
+  border-color: rgba(55, 213, 180, 0.5);
+}
+
+/* -- Modal ------------------------------------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-overlay[hidden] {
+  display: none;
+}
+
+.modal {
+  width: 380px;
+  max-width: 90vw;
+  display: grid;
+  gap: 12px;
+}
+
+.modal h3 {
+  margin: 0;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* -- Memory grid ------------------------------------------------------------- */
 
 .memory-grid {
   display: grid;
@@ -230,6 +400,8 @@ button:focus {
   }
 }
 
+/* -- Responsive -------------------------------------------------------------- */
+
 @media (max-width: 760px) {
   .control-row {
     grid-template-columns: 1fr;
@@ -245,5 +417,29 @@ button:focus {
 
   .summary {
     grid-template-columns: 1fr;
+  }
+
+  .content-with-sidebar {
+    grid-template-columns: 1fr;
+  }
+
+  .folder-sidebar {
+    position: static;
+    max-height: none;
+  }
+
+  .folder-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .folder-item {
+    padding: 5px 10px;
+    font-size: 0.82rem;
+  }
+
+  .folder-actions {
+    display: none !important;
   }
 }
