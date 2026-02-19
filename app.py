@@ -862,6 +862,11 @@ class DeleteByPrefixRequest(BaseModel):
     source_prefix: str = Field(..., min_length=1, max_length=500)
 
 
+class RenameFolderRequest(BaseModel):
+    old_name: str = Field(..., min_length=1, max_length=500)
+    new_name: str = Field(..., min_length=1, max_length=500)
+
+
 class PatchMemoryRequest(BaseModel):
     text: Optional[str] = Field(None, min_length=1, max_length=50000)
     source: Optional[str] = Field(None, min_length=1, max_length=500)
@@ -1255,6 +1260,36 @@ async def list_memories(
 ):
     """List memories with pagination and optional source filter"""
     return memory.list_memories(offset=offset, limit=limit, source_filter=source)
+
+
+@app.get("/folders")
+async def list_folders():
+    """List unique source-based folders with memory counts."""
+    folder_counts: Dict[str, int] = {}
+    for m in memory.metadata:
+        source = m.get("source", "")
+        folder = source.split("/")[0] if "/" in source else source if source else "(ungrouped)"
+        folder_counts[folder] = folder_counts.get(folder, 0) + 1
+    folders = [{"name": k, "count": v} for k, v in sorted(folder_counts.items())]
+    return {"folders": folders, "total": len(memory.metadata)}
+
+
+@app.post("/folders/rename")
+async def rename_folder(request: RenameFolderRequest):
+    """Batch-rename a folder by updating the source prefix on all matching memories."""
+    old_prefix = request.old_name
+    new_prefix = request.new_name
+    updated = 0
+    for i, m in enumerate(memory.metadata):
+        source = m.get("source", "")
+        if source == old_prefix or source.startswith(old_prefix + "/"):
+            new_source = new_prefix + source[len(old_prefix):]
+            try:
+                memory.update_memory(memory_id=i, source=new_source)
+                updated += 1
+            except (ValueError, Exception):
+                continue
+    return {"success": True, "updated": updated, "old_name": old_prefix, "new_name": new_prefix}
 
 
 # -- Index operations ---------------------------------------------------------

@@ -4,6 +4,9 @@ const state = {
   source: "",
   total: 0,
   apiKey: sessionStorage.getItem("faiss_ui_api_key") || "",
+  activeFolder: null, // null = all, string = folder name
+  folders: [],        // [{name, count}, ...]
+  folderTotal: 0,
 };
 
 const els = {
@@ -19,7 +22,15 @@ const els = {
   totalCount: document.getElementById("totalCount"),
   offsetValue: document.getElementById("offsetValue"),
   cardTemplate: document.getElementById("memoryCardTemplate"),
+  folderList: document.getElementById("folderList"),
+  folderAllCount: document.getElementById("folderAllCount"),
+  renameFolderModal: document.getElementById("renameFolderModal"),
+  renameFolderInput: document.getElementById("renameFolderInput"),
+  renameFolderConfirm: document.getElementById("renameFolderConfirm"),
+  renameFolderCancel: document.getElementById("renameFolderCancel"),
 };
+
+let renamingFolder = null; // folder name being renamed
 
 function setStatus(message, isError = false) {
   els.status.textContent = message;
@@ -54,6 +65,205 @@ async function parseErrorDetail(resp) {
   return resp.text();
 }
 
+// -- Folder sidebar -----------------------------------------------------------
+
+async function loadFolders() {
+  try {
+    const resp = await fetch("/folders", { headers: authHeaders() });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    state.folders = data.folders || [];
+    state.folderTotal = data.total || 0;
+    renderFolders();
+  } catch (_) {
+    // Silently fail — folders are supplementary
+  }
+}
+
+function renderFolders() {
+  els.folderList.innerHTML = "";
+
+  // "All Memories" item
+  const allLi = document.createElement("li");
+  allLi.className = "folder-item" + (state.activeFolder === null ? " active" : "");
+  allLi.dataset.folder = "";
+  allLi.innerHTML = `
+    <span class="folder-name">All Memories</span>
+    <span class="folder-count">${state.folderTotal}</span>
+  `;
+  allLi.addEventListener("click", () => {
+    state.activeFolder = null;
+    state.source = "";
+    els.source.value = "";
+    state.offset = 0;
+    renderFolders();
+    loadMemories();
+  });
+  els.folderList.appendChild(allLi);
+
+  // Individual folders
+  state.folders.forEach((folder) => {
+    const li = document.createElement("li");
+    li.className = "folder-item" + (state.activeFolder === folder.name ? " active" : "");
+    li.dataset.folder = folder.name;
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "folder-name";
+    nameSpan.textContent = folder.name;
+
+    const countSpan = document.createElement("span");
+    countSpan.className = "folder-count";
+    countSpan.textContent = String(folder.count);
+
+    const actionsSpan = document.createElement("span");
+    actionsSpan.className = "folder-actions";
+
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "folder-action-btn";
+    renameBtn.textContent = "Rename";
+    renameBtn.title = "Rename folder";
+    renameBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openRenameModal(folder.name);
+    });
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "folder-action-btn delete";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.title = "Delete all memories in this folder";
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteFolder(folder.name);
+    });
+
+    actionsSpan.appendChild(renameBtn);
+    actionsSpan.appendChild(deleteBtn);
+
+    li.appendChild(nameSpan);
+    li.appendChild(countSpan);
+    li.appendChild(actionsSpan);
+
+    li.addEventListener("click", () => {
+      state.activeFolder = folder.name;
+      state.source = folder.name;
+      els.source.value = folder.name;
+      state.offset = 0;
+      renderFolders();
+      loadMemories();
+    });
+
+    els.folderList.appendChild(li);
+  });
+}
+
+// -- Rename modal -------------------------------------------------------------
+
+function openRenameModal(folderName) {
+  renamingFolder = folderName;
+  els.renameFolderInput.value = folderName;
+  els.renameFolderModal.hidden = false;
+  els.renameFolderInput.focus();
+  els.renameFolderInput.select();
+}
+
+function closeRenameModal() {
+  renamingFolder = null;
+  els.renameFolderModal.hidden = true;
+  els.renameFolderInput.value = "";
+}
+
+async function confirmRename() {
+  const newName = els.renameFolderInput.value.trim();
+  if (!newName || !renamingFolder || newName === renamingFolder) {
+    closeRenameModal();
+    return;
+  }
+
+  setStatus(`Renaming folder "${renamingFolder}" to "${newName}"...`);
+  try {
+    const resp = await fetch("/folders/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ old_name: renamingFolder, new_name: newName }),
+    });
+    if (!resp.ok) {
+      const detail = await parseErrorDetail(resp);
+      throw new Error(detail);
+    }
+    const data = await resp.json();
+    setStatus(`Renamed: ${data.updated} memories updated.`);
+    if (state.activeFolder === renamingFolder) {
+      state.activeFolder = newName;
+      state.source = newName;
+      els.source.value = newName;
+    }
+    closeRenameModal();
+    await loadFolders();
+    await loadMemories();
+  } catch (err) {
+    setStatus(`Rename failed: ${err.message}`, true);
+  }
+}
+
+// -- Delete folder ------------------------------------------------------------
+
+async function deleteFolder(folderName) {
+  if (!confirm(`Delete ALL memories in folder "${folderName}"? This cannot be undone.`)) {
+    return;
+  }
+
+  setStatus(`Deleting folder "${folderName}"...`);
+  try {
+    const resp = await fetch("/memory/delete-by-prefix", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ source_prefix: folderName }),
+    });
+    if (!resp.ok) {
+      const detail = await parseErrorDetail(resp);
+      throw new Error(detail);
+    }
+    const data = await resp.json();
+    setStatus(`Deleted folder "${folderName}": ${data.deleted || 0} memories removed.`);
+    if (state.activeFolder === folderName) {
+      state.activeFolder = null;
+      state.source = "";
+      els.source.value = "";
+    }
+    await loadFolders();
+    state.offset = 0;
+    await loadMemories();
+  } catch (err) {
+    setStatus(`Delete failed: ${err.message}`, true);
+  }
+}
+
+// -- Move to folder -----------------------------------------------------------
+
+async function moveToFolder(memoryId, newFolder) {
+  if (!newFolder) return;
+
+  setStatus(`Moving memory #${memoryId} to "${newFolder}"...`);
+  try {
+    const resp = await fetch(`/memory/${memoryId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ source: newFolder }),
+    });
+    if (!resp.ok) {
+      const detail = await parseErrorDetail(resp);
+      throw new Error(detail);
+    }
+    setStatus(`Moved memory #${memoryId} to "${newFolder}".`);
+    await loadFolders();
+    await loadMemories();
+  } catch (err) {
+    setStatus(`Move failed: ${err.message}`, true);
+  }
+}
+
+// -- Render memories ----------------------------------------------------------
+
 function renderMemories(memories) {
   els.memoryList.innerHTML = "";
 
@@ -65,11 +275,25 @@ function renderMemories(memories) {
     return;
   }
 
-  memories.forEach((memory, idx) => {
+  memories.forEach((mem, idx) => {
     const frag = els.cardTemplate.content.cloneNode(true);
-    frag.querySelector(".memory-id").textContent = `#${memory.id}`;
-    frag.querySelector(".memory-source").textContent = memory.source || "(no source)";
-    frag.querySelector(".memory-text").textContent = memory.text;
+    frag.querySelector(".memory-id").textContent = `#${mem.id}`;
+    frag.querySelector(".memory-source").textContent = mem.source || "(no source)";
+    frag.querySelector(".memory-text").textContent = mem.text;
+
+    // Populate the move-to-folder dropdown
+    const moveSelect = frag.querySelector(".move-folder-select");
+    state.folders.forEach((folder) => {
+      const opt = document.createElement("option");
+      opt.value = folder.name;
+      opt.textContent = folder.name;
+      moveSelect.appendChild(opt);
+    });
+    moveSelect.addEventListener("change", () => {
+      if (moveSelect.value) {
+        moveToFolder(mem.id, moveSelect.value);
+      }
+    });
 
     const card = frag.querySelector(".memory-card");
     card.style.animationDelay = `${idx * 14}ms`;
@@ -102,9 +326,7 @@ async function loadMemories() {
 
   try {
     const resp = await fetch(`/memories?${params.toString()}`, {
-      headers: {
-        ...authHeaders(),
-      },
+      headers: authHeaders(),
     });
 
     if (!resp.ok) {
@@ -126,6 +348,8 @@ async function loadMemories() {
   }
 }
 
+// -- Event bindings -----------------------------------------------------------
+
 function bindEvents() {
   els.apiKey.value = state.apiKey;
 
@@ -134,16 +358,17 @@ function bindEvents() {
   });
 
   els.apiKey.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") {
-      return;
-    }
+    if (event.key !== "Enter") return;
     state.offset = 0;
+    loadFolders();
     loadMemories();
   });
 
   els.source.addEventListener("change", () => {
     state.source = els.source.value;
+    state.activeFolder = null; // manual source filter clears folder selection
     state.offset = 0;
+    renderFolders();
     loadMemories();
   });
 
@@ -154,6 +379,7 @@ function bindEvents() {
   });
 
   els.refresh.addEventListener("click", () => {
+    loadFolders();
     loadMemories();
   });
 
@@ -166,7 +392,19 @@ function bindEvents() {
     state.offset += state.limit;
     loadMemories();
   });
+
+  // Rename modal
+  els.renameFolderConfirm.addEventListener("click", confirmRename);
+  els.renameFolderCancel.addEventListener("click", closeRenameModal);
+  els.renameFolderInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") confirmRename();
+    if (e.key === "Escape") closeRenameModal();
+  });
+  els.renameFolderModal.addEventListener("click", (e) => {
+    if (e.target === els.renameFolderModal) closeRenameModal();
+  });
 }
 
 bindEvents();
+loadFolders();
 loadMemories();
