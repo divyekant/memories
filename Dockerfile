@@ -72,7 +72,7 @@ COPY webui ./webui
 
 # Create non-root user for runtime
 RUN useradd -r -m -s /bin/false memories && \
-    mkdir -p /data/backups /data/model-cache && \
+    mkdir -p /data/backups /data/model-cache /opt/model-cache && \
     chown -R memories:memories /data /opt/model-cache /app
 
 USER memories

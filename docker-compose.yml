@@ -7,7 +7,7 @@ services:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
     volumes:
-      - ./data/qdrant:/qdrant/storage
+      - qdrant-storage:/qdrant/storage
 
   memories:
     build:
@@ -93,3 +93,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+volumes:
+  qdrant-storage:

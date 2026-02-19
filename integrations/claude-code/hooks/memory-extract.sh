@@ -13,13 +13,22 @@ MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 INPUT=$(cat)
 STOP_REASON=$(echo "$INPUT" | jq -r '.stop_reason // "end_turn"')
+TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // "null"')
 
 # Only extract on normal completions
 if [ "$STOP_REASON" != "end_turn" ]; then
   exit 0
 fi
 
+# Try inline messages first, fall back to transcript_path (Cursor sends transcript_path, not inline messages)
 MESSAGES=$(echo "$INPUT" | jq -r '.messages // empty')
+if [ -z "$MESSAGES" ] && [ -n "$TRANSCRIPT_PATH" ] && [ "$TRANSCRIPT_PATH" != "null" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+  MESSAGES=$(jq -r '
+    select(.role == "user" or .role == "assistant") |
+    (if .role == "user" then "User" else "Assistant" end) + ": " +
+    ([.message.content[]? | select(.type == "text") | .text] | join(" "))
+  ' "$TRANSCRIPT_PATH" 2>/dev/null | head -c 60000) || true
+fi
 if [ -z "$MESSAGES" ]; then
   exit 0
 fi
