@@ -1,45 +1,31 @@
 #!/bin/bash
-# memory-extract.sh — Stop hook (async)
-# Extracts facts from the last exchange and stores via AUDN pipeline.
-# Requires Memories service with extraction enabled (EXTRACT_PROVIDER set).
+# memory-extract.sh — Stop hook
+# Extracts facts from the last assistant message and stores via extraction pipeline.
+# CC Stop hook provides: session_id, transcript_path, cwd, last_assistant_message
+# (NOT a "messages" field — that was a bug in the original version)
 
 set -euo pipefail
 
-# Load from dedicated env file — avoids requiring shell profile changes
+# Load from dedicated env file
 [ -f "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}" ] && . "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 INPUT=$(cat)
-STOP_REASON=$(echo "$INPUT" | jq -r '.stop_reason // "end_turn"')
-TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // "null"')
 
-# Only extract on normal completions
-if [ "$STOP_REASON" != "end_turn" ]; then
+# CC sends last_assistant_message on Stop events
+LAST_MSG=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
+if [ -z "$LAST_MSG" ]; then
   exit 0
 fi
 
-# Try inline messages first, fall back to transcript_path (Cursor sends transcript_path, not inline messages)
-MESSAGES=$(echo "$INPUT" | jq -r '.messages // empty')
-if [ -z "$MESSAGES" ] && [ -n "$TRANSCRIPT_PATH" ] && [ "$TRANSCRIPT_PATH" != "null" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-  MESSAGES=$(jq -r '
-    select(.role == "user" or .role == "assistant") |
-    (if .role == "user" then "User" else "Assistant" end) + ": " +
-    ([.message.content[]? | select(.type == "text") | .text] | join(" "))
-  ' "$TRANSCRIPT_PATH" 2>/dev/null | head -c 60000) || true
-fi
-if [ -z "$MESSAGES" ]; then
-  exit 0
-fi
-
-CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // "unknown"')
+CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
 PROJECT=$(basename "$CWD")
 
-# POST to extraction endpoint (fire-and-forget, async hook)
-BODY=$(jq -nc --arg msgs "$MESSAGES" --arg src "claude-code/$PROJECT" '{"messages": $msgs, "source": $src, "context": "stop"}')
+# POST to extraction endpoint (fire-and-forget)
 curl -sf -X POST "$MEMORIES_URL/memory/extract" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $MEMORIES_API_KEY" \
-  -d "$BODY" \
+  -d "{\"messages\": $(echo "$LAST_MSG" | jq -Rs), \"source\": \"claude-code/$PROJECT\", \"context\": \"stop\"}" \
   > /dev/null 2>&1 || true
