@@ -46,7 +46,7 @@ class TestProviderFactory:
             provider = get_provider()
             assert provider is not None
             assert provider.provider_name == "ollama"
-            assert provider.supports_audn is False
+            assert provider.supports_audn is True
 
 
 class TestAnthropicOAuth:
@@ -228,6 +228,31 @@ class TestOllamaProvider:
 
             with patch("llm_provider.urllib.request.urlopen", side_effect=Exception("conn refused")):
                 assert provider.health_check() is False
+
+    def test_ollama_supports_audn(self):
+        env = {"EXTRACT_PROVIDER": "ollama"}
+        with patch.dict(os.environ, env):
+            from llm_provider import get_provider
+            provider = get_provider()
+            assert provider.supports_audn is True
+
+    def test_ollama_complete_sends_json_format(self):
+        env = {"EXTRACT_PROVIDER": "ollama"}
+        with patch.dict(os.environ, env):
+            from llm_provider import get_provider
+            provider = get_provider()
+
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps({"response": "test"}).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+
+            with patch("llm_provider.urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+                provider.complete("system", "user")
+                call_args = mock_urlopen.call_args
+                request_obj = call_args[0][0]
+                body = json.loads(request_obj.data)
+                assert body.get("format") == "json"
 
 
 class TestProviderInterface:

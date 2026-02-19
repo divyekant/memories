@@ -227,10 +227,10 @@ class OpenAIProvider(LLMProvider):
 
 
 class OllamaProvider(LLMProvider):
-    """Ollama local provider. Extraction only — no AUDN support."""
+    """Ollama local provider with AUDN support."""
 
     provider_name = "ollama"
-    supports_audn = False
+    supports_audn = True
 
     def __init__(self, base_url: str | None = None, model: str | None = None):
         self.base_url = (base_url or "http://host.docker.internal:11434").rstrip("/")
@@ -242,6 +242,7 @@ class OllamaProvider(LLMProvider):
             "system": system,
             "prompt": user,
             "stream": False,
+            "format": "json",
         }).encode()
         req = urllib.request.Request(
             f"{self.base_url}/api/generate",
