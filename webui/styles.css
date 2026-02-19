@@ -182,7 +182,7 @@ button:focus {
 
 .content-with-sidebar {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 240px 1fr;
   gap: 14px;
   align-items: start;
 }
@@ -234,12 +234,14 @@ button:focus {
 .folder-name {
   flex: 1;
   font-size: 0.88rem;
+  min-width: 0;  /* allow text truncation inside flex */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .folder-count {
+  flex-shrink: 0;
   font-size: 0.75rem;
   color: var(--text-soft);
   background: rgba(148, 178, 221, 0.12);
@@ -248,18 +250,25 @@ button:focus {
   font-variant-numeric: tabular-nums;
 }
 
+/* Actions overlay the count area — no layout shift on hover */
 .folder-actions {
-  display: none;
-  gap: 4px;
-  margin-left: auto;
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+  background: var(--bg-soft);
+  border-radius: 6px;
+  padding: 2px 4px;
 }
 
 .folder-item:hover .folder-actions {
-  display: flex;
-}
-
-.folder-item:hover .folder-count {
-  display: none;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .folder-action-btn {
@@ -267,10 +276,11 @@ button:focus {
   border: none;
   color: var(--text-soft);
   cursor: pointer;
-  padding: 2px 4px;
-  font-size: 0.75rem;
+  padding: 3px 6px;
+  font-size: 0.72rem;
   border-radius: 4px;
   transition: color 120ms ease, background 120ms ease;
+  white-space: nowrap;
 }
 
 .folder-action-btn:hover {
