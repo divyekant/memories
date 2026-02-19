@@ -7,7 +7,7 @@ services:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
     volumes:
-      - ./data/qdrant:/qdrant/storage
+      - qdrant-storage:/qdrant/storage
 
   memories:
     build:
@@ -33,6 +33,9 @@ services:
       # - WORKSPACE_DIR=/workspace  # Uncomment if mounting documents
       - API_KEY=${API_KEY:-}
       - MODEL_NAME=all-MiniLM-L6-v2
+      # Embedding provider: onnx (local, default) or openai (BYOK)
+      - EMBED_PROVIDER=${EMBED_PROVIDER:-onnx}
+      - EMBED_MODEL=${EMBED_MODEL:-}
       - MAX_BACKUPS=10
       # Qdrant backend
       - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
@@ -90,3 +93,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+volumes:
+  qdrant-storage:

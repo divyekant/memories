@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_render_three_node_cluster(tmp_path, script_name):
     output = tmp_path / "docker-compose.qdrant-cluster.generated.yml"
     cmd = [
-        "/Users/dk/projects/memories/.venv/bin/python",
+        str(ROOT / ".venv" / "bin" / "python"),
         str(ROOT / "scripts" / script_name),
         "--nodes",
         "3",

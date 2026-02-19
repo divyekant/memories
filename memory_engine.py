@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from entity_locks import EntityLockManager
-from onnx_embedder import OnnxEmbedder
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
@@ -61,6 +60,8 @@ class MemoryEngine:
         self._model_cache_dir = os.getenv("MODEL_CACHE_DIR", "").strip()
         self._preloaded_model_cache_dir = os.getenv("PRELOADED_MODEL_CACHE_DIR", "").strip()
         self._embedder_cache_dir: Optional[str] = None
+        self._embed_provider = os.getenv("EMBED_PROVIDER", "onnx").strip().lower()
+        self._embed_model = os.getenv("EMBED_MODEL", "").strip()
 
         requested_backend = os.getenv("STORAGE_BACKEND", "qdrant").strip().lower() or "qdrant"
         if requested_backend != "qdrant":
@@ -99,7 +100,7 @@ class MemoryEngine:
 
         self._embedder_cache_dir = embedder_cache_dir
         self._embedder_lock = threading.RLock()
-        self.model = OnnxEmbedder(self._model_name, cache_dir=embedder_cache_dir)
+        self.model = self._make_embedder()
         self.dim = self.model.get_sentence_embedding_dimension()
 
         self._write_lock = threading.Lock()
@@ -107,7 +108,8 @@ class MemoryEngine:
 
         self.metadata: List[Dict[str, Any]] = []
         self.config = {
-            "model": self._model_name,
+            "model": self._active_embed_model(),
+            "embed_provider": self._embed_provider,
             "dimension": self.dim,
             "storage_backend": self._storage_backend,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -972,7 +974,28 @@ class MemoryEngine:
             with open(self.config_path, encoding="utf-8") as f:
                 self.config.update(json.load(f))
 
+        self.config["model"] = self._active_embed_model()
+        self.config["embed_provider"] = self._embed_provider
+        self.config["dimension"] = self.dim
+
         self._normalize_ids()
+
+        collection_dim = self.qdrant_store.get_collection_dimension()
+        if collection_dim is not None and collection_dim != self.dim:
+            if self.metadata:
+                logger.info(
+                    "Embedding dimension changed (%d -> %d). Rebuilding vectors from metadata.",
+                    collection_dim,
+                    self.dim,
+                )
+                self._reindex_store_from_metadata()
+            else:
+                logger.info(
+                    "Embedding dimension changed (%d -> %d) with empty metadata. Recreating collection.",
+                    collection_dim,
+                    self.dim,
+                )
+                self.qdrant_store.recreate_collection(self.dim)
 
         total_points = self.qdrant_store.count()
         if total_points == 0 and self.metadata:
@@ -1109,13 +1132,42 @@ class MemoryEngine:
         """Create a manual backup with optional prefix."""
         return self._backup(prefix=prefix)
 
+    def _active_embed_model(self) -> str:
+        if self._embed_provider == "openai":
+            return self._embed_model or "text-embedding-3-small"
+        return self._embed_model or self._model_name
+
+    def _make_embedder(self):
+        """Instantiate the configured embedding provider."""
+        if self._embed_provider == "onnx":
+            from onnx_embedder import OnnxEmbedder
+            model = self._active_embed_model()
+            logger.info("Embedder: provider=onnx, model=%s", model)
+            return OnnxEmbedder(model, cache_dir=self._embedder_cache_dir)
+
+        if self._embed_provider == "openai":
+            from openai_embedder import OpenAIEmbedder
+            model = self._active_embed_model()
+            api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
+            if not api_key:
+                raise ValueError(
+                    "EMBED_PROVIDER=openai requires OPENAI_API_KEY to be set"
+                )
+            logger.info("Embedder: provider=openai, model=%s", model)
+            return OpenAIEmbedder(model, api_key=api_key)
+
+        raise ValueError(
+            f"Unknown EMBED_PROVIDER={self._embed_provider!r}. "
+            "Valid values: openai, onnx"
+        )
+
     def reload_embedder(self) -> Dict[str, Any]:
         """Recreate embedder runtime and release old inference objects."""
         with self._entity_locks.acquire_many(["__all__"]):
             with self._write_lock:
                 with self._embedder_lock:
                     old_model = self.model
-                    new_model = OnnxEmbedder(self._model_name, cache_dir=self._embedder_cache_dir)
+                    new_model = self._make_embedder()
                     new_dim = new_model.get_sentence_embedding_dimension()
                     if new_dim != self.dim:
                         close_fn = getattr(new_model, "close", None)
@@ -1127,6 +1179,8 @@ class MemoryEngine:
 
                     self.model = new_model
                     self.dim = new_dim
+                    self.config["model"] = self._active_embed_model()
+                    self.config["embed_provider"] = self._embed_provider
                     self.config["dimension"] = new_dim
                     self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                     self.save()

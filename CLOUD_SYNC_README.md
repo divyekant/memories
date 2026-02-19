@@ -18,17 +18,19 @@ docker build --target core --build-arg ENABLE_CLOUD_SYNC=true -t memories:core .
 # or: docker build --target extract --build-arg ENABLE_CLOUD_SYNC=true -t memories:extract .
 ```
 
-### Option 2: Install Manually (if already running)
+### Option 2: Rebuild with Cloud Sync (if already running)
+
+With the uv-based Docker image, runtime package installs are not supported. Rebuild the image with cloud sync:
 
 ```bash
-docker exec memories pip install boto3==1.35.36
+docker compose build --build-arg ENABLE_CLOUD_SYNC=true memories
+docker compose up -d memories
 ```
 
 ### Option 3: Local Development
 
 ```bash
-pip install -r requirements.txt
-pip install -r requirements-cloud.txt
+uv sync --extra cloud
 ```
 
 ---

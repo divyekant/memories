@@ -249,7 +249,7 @@ npm install
 
 3. Restart Cursor.
 
-Cursor support is MCP-first today (no automatic hook installer path yet).
+Cursor also supports the full hook lifecycle via its "Third-party skills" feature. Run `./integrations/claude-code/install.sh --cursor` to install hooks alongside the MCP config.
 
 ---
 
@@ -475,7 +475,7 @@ ingress:
 }
 ```
 
-Now every client — Claude Code on your laptop, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
+Now every client — Claude Code on your laptop, Cursor, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
 
 ---
 
@@ -621,7 +621,9 @@ When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools
 | `DATA_DIR` | `/data` | Persistent storage path |
 | `WORKSPACE_DIR` | `/workspace` | Read-only workspace for index rebuilds |
 | `API_KEY` | (empty) | API key for auth. Empty = no auth. |
-| `MODEL_NAME` | `all-MiniLM-L6-v2` | Embedding model (ONNX Runtime) |
+| `EMBED_PROVIDER` | `onnx` | Embedding provider: `onnx` (local) or `openai` (BYOK) |
+| `EMBED_MODEL` | (unset) | Provider-specific embedding model override |
+| `MODEL_NAME` | `all-MiniLM-L6-v2` | Default ONNX model used when `EMBED_PROVIDER=onnx` and `EMBED_MODEL` is unset |
 | `MODEL_CACHE_DIR` | (unset; Docker image sets `/data/model-cache`) | Optional writable cache path for downloaded model files |
 | `PRELOADED_MODEL_CACHE_DIR` | (unset; Docker image sets `/opt/model-cache`) | Optional read-only cache to seed `MODEL_CACHE_DIR` when empty |
 | `MAX_BACKUPS` | `10` | Number of backups to keep |
@@ -665,10 +667,11 @@ Default compose files now include:
 
 Memories supports automatic retrieval/extraction, with client-specific behavior:
 - Claude Code: full 5-hook lifecycle (session start, each prompt, stop, pre-compact, session end)
+- Cursor: same 5-hook lifecycle via Third-party skills (loads from `~/.claude/settings.json`)
 - Codex: native `notify` hook after each completed turn + MCP/developer instructions for retrieval
 - OpenClaw: skill-driven retrieval/extraction flow
 
-### Claude Code Hook Lifecycle
+### Claude Code / Cursor Hook Lifecycle
 
 | Event | Hook | What happens |
 |-------|------|-------------|
@@ -677,6 +680,8 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 | After response | `memory-extract.sh` | Extracts facts and stores via AUDN pipeline |
 | Before compaction | `memory-flush.sh` | Aggressive extraction before context loss |
 | Session end | `memory-commit.sh` | Final extraction pass |
+
+**Cursor compatibility note:** Cursor sends `workspace_roots[]` (not `cwd`) and `transcript_path` (not inline `messages`) in hook payloads. The hook scripts handle both formats automatically — no separate configuration needed.
 
 ### Codex Lifecycle (Native)
 
@@ -701,9 +706,14 @@ This detects and configures any available targets on your machine:
 
 Cursor is supported via manual MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`).
 
-**Target only Claude or Codex:**
+The installer writes runtime config to:
+- `~/.config/memories/env` for hook vars (`MEMORIES_URL`, optional `MEMORIES_API_KEY`)
+- repo `.env` for extraction vars (`EXTRACT_PROVIDER`, provider keys/URL)
+
+**Target only Claude, Cursor, or Codex:**
 ```bash
 ./integrations/claude-code/install.sh --claude
+./integrations/claude-code/install.sh --cursor
 ./integrations/claude-code/install.sh --codex
 ```
 
@@ -853,6 +863,8 @@ Reference benchmark: `docs/benchmarks/2026-02-17-memory-reclamation.md`
 ./integrations/claude-code/install.sh --uninstall
 ```
 
+Then optionally remove `MEMORIES_*` from `~/.config/memories/env` and `EXTRACT_*` from repo `.env`.
+
 ---
 
 ## Backup & Recovery
@@ -968,8 +980,8 @@ memories/
   memories_auth.py        # CLI auth tool (python -m memories auth chatgpt/status)
   __main__.py             # Entry point for python -m memories
   Dockerfile              # Multi-stage Docker build (core/extract targets)
-  requirements.txt        # Python dependencies
-  requirements-extract.txt # Optional extraction deps (Anthropic/OpenAI SDKs)
+  pyproject.toml          # Python dependencies (uv)
+  uv.lock                 # Locked dependency resolutions
   docker-compose.snippet.yml
   docs/
     architecture.md       # System architecture and runtime flows
@@ -988,7 +1000,7 @@ memories/
     app.js                # Browser-side pagination/filter logic
   integrations/
     claude-code/
-      install.sh          # Auto-detect installer (Claude/Codex/OpenClaw)
+      install.sh          # Auto-detect installer (Claude/Codex/Cursor/OpenClaw)
       hooks/              # Claude Code 5-hook scripts + hooks.json
     codex/
       memory-codex-notify.sh # Codex notify hook script (after-turn extraction)

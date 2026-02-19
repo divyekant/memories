@@ -1,5 +1,0 @@
-# Optional: LLM extraction support
-# Only needed if EXTRACT_PROVIDER is set to "anthropic" or "openai"
-# Ollama uses HTTP directly (no SDK needed)
-anthropic>=0.40.0
-openai>=1.50.0

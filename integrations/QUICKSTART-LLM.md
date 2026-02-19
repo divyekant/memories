@@ -22,8 +22,8 @@ Before starting, verify:
 # 1. Memories service is running
 curl -s http://localhost:8900/health | jq .
 
-# 2. API key is set (check your shell profile)
-echo $MEMORIES_API_KEY
+# 2. Hook env file (installer writes this)
+grep -E '^(MEMORIES_URL|MEMORIES_API_KEY)=' ~/.config/memories/env 2>/dev/null || echo "No hook env file yet (installer will create it)"
 
 # 3. jq is installed
 jq --version
@@ -51,7 +51,7 @@ The installer will:
 2. Ask which extraction provider to use (Anthropic, OpenAI, ChatGPT Subscription, Ollama, or skip)
 3. Copy hook scripts to `~/.claude/hooks/memory/`
 4. Merge hook configuration into `~/.claude/settings.json`
-5. Add environment variables to your shell profile
+5. Write env files (`~/.config/memories/env` for hooks, repo `.env` for extraction)
 
 ### Option B: Manual Setup
 
@@ -63,33 +63,31 @@ cp ~/projects/memories/integrations/claude-code/hooks/*.sh ~/.claude/hooks/memor
 chmod +x ~/.claude/hooks/memory/*.sh
 ```
 
-**Step 2: Add environment variables to `~/.zshrc` (or `~/.bashrc`)**
+**Step 2: Create hook env file (`~/.config/memories/env`)**
 
 ```bash
-# Memories hooks
-export MEMORIES_URL="http://localhost:8900"
-export MEMORIES_API_KEY="your-api-key-here"
-
-# Extraction provider (choose one, or omit to disable extraction)
-# Option 1: Anthropic (recommended, ~$0.001/turn, full AUDN)
-export EXTRACT_PROVIDER="anthropic"
-export ANTHROPIC_API_KEY="sk-ant-..."
-
-# Option 2: OpenAI (~$0.001/turn, full AUDN)
-# export EXTRACT_PROVIDER="openai"
-# export OPENAI_API_KEY="sk-..."
-
-# Option 3: ChatGPT Subscription (free, full AUDN — requires one-time OAuth setup)
-# export EXTRACT_PROVIDER="chatgpt-subscription"
-# export CHATGPT_REFRESH_TOKEN="<from: python -m memories auth chatgpt>"
-# export CHATGPT_CLIENT_ID="<your OpenAI OAuth client ID>"
-
-# Option 4: Ollama (free, local, full AUDN)
-# export EXTRACT_PROVIDER="ollama"
-# export OLLAMA_URL="http://localhost:11434"
+mkdir -p ~/.config/memories
+cat > ~/.config/memories/env <<'EOF'
+MEMORIES_URL="http://localhost:8900"
+MEMORIES_API_KEY="your-api-key-here"  # optional if API auth is disabled
+EOF
 ```
 
-Source the profile: `source ~/.zshrc`
+**Step 2b: Configure extraction provider in repo `.env`**
+
+```bash
+cat >> ~/projects/memories/.env <<'EOF'
+# Choose one provider (or omit all for retrieval-only mode)
+EXTRACT_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+
+# EXTRACT_PROVIDER=openai
+# OPENAI_API_KEY=sk-...
+
+# EXTRACT_PROVIDER=ollama
+# OLLAMA_URL=http://localhost:11434
+EOF
+```
 
 **Step 3: Add hooks to Claude Code settings**
 
@@ -147,6 +145,31 @@ If you already have hooks in `settings.json`, merge the arrays — don't replace
 **Step 4: Verify**
 
 Start a new Claude Code session. You should see "Relevant Memories" injected at the top if you have existing memories for the project.
+
+---
+
+## Setup for Cursor
+
+Cursor supports full automatic memory via its **Third-party skills** feature, which reads Claude Code's `~/.claude/settings.json` directly. All 5 hook events work: `SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`, and `SessionEnd`.
+
+### Step 1: Run the installer
+
+```bash
+cd ~/projects/memories
+./integrations/claude-code/install.sh --cursor
+```
+
+This copies hook scripts to `~/.claude/hooks/memory/` and merges hook config into `~/.claude/settings.json`.
+
+### Step 2: Enable Third-party skills in Cursor
+
+Go to **Cursor Settings → Features → Third-party skills** and toggle it **ON**, then restart Cursor.
+
+That's it — Cursor will automatically load and run the memory hooks from `~/.claude/settings.json`.
+
+### Manual setup (optional)
+
+Follow the Claude Code manual setup steps above (copy hooks, add env vars, edit `~/.claude/settings.json`), then enable Third-party skills in Cursor Settings.
 
 ---
 
@@ -369,9 +392,9 @@ curl -s -H "X-API-Key: $MEMORIES_API_KEY" "http://localhost:8900/memory/extract/
 
 ### Disable extraction only (keep retrieval)
 
-Remove or comment out `EXTRACT_PROVIDER` from your shell profile:
+Remove or comment out `EXTRACT_PROVIDER` in repo `.env`:
 ```bash
-# export EXTRACT_PROVIDER="anthropic"  # commented out
+# EXTRACT_PROVIDER=anthropic
 ```
 
 Retrieval still works. Extraction paths will return "not configured" unless fallback mode is enabled.
@@ -397,8 +420,9 @@ rm -rf ~/.codex/hooks/memory/
 # - [mcp_servers.memories] section
 # - [mcp_servers.memories.env] section
 
-# Remove env vars from shell profile (optional)
-# Edit ~/.zshrc and remove MEMORIES_URL, EXTRACT_PROVIDER, etc.
+# Remove env vars from hook/repo env files
+# Edit ~/.config/memories/env and remove MEMORIES_URL/MEMORIES_API_KEY
+# Edit ~/projects/memories/.env and remove EXTRACT_PROVIDER/provider keys
 ```
 
 ---
@@ -425,8 +449,8 @@ bash ~/.codex/hooks/memory/memory-codex-notify.sh '{"type":"agent-turn-complete"
 
 ```bash
 # Extraction is disabled. Set EXTRACT_PROVIDER:
-export EXTRACT_PROVIDER="anthropic"  # or openai, chatgpt-subscription, ollama
-# Then restart your shell and Claude Code session
+echo 'EXTRACT_PROVIDER=anthropic' >> ~/projects/memories/.env  # or openai, chatgpt-subscription, ollama
+# Then restart docker-compose and your Claude/Cursor/Codex session
 ```
 
 ### Slow retrieval hooks

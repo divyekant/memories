@@ -150,6 +150,20 @@ This document captures key architecture decisions for Memories and the tradeoffs
   - in-memory failure tracking resets on restart
   - no distributed rate limiting across replicas (acceptable for single-instance deployment)
 
+## D13: Qdrant Named Docker Volume
+
+- Status: accepted
+- Decision: mount Qdrant storage as a named Docker volume (`qdrant-storage`) rather than a host bind mount (`./data/qdrant:/qdrant/storage`).
+- Why:
+  - Qdrant v1.15+ uses memory-mapped files (`mmap`) for its HNSW index, which requires full POSIX filesystem semantics
+  - Docker Desktop on macOS and Windows uses VirtioFS for bind mounts, which is not fully POSIX-compliant
+  - This combination causes Qdrant to panic with `OutputTooSmall` (and similar) errors on vector search/upsert operations — data is silently lost or corrupted
+  - Named volumes live inside the Linux VM managed by Docker Desktop, giving Qdrant a compliant filesystem
+- Tradeoff:
+  - Volume data is managed by Docker rather than visible as host-side files — `docker volume inspect` / `docker cp` required to access raw files
+  - Existing bind-mount data must be manually migrated (see README migration note)
+  - On Linux hosts (where bind mounts are POSIX-compliant) the change is neutral — named volumes behave identically
+
 ---
 
 ## Revisit Triggers

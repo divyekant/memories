@@ -1,0 +1,40 @@
+[project]
+name = "memories"
+version = "0.1.0"
+description = "Local-first memory layer for AI assistants"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.30.0",
+    "pydantic==2.9.0",
+    "onnxruntime>=1.17.0,<1.24",
+    "tokenizers>=0.15.0",
+    "huggingface-hub>=0.20.0",
+    "qdrant-client==1.14.2",
+    "numpy>=1.26.4; python_version < \"3.13\"",
+    "numpy>=2.1.0,<3; python_version >= \"3.13\"",
+    "rank-bm25==0.2.2",
+    "openai>=2.21.0",
+]
+
+[project.optional-dependencies]
+extract = [
+    "anthropic>=0.40.0",
+]
+cloud = [
+    "boto3==1.35.36",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "httpx>=0.24.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["*.py", "webui"]

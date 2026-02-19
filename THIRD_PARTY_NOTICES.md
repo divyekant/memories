@@ -13,8 +13,9 @@ This repository uses third-party open-source packages.
 Use the project virtual environment and run:
 
 ```bash
-./.venv/bin/pip install pip-licenses
-./.venv/bin/pip-licenses --from=mixed --format=markdown > THIRD_PARTY_LICENSE_REPORT.md
+uv sync
+uv pip install pip-licenses
+uv run pip-licenses --from=mixed --format=markdown > THIRD_PARTY_LICENSE_REPORT.md
 ```
 
 Review the generated report before release publication.

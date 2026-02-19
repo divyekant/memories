@@ -74,8 +74,9 @@ Memory controls:
 
 ## Development Workflow
 
-- Tests: `./.venv/bin/python -m pytest -q`
-- Local run: `./.venv/bin/python -m uvicorn app:app --reload`
+- Sync deps: `uv sync` (add `--extra extract` and/or `--extra cloud` as needed)
+- Tests: `uv run pytest -q`
+- Local run: `uv run uvicorn app:app --reload`
 - Docker build (core): `docker build --target core -t memories:core .`
 - Docker build (extract): `docker build --target extract -t memories:extract .`
 

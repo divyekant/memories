@@ -36,6 +36,9 @@ services:
       - WORKSPACE_DIR=/workspace
       - API_KEY=              # Set to enable auth (e.g. API_KEY=my-secret-key)
       - MODEL_NAME=all-MiniLM-L6-v2
+      # Embedding provider: onnx (local, default) or openai (BYOK)
+      - EMBED_PROVIDER=${EMBED_PROVIDER:-onnx}
+      - EMBED_MODEL=${EMBED_MODEL:-}
       - MAX_BACKUPS=10
       # Qdrant backend
       - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}

@@ -9,10 +9,10 @@ def _read(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-def test_requirements_use_qdrant_client_not_faiss():
-    req = _read("requirements.txt")
-    assert "qdrant-client" in req
-    assert "faiss-cpu" not in req
+def test_dependencies_use_qdrant_client_not_faiss():
+    deps = _read("pyproject.toml")
+    assert "qdrant-client" in deps
+    assert "faiss-cpu" not in deps
 
 
 def test_compose_defines_qdrant_service_and_env():
