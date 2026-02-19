@@ -61,6 +61,9 @@ COPY qdrant_config.py .
 COPY qdrant_store.py .
 COPY cloud_sync.py .
 COPY runtime_memory.py .
+COPY chatgpt_oauth.py .
+COPY memories_auth.py .
+COPY __main__.py .
 COPY llm_provider.py .
 COPY llm_extract.py .
 COPY app.py .
