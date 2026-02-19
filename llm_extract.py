@@ -119,7 +119,12 @@ def _parse_json_array(text: str) -> list:
     return []
 
 
-def extract_facts(provider, messages: str, context: str = "stop") -> list[str]:
+def extract_facts(
+    provider,
+    messages: str,
+    context: str = "stop",
+    return_error: bool = False,
+):
     """Extract atomic facts from conversation using LLM.
 
     Args:
@@ -127,7 +132,8 @@ def extract_facts(provider, messages: str, context: str = "stop") -> list[str]:
         messages: conversation text
         context: "stop", "pre_compact", or "session_end"
 
-    Returns: list of fact strings
+    Returns:
+        list[str], or tuple[list[str], Optional[str]] when return_error=True
     """
     if context == "pre_compact":
         system = FACT_EXTRACTION_PROMPT_AGGRESSIVE
@@ -153,9 +159,13 @@ def extract_facts(provider, messages: str, context: str = "stop") -> list[str]:
             facts = facts[:EXTRACT_MAX_FACTS]
 
         logger.info("Extracted %d facts (context=%s)", len(facts), context)
+        if return_error:
+            return facts, None
         return facts
     except Exception as e:
         logger.error("Fact extraction failed: %s", e)
+        if return_error:
+            return [], str(e)
         return []
 
 
@@ -309,7 +319,24 @@ def run_extraction(
         return {"error": "extraction_disabled"}
 
     # Step 1: Extract facts
-    facts = extract_facts(provider, messages, context=context)
+    facts, extract_error = extract_facts(
+        provider,
+        messages,
+        context=context,
+        return_error=True,
+    )
+    if extract_error:
+        return {
+            "actions": [],
+            "extracted_count": 0,
+            "stored_count": 0,
+            "updated_count": 0,
+            "deleted_count": 0,
+            "error": "provider_runtime_failure",
+            "error_stage": "extract_facts",
+            "error_message": extract_error,
+        }
+
     if not facts:
         return {
             "actions": [],

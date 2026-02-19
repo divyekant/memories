@@ -131,6 +131,14 @@ EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH = _env_int(
 )
 METRICS_LATENCY_SAMPLES = _env_int("METRICS_LATENCY_SAMPLES", 200, minimum=20)
 METRICS_TREND_SAMPLES = _env_int("METRICS_TREND_SAMPLES", 120, minimum=5)
+EXTRACT_FALLBACK_ADD_ENABLED = _env_bool("EXTRACT_FALLBACK_ADD", False)
+EXTRACT_FALLBACK_MAX_FACTS = _env_int("EXTRACT_FALLBACK_MAX_FACTS", 1, minimum=1)
+EXTRACT_FALLBACK_MIN_FACT_CHARS = _env_int("EXTRACT_FALLBACK_MIN_FACT_CHARS", 24, minimum=5)
+EXTRACT_FALLBACK_MAX_FACT_CHARS = _env_int("EXTRACT_FALLBACK_MAX_FACT_CHARS", 280, minimum=32)
+EXTRACT_FALLBACK_NOVELTY_THRESHOLD = min(
+    1.0,
+    _env_float("EXTRACT_FALLBACK_NOVELTY_THRESHOLD", 0.88, minimum=0.0),
+)
 
 extract_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=EXTRACT_QUEUE_MAX)
 extract_jobs: Dict[str, Dict[str, Any]] = {}
@@ -381,6 +389,123 @@ def _trim_finished_extract_jobs() -> None:
             extract_jobs.pop(jid, None)
 
 
+_FALLBACK_DECISION_PATTERN = re.compile(
+    r"\b("
+    r"decide(?:d|s|ing)?|decision|prefer|standard|policy|"
+    r"we\s+should|we\s+will|let'?s|going\s+with|"
+    r"use\s+[a-z0-9_.-]+|remember\s+"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _normalize_candidate_text(text: str) -> str:
+    """Normalize one candidate line for conservative fallback extraction."""
+    compact = re.sub(r"\s+", " ", text.strip())
+    compact = re.sub(r"^(User|Assistant)\s*:\s*", "", compact, flags=re.IGNORECASE)
+    return compact.strip()
+
+
+def _fallback_extract_facts(messages: str) -> List[str]:
+    """
+    Extract a tiny set of high-confidence fact candidates from raw transcript text.
+
+    This is intentionally conservative: if unsure, emit no facts.
+    """
+    candidates: List[str] = []
+    seen = set()
+    for raw_line in messages.splitlines():
+        line = _normalize_candidate_text(raw_line)
+        if not line:
+            continue
+        if line.endswith("?"):
+            continue
+        if len(line) < EXTRACT_FALLBACK_MIN_FACT_CHARS:
+            continue
+        if len(line) > EXTRACT_FALLBACK_MAX_FACT_CHARS:
+            continue
+        if len(line.split()) < 4:
+            continue
+        if not _FALLBACK_DECISION_PATTERN.search(line):
+            continue
+
+        lowered = line.lower()
+        if lowered.startswith(("ok ", "okay ", "sure ", "thanks", "thank you")):
+            continue
+
+        if line not in seen:
+            seen.add(line)
+            candidates.append(line)
+        if len(candidates) >= EXTRACT_FALLBACK_MAX_FACTS:
+            break
+
+    return candidates
+
+
+def _run_fallback_extraction(messages: str, source: str, context: str) -> Dict[str, Any]:
+    """Fallback add-only extraction path for disabled or runtime-failed providers."""
+    facts = _fallback_extract_facts(messages)
+    actions: List[Dict[str, Any]] = []
+    stored_count = 0
+    source_value = source or "extract/fallback"
+
+    for fact in facts:
+        is_new, similar = memory.is_novel(fact, threshold=EXTRACT_FALLBACK_NOVELTY_THRESHOLD)
+        if is_new:
+            ids = memory.add_memories(
+                texts=[fact],
+                sources=[source_value],
+                metadata_list=[{"extraction_mode": "fallback_add", "context": context}],
+                deduplicate=False,
+            )
+            if ids:
+                stored_count += 1
+                actions.append(
+                    {
+                        "action": "add",
+                        "text": fact,
+                        "id": ids[0],
+                        "mode": "fallback_add",
+                    }
+                )
+        else:
+            actions.append(
+                {
+                    "action": "noop",
+                    "text": fact,
+                    "mode": "fallback_add",
+                    "matched_id": similar.get("id") if similar else None,
+                    "similarity": similar.get("similarity") if similar else None,
+                }
+            )
+
+    return {
+        "actions": actions,
+        "extracted_count": len(facts),
+        "stored_count": stored_count,
+        "updated_count": 0,
+        "deleted_count": 0,
+        "mode": "fallback_add",
+    }
+
+
+def _should_use_runtime_fallback(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    return result.get("error") == "provider_runtime_failure"
+
+
+def _merge_runtime_fallback_result(primary_result: Dict[str, Any], fallback_result: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(fallback_result)
+    merged["fallback_triggered"] = True
+    merged["fallback_reason"] = primary_result.get("error")
+    if primary_result.get("error_stage"):
+        merged["fallback_source_stage"] = primary_result.get("error_stage")
+    if primary_result.get("error_message"):
+        merged["primary_error"] = primary_result.get("error_message")
+    return merged
+
+
 def _ensure_extract_workers_started() -> None:
     if extract_provider is None or run_extraction is None:
         return
@@ -426,6 +551,22 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data["source"],
                 request_data["context"],
             )
+            if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result):
+                fallback_result = await run_in_threadpool(
+                    _run_fallback_extraction,
+                    request_data["messages"],
+                    request_data["source"],
+                    request_data["context"],
+                )
+                result = _merge_runtime_fallback_result(result, fallback_result)
+                logger.info(
+                    "Extract runtime fallback completed: job_id=%s source=%s context=%s extracted=%d stored=%d",
+                    job_id,
+                    request_data["source"],
+                    request_data["context"],
+                    result.get("extracted_count", 0),
+                    result.get("stored_count", 0),
+                )
             if job_state is not None:
                 job_state["status"] = "completed"
                 job_state["completed_at"] = _utc_now_iso()
@@ -1314,7 +1455,53 @@ async def sync_restore(backup_name: str, confirm: bool = False):
 async def memory_extract(request: ExtractRequest):
     """Queue extraction and return immediately."""
     if extract_provider is None or run_extraction is None:
-        raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
+        if not EXTRACT_FALLBACK_ADD_ENABLED:
+            raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
+
+        job_id = uuid4().hex
+        extract_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "source": request.source,
+            "context": request.context,
+            "message_length": len(request.messages),
+            "created_at": _utc_now_iso(),
+            "started_at": _utc_now_iso(),
+            "mode": "fallback_add",
+        }
+        try:
+            result = await run_in_threadpool(
+                _run_fallback_extraction,
+                request.messages,
+                request.source,
+                request.context,
+            )
+            extract_jobs[job_id]["status"] = "completed"
+            extract_jobs[job_id]["completed_at"] = _utc_now_iso()
+            extract_jobs[job_id]["result"] = result
+            logger.info(
+                "Extract fallback completed: job_id=%s source=%s context=%s extracted=%d stored=%d",
+                job_id,
+                request.source,
+                request.context,
+                result.get("extracted_count", 0),
+                result.get("stored_count", 0),
+            )
+        except Exception as e:
+            logger.exception("Extract fallback failed: job_id=%s", job_id)
+            extract_jobs[job_id]["status"] = "failed"
+            extract_jobs[job_id]["completed_at"] = _utc_now_iso()
+            extract_jobs[job_id]["error"] = str(e)
+        finally:
+            _trim_finished_extract_jobs()
+
+        return {
+            "job_id": job_id,
+            "status": extract_jobs[job_id]["status"],
+            "queue_depth": extract_queue.qsize(),
+            "result_url": f"/memory/extract/{job_id}",
+        }
+
     _ensure_extract_workers_started()
     job_id = uuid4().hex
     extract_jobs[job_id] = {
@@ -1409,6 +1596,7 @@ async def extract_status():
         "queue_remaining": max(0, EXTRACT_QUEUE_MAX - extract_queue.qsize()),
         "workers": EXTRACT_MAX_INFLIGHT,
         "jobs_tracked": len(extract_jobs),
+        "fallback_add_enabled": EXTRACT_FALLBACK_ADD_ENABLED,
     }
 
     if extract_provider is None:

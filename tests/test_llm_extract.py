@@ -291,3 +291,23 @@ class TestFullPipeline:
             context="stop"
         )
         assert result["error"] == "extraction_disabled"
+
+    def test_provider_runtime_failure_returns_error_signal(self):
+        from llm_extract import run_extraction
+
+        mock_provider = MagicMock()
+        mock_provider.complete.side_effect = Exception("429 Too Many Requests")
+        mock_provider.supports_audn = True
+
+        result = run_extraction(
+            provider=mock_provider,
+            engine=MagicMock(),
+            messages="User: capture this decision",
+            source="test",
+            context="stop",
+        )
+
+        assert result["error"] == "provider_runtime_failure"
+        assert result["error_stage"] == "extract_facts"
+        assert "429" in result["error_message"]
+        assert result["stored_count"] == 0

@@ -43,6 +43,7 @@ docker compose up -d --build memories
 | Mode | Cost | What you get |
 |------|------|--------------|
 | Retrieval only (`EXTRACT_PROVIDER` unset) | Free | Recalls existing memories, does not learn new ones automatically |
+| Retrieval + fallback add (`EXTRACT_FALLBACK_ADD=true`) | Free | Recalls existing memories and stores a tiny set of high-confidence facts (add-only, no AUDN updates/deletes) when extraction is disabled or provider calls fail at runtime |
 | Ollama extraction (`EXTRACT_PROVIDER=ollama`) | Free | Learns new facts with simplified decisions (`ADD/NOOP`) |
 | Anthropic/OpenAI extraction | Small API cost (~$0.001/turn typical) | Full AUDN (`ADD/UPDATE/DELETE/NOOP`) and better long-term memory quality |
 

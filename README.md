@@ -712,7 +712,12 @@ Cursor is supported via manual MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.
 | Ollama | Free | Extract only (Add/Noop) | ~5s |
 | Skip | Free | None | N/A |
 
-Extraction is optional. Without it, retrieval still works — it just doesn't learn new memories automatically.
+Extraction is optional. Without it, retrieval still works.
+
+By default, automatic write hooks do not store new memories when extraction is disabled.
+If you want a degraded automatic-write mode, set `EXTRACT_FALLBACK_ADD=true` to enable a strict
+heuristic + novelty-check fallback that writes at most a small number of high-confidence facts
+when extraction is disabled or the configured provider fails at runtime (for example rate limits/timeouts).
 
 ### AUDN in plain English
 
@@ -732,7 +737,8 @@ Why it matters:
 
 - **Anthropic/OpenAI extraction**: small usage cost (typically around ~$0.001/turn), full AUDN quality.
 - **Ollama extraction**: no API cost, but simplified decisions (`ADD/NOOP` only).
-- **Retrieval only** (`EXTRACT_PROVIDER` unset): no extraction model cost, but no new memories are learned automatically.
+- **Retrieval only** (`EXTRACT_PROVIDER` unset): no extraction model cost.
+- **Optional fallback writes** (`EXTRACT_FALLBACK_ADD=true`): add-only, heuristic extraction path (no AUDN update/delete) used when extraction is disabled or provider calls fail at runtime.
 
 ### Cost control knobs
 
@@ -747,6 +753,9 @@ Use these to keep extraction spend bounded:
 `POST /memory/extract` is async-first. It enqueues work and returns `202` with a `job_id`.
 Poll `GET /memory/extract/{job_id}` for `queued`, `running`, `completed`, or `failed`.
 If the queue is full, the API returns `429` with a `Retry-After` header.
+When extraction is disabled and `EXTRACT_FALLBACK_ADD=true`, `/memory/extract` runs an immediate
+fallback add path and still returns a job object. When extraction is configured but fails at runtime,
+the queued worker also falls back to add-only mode when `EXTRACT_FALLBACK_ADD=true`.
 
 ### Docker image targets (core / extract)
 
@@ -793,6 +802,11 @@ Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough 
 | `ANTHROPIC_API_KEY` | (none) | Required for Anthropic provider |
 | `OPENAI_API_KEY` | (none) | Required for OpenAI provider |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
+| `EXTRACT_FALLBACK_ADD` | `false` | Enable add-only fallback writes when extraction is disabled or provider calls fail at runtime |
+| `EXTRACT_FALLBACK_MAX_FACTS` | `1` | Max fallback facts to store per extract request |
+| `EXTRACT_FALLBACK_MIN_FACT_CHARS` | `24` | Minimum candidate fact length for fallback |
+| `EXTRACT_FALLBACK_MAX_FACT_CHARS` | `280` | Maximum candidate fact length for fallback |
+| `EXTRACT_FALLBACK_NOVELTY_THRESHOLD` | `0.88` | Novelty threshold used by fallback add mode |
 | `EXTRACT_QUEUE_MAX` | `EXTRACT_MAX_INFLIGHT * 20` | Maximum queued extraction jobs before backpressure (`429`) |
 | `EXTRACT_JOB_RETENTION_SEC` | `300` | How long completed/failed extraction jobs stay queryable |
 | `EXTRACT_JOBS_MAX` | `200` | Hard cap on stored extraction job records (finished jobs evicted first) |

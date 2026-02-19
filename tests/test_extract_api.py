@@ -52,6 +52,62 @@ class TestExtractEndpoint:
             )
             assert response.status_code == 501
 
+    def test_extract_fallback_add_stores_memory_when_enabled(self, client):
+        test_client, mock_engine = client
+        mock_engine.is_novel.return_value = (True, None)
+        mock_engine.add_memories.return_value = [123]
+        with patch("app.extract_provider", None), \
+             patch("app.run_extraction", None), \
+             patch("app.EXTRACT_FALLBACK_ADD_ENABLED", True):
+            response = test_client.post(
+                "/memory/extract",
+                json={
+                    "messages": "User: We decided to use qdrant as the default vector store for production.",
+                    "source": "test/proj",
+                    "context": "stop",
+                },
+                headers={"X-API-Key": "test-key"},
+            )
+            assert response.status_code == 202
+            data = response.json()
+            assert data["status"] == "completed"
+
+            job_state = self._wait_for_terminal_job(test_client, data["job_id"])
+            assert job_state["status"] == "completed"
+            assert job_state["result"]["mode"] == "fallback_add"
+            assert job_state["result"]["stored_count"] == 1
+            assert job_state["result"]["extracted_count"] == 1
+
+        mock_engine.is_novel.assert_called_once()
+        mock_engine.add_memories.assert_called_once()
+
+    def test_extract_fallback_add_skips_when_no_fact_candidate(self, client):
+        test_client, mock_engine = client
+        with patch("app.extract_provider", None), \
+             patch("app.run_extraction", None), \
+             patch("app.EXTRACT_FALLBACK_ADD_ENABLED", True):
+            response = test_client.post(
+                "/memory/extract",
+                json={
+                    "messages": "User: hi\nAssistant: hello",
+                    "source": "test/proj",
+                    "context": "stop",
+                },
+                headers={"X-API-Key": "test-key"},
+            )
+            assert response.status_code == 202
+            data = response.json()
+            assert data["status"] == "completed"
+
+            job_state = self._wait_for_terminal_job(test_client, data["job_id"])
+            assert job_state["status"] == "completed"
+            assert job_state["result"]["mode"] == "fallback_add"
+            assert job_state["result"]["stored_count"] == 0
+            assert job_state["result"]["extracted_count"] == 0
+
+        mock_engine.is_novel.assert_not_called()
+        mock_engine.add_memories.assert_not_called()
+
     def test_extract_returns_results(self, client):
         test_client, mock_engine = client
         mock_result = {
@@ -80,6 +136,45 @@ class TestExtractEndpoint:
             job_state = self._wait_for_terminal_job(test_client, data["job_id"])
             assert job_state["status"] == "completed"
             assert job_state["result"]["extracted_count"] == 1
+
+    def test_extract_runtime_failure_uses_fallback_when_enabled(self, client):
+        test_client, mock_engine = client
+        mock_engine.is_novel.return_value = (True, None)
+        mock_engine.add_memories.return_value = [777]
+        with patch("app.extract_provider", MagicMock()), \
+             patch("app.EXTRACT_FALLBACK_ADD_ENABLED", True), \
+             patch(
+                 "app.run_extraction",
+                 return_value={
+                     "actions": [],
+                     "extracted_count": 0,
+                     "stored_count": 0,
+                     "updated_count": 0,
+                     "deleted_count": 0,
+                     "error": "provider_runtime_failure",
+                     "error_stage": "extract_facts",
+                     "error_message": "429 Too Many Requests",
+                 },
+             ):
+            response = test_client.post(
+                "/memory/extract",
+                json={
+                    "messages": "User: We decided to keep fallback enabled for quota failures.",
+                    "source": "test/runtime-fallback",
+                    "context": "stop",
+                },
+                headers={"X-API-Key": "test-key"},
+            )
+            assert response.status_code == 202
+            job_state = self._wait_for_terminal_job(test_client, response.json()["job_id"])
+            assert job_state["status"] == "completed"
+            assert job_state["result"]["mode"] == "fallback_add"
+            assert job_state["result"]["stored_count"] == 1
+            assert job_state["result"]["fallback_triggered"] is True
+            assert job_state["result"]["fallback_reason"] == "provider_runtime_failure"
+
+        mock_engine.is_novel.assert_called_once()
+        mock_engine.add_memories.assert_called_once()
 
     def test_extract_triggers_memory_trim(self, client):
         test_client, _ = client

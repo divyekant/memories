@@ -271,11 +271,11 @@ Codex currently does not expose Claude-style SessionStart/UserPromptSubmit/PreCo
 | **Anthropic** (recommended) | ~$0.001/turn | Full (Add/Update/Delete/Noop) | ~1-2s | Best |
 | **OpenAI** | ~$0.001/turn | Full (Add/Update/Delete/Noop) | ~1-2s | Great |
 | **Ollama** | Free | Extract only (Add/Noop via novelty check) | ~5s | Good |
-| **Skip** | Free | None (retrieval only) | N/A | N/A |
+| **Skip** | Free | None by default (retrieval only) | N/A | N/A |
 
 - **Full AUDN** means the LLM compares new facts against existing memories and decides whether to add, update, delete, or skip
 - **Ollama** can extract facts but uses cosine similarity for dedup instead of LLM reasoning — no updates or deletions of stale memories
-- **Skip** means hooks only retrieve memories, never extract. Good for testing retrieval before enabling extraction.
+- **Skip** means hooks retrieve memories. By default no new memories are added; optional fallback add mode exists (`EXTRACT_FALLBACK_ADD=true`) and also activates on provider runtime failures (for example 429/timeouts).
 
 ---
 
@@ -290,6 +290,11 @@ Codex currently does not expose Claude-style SessionStart/UserPromptSubmit/PreCo
 | `ANTHROPIC_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=anthropic` |
 | `OPENAI_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=openai` |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
+| `EXTRACT_FALLBACK_ADD` | `false` | Enable add-only fallback when extraction is disabled or provider calls fail at runtime |
+| `EXTRACT_FALLBACK_MAX_FACTS` | `1` | Max fallback facts per request |
+| `EXTRACT_FALLBACK_MIN_FACT_CHARS` | `24` | Minimum candidate fact length |
+| `EXTRACT_FALLBACK_MAX_FACT_CHARS` | `280` | Maximum candidate fact length |
+| `EXTRACT_FALLBACK_NOVELTY_THRESHOLD` | `0.88` | Novelty threshold for fallback adds |
 | `MEMORIES_HOOKS_DIR` | `~/.claude/hooks/memory` | Override Claude hooks location |
 
 ---
@@ -346,7 +351,13 @@ Remove or comment out `EXTRACT_PROVIDER` from your shell profile:
 # export EXTRACT_PROVIDER="anthropic"  # commented out
 ```
 
-Retrieval still works. Extraction paths will silently skip (the Memories endpoint returns 501 when extraction is not configured).
+Retrieval still works. Extraction paths will return "not configured" unless fallback mode is enabled.
+
+Optional fallback mode:
+```bash
+export EXTRACT_FALLBACK_ADD=true
+```
+This enables strict add-only fallback writes (no AUDN update/delete behavior), including runtime provider failures such as quota/rate-limit errors.
 
 ### Remove all integrations
 
