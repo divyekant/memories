@@ -47,6 +47,15 @@ class NullTracker:
     ) -> None:
         pass
 
+    def log_retrieval(self, memory_id: int, query: str = "", source: str = "") -> None:
+        pass
+
+    def get_retrieval_stats(self, memory_ids: list[int]) -> dict:
+        return {}
+
+    def get_unretrieved_memory_ids(self, all_memory_ids: list[int]) -> list[int]:
+        return []
+
     def get_usage(self, period: str = "7d") -> Dict[str, Any]:
         return {"enabled": False}
 
@@ -80,6 +89,15 @@ class UsageTracker:
             CREATE INDEX IF NOT EXISTS idx_api_events_ts ON api_events(ts);
             CREATE INDEX IF NOT EXISTS idx_api_events_op ON api_events(operation);
             CREATE INDEX IF NOT EXISTS idx_extraction_tokens_ts ON extraction_tokens(ts);
+            CREATE TABLE IF NOT EXISTS retrieval_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                memory_id INTEGER NOT NULL,
+                query TEXT DEFAULT '',
+                source TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_retrieval_memory ON retrieval_log(memory_id);
+            CREATE INDEX IF NOT EXISTS idx_retrieval_ts ON retrieval_log(ts);
         """)
         conn.close()
         logger.info("Usage tracker initialized: %s", db_path)
@@ -126,6 +144,45 @@ class UsageTracker:
             conn.commit()
         except Exception:
             logger.debug("Failed to log extraction tokens", exc_info=True)
+
+    def log_retrieval(self, memory_id: int, query: str = "", source: str = "") -> None:
+        try:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO retrieval_log (memory_id, query, source) VALUES (?, ?, ?)",
+                (memory_id, query[:500], source),
+            )
+            conn.commit()
+        except Exception:
+            logger.debug("Failed to log retrieval", exc_info=True)
+
+    def get_retrieval_stats(self, memory_ids: list[int]) -> dict[int, dict]:
+        conn = self._connect()
+        try:
+            placeholders = ",".join("?" * len(memory_ids))
+            rows = conn.execute(
+                f"SELECT memory_id, COUNT(*) as cnt, MAX(ts) as last_ts "
+                f"FROM retrieval_log WHERE memory_id IN ({placeholders}) "
+                f"GROUP BY memory_id",
+                memory_ids,
+            ).fetchall()
+            stats = {mid: {"count": 0, "last_retrieved_at": None} for mid in memory_ids}
+            for row in rows:
+                stats[row[0]] = {"count": row[1], "last_retrieved_at": row[2]}
+            return stats
+        finally:
+            conn.close()
+
+    def get_unretrieved_memory_ids(self, all_memory_ids: list[int]) -> list[int]:
+        conn = self._connect()
+        try:
+            retrieved = set(
+                row[0] for row in
+                conn.execute("SELECT DISTINCT memory_id FROM retrieval_log").fetchall()
+            )
+            return [mid for mid in all_memory_ids if mid not in retrieved]
+        finally:
+            conn.close()
 
     def get_usage(self, period: str = "7d") -> Dict[str, Any]:
         period_filter = PERIOD_SQL.get(period, PERIOD_SQL["7d"])
