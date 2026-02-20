@@ -726,10 +726,14 @@ async def _periodic_embedder_reload() -> None:
 
 async def _maintenance_scheduler():
     """Run consolidation daily and pruning weekly."""
+    _last_consolidation_date = None
+    _last_prune_date = None
     while True:
         now = datetime.now(timezone.utc)
-        # Consolidation: daily at 3 AM UTC
-        if now.hour == 3 and now.minute < 5:
+        today = now.date()
+        # Consolidation: daily at 3 AM UTC (once per day)
+        if now.hour == 3 and now.minute < 5 and _last_consolidation_date != today:
+            _last_consolidation_date = today
             try:
                 logger.info("Running scheduled consolidation")
                 from consolidator import find_clusters, consolidate_cluster
@@ -738,8 +742,9 @@ async def _maintenance_scheduler():
                     consolidate_cluster(extract_provider, memory, cluster, dry_run=False)
             except Exception:
                 logger.exception("Scheduled consolidation failed")
-        # Pruning: Sunday at 4 AM UTC
-        if now.weekday() == 6 and now.hour == 4 and now.minute < 5:
+        # Pruning: Sunday at 4 AM UTC (once per week)
+        if now.weekday() == 6 and now.hour == 4 and now.minute < 5 and _last_prune_date != today:
+            _last_prune_date = today
             try:
                 logger.info("Running scheduled pruning")
                 from consolidator import find_prune_candidates

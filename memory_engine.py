@@ -453,10 +453,10 @@ class MemoryEngine:
                 start_id = len(self.metadata)
                 points = []
                 added_ids = []
+                _reserved_add = {"id", "text", "source", "timestamp", "created_at", "updated_at"}
                 for i, (text, source) in enumerate(zip(texts, sources)):
                     mem_id = start_id + i
                     now = datetime.now(timezone.utc).isoformat()
-                    _reserved_add = {"id", "text", "source", "timestamp", "created_at", "updated_at"}
                     extra = metadata_list[i] if metadata_list and i < len(metadata_list) else {}
                     filtered_extra = {k: v for k, v in extra.items() if k not in _reserved_add}
                     meta = {

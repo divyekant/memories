@@ -21,8 +21,8 @@ Memories to consolidate:
 
 Output a JSON array of consolidated text strings. Each must be self-contained."""
 
-# Categories that use the longer decision_days threshold
-_LONG_LIVED_CATEGORIES = {"DECISION", "LEARNING"}
+# Categories that use the longer decision_days threshold (lowercase — matches llm_extract.py)
+_LONG_LIVED_CATEGORIES = {"decision", "learning"}
 
 
 def _parse_datetime(ts: str) -> datetime:
@@ -103,8 +103,8 @@ def find_clusters(
 
 
 def _dominant_category(cluster: List[Dict]) -> str:
-    """Return the most common category in a cluster, defaulting to DETAIL."""
-    cats = [m.get("category", "DETAIL") for m in cluster]
+    """Return the most common category in a cluster, defaulting to detail."""
+    cats = [m.get("category", "detail") for m in cluster]
     counter = Counter(cats)
     return counter.most_common(1)[0][0]
 
@@ -114,6 +114,8 @@ def _infer_project(cluster: List[Dict]) -> str:
     sources = [m.get("source", "") for m in cluster]
     for s in sources:
         parts = s.split("/")
+        if len(parts) > 1 and parts[-1]:
+            return parts[-1]
         if parts and parts[0]:
             return parts[0]
     return "unknown"
@@ -242,8 +244,8 @@ def find_prune_candidates(
 
         age_days = (now - created).days
 
-        # Determine threshold based on category
-        category = mem.get("category", "DETAIL")
+        # Determine threshold based on category (lowercase from llm_extract.py)
+        category = mem.get("category", "detail").lower()
         if category in _LONG_LIVED_CATEGORIES:
             threshold = decision_days
         else:

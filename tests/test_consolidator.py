@@ -11,7 +11,7 @@ def _cr(text, input_tokens=10, output_tokens=5):
     return CompletionResult(text=text, input_tokens=input_tokens, output_tokens=output_tokens)
 
 
-def _make_memory(id, text, source="project/decisions", category="DETAIL",
+def _make_memory(id, text, source="project/decisions", category="detail",
                  created_at=None):
     """Build a metadata dict resembling a real memory."""
     ts = created_at or datetime.now(timezone.utc).isoformat()
@@ -122,9 +122,9 @@ class TestConsolidation:
     def test_consolidate_cluster_merges_memories(self):
         from consolidator import consolidate_cluster
 
-        m0 = _make_memory(0, "We use Postgres", category="DECISION")
-        m1 = _make_memory(1, "Postgres with pgvector", category="DECISION")
-        m2 = _make_memory(2, "Postgres for storage", category="DETAIL")
+        m0 = _make_memory(0, "We use Postgres", category="decision")
+        m1 = _make_memory(1, "Postgres with pgvector", category="decision")
+        m2 = _make_memory(2, "Postgres for storage", category="detail")
         cluster = [m0, m1, m2]
 
         provider = MagicMock()
@@ -150,14 +150,14 @@ class TestConsolidation:
         add_call = engine.add_memories.call_args
         assert add_call[1]["texts"] == ["We use Postgres with pgvector for relational data storage"]
         meta = add_call[1]["metadata_list"][0]
-        assert meta["category"] == "DECISION"  # dominant category
+        assert meta["category"] == "decision"  # dominant category
         assert set(meta["consolidated_from"]) == {0, 1, 2}
 
     def test_dry_run_does_not_mutate(self):
         from consolidator import consolidate_cluster
 
-        m0 = _make_memory(0, "We use Postgres", category="DECISION")
-        m1 = _make_memory(1, "Postgres with pgvector", category="DECISION")
+        m0 = _make_memory(0, "We use Postgres", category="decision")
+        m1 = _make_memory(1, "Postgres with pgvector", category="decision")
         cluster = [m0, m1]
 
         provider = MagicMock()
@@ -182,9 +182,9 @@ class TestConsolidation:
     def test_consolidate_uses_dominant_category(self):
         from consolidator import consolidate_cluster
 
-        m0 = _make_memory(0, "Fact A", category="DETAIL")
-        m1 = _make_memory(1, "Fact B", category="DECISION")
-        m2 = _make_memory(2, "Fact C", category="DECISION")
+        m0 = _make_memory(0, "Fact A", category="detail")
+        m1 = _make_memory(1, "Fact B", category="decision")
+        m2 = _make_memory(2, "Fact C", category="decision")
         cluster = [m0, m1, m2]
 
         provider = MagicMock()
@@ -197,7 +197,7 @@ class TestConsolidation:
 
         add_call = engine.add_memories.call_args
         meta = add_call[1]["metadata_list"][0]
-        assert meta["category"] == "DECISION"
+        assert meta["category"] == "decision"
 
     def test_consolidate_handles_multiple_outputs(self):
         from consolidator import consolidate_cluster
@@ -228,8 +228,8 @@ class TestPruning:
         from consolidator import find_prune_candidates
 
         old_date = (datetime.now(timezone.utc) - timedelta(days=112)).isoformat()
-        m0 = _make_memory(0, "Old detail", category="DETAIL", created_at=old_date)
-        m1 = _make_memory(1, "Recent detail", category="DETAIL")
+        m0 = _make_memory(0, "Old detail", category="detail", created_at=old_date)
+        m1 = _make_memory(1, "Recent detail", category="detail")
 
         candidates = find_prune_candidates(
             all_memories=[m0, m1],
@@ -246,7 +246,7 @@ class TestPruning:
         from consolidator import find_prune_candidates
 
         old_date = (datetime.now(timezone.utc) - timedelta(days=112)).isoformat()
-        m0 = _make_memory(0, "Old decision", category="DECISION", created_at=old_date)
+        m0 = _make_memory(0, "Old decision", category="decision", created_at=old_date)
 
         candidates = find_prune_candidates(
             all_memories=[m0],
@@ -262,7 +262,7 @@ class TestPruning:
         from consolidator import find_prune_candidates
 
         old_date = (datetime.now(timezone.utc) - timedelta(days=150)).isoformat()
-        m0 = _make_memory(0, "Very old decision", category="DECISION", created_at=old_date)
+        m0 = _make_memory(0, "Very old decision", category="decision", created_at=old_date)
 
         candidates = find_prune_candidates(
             all_memories=[m0],
@@ -278,7 +278,7 @@ class TestPruning:
         from consolidator import find_prune_candidates
 
         old_date = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
-        m0 = _make_memory(0, "Old but retrieved", category="DETAIL", created_at=old_date)
+        m0 = _make_memory(0, "Old but retrieved", category="detail", created_at=old_date)
 
         candidates = find_prune_candidates(
             all_memories=[m0],
@@ -293,7 +293,7 @@ class TestPruning:
         from consolidator import find_prune_candidates
 
         old_date = (datetime.now(timezone.utc) - timedelta(days=112)).isoformat()
-        m0 = _make_memory(0, "Old learning", category="LEARNING", created_at=old_date)
+        m0 = _make_memory(0, "Old learning", category="learning", created_at=old_date)
 
         candidates = find_prune_candidates(
             all_memories=[m0],
@@ -313,7 +313,7 @@ class TestPruning:
         old_date = (datetime.now(timezone.utc) - timedelta(days=100)).strftime(
             "%Y-%m-%dT%H:%M:%S.%fZ"
         )
-        m0 = _make_memory(0, "Old detail with Z", category="DETAIL", created_at=old_date)
+        m0 = _make_memory(0, "Old detail with Z", category="detail", created_at=old_date)
 
         candidates = find_prune_candidates(
             all_memories=[m0],

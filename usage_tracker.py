@@ -157,6 +157,8 @@ class UsageTracker:
             logger.debug("Failed to log retrieval", exc_info=True)
 
     def get_retrieval_stats(self, memory_ids: list[int]) -> dict[int, dict]:
+        if not memory_ids:
+            return {}
         conn = self._connect()
         try:
             placeholders = ",".join("?" * len(memory_ids))
