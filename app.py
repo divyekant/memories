@@ -131,6 +131,7 @@ EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH = _env_int(
     0,
     minimum=0,
 )
+MAINTENANCE_ENABLED = _env_bool("MAINTENANCE_ENABLED", False)
 METRICS_LATENCY_SAMPLES = _env_int("METRICS_LATENCY_SAMPLES", 200, minimum=20)
 METRICS_TREND_SAMPLES = _env_int("METRICS_TREND_SAMPLES", 120, minimum=5)
 EXTRACT_FALLBACK_ADD_ENABLED = _env_bool("EXTRACT_FALLBACK_ADD", False)
@@ -723,6 +724,37 @@ async def _periodic_embedder_reload() -> None:
             logger.debug("Periodic auto reload error", exc_info=True)
 
 
+async def _maintenance_scheduler():
+    """Run consolidation daily and pruning weekly."""
+    while True:
+        now = datetime.now(timezone.utc)
+        # Consolidation: daily at 3 AM UTC
+        if now.hour == 3 and now.minute < 5:
+            try:
+                logger.info("Running scheduled consolidation")
+                from consolidator import find_clusters, consolidate_cluster
+                clusters = find_clusters(memory)
+                for cluster in clusters:
+                    consolidate_cluster(extract_provider, memory, cluster, dry_run=False)
+            except Exception:
+                logger.exception("Scheduled consolidation failed")
+        # Pruning: Sunday at 4 AM UTC
+        if now.weekday() == 6 and now.hour == 4 and now.minute < 5:
+            try:
+                logger.info("Running scheduled pruning")
+                from consolidator import find_prune_candidates
+                all_mems = [m for m in memory.metadata if m]
+                all_ids = [m["id"] for m in all_mems]
+                unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
+                candidates = find_prune_candidates(all_mems, unretrieved)
+                for c in candidates:
+                    memory.delete_memory(c["id"])
+                logger.info("Pruned %d stale memories", len(candidates))
+            except Exception:
+                logger.exception("Scheduled pruning failed")
+        await asyncio.sleep(300)  # Check every 5 minutes
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global memory
@@ -768,6 +800,10 @@ async def lifespan(app: FastAPI):
     if EMBEDDER_AUTO_RELOAD_ENABLED:
         background_tasks.append(
             asyncio.create_task(_periodic_embedder_reload(), name="embedder-auto-reload")
+        )
+    if MAINTENANCE_ENABLED and extract_provider:
+        background_tasks.append(
+            asyncio.create_task(_maintenance_scheduler(), name="maintenance-scheduler")
         )
     yield
     for task in background_tasks:
@@ -1041,6 +1077,45 @@ async def reload_embedder():
             manual_metrics["last_error_at"] = _utc_now_iso()
         logger.exception("Embedder reload failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/maintenance/consolidate")
+async def consolidate(
+    dry_run: bool = Query(True),
+    source_prefix: str = Query(""),
+):
+    """Run memory consolidation. Merges redundant memory clusters."""
+    if not extract_provider:
+        raise HTTPException(503, "No LLM provider configured for consolidation")
+    from consolidator import find_clusters, consolidate_cluster
+    clusters = find_clusters(memory, source_prefix=source_prefix)
+    results = []
+    for cluster in clusters:
+        r = await run_in_threadpool(
+            consolidate_cluster, extract_provider, memory, cluster, dry_run=dry_run,
+        )
+        results.append(r)
+    return {"clusters_found": len(clusters), "results": results, "dry_run": dry_run}
+
+
+@app.post("/maintenance/prune")
+async def prune(dry_run: bool = Query(True)):
+    """Prune stale unretrieved memories."""
+    all_mems = [m for m in memory.metadata if m]
+    all_ids = [m["id"] for m in all_mems]
+    unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
+    from consolidator import find_prune_candidates
+    candidates = find_prune_candidates(all_mems, unretrieved)
+    pruned = 0
+    if not dry_run:
+        for c in candidates:
+            memory.delete_memory(c["id"])
+            pruned += 1
+    return {
+        "candidates": len(candidates),
+        "pruned": pruned,
+        "dry_run": dry_run,
+    }
 
 
 # -- Search -------------------------------------------------------------------
