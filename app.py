@@ -1066,6 +1066,13 @@ async def search(request: SearchRequest):
                 source_prefix=request.source_prefix,
             )
         usage_tracker.log_api_event("search", request.source)
+        for r in results:
+            if "id" in r:
+                usage_tracker.log_retrieval(
+                    memory_id=r["id"],
+                    query=request.query[:200],
+                    source=request.source,
+                )
         return {"query": request.query, "results": results, "count": len(results)}
     except Exception as e:
         logger.exception("Search failed")
@@ -1093,6 +1100,13 @@ async def search_batch(request: SearchBatchRequest):
                     threshold=item.threshold,
                     source_prefix=item.source_prefix,
                 )
+            for r in results:
+                if "id" in r:
+                    usage_tracker.log_retrieval(
+                        memory_id=r["id"],
+                        query=item.query[:200],
+                        source=item.source,
+                    )
             outputs.append({"query": item.query, "results": results, "count": len(results)})
         usage_tracker.log_api_event("search_batch", count=len(request.queries))
         return {"results": outputs, "count": len(outputs)}
