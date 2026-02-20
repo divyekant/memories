@@ -16,6 +16,13 @@
       <p class="subtitle">Browse, filter, and inspect stored memories without leaving the browser.</p>
     </header>
 
+    <nav class="tab-bar">
+      <button class="tab-btn active" data-tab="memories">Memories</button>
+      <button class="tab-btn" data-tab="usage">Usage</button>
+    </nav>
+
+    <div id="tabMemories" class="tab-content active">
+
     <section class="panel controls">
       <div class="control-row">
         <label>
@@ -76,6 +83,60 @@
 
       <section id="memoryList" class="memory-grid"></section>
     </div>
+
+    </div><!-- /tabMemories -->
+
+    <div id="tabUsage" class="tab-content">
+      <section class="panel controls">
+        <div class="control-row">
+          <label>
+            Period
+            <select id="usagePeriod">
+              <option value="today">Today</option>
+              <option value="7d" selected>Last 7 days</option>
+              <option value="30d">Last 30 days</option>
+              <option value="all">All time</option>
+            </select>
+          </label>
+          <div class="buttons">
+            <button id="usageRefresh" class="btn primary">Refresh</button>
+          </div>
+        </div>
+        <div id="usageStatus" class="status">Ready.</div>
+      </section>
+
+      <section id="usageSummary" class="panel summary usage-summary">
+        <div class="metric">
+          <span class="metric-label">Total Ops</span>
+          <span id="usageTotalOps" class="metric-value">0</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Extraction Calls</span>
+          <span id="usageExtractCalls" class="metric-value">0</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Est. Cost</span>
+          <span id="usageEstCost" class="metric-value">$0.00</span>
+        </div>
+      </section>
+
+      <div class="usage-grid">
+        <section class="panel usage-section">
+          <h3 class="usage-heading">Operations</h3>
+          <div id="usageOpsTable" class="usage-table-wrap">
+            <p class="notice">No data yet.</p>
+          </div>
+        </section>
+
+        <section class="panel usage-section">
+          <h3 class="usage-heading">Extraction Tokens</h3>
+          <div id="usageTokensTable" class="usage-table-wrap">
+            <p class="notice">No data yet.</p>
+          </div>
+        </section>
+      </div>
+    </div><!-- /tabUsage -->
+
   </main>
 
   <div id="renameFolderModal" class="modal-overlay" hidden>

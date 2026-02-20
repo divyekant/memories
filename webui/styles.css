@@ -410,6 +410,140 @@ button:focus {
   }
 }
 
+/* -- Tab navigation ---------------------------------------------------------- */
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0;
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-soft);
+  padding: 10px 20px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+  border-radius: 0;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-btn:focus {
+  outline: none;
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: grid;
+  gap: 14px;
+}
+
+/* -- Usage dashboard --------------------------------------------------------- */
+
+.usage-summary {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.usage-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.usage-section {
+  padding: 16px;
+}
+
+.usage-heading {
+  margin: 0 0 12px;
+  font-size: 0.88rem;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.usage-table-wrap {
+  overflow-x: auto;
+}
+
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.usage-table th {
+  text-align: left;
+  color: var(--text-soft);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.usage-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(148, 178, 221, 0.08);
+}
+
+.usage-table tbody tr:hover {
+  background: rgba(55, 213, 180, 0.05);
+}
+
+.op-name,
+.model-name {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, monospace;
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+
+.op-count {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.op-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.source-tag {
+  background: rgba(148, 178, 221, 0.1);
+  border: 1px solid rgba(148, 178, 221, 0.15);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.78rem;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.source-tag b {
+  color: var(--text);
+  margin-left: 4px;
+}
+
+.text-soft {
+  color: var(--text-soft);
+}
+
 /* -- Responsive -------------------------------------------------------------- */
 
 @media (max-width: 760px) {
@@ -451,5 +585,13 @@ button:focus {
 
   .folder-actions {
     display: none !important;
+  }
+
+  .usage-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .usage-table {
+    font-size: 0.82rem;
   }
 }
