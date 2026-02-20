@@ -187,6 +187,24 @@ class MemoryEngine:
     def _point_payload(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         return {k: v for k, v in meta.items() if k != "id"}
 
+    def _migrate_timestamps(self):
+        """Migrate existing memories from single `timestamp` to created_at/updated_at."""
+        migrated = 0
+        for meta in self.metadata:
+            if not meta:
+                continue
+            if "created_at" not in meta:
+                ts = meta.get("timestamp", datetime.now(timezone.utc).isoformat())
+                meta["created_at"] = ts
+                meta["updated_at"] = ts
+                meta["timestamp"] = ts
+                migrated += 1
+        if migrated:
+            logger.info("Migrated %d memories to created_at/updated_at timestamps", migrated)
+            self.save()
+            # NOTE: Qdrant payloads are not updated here to avoid slow bulk writes.
+            # They will sync on next update_memory or reindex.
+
     def _encode(
         self,
         texts: List[str],
@@ -437,12 +455,18 @@ class MemoryEngine:
                 added_ids = []
                 for i, (text, source) in enumerate(zip(texts, sources)):
                     mem_id = start_id + i
+                    now = datetime.now(timezone.utc).isoformat()
+                    _reserved_add = {"id", "text", "source", "timestamp", "created_at", "updated_at"}
+                    extra = metadata_list[i] if metadata_list and i < len(metadata_list) else {}
+                    filtered_extra = {k: v for k, v in extra.items() if k not in _reserved_add}
                     meta = {
                         "id": mem_id,
                         "text": text,
                         "source": source,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        **(metadata_list[i] if metadata_list and i < len(metadata_list) else {}),
+                        "created_at": now,
+                        "updated_at": now,
+                        "timestamp": now,  # backward compat alias
+                        **filtered_extra,
                     }
                     self.metadata.append(meta)
                     points.append(
@@ -634,7 +658,8 @@ class MemoryEngine:
 
                 if source_only:
                     meta["source"] = source
-                    meta["timestamp"] = datetime.now(timezone.utc).isoformat()
+                    meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    # Don't touch created_at or timestamp
                     self.qdrant_store.set_payload(memory_id, self._point_payload(meta))
                     self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                     self.save()
@@ -651,14 +676,15 @@ class MemoryEngine:
                     updated_fields.append("source")
 
                 if metadata_patch:
-                    _reserved = {"id", "text", "source", "timestamp", "entity_key"}
+                    _reserved = {"id", "text", "source", "timestamp", "created_at", "updated_at", "entity_key"}
                     for key, value in metadata_patch.items():
                         if key in _reserved:
                             continue
                         meta[key] = value
                     updated_fields.append("metadata")
 
-                meta["timestamp"] = datetime.now(timezone.utc).isoformat()
+                meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+                # Don't touch created_at or timestamp
 
                 embedding = self._encode(
                     [meta["text"]],
@@ -1028,6 +1054,7 @@ class MemoryEngine:
 
         self._check_integrity()
         self._rebuild_bm25()
+        self._migrate_timestamps()
 
     def rebuild_from_files(self, file_paths: List[str]) -> Dict[str, Any]:
         """Rebuild index from markdown files using proper chunking."""
