@@ -42,22 +42,45 @@ EXTRACT_SIMILAR_PER_FACT = _env_int("EXTRACT_SIMILAR_PER_FACT", 5)
 
 # --- Prompts ---
 
-FACT_EXTRACTION_PROMPT = """Extract atomic facts worth remembering from this conversation.
-Focus on: decisions made, preferences expressed, bugs found + root causes + fixes,
-architectural choices, tool/library selections, project conventions.
-Output a JSON array of strings, one fact per element.
-Each fact should be self-contained and understandable without the conversation.
+FACT_EXTRACTION_PROMPT = """Extract durable facts worth remembering from this conversation about the {project} project.
+
+Categorize each fact:
+- DECISION: Architectural choices, library selections, design patterns, preferences. WHY something was chosen matters more than WHAT.
+- LEARNING: Bug root causes + fixes, gotchas discovered, workarounds, performance findings.
+- DETAIL: File paths, API signatures, config values that are project-specific conventions.
+
+Skip anything that fails this test: "Would this still be useful 30 days from now?"
+
+DO NOT extract:
+- Task completion status ("done", "all tests pass", "deployed successfully")
+- Commit hashes, PR numbers, or branch names
+- Counts or metrics ("44 tests", "5 files changed")
+- Session-specific context ("currently working on...", "next step is...")
+- Generic programming knowledge any developer would know
+
+Output a JSON array of objects: [{{"category": "DECISION"|"LEARNING"|"DETAIL", "text": "..."}}]
+Each fact must be self-contained and understandable without the conversation.
 If nothing worth storing, output []."""
 
-FACT_EXTRACTION_PROMPT_AGGRESSIVE = """Extract ALL potentially useful facts from this conversation.
-This context is about to be lost, so be thorough. Include:
-- Decisions made, preferences expressed
-- Bugs found + root causes + fixes
-- Architectural choices, tool/library selections
-- Project conventions, file paths mentioned
-- Any technical detail that might be useful later
-Output a JSON array of strings, one fact per element.
-Each fact should be self-contained and understandable without the conversation.
+FACT_EXTRACTION_PROMPT_AGGRESSIVE = """Extract durable facts worth remembering from this conversation about the {project} project.
+This context is about to be lost permanently. Be thorough but still apply the 30-day test.
+
+Categorize each fact:
+- DECISION: Architectural choices, library selections, design patterns, preferences. WHY > WHAT.
+- LEARNING: Bug root causes + fixes, gotchas discovered, workarounds, performance findings.
+- DETAIL: File paths, API signatures, config values, naming conventions — project-specific patterns.
+
+Include DETAIL-category items you would normally skip — file paths, config patterns, naming conventions.
+
+DO NOT extract:
+- Task completion status ("done", "all tests pass", "deployed successfully")
+- Commit hashes, PR numbers, or branch names
+- Counts or metrics ("44 tests", "5 files changed")
+- Session-specific context ("currently working on...", "next step is...")
+- Generic programming knowledge any developer would know
+
+Output a JSON array of objects: [{{"category": "DECISION"|"LEARNING"|"DETAIL", "text": "..."}}]
+Each fact must be self-contained and understandable without the conversation.
 If nothing worth storing, output []."""
 
 AUDN_PROMPT = """You are a memory manager. For each new fact, decide what to do given
@@ -124,38 +147,54 @@ def extract_facts(
     messages: str,
     context: str = "stop",
     return_error: bool = False,
+    source: str = "",
 ):
-    """Extract atomic facts from conversation using LLM.
+    """Extract categorized facts from conversation using LLM.
 
     Args:
         provider: LLM provider instance
         messages: conversation text
         context: "stop", "pre_compact", or "session_end"
+        source: memory source identifier (e.g. "claude-code/my-app")
 
     Returns:
-        list[str], or tuple[list[str], Optional[str]] when return_error=True
+        list[dict], or tuple[list[dict], Optional[str], dict] when return_error=True.
+        Each dict has {"category": str, "text": str}.
     """
     if context == "pre_compact":
         system = FACT_EXTRACTION_PROMPT_AGGRESSIVE
     else:
         system = FACT_EXTRACTION_PROMPT
 
+    project = source.rsplit("/", 1)[-1] if "/" in source else source or "this"
+    system = system.format(project=project)
+
+    tokens = {"input": 0, "output": 0}
     try:
         result = provider.complete(system, messages)
-        facts = _parse_json_array(result.text)
+        raw_facts = _parse_json_array(result.text)
         tokens = {"input": result.input_tokens, "output": result.output_tokens}
-        # Keep only non-empty strings; normalize + cap length.
-        facts = [
-            _clip_text(f, EXTRACT_MAX_FACT_CHARS)
-            for f in facts
-            if isinstance(f, str) and f.strip()
-        ]
+
+        facts = []
+        for item in raw_facts:
+            if isinstance(item, dict) and "text" in item:
+                # New format: {"category": "...", "text": "..."}
+                cat = item.get("category", "detail").lower()
+                if cat not in ("decision", "learning", "detail"):
+                    cat = "detail"
+                text = _clip_text(str(item["text"]), EXTRACT_MAX_FACT_CHARS)
+                if text:
+                    facts.append({"category": cat, "text": text})
+            elif isinstance(item, str) and item.strip():
+                # Backward compat: plain string -> detail
+                text = _clip_text(item, EXTRACT_MAX_FACT_CHARS)
+                if text:
+                    facts.append({"category": "detail", "text": text})
 
         if len(facts) > EXTRACT_MAX_FACTS:
             logger.info(
-                "Extracted %d facts; keeping first %d to bound memory and latency",
-                len(facts),
-                EXTRACT_MAX_FACTS,
+                "Extracted %d facts; keeping first %d",
+                len(facts), EXTRACT_MAX_FACTS,
             )
             facts = facts[:EXTRACT_MAX_FACTS]
 
@@ -166,15 +205,18 @@ def extract_facts(
     except Exception as e:
         logger.error("Fact extraction failed: %s", e)
         if return_error:
-            return [], str(e), {"input": 0, "output": 0}
+            return [], str(e), tokens
         return []
 
 
-def run_audn(provider, engine, facts: list[str], source: str) -> tuple[list[dict], dict]:
+def run_audn(provider, engine, facts: list[dict], source: str) -> tuple[list[dict], dict]:
     """Run AUDN cycle on extracted facts.
 
     For providers with supports_audn=True: uses LLM to decide action per fact.
     For Ollama (supports_audn=False): uses engine.is_novel() for ADD/NOOP only.
+
+    Args:
+        facts: list of {"category": str, "text": str} dicts
 
     Returns: (list of action dicts, token usage dict)
     """
@@ -185,7 +227,8 @@ def run_audn(provider, engine, facts: list[str], source: str) -> tuple[list[dict
         # Ollama fallback: novelty check only
         decisions = []
         for i, fact in enumerate(facts):
-            is_new, _ = engine.is_novel(fact, threshold=0.88)
+            fact_text = fact["text"] if isinstance(fact, dict) else str(fact)
+            is_new, _ = engine.is_novel(fact_text, threshold=0.88)
             if is_new:
                 decisions.append({"action": "ADD", "fact_index": i})
             else:
@@ -195,14 +238,15 @@ def run_audn(provider, engine, facts: list[str], source: str) -> tuple[list[dict
     # Full AUDN with LLM
     similar_per_fact = {}
     for i, fact in enumerate(facts):
+        fact_text = fact["text"] if isinstance(fact, dict) else str(fact)
         try:
-            results = engine.hybrid_search(fact, k=EXTRACT_SIMILAR_PER_FACT)
+            results = engine.hybrid_search(fact_text, k=EXTRACT_SIMILAR_PER_FACT)
             similar_per_fact[i] = results
         except Exception:
             similar_per_fact[i] = []
 
     facts_json = json.dumps(
-        [{"index": i, "text": _clip_text(f, EXTRACT_MAX_FACT_CHARS)} for i, f in enumerate(facts)],
+        [{"index": i, "text": _clip_text(f["text"], EXTRACT_MAX_FACT_CHARS), "category": f.get("category", "detail")} for i, f in enumerate(facts)],
         separators=(",", ":"),
     )
     similar_json = json.dumps(
@@ -238,8 +282,12 @@ def run_audn(provider, engine, facts: list[str], source: str) -> tuple[list[dict
         return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}
 
 
-def execute_actions(engine, actions: list[dict], facts: list[str], source: str) -> dict:
-    """Execute AUDN decisions against the memory engine."""
+def execute_actions(engine, actions: list[dict], facts: list[dict], source: str) -> dict:
+    """Execute AUDN decisions against the memory engine.
+
+    Args:
+        facts: list of {"category": str, "text": str} dicts
+    """
     stored_count = 0
     updated_count = 0
     deleted_count = 0
@@ -247,15 +295,18 @@ def execute_actions(engine, actions: list[dict], facts: list[str], source: str) 
 
     for action in actions:
         act = action.get("action", "").upper()
-        fact_idx = action.get("fact_index", 0)
-        fact_text = facts[fact_idx] if fact_idx < len(facts) else ""
+        fi = action.get("fact_index", -1)
+        fact = facts[fi] if 0 <= fi < len(facts) else {"text": "", "category": "detail"}
+        fact_text = fact["text"] if isinstance(fact, dict) else str(fact)
 
         try:
             if act == "ADD":
+                fact_meta = {"category": fact.get("category", "detail")} if isinstance(fact, dict) else {}
                 added_ids = engine.add_memories(
                     texts=[fact_text],
                     sources=[source],
-                    deduplicate=True
+                    metadata_list=[fact_meta],
+                    deduplicate=True,
                 )
                 new_id = added_ids[0] if added_ids else None
                 result_actions.append({"action": "add", "text": fact_text, "id": new_id})
@@ -266,10 +317,11 @@ def execute_actions(engine, actions: list[dict], facts: list[str], source: str) 
                 new_text = action.get("new_text", fact_text)
                 if old_id is not None:
                     engine.delete_memory(old_id)
+                fact_meta = {"category": fact.get("category", "detail"), "supersedes": old_id} if isinstance(fact, dict) else {"supersedes": old_id}
                 added_ids = engine.add_memories(
                     texts=[new_text],
                     sources=[source],
-                    metadata_list=[{"supersedes": old_id}],
+                    metadata_list=[fact_meta],
                     deduplicate=False,
                 )
                 new_id = added_ids[0] if added_ids else None
@@ -326,6 +378,7 @@ def run_extraction(
         messages,
         context=context,
         return_error=True,
+        source=source,
     )
     if extract_error:
         return {

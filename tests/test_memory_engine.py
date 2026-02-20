@@ -58,6 +58,16 @@ class TestAddAndSearch:
         results = populated_engine.search("test", k=1000)
         assert len(results) <= populated_engine.stats_light()["total_memories"]
 
+    def test_add_sets_created_at_and_updated_at(self, engine):
+        ids = engine.add_memories(["timestamp test"], ["test/ts"])
+        meta = engine.metadata[ids[0]]
+        assert "created_at" in meta
+        assert "updated_at" in meta
+        assert meta["created_at"] == meta["updated_at"]
+        # Backward compat alias
+        assert "timestamp" in meta
+        assert meta["timestamp"] == meta["created_at"]
+
 
 class TestHybridSearch:
     def test_hybrid_returns_results(self, populated_engine):
@@ -147,6 +157,16 @@ class TestFetchAndUpsert:
         # Source-only fast path should NOT create a backup
         backup_count_after = len(list(Path(populated_engine.data_dir).glob("backups/*")))
         assert backup_count_after == backup_count_before
+
+    def test_update_preserves_created_at(self, populated_engine):
+        ids = populated_engine.add_memories(["will be updated"], ["test/ts"])
+        original_created = populated_engine.metadata[ids[0]]["created_at"]
+        import time; time.sleep(0.01)
+        populated_engine.update_memory(ids[0], text="updated text")
+        meta = populated_engine.metadata[ids[0]]
+        assert meta["created_at"] == original_created
+        assert meta["updated_at"] > original_created
+        assert meta["timestamp"] == meta["created_at"]  # alias stays at creation
 
     def test_upsert_memory_create_then_update(self, populated_engine):
         created = populated_engine.upsert_memory(

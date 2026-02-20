@@ -131,6 +131,7 @@ EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH = _env_int(
     0,
     minimum=0,
 )
+MAINTENANCE_ENABLED = _env_bool("MAINTENANCE_ENABLED", False)
 METRICS_LATENCY_SAMPLES = _env_int("METRICS_LATENCY_SAMPLES", 200, minimum=20)
 METRICS_TREND_SAMPLES = _env_int("METRICS_TREND_SAMPLES", 120, minimum=5)
 EXTRACT_FALLBACK_ADD_ENABLED = _env_bool("EXTRACT_FALLBACK_ADD", False)
@@ -723,6 +724,42 @@ async def _periodic_embedder_reload() -> None:
             logger.debug("Periodic auto reload error", exc_info=True)
 
 
+async def _maintenance_scheduler():
+    """Run consolidation daily and pruning weekly."""
+    _last_consolidation_date = None
+    _last_prune_date = None
+    while True:
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        # Consolidation: daily at 3 AM UTC (once per day)
+        if now.hour == 3 and now.minute < 5 and _last_consolidation_date != today:
+            _last_consolidation_date = today
+            try:
+                logger.info("Running scheduled consolidation")
+                from consolidator import find_clusters, consolidate_cluster
+                clusters = find_clusters(memory)
+                for cluster in clusters:
+                    consolidate_cluster(extract_provider, memory, cluster, dry_run=False)
+            except Exception:
+                logger.exception("Scheduled consolidation failed")
+        # Pruning: Sunday at 4 AM UTC (once per week)
+        if now.weekday() == 6 and now.hour == 4 and now.minute < 5 and _last_prune_date != today:
+            _last_prune_date = today
+            try:
+                logger.info("Running scheduled pruning")
+                from consolidator import find_prune_candidates
+                all_mems = [m for m in memory.metadata if m]
+                all_ids = [m["id"] for m in all_mems]
+                unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
+                candidates = find_prune_candidates(all_mems, unretrieved)
+                for c in candidates:
+                    memory.delete_memory(c["id"])
+                logger.info("Pruned %d stale memories", len(candidates))
+            except Exception:
+                logger.exception("Scheduled pruning failed")
+        await asyncio.sleep(300)  # Check every 5 minutes
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global memory
@@ -768,6 +805,10 @@ async def lifespan(app: FastAPI):
     if EMBEDDER_AUTO_RELOAD_ENABLED:
         background_tasks.append(
             asyncio.create_task(_periodic_embedder_reload(), name="embedder-auto-reload")
+        )
+    if MAINTENANCE_ENABLED and extract_provider:
+        background_tasks.append(
+            asyncio.create_task(_maintenance_scheduler(), name="maintenance-scheduler")
         )
     yield
     for task in background_tasks:
@@ -1043,6 +1084,45 @@ async def reload_embedder():
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/maintenance/consolidate")
+async def consolidate(
+    dry_run: bool = Query(True),
+    source_prefix: str = Query(""),
+):
+    """Run memory consolidation. Merges redundant memory clusters."""
+    if not extract_provider:
+        raise HTTPException(503, "No LLM provider configured for consolidation")
+    from consolidator import find_clusters, consolidate_cluster
+    clusters = find_clusters(memory, source_prefix=source_prefix)
+    results = []
+    for cluster in clusters:
+        r = await run_in_threadpool(
+            consolidate_cluster, extract_provider, memory, cluster, dry_run=dry_run,
+        )
+        results.append(r)
+    return {"clusters_found": len(clusters), "results": results, "dry_run": dry_run}
+
+
+@app.post("/maintenance/prune")
+async def prune(dry_run: bool = Query(True)):
+    """Prune stale unretrieved memories."""
+    all_mems = [m for m in memory.metadata if m]
+    all_ids = [m["id"] for m in all_mems]
+    unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
+    from consolidator import find_prune_candidates
+    candidates = find_prune_candidates(all_mems, unretrieved)
+    pruned = 0
+    if not dry_run:
+        for c in candidates:
+            memory.delete_memory(c["id"])
+            pruned += 1
+    return {
+        "candidates": len(candidates),
+        "pruned": pruned,
+        "dry_run": dry_run,
+    }
+
+
 # -- Search -------------------------------------------------------------------
 
 @app.post("/search")
@@ -1066,6 +1146,13 @@ async def search(request: SearchRequest):
                 source_prefix=request.source_prefix,
             )
         usage_tracker.log_api_event("search", request.source)
+        for r in results:
+            if "id" in r:
+                usage_tracker.log_retrieval(
+                    memory_id=r["id"],
+                    query=request.query[:200],
+                    source=request.source,
+                )
         return {"query": request.query, "results": results, "count": len(results)}
     except Exception as e:
         logger.exception("Search failed")
@@ -1093,6 +1180,13 @@ async def search_batch(request: SearchBatchRequest):
                     threshold=item.threshold,
                     source_prefix=item.source_prefix,
                 )
+            for r in results:
+                if "id" in r:
+                    usage_tracker.log_retrieval(
+                        memory_id=r["id"],
+                        query=item.query[:200],
+                        source=item.source,
+                    )
             outputs.append({"query": item.query, "results": results, "count": len(results)})
         usage_tracker.log_api_event("search_batch", count=len(request.queries))
         return {"results": outputs, "count": len(outputs)}

@@ -602,7 +602,19 @@ memory_recall_memories "my-project" 10
 
 ### Extract Facts from Conversation (Auto)
 
-Call this after completing significant tasks to store new learnings:
+Call this after completing significant tasks to store new learnings.
+
+The extraction API returns **categorized facts** rather than plain strings. Each extracted fact includes a category that indicates its type:
+
+| Category | What it captures | Examples |
+|---|---|---|
+| `DECISION` | Architectural choices, *why* over *what* | "Chose Drizzle over Prisma for type-safe SQL and simpler migrations" |
+| `LEARNING` | Bug fixes, gotchas, hard-won knowledge | "vite.config.ts needs `optimizeDeps.exclude: ['fsevents']` on macOS or HMR hangs" |
+| `DETAIL` | File paths, conventions, concrete facts | "Auth middleware lives in src/middleware/auth.ts, runs before all /api routes" |
+
+**Durability test**: The extractor applies a 30-day durability test -- only facts that would still be useful in 30 days get extracted. Ephemeral details (temporary debug flags, one-off error messages) are filtered out.
+
+**Source-awareness**: The `source` field is used to derive the project name. For example, `source: "openclaw/my-project"` tells the extractor this conversation is about `my-project`, so it can contextualize facts appropriately.
 
 ```bash
 function memory_extract_memories() {
@@ -627,6 +639,16 @@ function memory_extract_memories() {
 # Usage — call after completing tasks
 memory_extract_memories "User: use drizzle\nAssistant: Good choice, switching from Prisma"
 memory_extract_memories "conversation text" "openclaw/my-project" "session_end"
+
+# Example response (new categorized format):
+# {
+#   "extracted": [
+#     {"category": "DECISION", "text": "Chose Drizzle over Prisma for type-safe SQL and simpler migrations"},
+#     {"category": "DETAIL",   "text": "ORM config lives in drizzle.config.ts at project root"}
+#   ],
+#   "stored": 2,
+#   "duplicates_skipped": 0
+# }
 ```
 
 ## Typical Workflows
@@ -645,7 +667,7 @@ memory_search_memories "your query" 5
 
 ### After Task Completion
 
-Extract and store new learnings from the conversation:
+Extract and store new learnings from the conversation. The API returns categorized facts (`DECISION`, `LEARNING`, `DETAIL`) that pass a 30-day durability test:
 ```bash
 memory_extract_memories "summary of conversation or key decisions"
 ```
@@ -677,7 +699,7 @@ memory_backup "before_openclaw_upgrade_$(date +%Y%m%d)"
 
 During heartbeats, I can:
 
-1. **Extract new learnings** using `memory_extract_memories` (preferred — sends conversation to the extract endpoint which handles fact extraction, novelty checking, and storage in one call)
+1. **Extract new learnings** using `memory_extract_memories` (preferred — sends conversation to the extract endpoint which categorizes facts as DECISION/LEARNING/DETAIL, applies a 30-day durability filter, and handles novelty checking and storage in one call)
 2. **Manual alternative**: Check novelty with `memory_is_novel`, then add if novel with `memory_add_memories` (auto-dedup enabled)
 3. **Recall context** at task start with `memory_recall_memories`
 4. **Auto-backup** handled by service
