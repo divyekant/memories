@@ -10,6 +10,47 @@
   --accent-deep: #1b9b84;
   --warn: #f0a94a;
   --danger: #e0544a;
+  --input-bg: #142238;
+  --card-bg: rgba(12, 23, 39, 0.82);
+  --metric-bg: rgba(19, 31, 50, 0.7);
+  --subtle-bg: rgba(148, 178, 221, 0.12);
+  --subtle-border: rgba(148, 178, 221, 0.15);
+  --subtle-hover: rgba(148, 178, 221, 0.08);
+  --accent-hover: rgba(55, 213, 180, 0.08);
+  --accent-active: rgba(55, 213, 180, 0.15);
+  --accent-focus: rgba(55, 213, 180, 0.6);
+  --btn-primary-text: #001713;
+  --overlay: rgba(0, 0, 0, 0.6);
+  --body-grad-a: #1e3050;
+  --body-grad-b: #0a111d;
+  --backdrop-opacity: 0.25;
+}
+
+[data-theme="light"] {
+  --bg: #f4f6f9;
+  --bg-soft: #e8ecf1;
+  --panel: rgba(255, 255, 255, 0.85);
+  --line: rgba(60, 80, 110, 0.18);
+  --text: #1a2332;
+  --text-soft: #5a6a7e;
+  --accent: #1b9b84;
+  --accent-deep: #15806d;
+  --warn: #c87a20;
+  --danger: #c93e36;
+  --input-bg: #ffffff;
+  --card-bg: rgba(255, 255, 255, 0.9);
+  --metric-bg: rgba(240, 243, 247, 0.85);
+  --subtle-bg: rgba(60, 80, 110, 0.08);
+  --subtle-border: rgba(60, 80, 110, 0.12);
+  --subtle-hover: rgba(60, 80, 110, 0.06);
+  --accent-hover: rgba(27, 155, 132, 0.08);
+  --accent-active: rgba(27, 155, 132, 0.15);
+  --accent-focus: rgba(27, 155, 132, 0.5);
+  --btn-primary-text: #ffffff;
+  --overlay: rgba(0, 0, 0, 0.3);
+  --body-grad-a: #e0e6ee;
+  --body-grad-b: #d4dae3;
+  --backdrop-opacity: 0.12;
 }
 
 * {
@@ -21,7 +62,7 @@ body {
   min-height: 100vh;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Avenir Next", sans-serif;
   color: var(--text);
-  background: radial-gradient(circle at 20% 10%, #1e3050 0%, var(--bg) 40%, #0a111d 100%);
+  background: radial-gradient(circle at 20% 10%, var(--body-grad-a) 0%, var(--bg) 40%, var(--body-grad-b) 100%);
 }
 
 .backdrop {
@@ -31,7 +72,7 @@ body {
   background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
   background-size: 28px 28px;
   mask-image: radial-gradient(circle at center, black 45%, transparent 100%);
-  opacity: 0.25;
+  opacity: var(--backdrop-opacity);
 }
 
 .shell {
@@ -95,7 +136,7 @@ select,
 button {
   border-radius: 10px;
   border: 1px solid var(--line);
-  background: #142238;
+  background: var(--input-bg);
   color: var(--text);
   padding: 10px 12px;
   font-family: inherit;
@@ -105,7 +146,7 @@ button {
 input:focus,
 select:focus,
 button:focus {
-  outline: 2px solid rgba(55, 213, 180, 0.6);
+  outline: 2px solid var(--accent-focus);
   outline-offset: 1px;
 }
 
@@ -122,7 +163,7 @@ button:focus {
 
 .btn:hover:not(:disabled) {
   transform: translateY(-1px);
-  border-color: rgba(55, 213, 180, 0.7);
+  border-color: var(--accent-focus);
 }
 
 .btn:disabled {
@@ -133,7 +174,7 @@ button:focus {
 .btn.primary {
   background: linear-gradient(135deg, var(--accent), var(--accent-deep));
   border-color: transparent;
-  color: #001713;
+  color: var(--btn-primary-text);
   font-weight: 700;
 }
 
@@ -160,7 +201,7 @@ button:focus {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 10px;
-  background: rgba(19, 31, 50, 0.7);
+  background: var(--metric-bg);
 }
 
 .metric-label {
@@ -223,11 +264,11 @@ button:focus {
 }
 
 .folder-item:hover {
-  background: rgba(55, 213, 180, 0.08);
+  background: var(--accent-hover);
 }
 
 .folder-item.active {
-  background: rgba(55, 213, 180, 0.15);
+  background: var(--accent-active);
   border-left: 3px solid var(--accent);
 }
 
@@ -244,7 +285,7 @@ button:focus {
   flex-shrink: 0;
   font-size: 0.75rem;
   color: var(--text-soft);
-  background: rgba(148, 178, 221, 0.12);
+  background: var(--subtle-bg);
   padding: 2px 7px;
   border-radius: 10px;
   font-variant-numeric: tabular-nums;
@@ -285,7 +326,7 @@ button:focus {
 
 .folder-action-btn:hover {
   color: var(--text);
-  background: rgba(148, 178, 221, 0.15);
+  background: var(--subtle-border);
 }
 
 .folder-action-btn.delete:hover {
@@ -304,7 +345,7 @@ button:focus {
   font-size: 0.78rem;
   padding: 4px 8px;
   border-radius: 6px;
-  background: #142238;
+  background: var(--input-bg);
   border: 1px solid var(--line);
   color: var(--text-soft);
   cursor: pointer;
@@ -312,7 +353,7 @@ button:focus {
 }
 
 .move-folder-select:hover {
-  border-color: rgba(55, 213, 180, 0.5);
+  border-color: var(--accent-focus);
 }
 
 /* -- Modal ------------------------------------------------------------------- */
@@ -320,7 +361,7 @@ button:focus {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -358,7 +399,7 @@ button:focus {
 .memory-card {
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: rgba(12, 23, 39, 0.82);
+  background: var(--card-bg);
   padding: 12px;
   transform: translateY(6px);
   opacity: 0;
@@ -410,6 +451,168 @@ button:focus {
   }
 }
 
+/* -- Theme toggle ------------------------------------------------------------ */
+
+.hero-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.theme-toggle {
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  color: var(--text-soft);
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 1.1rem;
+  line-height: 1;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.theme-toggle:hover {
+  color: var(--text);
+  border-color: var(--accent-focus);
+}
+
+/* -- Tab navigation ---------------------------------------------------------- */
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0;
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-soft);
+  padding: 10px 20px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+  border-radius: 0;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-btn:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: grid;
+  gap: 14px;
+}
+
+/* -- Usage dashboard --------------------------------------------------------- */
+
+.usage-summary {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.usage-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.usage-section {
+  padding: 16px;
+}
+
+.usage-heading {
+  margin: 0 0 12px;
+  font-size: 0.88rem;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.usage-table-wrap {
+  overflow-x: auto;
+}
+
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.usage-table th {
+  text-align: left;
+  color: var(--text-soft);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.usage-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--subtle-hover);
+}
+
+.usage-table tbody tr:hover {
+  background: var(--accent-hover);
+}
+
+.op-name,
+.model-name {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, monospace;
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+
+.op-count {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.op-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.source-tag {
+  background: var(--subtle-bg);
+  border: 1px solid var(--subtle-border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.78rem;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.source-tag b {
+  color: var(--text);
+  margin-left: 4px;
+}
+
+.text-soft {
+  color: var(--text-soft);
+}
+
 /* -- Responsive -------------------------------------------------------------- */
 
 @media (max-width: 760px) {
@@ -451,5 +654,13 @@ button:focus {
 
   .folder-actions {
     display: none !important;
+  }
+
+  .usage-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .usage-table {
+    font-size: 0.82rem;
   }
 }

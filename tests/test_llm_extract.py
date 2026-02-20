@@ -2,6 +2,12 @@
 import pytest
 import json
 from unittest.mock import MagicMock, patch
+from llm_provider import CompletionResult
+
+
+def _cr(text, input_tokens=10, output_tokens=5):
+    """Helper to build CompletionResult from text."""
+    return CompletionResult(text=text, input_tokens=input_tokens, output_tokens=output_tokens)
 
 
 class TestFactExtraction:
@@ -11,10 +17,10 @@ class TestFactExtraction:
         from llm_extract import extract_facts
 
         mock_provider = MagicMock()
-        mock_provider.complete.return_value = json.dumps([
+        mock_provider.complete.return_value = _cr(json.dumps([
             "User prefers Drizzle ORM over Prisma",
             "Project uses TypeScript strict mode"
-        ])
+        ]))
 
         facts = extract_facts(mock_provider, "User: let's use drizzle\nAssistant: Good choice!")
         assert len(facts) == 2
@@ -24,7 +30,7 @@ class TestFactExtraction:
         from llm_extract import extract_facts
 
         mock_provider = MagicMock()
-        mock_provider.complete.return_value = "[]"
+        mock_provider.complete.return_value = _cr("[]")
 
         facts = extract_facts(mock_provider, "User: hi\nAssistant: hello!")
         assert facts == []
@@ -33,7 +39,7 @@ class TestFactExtraction:
         from llm_extract import extract_facts
 
         mock_provider = MagicMock()
-        mock_provider.complete.return_value = "Sorry, I can't extract facts from this."
+        mock_provider.complete.return_value = _cr("Sorry, I can't extract facts from this.")
 
         facts = extract_facts(mock_provider, "User: hi")
         assert facts == []
@@ -42,7 +48,7 @@ class TestFactExtraction:
         from llm_extract import extract_facts
 
         mock_provider = MagicMock()
-        mock_provider.complete.return_value = "[]"
+        mock_provider.complete.return_value = _cr("[]")
 
         extract_facts(mock_provider, "some messages", context="pre_compact")
         call_args = mock_provider.complete.call_args
@@ -54,7 +60,7 @@ class TestFactExtraction:
 
         mock_provider = MagicMock()
         oversized_fact = "x" * (EXTRACT_MAX_FACT_CHARS + 300)
-        mock_provider.complete.return_value = json.dumps([oversized_fact] * (EXTRACT_MAX_FACTS + 10))
+        mock_provider.complete.return_value = _cr(json.dumps([oversized_fact] * (EXTRACT_MAX_FACTS + 10)))
 
         facts = extract_facts(mock_provider, "User: test")
         assert len(facts) == EXTRACT_MAX_FACTS
@@ -70,14 +76,14 @@ class TestAUDNCycle:
 
         mock_provider = MagicMock()
         mock_provider.supports_audn = True
-        mock_provider.complete.return_value = json.dumps([
+        mock_provider.complete.return_value = _cr(json.dumps([
             {"action": "ADD", "fact_index": 0}
-        ])
+        ]))
 
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = []
 
-        decisions = run_audn(
+        decisions, _ = run_audn(
             mock_provider, mock_engine,
             facts=["Uses Drizzle ORM"],
             source="test/project"
@@ -90,16 +96,16 @@ class TestAUDNCycle:
 
         mock_provider = MagicMock()
         mock_provider.supports_audn = True
-        mock_provider.complete.return_value = json.dumps([
+        mock_provider.complete.return_value = _cr(json.dumps([
             {"action": "NOOP", "fact_index": 0, "existing_id": 42}
-        ])
+        ]))
 
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = [
             {"id": 42, "text": "Uses Drizzle ORM", "similarity": 0.95}
         ]
 
-        decisions = run_audn(
+        decisions, _ = run_audn(
             mock_provider, mock_engine,
             facts=["Uses Drizzle ORM"],
             source="test/project"
@@ -112,16 +118,16 @@ class TestAUDNCycle:
 
         mock_provider = MagicMock()
         mock_provider.supports_audn = True
-        mock_provider.complete.return_value = json.dumps([
+        mock_provider.complete.return_value = _cr(json.dumps([
             {"action": "UPDATE", "fact_index": 0, "old_id": 10, "new_text": "Uses Drizzle ORM (switched from Prisma)"}
-        ])
+        ]))
 
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = [
             {"id": 10, "text": "Uses Prisma ORM", "similarity": 0.75}
         ]
 
-        decisions = run_audn(
+        decisions, _ = run_audn(
             mock_provider, mock_engine,
             facts=["Switched from Prisma to Drizzle ORM"],
             source="test/project"
@@ -138,7 +144,7 @@ class TestAUDNCycle:
         mock_engine = MagicMock()
         mock_engine.is_novel.return_value = (True, None)
 
-        decisions = run_audn(
+        decisions, _ = run_audn(
             mock_provider, mock_engine,
             facts=["New fact"],
             source="test/project"
@@ -157,7 +163,7 @@ class TestAUDNCycle:
         mock_engine = MagicMock()
         mock_engine.is_novel.return_value = (False, {"id": 5, "text": "Existing fact", "similarity": 0.95})
 
-        decisions = run_audn(
+        decisions, _ = run_audn(
             mock_provider, mock_engine,
             facts=["Existing fact"],
             source="test/project"
@@ -171,9 +177,9 @@ class TestAUDNCycle:
 
         mock_provider = MagicMock()
         mock_provider.supports_audn = True
-        mock_provider.complete.return_value = json.dumps(
+        mock_provider.complete.return_value = _cr(json.dumps(
             [{"action": "ADD", "fact_index": 0}]
-        )
+        ))
 
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = [
@@ -256,11 +262,11 @@ class TestFullPipeline:
         mock_provider = MagicMock()
         mock_provider.supports_audn = True
         mock_provider.complete.side_effect = [
-            json.dumps(["Uses Drizzle ORM", "TypeScript strict mode"]),
-            json.dumps([
+            _cr(json.dumps(["Uses Drizzle ORM", "TypeScript strict mode"])),
+            _cr(json.dumps([
                 {"action": "ADD", "fact_index": 0},
                 {"action": "NOOP", "fact_index": 1, "existing_id": 30}
-            ])
+            ]))
         ]
 
         mock_engine = MagicMock()

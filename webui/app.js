@@ -1,3 +1,32 @@
+// -- Theme toggle (runs first to avoid flash) --------------------------------
+
+(function initTheme() {
+  const stored = localStorage.getItem("theme");
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const theme = stored || (prefersDark ? "dark" : "light");
+  document.documentElement.dataset.theme = theme;
+
+  const btn = document.getElementById("themeToggle");
+  if (btn) {
+    btn.textContent = theme === "dark" ? "🌙" : "☀️";
+    btn.addEventListener("click", () => {
+      const current = document.documentElement.dataset.theme;
+      const next = current === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      btn.textContent = next === "dark" ? "🌙" : "☀️";
+      localStorage.setItem("theme", next);
+    });
+  }
+
+  // Listen for OS theme changes (only when no manual override)
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+    if (localStorage.getItem("theme")) return; // manual override active
+    const auto = e.matches ? "dark" : "light";
+    document.documentElement.dataset.theme = auto;
+    if (btn) btn.textContent = auto === "dark" ? "🌙" : "☀️";
+  });
+})();
+
 const state = {
   offset: 0,
   limit: 20,
@@ -404,6 +433,146 @@ function bindEvents() {
     if (e.target === els.renameFolderModal) closeRenameModal();
   });
 }
+
+// -- Tab navigation -----------------------------------------------------------
+
+const tabBtns = document.querySelectorAll(".tab-btn");
+const tabContents = document.querySelectorAll(".tab-content");
+
+tabBtns.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    tabBtns.forEach((b) => b.classList.remove("active"));
+    tabContents.forEach((c) => c.classList.remove("active"));
+    btn.classList.add("active");
+    const target = document.getElementById(
+      btn.dataset.tab === "memories" ? "tabMemories" : "tabUsage"
+    );
+    if (target) target.classList.add("active");
+
+    if (btn.dataset.tab === "usage" && !usageLoaded) {
+      loadUsage();
+    }
+  });
+});
+
+// -- Usage dashboard ----------------------------------------------------------
+
+let usageLoaded = false;
+
+const usageEls = {
+  period: document.getElementById("usagePeriod"),
+  refresh: document.getElementById("usageRefresh"),
+  status: document.getElementById("usageStatus"),
+  totalOps: document.getElementById("usageTotalOps"),
+  extractCalls: document.getElementById("usageExtractCalls"),
+  estCost: document.getElementById("usageEstCost"),
+  opsTable: document.getElementById("usageOpsTable"),
+  tokensTable: document.getElementById("usageTokensTable"),
+};
+
+function setUsageStatus(msg, isError = false) {
+  usageEls.status.textContent = msg;
+  usageEls.status.classList.toggle("error", isError);
+}
+
+function formatNumber(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
+function renderOpsTable(operations) {
+  if (!operations || Object.keys(operations).length === 0) {
+    usageEls.opsTable.innerHTML = '<p class="notice">No operations recorded.</p>';
+    return;
+  }
+
+  let html = '<table class="usage-table"><thead><tr><th>Operation</th><th>Count</th><th>Sources</th></tr></thead><tbody>';
+  for (const [op, data] of Object.entries(operations)) {
+    const sources = data.by_source || {};
+    const sourceList = Object.entries(sources)
+      .sort((a, b) => b[1] - a[1])
+      .map(([s, c]) => `<span class="source-tag">${escHtml(s)} <b>${c}</b></span>`)
+      .join(" ");
+    html += `<tr><td class="op-name">${escHtml(op)}</td><td class="op-count">${formatNumber(data.total || 0)}</td><td class="op-sources">${sourceList || '<span class="text-soft">—</span>'}</td></tr>`;
+  }
+  html += "</tbody></table>";
+  usageEls.opsTable.innerHTML = html;
+}
+
+function renderTokensTable(extraction) {
+  if (!extraction || extraction.total_calls === 0) {
+    usageEls.tokensTable.innerHTML = '<p class="notice">No extraction calls recorded.</p>';
+    return;
+  }
+
+  const byModel = extraction.by_model || {};
+  let html = '<table class="usage-table"><thead><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th></tr></thead><tbody>';
+  for (const [model, data] of Object.entries(byModel)) {
+    html += `<tr><td class="model-name">${escHtml(model)}</td><td>${data.calls || 0}</td><td>${formatNumber(data.input_tokens || 0)}</td><td>${formatNumber(data.output_tokens || 0)}</td></tr>`;
+  }
+  html += "</tbody></table>";
+  usageEls.tokensTable.innerHTML = html;
+}
+
+function escHtml(str) {
+  const d = document.createElement("div");
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+async function loadUsage() {
+  syncApiKeyFromInput();
+  const period = usageEls.period.value;
+  setUsageStatus("Loading usage data...");
+
+  try {
+    const resp = await fetch(`/usage?period=${period}`, {
+      headers: authHeaders(),
+    });
+
+    if (!resp.ok) {
+      const detail = await parseErrorDetail(resp);
+      throw new Error(`Request failed (${resp.status}): ${detail}`);
+    }
+
+    const data = await resp.json();
+
+    if (data.enabled === false) {
+      setUsageStatus("Usage tracking is disabled. Set USAGE_TRACKING=true to enable.", true);
+      usageEls.totalOps.textContent = "—";
+      usageEls.extractCalls.textContent = "—";
+      usageEls.estCost.textContent = "—";
+      usageEls.opsTable.innerHTML = '<p class="notice">Usage tracking is disabled on this server.</p>';
+      usageEls.tokensTable.innerHTML = '<p class="notice">Usage tracking is disabled on this server.</p>';
+      return;
+    }
+
+    // Summary metrics
+    const ops = data.operations || {};
+    let totalOps = 0;
+    for (const v of Object.values(ops)) totalOps += v.total || 0;
+    usageEls.totalOps.textContent = formatNumber(totalOps);
+
+    const extraction = data.extraction || {};
+    usageEls.extractCalls.textContent = formatNumber(extraction.total_calls || 0);
+    const cost = extraction.estimated_cost_usd || 0;
+    usageEls.estCost.textContent = cost < 0.01 && cost > 0
+      ? `$${cost.toFixed(4)}`
+      : `$${cost.toFixed(2)}`;
+
+    renderOpsTable(ops);
+    renderTokensTable(extraction);
+
+    usageLoaded = true;
+    setUsageStatus(`Loaded usage data for period: ${period}`);
+  } catch (err) {
+    setUsageStatus(err.message || "Failed to load usage data.", true);
+  }
+}
+
+usageEls.refresh.addEventListener("click", loadUsage);
+usageEls.period.addEventListener("change", loadUsage);
 
 bindEvents();
 loadFolders();

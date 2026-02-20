@@ -17,9 +17,19 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from chatgpt_oauth import refresh_tokens, exchange_id_token_for_api_key
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CompletionResult:
+    """Result from an LLM completion, including token usage."""
+    text: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+
 
 # Default models per provider
 DEFAULT_MODELS = {
@@ -37,8 +47,8 @@ class LLMProvider(ABC):
     supports_audn: bool
 
     @abstractmethod
-    def complete(self, system: str, user: str) -> str:
-        """Send a completion request. Returns the response text."""
+    def complete(self, system: str, user: str) -> CompletionResult:
+        """Send a completion request. Returns text and token usage."""
         ...
 
     @abstractmethod
@@ -176,14 +186,18 @@ class AnthropicProvider(LLMProvider):
         else:
             self.client = anthropic.Anthropic(api_key=api_key)
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(self, system: str, user: str) -> CompletionResult:
         response = self.client.messages.create(
             model=self.model,
             max_tokens=1024,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        return response.content[0].text
+        return CompletionResult(
+            text=response.content[0].text,
+            input_tokens=getattr(response.usage, "input_tokens", 0),
+            output_tokens=getattr(response.usage, "output_tokens", 0),
+        )
 
     def health_check(self) -> bool:
         try:
@@ -210,7 +224,7 @@ class OpenAIProvider(LLMProvider):
         self.model = model or DEFAULT_MODELS["openai"]
         self.client = openai.OpenAI(api_key=api_key)
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(self, system: str, user: str) -> CompletionResult:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -219,7 +233,12 @@ class OpenAIProvider(LLMProvider):
             ],
             max_tokens=1024,
         )
-        return response.choices[0].message.content
+        usage = response.usage
+        return CompletionResult(
+            text=response.choices[0].message.content,
+            input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+            output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+        )
 
     def health_check(self) -> bool:
         try:
@@ -281,7 +300,7 @@ class ChatGPTSubscriptionProvider(LLMProvider):
             logger.info("ChatGPT subscription: API key expired, refreshing...")
             self._refresh_api_key()
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(self, system: str, user: str) -> CompletionResult:
         self._ensure_fresh()
         response = self.client.chat.completions.create(
             model=self.model,
@@ -291,7 +310,12 @@ class ChatGPTSubscriptionProvider(LLMProvider):
             ],
             max_tokens=1024,
         )
-        return response.choices[0].message.content
+        usage = response.usage
+        return CompletionResult(
+            text=response.choices[0].message.content,
+            input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+            output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+        )
 
     def health_check(self) -> bool:
         try:
@@ -316,7 +340,7 @@ class OllamaProvider(LLMProvider):
             raise ValueError(f"Invalid OLLAMA_URL scheme: {parsed.scheme!r} (must be http or https)")
         self.model = model or DEFAULT_MODELS["ollama"]
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(self, system: str, user: str) -> CompletionResult:
         payload = json.dumps({
             "model": self.model,
             "system": system,
@@ -331,7 +355,12 @@ class OllamaProvider(LLMProvider):
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read())["response"]
+            data = json.loads(resp.read())
+        return CompletionResult(
+            text=data["response"],
+            input_tokens=data.get("prompt_eval_count", 0),
+            output_tokens=data.get("eval_count", 0),
+        )
 
     def health_check(self) -> bool:
         try:

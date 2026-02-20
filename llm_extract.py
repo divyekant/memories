@@ -141,8 +141,9 @@ def extract_facts(
         system = FACT_EXTRACTION_PROMPT
 
     try:
-        response = provider.complete(system, messages)
-        facts = _parse_json_array(response)
+        result = provider.complete(system, messages)
+        facts = _parse_json_array(result.text)
+        tokens = {"input": result.input_tokens, "output": result.output_tokens}
         # Keep only non-empty strings; normalize + cap length.
         facts = [
             _clip_text(f, EXTRACT_MAX_FACT_CHARS)
@@ -160,25 +161,25 @@ def extract_facts(
 
         logger.info("Extracted %d facts (context=%s)", len(facts), context)
         if return_error:
-            return facts, None
+            return facts, None, tokens
         return facts
     except Exception as e:
         logger.error("Fact extraction failed: %s", e)
         if return_error:
-            return [], str(e)
+            return [], str(e), {"input": 0, "output": 0}
         return []
 
 
-def run_audn(provider, engine, facts: list[str], source: str) -> list[dict]:
+def run_audn(provider, engine, facts: list[str], source: str) -> tuple[list[dict], dict]:
     """Run AUDN cycle on extracted facts.
 
     For providers with supports_audn=True: uses LLM to decide action per fact.
     For Ollama (supports_audn=False): uses engine.is_novel() for ADD/NOOP only.
 
-    Returns: list of action dicts
+    Returns: (list of action dicts, token usage dict)
     """
     if not facts:
-        return []
+        return [], {"input": 0, "output": 0}
 
     if not provider.supports_audn:
         # Ollama fallback: novelty check only
@@ -189,7 +190,7 @@ def run_audn(provider, engine, facts: list[str], source: str) -> list[dict]:
                 decisions.append({"action": "ADD", "fact_index": i})
             else:
                 decisions.append({"action": "NOOP", "fact_index": i})
-        return decisions
+        return decisions, {"input": 0, "output": 0}
 
     # Full AUDN with LLM
     similar_per_fact = {}
@@ -222,18 +223,19 @@ def run_audn(provider, engine, facts: list[str], source: str) -> list[dict]:
     prompt = AUDN_PROMPT.format(facts_json=facts_json, similar_json=similar_json)
 
     try:
-        response = provider.complete("You are a memory manager. Output only valid JSON.", prompt)
-        decisions = _parse_json_array(response)
-        del response, prompt, facts_json, similar_json, similar_per_fact
+        result = provider.complete("You are a memory manager. Output only valid JSON.", prompt)
+        tokens = {"input": result.input_tokens, "output": result.output_tokens}
+        decisions = _parse_json_array(result.text)
+        del result, prompt, facts_json, similar_json, similar_per_fact
         valid = []
         for d in decisions:
             if isinstance(d, dict) and "action" in d:
                 d["action"] = d["action"].upper()
                 valid.append(d)
-        return valid
+        return valid, tokens
     except Exception as e:
         logger.error("AUDN cycle failed: %s", e)
-        return [{"action": "ADD", "fact_index": i} for i in range(len(facts))]
+        return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}
 
 
 def execute_actions(engine, actions: list[dict], facts: list[str], source: str) -> dict:
@@ -319,7 +321,7 @@ def run_extraction(
         return {"error": "extraction_disabled"}
 
     # Step 1: Extract facts
-    facts, extract_error = extract_facts(
+    facts, extract_error, extract_tokens = extract_facts(
         provider,
         messages,
         context=context,
@@ -335,6 +337,7 @@ def run_extraction(
             "error": "provider_runtime_failure",
             "error_stage": "extract_facts",
             "error_message": extract_error,
+            "tokens": {"extract": extract_tokens, "audn": {"input": 0, "output": 0}},
         }
 
     if not facts:
@@ -344,14 +347,16 @@ def run_extraction(
             "stored_count": 0,
             "updated_count": 0,
             "deleted_count": 0,
+            "tokens": {"extract": extract_tokens, "audn": {"input": 0, "output": 0}},
         }
 
     # Step 2: AUDN decisions
-    decisions = run_audn(provider, engine, facts, source)
+    decisions, audn_tokens = run_audn(provider, engine, facts, source)
 
     # Step 3: Execute
     result = execute_actions(engine, decisions, facts, source)
     result["extracted_count"] = len(facts)
+    result["tokens"] = {"extract": extract_tokens, "audn": audn_tokens}
 
     logger.info(
         "Extraction complete: %d extracted, %d stored, %d updated, %d deleted",

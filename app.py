@@ -28,6 +28,7 @@ from starlette.concurrency import run_in_threadpool
 from embedder_reloader import EmbedderAutoReloadController
 from memory_engine import MemoryEngine
 from runtime_memory import MemoryTrimmer
+from usage_tracker import UsageTracker, NullTracker
 
 # -- Logging ------------------------------------------------------------------
 
@@ -158,6 +159,7 @@ embedder_auto_reloader = EmbedderAutoReloadController(
     max_active_requests=EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS,
     max_queue_depth=EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH,
 )
+usage_tracker: UsageTracker | NullTracker = NullTracker()  # replaced in lifespan if enabled
 metrics_started_at = time.time()
 metrics_lock = threading.Lock()
 request_metrics: Dict[str, Dict[str, Any]] = {}
@@ -587,6 +589,21 @@ async def _extract_worker(worker_id: int) -> None:
                 job_state["status"] = "completed"
                 job_state["completed_at"] = _utc_now_iso()
                 job_state["result"] = result
+            # Log extraction token usage
+            tokens = result.get("tokens", {})
+            for stage_name in ("extract", "audn"):
+                stage_tokens = tokens.get(stage_name, {})
+                inp = stage_tokens.get("input", 0)
+                out = stage_tokens.get("output", 0)
+                if inp or out:
+                    usage_tracker.log_extraction_tokens(
+                        provider=extract_provider.provider_name,
+                        model=extract_provider.model,
+                        stage=stage_name,
+                        input_tokens=inp,
+                        output_tokens=out,
+                        source=request_data.get("source", ""),
+                    )
         except Exception as e:
             logger.exception("Extraction failed: job_id=%s", job_id)
             if job_state is not None:
@@ -736,6 +753,10 @@ async def lifespan(app: FastAPI):
         memory.config.get("model"),
         memory.dim,
     )
+    global usage_tracker
+    if _env_bool("USAGE_TRACKING", False):
+        usage_tracker = UsageTracker(os.path.join(DATA_DIR, "usage.db"))
+        logger.info("Usage tracking enabled")
     _ensure_extract_workers_started()
     background_tasks: List[asyncio.Task] = [
         asyncio.create_task(_periodic_job_cleanup(), name="job-cleanup"),
@@ -818,6 +839,7 @@ class SearchRequest(BaseModel):
         max_length=500,
         description="Optional source path prefix filter",
     )
+    source: str = Field("", max_length=500, description="Caller source for usage tracking")
 
 
 class SearchBatchRequest(BaseModel):
@@ -979,6 +1001,12 @@ async def metrics():
     }
 
 
+@app.get("/usage")
+async def usage(period: str = Query("7d", regex="^(today|7d|30d|all)$")):
+    """Persistent usage analytics (opt-in via USAGE_TRACKING=true)."""
+    return usage_tracker.get_usage(period)
+
+
 @app.post("/maintenance/embedder/reload")
 async def reload_embedder():
     """Reload in-process embedder runtime and release old inference objects."""
@@ -1037,6 +1065,7 @@ async def search(request: SearchRequest):
                 threshold=request.threshold,
                 source_prefix=request.source_prefix,
             )
+        usage_tracker.log_api_event("search", request.source)
         return {"query": request.query, "results": results, "count": len(results)}
     except Exception as e:
         logger.exception("Search failed")
@@ -1065,6 +1094,7 @@ async def search_batch(request: SearchBatchRequest):
                     source_prefix=item.source_prefix,
                 )
             outputs.append({"query": item.query, "results": results, "count": len(results)})
+        usage_tracker.log_api_event("search_batch", count=len(request.queries))
         return {"results": outputs, "count": len(outputs)}
     except Exception as e:
         logger.exception("Batch search failed")
@@ -1084,6 +1114,7 @@ async def add_memory(request: AddMemoryRequest):
             metadata_list=[request.metadata] if request.metadata else None,
             deduplicate=request.deduplicate,
         )
+        usage_tracker.log_api_event("add", request.source)
         return {
             "success": True,
             "id": ids[0] if ids else None,
@@ -1112,6 +1143,7 @@ async def add_batch(request: AddBatchRequest):
             metadata_list=metadata_list,
             deduplicate=request.deduplicate,
         )
+        usage_tracker.log_api_event("add", count=len(request.memories))
         return {
             "success": True,
             "ids": ids,
@@ -1129,6 +1161,7 @@ async def delete_memory(memory_id: int):
     logger.info("Delete memory: id=%d", memory_id)
     try:
         result = memory.delete_memory(memory_id)
+        usage_tracker.log_api_event("delete")
         return {"success": True, **result}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1178,6 +1211,7 @@ async def delete_batch(request: DeleteBatchRequest):
     logger.info("Delete batch: count=%d", len(request.ids))
     try:
         result = memory.delete_memories(request.ids)
+        usage_tracker.log_api_event("delete", count=len(request.ids))
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete batch failed")
@@ -1259,6 +1293,7 @@ async def is_novel(request: IsNovelRequest):
         is_new, similar = memory.is_novel(
             text=request.text, threshold=request.threshold
         )
+        usage_tracker.log_api_event("is_novel")
         return {
             "is_novel": is_new,
             "threshold": request.threshold,
@@ -1621,6 +1656,7 @@ async def memory_extract(request: ExtractRequest):
         }
 
     _ensure_extract_workers_started()
+    usage_tracker.log_api_event("extract", request.source)
     job_id = uuid4().hex
     extract_jobs[job_id] = {
         "job_id": job_id,
