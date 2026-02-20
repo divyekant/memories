@@ -64,6 +64,7 @@ COPY memories_auth.py .
 COPY __main__.py .
 COPY llm_provider.py .
 COPY llm_extract.py .
+COPY usage_tracker.py .
 COPY app.py .
 COPY webui ./webui
 
