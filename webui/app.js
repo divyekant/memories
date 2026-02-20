@@ -1,3 +1,32 @@
+// -- Theme toggle (runs first to avoid flash) --------------------------------
+
+(function initTheme() {
+  const stored = localStorage.getItem("theme");
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const theme = stored || (prefersDark ? "dark" : "light");
+  document.documentElement.dataset.theme = theme;
+
+  const btn = document.getElementById("themeToggle");
+  if (btn) {
+    btn.textContent = theme === "dark" ? "🌙" : "☀️";
+    btn.addEventListener("click", () => {
+      const current = document.documentElement.dataset.theme;
+      const next = current === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      btn.textContent = next === "dark" ? "🌙" : "☀️";
+      localStorage.setItem("theme", next);
+    });
+  }
+
+  // Listen for OS theme changes (only when no manual override)
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+    if (localStorage.getItem("theme")) return; // manual override active
+    const auto = e.matches ? "dark" : "light";
+    document.documentElement.dataset.theme = auto;
+    if (btn) btn.textContent = auto === "dark" ? "🌙" : "☀️";
+  });
+})();
+
 const state = {
   offset: 0,
   limit: 20,

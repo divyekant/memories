@@ -6,14 +6,25 @@
   <title>Memory Observatory</title>
   <link rel="icon" type="image/svg+xml" href="/ui/static/favicon.svg">
   <link rel="stylesheet" href="/ui/static/styles.css">
+  <script>
+    // Apply theme immediately to prevent flash
+    (function(){var t=localStorage.getItem("theme")||
+      (window.matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
+      document.documentElement.dataset.theme=t})();
+  </script>
 </head>
 <body>
   <div class="backdrop"></div>
   <main class="shell">
     <header class="hero">
-      <p class="eyebrow">Memories MEMORY</p>
-      <h1>Memory Observatory</h1>
-      <p class="subtitle">Browse, filter, and inspect stored memories without leaving the browser.</p>
+      <div class="hero-row">
+        <div>
+          <p class="eyebrow">Memories MEMORY</p>
+          <h1>Memory Observatory</h1>
+          <p class="subtitle">Browse, filter, and inspect stored memories without leaving the browser.</p>
+        </div>
+        <button id="themeToggle" class="theme-toggle" title="Toggle light/dark mode" aria-label="Toggle theme">🌙</button>
+      </div>
     </header>
 
     <nav class="tab-bar">
