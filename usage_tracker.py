@@ -168,7 +168,10 @@ class UsageTracker:
             # Estimate cost
             estimated_cost = 0.0
             for model_key, data in by_model.items():
-                pricing = MODEL_PRICING.get(model_key, {"input": 1.0, "output": 4.0})
+                pricing = MODEL_PRICING.get(model_key)
+                if pricing is None:
+                    logger.warning("Unknown model %r for pricing; using fallback $1/$4 per 1M tokens", model_key)
+                    pricing = {"input": 1.0, "output": 4.0}
                 estimated_cost += (data["input_tokens"] / 1_000_000) * pricing["input"]
                 estimated_cost += (data["output_tokens"] / 1_000_000) * pricing["output"]
 

@@ -510,7 +510,7 @@ button:focus {
   border-bottom-color: var(--accent);
 }
 
-.tab-btn:focus {
+.tab-btn:focus:not(:focus-visible) {
   outline: none;
 }
 

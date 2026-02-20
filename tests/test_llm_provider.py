@@ -203,7 +203,7 @@ class TestOllamaProvider:
 
             with patch("llm_provider.urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
                 result = provider.complete("system prompt", "user prompt")
-                assert result == "test output"
+                assert result.text == "test output"
                 mock_urlopen.assert_called_once()
 
     def test_health_check(self):
@@ -328,7 +328,7 @@ class TestChatGPTSubscriptionProvider:
             # Force expiry
             provider._expires_at = time.time() - 10
             result = provider.complete("sys", "usr")
-            assert result == "test response"
+            assert result.text == "test response"
             # Should have refreshed (init + expiry refresh = 2 calls)
             assert mock_refresh.call_count == 2
 
