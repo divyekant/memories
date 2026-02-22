@@ -38,9 +38,9 @@ Usage:
 
 Options:
   --auto       Auto-detect targets (default)
-  --claude     Install Claude Code hooks
+  --claude     Install Claude Code hooks + MCP
   --codex      Install Codex integration (notify + MCP)
-  --cursor     Install Cursor hooks
+  --cursor     Install Cursor hooks + MCP
   --openclaw   Install OpenClaw skill
   --uninstall  Remove installed files for selected targets
   --dry-run    Print detected/selected targets and exit
@@ -219,11 +219,30 @@ remove_target() {
   fi
 }
 
+remove_mcp_json_target() {
+  local label="$1"
+  local settings_file="$2"
+
+  if [ ! -f "$settings_file" ]; then
+    return 0
+  fi
+
+  if ! jq -e '.mcpServers.memories' "$settings_file" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local updated
+  updated=$(jq 'del(.mcpServers.memories) | if .mcpServers == {} then del(.mcpServers) else . end' "$settings_file")
+  echo "$updated" > "$settings_file"
+  echo -e "  ${GREEN}[OK]${NC} Removed $label MCP 'memories' from $settings_file"
+}
+
 if [ "$UNINSTALL" = true ]; then
   echo -e "${YELLOW}Uninstalling selected targets...${NC}"
 
   if [ "$TARGET_CLAUDE" = true ]; then
     remove_target "Claude hooks" "$HOME/.claude/hooks/memory"
+    remove_mcp_json_target "Claude" "$HOME/.claude/settings.json"
     echo "  Manual cleanup: remove Memories hook entries from $HOME/.claude/settings.json"
   fi
 
@@ -237,6 +256,7 @@ if [ "$UNINSTALL" = true ]; then
 
   if [ "$TARGET_CURSOR" = true ]; then
     remove_target "Cursor hooks" "$HOME/.claude/hooks/memory"
+    remove_mcp_json_target "Cursor" "$HOME/.cursor/mcp.json"
     echo "  Manual cleanup: remove Memories hook entries from $HOME/.claude/settings.json"
   fi
 
@@ -369,12 +389,48 @@ install_hooks_target() {
   echo -e "  ${GREEN}[OK]${NC} Merged hook config into $settings_file"
 }
 
+install_mcp_json_target() {
+  local label="$1"
+  local settings_file="$2"
+
+  local settings_dir
+  settings_dir=$(dirname "$settings_file")
+  mkdir -p "$settings_dir"
+  if [ ! -f "$settings_file" ]; then
+    echo '{}' > "$settings_file"
+  fi
+
+  if jq -e '.mcpServers.memories' "$settings_file" >/dev/null 2>&1; then
+    echo -e "  ${YELLOW}[SKIP]${NC} $label MCP server 'memories' already configured in $settings_file"
+    return 0
+  fi
+
+  local mcp_path="$REPO_ROOT/mcp-server/index.js"
+  local merged
+  merged=$(jq --arg mcp_path "$mcp_path" \
+              --arg url "$MEMORIES_URL" \
+              --arg key "$MEMORIES_API_KEY" '
+    .mcpServers.memories = {
+      command: "node",
+      args: [$mcp_path],
+      env: {
+        MEMORIES_URL: $url,
+        MEMORIES_API_KEY: $key
+      }
+    }
+  ' "$settings_file")
+
+  echo "$merged" > "$settings_file"
+  echo -e "  ${GREEN}[OK]${NC} Added $label MCP config in $settings_file"
+}
+
 install_cursor_target() {
   # Cursor natively reads Claude Code's ~/.claude/settings.json via "Third-party skills".
   # All hook events (SessionStart, UserPromptSubmit, Stop, SessionEnd, PreCompact) are
   # supported with automatic name mapping. We install in Claude Code format and Cursor
   # picks it up — no separate hooks.json needed.
   install_hooks_target "Cursor" "$HOME/.claude/hooks/memory" "$HOME/.claude/settings.json"
+  install_mcp_json_target "Cursor" "$HOME/.cursor/mcp.json"
   echo ""
   echo -e "  ${YELLOW}[ACTION REQUIRED]${NC} Enable third-party hooks in Cursor:"
   echo -e "  Settings → Features → Third-party skills → toggle ON"
@@ -463,6 +519,7 @@ EOF
 
 if [ "$TARGET_CLAUDE" = true ]; then
   install_hooks_target "Claude" "$HOME/.claude/hooks/memory" "$HOME/.claude/settings.json"
+  install_mcp_json_target "Claude" "$HOME/.claude/settings.json"
 fi
 
 if [ "$TARGET_CODEX" = true ]; then
