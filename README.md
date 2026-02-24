@@ -193,7 +193,7 @@ MEMORIES_URL = "http://localhost:8900"
 MEMORIES_API_KEY = "your-api-key-here"
 ```
 
-3. Restart Codex. The `memory_search`, `memory_add`, and other tools will be available.
+3. Restart Codex. The `memory_search`, `memory_add`, `memory_delete`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, and other tools will be available.
 
 **Automatic memory layer for Codex:**
 
@@ -458,6 +458,8 @@ memory_add_memories "text" "source" [deduplicate]
 memory_is_novel "text" [threshold]
 memory_delete_memories <id>
 memory_delete_source_memories "pattern"
+memory_delete_by_prefix "source_prefix"
+memory_count_memories [source_prefix]
 memory_list_memories [offset] [limit] [source]
 memory_rebuild_index
 memory_dedup_memories [dry_run] [threshold]

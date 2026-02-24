@@ -108,6 +108,9 @@ npm install
 - `memory_search`
 - `memory_add`
 - `memory_delete`
+- `memory_delete_batch`
+- `memory_delete_by_source`
+- `memory_count`
 - `memory_list`
 - `memory_stats`
 - `memory_is_novel`

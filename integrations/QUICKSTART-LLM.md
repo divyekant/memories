@@ -219,7 +219,7 @@ MEMORIES_API_KEY = "your-api-key-here"
 
 **Step 3: Restart Codex**
 
-Codex will expose `memory_search`, `memory_add`, and related tools via MCP.
+Codex will expose `memory_search`, `memory_add`, `memory_delete`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, and other tools via MCP.
 
 ---
 
