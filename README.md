@@ -60,6 +60,7 @@ Persistent Storage (data/)
 ```
 
 Detailed docs:
+- [API reference](docs/api.md)
 - [Architecture deep dive](docs/architecture.md)
 - [Engineering decisions and tradeoffs](docs/decisions.md)
 
@@ -352,7 +353,7 @@ paths:
   /memories:
     get:
       operationId: listMemories
-      summary: Browse stored memories
+      summary: Browse stored memories with pagination
       parameters:
         - name: offset
           in: query
@@ -364,13 +365,42 @@ paths:
           schema:
             type: integer
             default: 20
+            maximum: 5000
         - name: source
           in: query
+          description: Source prefix filter
           schema:
             type: string
       responses:
         '200':
           description: List of memories
+    delete:
+      operationId: deleteMemoriesByPrefix
+      summary: Bulk delete all memories matching a source prefix
+      parameters:
+        - name: source
+          in: query
+          required: true
+          description: Source prefix to match
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Delete count
+
+  /memories/count:
+    get:
+      operationId: countMemories
+      summary: Count memories optionally filtered by source prefix
+      parameters:
+        - name: source
+          in: query
+          description: Source prefix filter
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Memory count
 
   /stats:
     get:
@@ -511,6 +541,7 @@ POST /memory/add-batch
 
 ```
 DELETE /memory/{id}
+DELETE /memories?source=<prefix>              # Bulk delete by source prefix; returns {"count": N}
 POST /memory/delete-batch     {"ids": [1, 2, 3]}
 POST /memory/delete-by-source  {"source_pattern": "credentials"}
 POST /memory/delete-by-prefix {"source_prefix": "team/project/"}
@@ -546,7 +577,8 @@ POST /memory/is-novel
 ### Browse
 
 ```
-GET /memories?offset=0&limit=20&source=filter
+GET /memories?offset=0&limit=20&source=filter   # limit up to 5000; source uses prefix matching
+GET /memories/count?source=<prefix>             # returns {"count": N}
 ```
 
 ### Deduplication
@@ -984,6 +1016,7 @@ memories/
   uv.lock                 # Locked dependency resolutions
   docker-compose.snippet.yml
   docs/
+    api.md                # Complete REST API reference
     architecture.md       # System architecture and runtime flows
     decisions.md          # Key design decisions and tradeoffs
     benchmarks/           # Reproducible benchmark notes

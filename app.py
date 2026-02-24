@@ -1299,6 +1299,21 @@ async def delete_by_source(request: DeleteBySourceRequest):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.delete("/memories")
+async def delete_memories_by_prefix(
+    source: str = Query(..., min_length=1, max_length=500),
+):
+    """Bulk-delete all memories whose source starts with the given prefix."""
+    logger.info("Bulk delete by source prefix: %s", source)
+    try:
+        result = memory.delete_by_prefix(source)
+        usage_tracker.log_api_event("delete", count=result["deleted_count"])
+        return {"count": result["deleted_count"]}
+    except Exception as e:
+        logger.exception("Bulk delete by prefix failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.post("/memory/delete-batch")
 async def delete_batch(request: DeleteBatchRequest):
     """Delete multiple memories in one operation."""
@@ -1400,10 +1415,19 @@ async def is_novel(request: IsNovelRequest):
 
 # -- Browse / List ------------------------------------------------------------
 
+@app.get("/memories/count")
+async def count_memories(
+    source: Optional[str] = Query(None, max_length=500),
+):
+    """Count memories, optionally filtered by source prefix."""
+    count = memory.count_memories(source_prefix=source)
+    return {"count": count}
+
+
 @app.get("/memories")
 async def list_memories(
     offset: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=5000),
     source: Optional[str] = Query(None, max_length=500),
 ):
     """List memories with pagination and optional source filter"""

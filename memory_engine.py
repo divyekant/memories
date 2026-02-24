@@ -415,8 +415,13 @@ class MemoryEngine:
         metadata_list: Optional[List[Dict]] = None,
         deduplicate: bool = False,
         dedup_threshold: float = 0.90,
+        _chunk_size: int = 100,
     ) -> List[int]:
-        """Add new memories to Qdrant + metadata (thread-safe)."""
+        """Add new memories to Qdrant + metadata (thread-safe).
+
+        Large batches are encoded in chunks of ``_chunk_size`` to avoid
+        embedding timeouts while still doing a single save/BM25 rebuild.
+        """
         if not texts:
             return []
 
@@ -440,45 +445,56 @@ class MemoryEngine:
             if not texts:
                 return []
 
-            embeddings = self._encode(
-                texts,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
+            # Encode in chunks to avoid timeout on large batches
+            import numpy as np  # local import to keep top-level unchanged
+            all_embeddings: List[np.ndarray] = []
+            for chunk_start in range(0, len(texts), _chunk_size):
+                chunk_texts = texts[chunk_start : chunk_start + _chunk_size]
+                chunk_emb = self._encode(
+                    chunk_texts,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )
+                all_embeddings.append(chunk_emb)
+            embeddings = np.concatenate(all_embeddings, axis=0)
 
             with self._write_lock:
                 if len(texts) > 10:
                     self._backup(prefix="pre_add")
 
                 start_id = len(self.metadata)
-                points = []
                 added_ids = []
                 _reserved_add = {"id", "text", "source", "timestamp", "created_at", "updated_at"}
-                for i, (text, source) in enumerate(zip(texts, sources)):
-                    mem_id = start_id + i
-                    now = datetime.now(timezone.utc).isoformat()
-                    extra = metadata_list[i] if metadata_list and i < len(metadata_list) else {}
-                    filtered_extra = {k: v for k, v in extra.items() if k not in _reserved_add}
-                    meta = {
-                        "id": mem_id,
-                        "text": text,
-                        "source": source,
-                        "created_at": now,
-                        "updated_at": now,
-                        "timestamp": now,  # backward compat alias
-                        **filtered_extra,
-                    }
-                    self.metadata.append(meta)
-                    points.append(
-                        {
-                            "id": mem_id,
-                            "vector": embeddings[i].astype("float32").tolist(),
-                            "payload": self._point_payload(meta),
-                        }
-                    )
-                    added_ids.append(mem_id)
 
-                self.qdrant_store.upsert_points(points)
+                # Build metadata + points in chunks and upsert per chunk
+                for chunk_start in range(0, len(texts), _chunk_size):
+                    chunk_end = min(chunk_start + _chunk_size, len(texts))
+                    points = []
+                    for i in range(chunk_start, chunk_end):
+                        mem_id = start_id + i
+                        now = datetime.now(timezone.utc).isoformat()
+                        extra = metadata_list[i] if metadata_list and i < len(metadata_list) else {}
+                        filtered_extra = {k: v for k, v in extra.items() if k not in _reserved_add}
+                        meta = {
+                            "id": mem_id,
+                            "text": texts[i],
+                            "source": sources[i],
+                            "created_at": now,
+                            "updated_at": now,
+                            "timestamp": now,  # backward compat alias
+                            **filtered_extra,
+                        }
+                        self.metadata.append(meta)
+                        points.append(
+                            {
+                                "id": mem_id,
+                                "vector": embeddings[i].astype("float32").tolist(),
+                                "payload": self._point_payload(meta),
+                            }
+                        )
+                        added_ids.append(mem_id)
+                    self.qdrant_store.upsert_points(points)
+
                 self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                 self.save()
                 self._rebuild_bm25()
@@ -977,6 +993,12 @@ class MemoryEngine:
     # Browse / List
     # ------------------------------------------------------------------
 
+    def count_memories(self, source_prefix: Optional[str] = None) -> int:
+        """Count memories, optionally filtered by source prefix."""
+        if not source_prefix:
+            return len(self.metadata)
+        return sum(1 for m in self.metadata if m.get("source", "").startswith(source_prefix))
+
     def list_memories(
         self,
         offset: int = 0,
@@ -986,7 +1008,7 @@ class MemoryEngine:
         """List memories with pagination and optional source filter."""
         filtered = self.metadata
         if source_filter:
-            filtered = [m for m in filtered if source_filter in m.get("source", "")]
+            filtered = [m for m in filtered if m.get("source", "").startswith(source_filter)]
 
         total = len(filtered)
         page = filtered[offset : offset + limit]

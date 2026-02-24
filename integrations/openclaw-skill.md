@@ -413,6 +413,41 @@ memory_delete_source_memories "credentials"
 memory_delete_source_memories "old-file.md"
 ```
 
+### Bulk Delete by Source Prefix
+
+```bash
+function memory_delete_by_prefix() {
+    local prefix="$1"
+
+    curl -s -X DELETE "http://localhost:8900/memories?source=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$prefix'))")" \
+        -H "X-API-Key: $MEMORIES_API_KEY" \
+    | jq -r '"Deleted \(.count) memories"'
+}
+
+# Usage
+memory_delete_by_prefix "team/old-project/"
+memory_delete_by_prefix "deprecated"
+```
+
+### Count Memories by Source
+
+```bash
+function memory_count_memories() {
+    local source="${1:-}"
+
+    local url="http://localhost:8900/memories/count"
+    if [[ -n "$source" ]]; then
+        url="${url}?source=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$source'))")"
+    fi
+
+    curl -s "$url" -H "X-API-Key: $MEMORIES_API_KEY" | jq -r '.count'
+}
+
+# Usage
+memory_count_memories                 # Total count
+memory_count_memories "team/project"  # Count for a source prefix
+```
+
 ### Browse Memories
 
 ```bash
