@@ -70,7 +70,7 @@ Detailed docs:
 
 ### Claude Code (CLI)
 
-The MCP server gives Claude Code native `memory_search`, `memory_add`, `memory_delete`, `memory_delete_batch`, `memory_list`, `memory_stats`, and `memory_is_novel` tools.
+The MCP server gives Claude Code native `memory_search`, `memory_add`, `memory_delete`, `memory_delete_batch`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, and `memory_is_novel` tools.
 
 **Setup:**
 
@@ -638,7 +638,9 @@ When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools
 | `memory_add` | Store a memory with auto-dedup. |
 | `memory_delete` | Delete by ID. |
 | `memory_delete_batch` | Delete multiple IDs in one operation. |
-| `memory_list` | Browse with pagination and source filter. |
+| `memory_delete_by_source` | Bulk delete all memories matching a source prefix. |
+| `memory_count` | Count memories, optionally filtered by source prefix. |
+| `memory_list` | Browse with pagination and source prefix filter. |
 | `memory_stats` | Index stats (count, model, last updated). |
 | `memory_is_novel` | Check if text is already known. |
 

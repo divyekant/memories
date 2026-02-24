@@ -146,7 +146,7 @@ server.tool(
   {
     offset: z.number().int().min(0).default(0).describe("Start position"),
     limit: z.number().int().min(1).max(50).default(20).describe("Number of memories to return"),
-    source: z.string().optional().describe("Filter by source (substring match)"),
+    source: z.string().optional().describe("Filter by source prefix (e.g. 'project/decisions' matches 'project/decisions/2024.md')"),
   },
   async ({ offset = 0, limit = 20, source }) => {
     let url = `/memories?offset=${offset}&limit=${limit}`;
@@ -166,6 +166,46 @@ server.tool(
       content: [{
         type: "text",
         text: `Memories (${data.offset + 1}-${data.offset + data.memories.length} of ${data.total}):\n\n${lines.join("\n\n")}`,
+      }],
+    };
+  }
+);
+
+server.tool(
+  "memory_delete_by_source",
+  "Delete all memories whose source starts with a given prefix. Returns count of deleted. Use for bulk cleanup of an entire source/project.",
+  {
+    source: z.string().min(1).describe("Source prefix to match (e.g. 'old-project/' deletes all memories from that project)"),
+  },
+  async ({ source }) => {
+    const data = await memoriesRequest(`/memories?source=${encodeURIComponent(source)}`, {
+      method: "DELETE",
+    });
+    return {
+      content: [{
+        type: "text",
+        text: `Deleted ${data.count} memories with source prefix "${source}".`,
+      }],
+    };
+  }
+);
+
+server.tool(
+  "memory_count",
+  "Count memories, optionally filtered by source prefix. Lightweight check without listing all memories.",
+  {
+    source: z.string().optional().describe("Source prefix filter (e.g. 'project/docs')"),
+  },
+  async ({ source }) => {
+    let url = "/memories/count";
+    if (source) url += `?source=${encodeURIComponent(source)}`;
+
+    const data = await memoriesRequest(url);
+    const label = source ? `memories with source prefix "${source}"` : "total memories";
+    return {
+      content: [{
+        type: "text",
+        text: `${data.count} ${label}.`,
       }],
     };
   }
