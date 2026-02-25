@@ -1454,11 +1454,11 @@ async def rename_folder(request: RenameFolderRequest):
 
     # Collect matching IDs first to avoid mutation during iteration
     targets = []
-    for i, m in enumerate(memory.metadata):
+    for m in memory.metadata:
         source = m.get("source", "")
         if source == old_prefix or source.startswith(old_prefix + "/"):
             new_source = new_prefix + source[len(old_prefix):]
-            targets.append((i, new_source))
+            targets.append((m["id"], new_source))
 
     if not targets:
         raise HTTPException(status_code=404, detail=f"No memories found with folder prefix '{old_prefix}'")
