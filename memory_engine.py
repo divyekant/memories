@@ -103,7 +103,7 @@ class MemoryEngine:
         self.model = self._make_embedder()
         self.dim = self.model.get_sentence_embedding_dimension()
 
-        self._write_lock = threading.Lock()
+        self._write_lock = threading.RLock()
         self._entity_locks = EntityLockManager()
 
         self.metadata: List[Dict[str, Any]] = []
@@ -117,6 +117,9 @@ class MemoryEngine:
         }
 
         self.bm25_index: Optional[BM25Okapi] = None
+        self._id_map: Dict[int, int] = {}      # memory_id -> index in self.metadata
+        self._next_id: int = 0                  # monotonic counter for new IDs
+        self._bm25_pos_to_id: List[int] = []   # BM25 corpus position -> memory_id
 
         self.qdrant_settings = QdrantSettings.from_env()
         self._qdrant_local_path = self.data_dir / "qdrant"
@@ -172,13 +175,33 @@ class MemoryEngine:
         """Rebuild BM25 index from current metadata."""
         if not self.metadata:
             self.bm25_index = None
+            self._bm25_pos_to_id = []
             return
         corpus = [m["text"].lower().split() for m in self.metadata]
         self.bm25_index = BM25Okapi(corpus)
+        self._bm25_pos_to_id = [m["id"] for m in self.metadata]
 
-    def _normalize_ids(self):
-        for i, meta in enumerate(self.metadata):
-            meta["id"] = i
+    def _rebuild_id_map(self):
+        """Rebuild the sparse ID lookup structures from current metadata."""
+        self._id_map = {m["id"]: i for i, m in enumerate(self.metadata)}
+        self._bm25_pos_to_id = [m["id"] for m in self.metadata]
+        self._next_id = max(self._id_map.keys(), default=-1) + 1
+
+    def _get_meta_by_id(self, memory_id: int) -> Dict[str, Any]:
+        """Fetch metadata dict for a memory by its sparse ID."""
+        idx = self._id_map.get(memory_id)
+        if idx is None:
+            raise ValueError(f"Memory ID {memory_id} not found")
+        return self.metadata[idx]
+
+    def _id_exists(self, memory_id: int) -> bool:
+        return memory_id in self._id_map
+
+    def _delete_ids_targeted(self, ids_to_remove: set):
+        """Remove specific IDs from metadata + Qdrant without full reindex."""
+        self.qdrant_store.delete_points(list(ids_to_remove))
+        self.metadata = [m for m in self.metadata if m["id"] not in ids_to_remove]
+        self._rebuild_id_map()
 
     def _entity_key(self, source: str) -> str:
         scoped = source.strip() if source else "__unknown__"
@@ -462,7 +485,7 @@ class MemoryEngine:
                 if len(texts) > 10:
                     self._backup(prefix="pre_add")
 
-                start_id = len(self.metadata)
+                start_id = self._next_id
                 added_ids = []
                 _reserved_add = {"id", "text", "source", "timestamp", "created_at", "updated_at"}
 
@@ -495,29 +518,28 @@ class MemoryEngine:
                         added_ids.append(mem_id)
                     self.qdrant_store.upsert_points(points)
 
+                self._next_id = start_id + len(texts)
                 self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                 self.save()
                 self._rebuild_bm25()
+                self._rebuild_id_map()
 
         return added_ids
 
     def delete_memory(self, memory_id: int) -> Dict[str, Any]:
-        """Delete a single memory by ID and keep IDs compact."""
-        if memory_id < 0 or memory_id >= len(self.metadata):
+        """Delete a single memory by ID."""
+        if not self._id_exists(memory_id):
             raise ValueError(f"Memory ID {memory_id} not found")
-        key = self._entity_key(self.metadata[memory_id].get("source", ""))
+        key = self._entity_key(self._get_meta_by_id(memory_id).get("source", ""))
         with self._entity_locks.acquire_many([key]):
             with self._write_lock:
-                if memory_id < 0 or memory_id >= len(self.metadata):
+                if not self._id_exists(memory_id):
                     raise ValueError(f"Memory ID {memory_id} not found")
 
                 self._backup(prefix="pre_delete")
 
-                deleted = self.metadata[memory_id]
-                remaining = [m for i, m in enumerate(self.metadata) if i != memory_id]
-                self.metadata = remaining
-                self._normalize_ids()
-                self._reindex_store_from_metadata()
+                deleted = dict(self._get_meta_by_id(memory_id))
+                self._delete_ids_targeted({memory_id})
 
                 self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                 self.save()
@@ -526,30 +548,27 @@ class MemoryEngine:
         return {"deleted_id": memory_id, "deleted_text": deleted["text"][:100]}
 
     def delete_memories(self, memory_ids: List[int]) -> Dict[str, Any]:
-        """Delete multiple memories by IDs in one rebuild pass."""
+        """Delete multiple memories by IDs in one pass."""
         unique_ids = sorted(set(memory_ids))
         if not unique_ids:
             return {"deleted_count": 0, "deleted_ids": [], "missing_ids": []}
 
-        existing = [mid for mid in unique_ids if 0 <= mid < len(self.metadata)]
+        existing = [mid for mid in unique_ids if self._id_exists(mid)]
         existing_set = set(existing)
         missing = [mid for mid in unique_ids if mid not in existing_set]
         if not existing:
             return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing}
 
-        keys = [self._entity_key(self.metadata[mid].get("source", "")) for mid in existing]
+        keys = [self._entity_key(self._get_meta_by_id(mid).get("source", "")) for mid in existing]
         with self._entity_locks.acquire_many(keys):
             with self._write_lock:
-                existing_now = [mid for mid in existing if 0 <= mid < len(self.metadata)]
+                existing_now = [mid for mid in existing if self._id_exists(mid)]
                 if not existing_now:
                     return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing}
 
                 self._backup(prefix="pre_delete_batch")
 
-                removed = set(existing_now)
-                self.metadata = [m for i, m in enumerate(self.metadata) if i not in removed]
-                self._normalize_ids()
-                self._reindex_store_from_metadata()
+                self._delete_ids_targeted(set(existing_now))
 
                 self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                 self.save()
@@ -563,10 +582,10 @@ class MemoryEngine:
 
     def supersede(self, old_id: int, new_text: str, source: str = "") -> dict:
         """Replace a memory with an updated version, preserving audit trail."""
-        if old_id < 0 or old_id >= len(self.metadata):
+        if not self._id_exists(old_id):
             raise ValueError(f"Memory {old_id} not found")
 
-        previous_text = self.metadata[old_id].get("text", "")
+        previous_text = self._get_meta_by_id(old_id).get("text", "")
 
         self.delete_memory(old_id)
 
@@ -577,9 +596,9 @@ class MemoryEngine:
         )
         new_id = added_ids[0] if added_ids else None
 
-        if new_id is not None and new_id < len(self.metadata) and self.metadata[new_id]:
-            self.metadata[new_id]["supersedes"] = old_id
-            self.metadata[new_id]["previous_text"] = previous_text
+        if new_id is not None and self._id_exists(new_id):
+            self._get_meta_by_id(new_id)["supersedes"] = old_id
+            self._get_meta_by_id(new_id)["previous_text"] = previous_text
             self.save()
 
         logger.info("Superseded memory %d → %d", old_id, new_id)
@@ -587,7 +606,6 @@ class MemoryEngine:
 
     def delete_by_source(self, source_pattern: str) -> Dict[str, Any]:
         """Delete all memories matching a source pattern."""
-        # Prefix/source deletes are broad operations; lock whole write domain.
         with self._entity_locks.acquire_many(["__all__"]):
             with self._write_lock:
                 matching = [m for m in self.metadata if source_pattern in m.get("source", "")]
@@ -596,9 +614,8 @@ class MemoryEngine:
 
                 self._backup(prefix="pre_delete_source")
 
-                self.metadata = [m for m in self.metadata if source_pattern not in m.get("source", "")]
-                self._normalize_ids()
-                self._reindex_store_from_metadata()
+                ids_to_remove = {m["id"] for m in matching}
+                self._delete_ids_targeted(ids_to_remove)
 
                 self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                 self.save()
@@ -615,9 +632,8 @@ class MemoryEngine:
                     return {"deleted_count": 0}
 
                 self._backup(prefix="pre_delete_prefix")
-                self.metadata = [m for m in self.metadata if not m.get("source", "").startswith(source_prefix)]
-                self._normalize_ids()
-                self._reindex_store_from_metadata()
+                ids_to_remove = {m["id"] for m in matching}
+                self._delete_ids_targeted(ids_to_remove)
                 self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                 self.save()
                 self._rebuild_bm25()
@@ -626,17 +642,15 @@ class MemoryEngine:
 
     def get_memory(self, memory_id: int) -> Dict[str, Any]:
         """Fetch a single memory by ID."""
-        if memory_id < 0 or memory_id >= len(self.metadata):
-            raise ValueError(f"Memory ID {memory_id} not found")
-        return dict(self.metadata[memory_id])
+        return dict(self._get_meta_by_id(memory_id))
 
     def get_memories(self, memory_ids: List[int]) -> Dict[str, Any]:
         """Fetch multiple memories by ID."""
         memories: List[Dict[str, Any]] = []
         missing_ids: List[int] = []
         for memory_id in memory_ids:
-            if 0 <= memory_id < len(self.metadata):
-                memories.append(dict(self.metadata[memory_id]))
+            if self._id_exists(memory_id):
+                memories.append(dict(self._get_meta_by_id(memory_id)))
             else:
                 missing_ids.append(memory_id)
         return {"memories": memories, "missing_ids": missing_ids}
@@ -649,10 +663,10 @@ class MemoryEngine:
         metadata_patch: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Update fields on an existing memory without changing its ID."""
-        if memory_id < 0 or memory_id >= len(self.metadata):
+        if not self._id_exists(memory_id):
             raise ValueError(f"Memory ID {memory_id} not found")
 
-        current = self.metadata[memory_id]
+        current = self._get_meta_by_id(memory_id)
         old_key = self._entity_key(current.get("source", ""))
         new_key = self._entity_key(source if source is not None else current.get("source", ""))
         updated_fields: List[str] = []
@@ -667,10 +681,10 @@ class MemoryEngine:
 
         with self._entity_locks.acquire_many([old_key, new_key]):
             with self._write_lock:
-                if memory_id < 0 or memory_id >= len(self.metadata):
+                if not self._id_exists(memory_id):
                     raise ValueError(f"Memory ID {memory_id} not found")
 
-                meta = self.metadata[memory_id]
+                meta = self._get_meta_by_id(memory_id)
 
                 if source_only:
                     meta["source"] = source
@@ -820,13 +834,12 @@ class MemoryEngine:
 
         results: List[Dict[str, Any]] = []
         for hit in hits:
-            idx = hit.get("id")
-            if not isinstance(idx, int):
-                continue
-            if idx < 0 or idx >= len(self.metadata):
+            mem_id = hit.get("id")
+            if not isinstance(mem_id, int) or not self._id_exists(mem_id):
                 continue
 
-            source = str(self.metadata[idx].get("source", ""))
+            meta = self._get_meta_by_id(mem_id)
+            source = str(meta.get("source", ""))
             if source_prefix and not source.startswith(source_prefix):
                 continue
 
@@ -834,7 +847,7 @@ class MemoryEngine:
             if threshold is not None and similarity < threshold:
                 continue
 
-            result = {**self.metadata[idx], "similarity": round(similarity, 6)}
+            result = {**meta, "similarity": round(similarity, 6)}
             results.append(result)
 
         return results
@@ -867,9 +880,10 @@ class MemoryEngine:
             bm25_scores = self.bm25_index.get_scores(tokenized)
             if source_prefix:
                 bm25_ranked = [
-                    (idx, score)
-                    for idx, score in enumerate(bm25_scores)
-                    if self.metadata[idx].get("source", "").startswith(source_prefix)
+                    (pos, score)
+                    for pos, score in enumerate(bm25_scores)
+                    if pos < len(self._bm25_pos_to_id)
+                    and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
                 ]
                 bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
             else:
@@ -883,17 +897,18 @@ class MemoryEngine:
             rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + vector_weight * (1.0 / (rank + rrf_k))
 
         bm25_weight = 1.0 - vector_weight
-        for rank, (idx, score) in enumerate(bm25_ranked):
-            if score > 0 and idx < len(self.metadata):
-                doc_id = self.metadata[idx]["id"]
+        for rank, (pos, score) in enumerate(bm25_ranked):
+            if score > 0 and pos < len(self._bm25_pos_to_id):
+                doc_id = self._bm25_pos_to_id[pos]
                 rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + bm25_weight * (1.0 / (rank + rrf_k))
 
         sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
         results = []
         for doc_id, rrf_score in sorted_ids:
-            if 0 <= doc_id < len(self.metadata):
-                result = {**self.metadata[doc_id], "rrf_score": round(rrf_score, 6)}
+            if self._id_exists(doc_id):
+                meta = self._get_meta_by_id(doc_id)
+                result = {**meta, "rrf_score": round(rrf_score, 6)}
                 if threshold is not None:
                     vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
                     if vec_match and vec_match["similarity"] < threshold:
@@ -927,6 +942,7 @@ class MemoryEngine:
 
         similarities = np.matmul(all_embeddings, all_embeddings.T)
         search_k = min(5, len(self.metadata))
+        id_list = [m["id"] for m in self.metadata]
 
         duplicates: List[Dict[str, Any]] = []
         seen = set()
@@ -937,7 +953,8 @@ class MemoryEngine:
             neighbors = [j for j in nearest if j != i][:search_k]
             for j in neighbors:
                 sim = float(row[j])
-                pair_key = (min(i, int(j)), max(i, int(j)))
+                id_a, id_b = id_list[i], id_list[int(j)]
+                pair_key = (min(id_a, id_b), max(id_a, id_b))
                 if sim >= threshold and pair_key not in seen:
                     seen.add(pair_key)
                     duplicates.append(
@@ -945,8 +962,8 @@ class MemoryEngine:
                             "id_a": pair_key[0],
                             "id_b": pair_key[1],
                             "similarity": round(sim, 4),
-                            "text_a": self.metadata[pair_key[0]]["text"][:120],
-                            "text_b": self.metadata[pair_key[1]]["text"][:120],
+                            "text_a": self._get_meta_by_id(pair_key[0])["text"][:120],
+                            "text_b": self._get_meta_by_id(pair_key[1])["text"][:120],
                         }
                     )
 
@@ -974,9 +991,7 @@ class MemoryEngine:
             with self._write_lock:
                 self._backup(prefix="pre_dedup")
 
-                self.metadata = [m for i, m in enumerate(self.metadata) if i not in ids_to_remove]
-                self._normalize_ids()
-                self._reindex_store_from_metadata()
+                self._delete_ids_targeted(ids_to_remove)
 
                 self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                 self.save()
@@ -1043,36 +1058,38 @@ class MemoryEngine:
         self.config["embed_provider"] = self._embed_provider
         self.config["dimension"] = self.dim
 
-        self._normalize_ids()
+        self._rebuild_id_map()
 
-        collection_dim = self.qdrant_store.get_collection_dimension()
-        if collection_dim is not None and collection_dim != self.dim:
-            if self.metadata:
+        # Hold write lock during reindex to prevent concurrent mutations (Option C)
+        with self._write_lock:
+            collection_dim = self.qdrant_store.get_collection_dimension()
+            if collection_dim is not None and collection_dim != self.dim:
+                if self.metadata:
+                    logger.info(
+                        "Embedding dimension changed (%d -> %d). Rebuilding vectors from metadata.",
+                        collection_dim,
+                        self.dim,
+                    )
+                    self._reindex_store_from_metadata()
+                else:
+                    logger.info(
+                        "Embedding dimension changed (%d -> %d) with empty metadata. Recreating collection.",
+                        collection_dim,
+                        self.dim,
+                    )
+                    self.qdrant_store.recreate_collection(self.dim)
+
+            total_points = self.qdrant_store.count()
+            if total_points == 0 and self.metadata:
+                logger.info("Qdrant collection empty with existing metadata. Rebuilding vectors.")
+                self._reindex_store_from_metadata()
+            elif rebuild_on_mismatch and total_points != len(self.metadata):
                 logger.info(
-                    "Embedding dimension changed (%d -> %d). Rebuilding vectors from metadata.",
-                    collection_dim,
-                    self.dim,
+                    "Qdrant mismatch during restore/load (%d vs %d). Rebuilding vectors.",
+                    total_points,
+                    len(self.metadata),
                 )
                 self._reindex_store_from_metadata()
-            else:
-                logger.info(
-                    "Embedding dimension changed (%d -> %d) with empty metadata. Recreating collection.",
-                    collection_dim,
-                    self.dim,
-                )
-                self.qdrant_store.recreate_collection(self.dim)
-
-        total_points = self.qdrant_store.count()
-        if total_points == 0 and self.metadata:
-            logger.info("Qdrant collection empty with existing metadata. Rebuilding vectors.")
-            self._reindex_store_from_metadata()
-        elif rebuild_on_mismatch and total_points != len(self.metadata):
-            logger.info(
-                "Qdrant mismatch during restore/load (%d vs %d). Rebuilding vectors.",
-                total_points,
-                len(self.metadata),
-            )
-            self._reindex_store_from_metadata()
 
         self._check_integrity()
         self._rebuild_bm25()
