@@ -46,3 +46,6 @@ htmlcov/
 
 # Local git worktrees
 .worktrees/
+
+# Apollo (personal config)
+.apollo.yaml

@@ -53,6 +53,9 @@
             <option value="10">10</option>
             <option value="20" selected>20</option>
             <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+            <option value="500">500</option>
           </select>
         </label>
 
@@ -75,9 +78,9 @@
         <span class="metric-label">Total</span>
         <span id="totalCount" class="metric-value">0</span>
       </div>
-      <div class="metric">
-        <span class="metric-label">Offset</span>
-        <span id="offsetValue" class="metric-value">0</span>
+      <div class="metric metric-offset">
+        <label class="metric-label" for="offsetInput">Offset</label>
+        <input id="offsetInput" class="metric-value offset-input" type="number" min="0" value="0" title="Type an offset and press Enter to jump">
       </div>
     </section>
 

@@ -49,7 +49,7 @@ const els = {
   memoryList: document.getElementById("memoryList"),
   visibleCount: document.getElementById("visibleCount"),
   totalCount: document.getElementById("totalCount"),
-  offsetValue: document.getElementById("offsetValue"),
+  offsetInput: document.getElementById("offsetInput"),
   cardTemplate: document.getElementById("memoryCardTemplate"),
   folderList: document.getElementById("folderList"),
   folderAllCount: document.getElementById("folderAllCount"),
@@ -333,7 +333,8 @@ function renderMemories(memories) {
 function updatePagingState(visibleCount) {
   els.visibleCount.textContent = String(visibleCount);
   els.totalCount.textContent = String(state.total);
-  els.offsetValue.textContent = String(state.offset);
+  els.offsetInput.value = state.offset;
+  els.offsetInput.max = Math.max(0, state.total - 1);
 
   els.prev.disabled = state.offset <= 0;
   els.next.disabled = state.offset + visibleCount >= state.total;
@@ -404,6 +405,13 @@ function bindEvents() {
   els.limit.addEventListener("change", () => {
     state.limit = Number(els.limit.value);
     state.offset = 0;
+    loadMemories();
+  });
+
+  els.offsetInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const val = Math.max(0, Math.min(parseInt(els.offsetInput.value, 10) || 0, state.total - 1));
+    state.offset = val;
     loadMemories();
   });
 
