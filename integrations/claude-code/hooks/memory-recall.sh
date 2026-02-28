@@ -60,7 +60,7 @@ if [ -n "$MEMORY_RESULTS" ] && [ "$MEMORY_RESULTS" != "null" ]; then
   if [ -f "$MEMORY_FILE" ]; then
     # Preserve everything above the sync marker (manual/pinned content)
     MARKER_LINE=$(grep -Fn "$SYNC_MARKER" "$MEMORY_FILE" 2>/dev/null | head -1 | cut -d: -f1) || true
-    if [ -n "$MARKER_LINE" ]; then
+    if [ -n "$MARKER_LINE" ] && [ "$MARKER_LINE" -gt 1 ]; then
       MANUAL_SECTION=$(head -n $((MARKER_LINE - 1)) "$MEMORY_FILE")
     else
       MANUAL_SECTION=$(cat "$MEMORY_FILE")
