@@ -1,0 +1,17 @@
+id: coding-001
+category: coding
+name: "Fix bug using team's known pattern"
+description: "The Voltis API has a recurring bug where handlers crash with AttributeError when tenant_id is missing. The team fix is TenantGuard middleware."
+memories:
+  - text: "Voltis API: AttributeError crashes in handlers are always caused by missing tenant_id in request context. The fix is to add TenantGuard middleware to the route, not to add null checks in the handler. Decided in team retro 2026-01-20."
+    source: eval/coding-001
+prompt: "In the Voltis task management API, the endpoint POST /api/tasks/create is crashing with AttributeError: 'NoneType' object has no attribute 'tenant_id' on line 47 of task_handler.py. How should I fix this?"
+expected:
+  - type: contains
+    value: "TenantGuard"
+    weight: 0.5
+  - type: not_contains
+    value: "if tenant_id is None"
+    weight: 0.2
+  - type: no_retry
+    weight: 0.3

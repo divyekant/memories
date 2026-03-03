@@ -1,0 +1,9 @@
+memories_url: http://localhost:8900
+memories_api_key: ""
+judge_provider: anthropic
+cc_timeout: 120
+mcp_server_path: ""
+category_weights:
+  coding: 0.40
+  recall: 0.35
+  compounding: 0.25

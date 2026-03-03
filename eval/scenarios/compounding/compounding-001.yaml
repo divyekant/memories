@@ -1,0 +1,10 @@
+id: compounding-001
+category: compounding
+name: "Search quality at scale"
+description: "Tests whether search retrieval quality holds up as memory store grows. Runner seeds memories externally."
+memories: []
+prompt: "What is the Voltis API rate limit for free-tier users?"
+expected:
+  - type: contains
+    value: "100 requests per minute"
+    weight: 1.0

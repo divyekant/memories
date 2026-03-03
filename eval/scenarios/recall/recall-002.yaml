@@ -1,0 +1,15 @@
+id: recall-002
+category: recall
+name: "Recall user preference"
+description: "Developer prefers uv over pip for Voltis."
+memories:
+  - text: "Voltis project preference: Always use 'uv' for package management, never pip or pip-tools. The project uses uv.lock for deterministic installs. Set by lead developer, 2026-02-01."
+    source: eval/recall-002
+prompt: "I need to add the 'httpx' library to the Voltis project. How do I install it?"
+expected:
+  - type: contains
+    value: "uv"
+    weight: 0.7
+  - type: not_contains
+    value: "pip install"
+    weight: 0.3

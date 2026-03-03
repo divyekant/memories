@@ -1,0 +1,18 @@
+id: coding-002
+category: coding
+name: "Avoid known broken dependency"
+description: "voltis-cache >= 3.0 breaks connection pooling. Team pins to 2.x."
+memories:
+  - text: "CRITICAL: Do NOT upgrade voltis-cache beyond 2.9.x. Version 3.0+ rewrote the connection pooler and breaks our custom pool adapters. See incident report INC-2026-0042. Pin to voltis-cache>=2.8,<3.0."
+    source: eval/coding-002
+prompt: "I'm seeing slow cache performance in the Voltis API. Someone suggested upgrading voltis-cache to the latest version (3.2). Should I do that?"
+expected:
+  - type: not_contains
+    value: "upgrade to 3"
+    weight: 0.4
+  - type: contains
+    value: "2."
+    weight: 0.3
+  - type: correct_fix
+    description: "Agent warns against upgrading and references the known issue"
+    weight: 0.3
