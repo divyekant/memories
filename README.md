@@ -1139,3 +1139,55 @@ See the [design doc](docs/plans/2026-03-03-efficacy-design.md) for full details.
 Uses **ONNX Runtime** for inference instead of PyTorch — same model (all-MiniLM-L6-v2), same embeddings, 68% smaller image.
 
 Tested on Mac mini M4 Pro, 16GB RAM.
+
+---
+
+## Development
+
+```bash
+# Install dependencies
+uv sync                              # core only
+uv sync --extra extract              # with extraction (Anthropic SDK)
+uv sync --extra cloud                # with cloud sync (boto3)
+
+# Run tests
+uv run pytest -q
+
+# Local dev server
+uv run uvicorn app:app --reload
+
+# Docker
+docker build --target core -t memories:core .
+docker build --target extract -t memories:extract .
+```
+
+When changing memory/index behavior: add or update tests, validate backup/restore still works, validate extraction if touching extraction paths, update README and/or `docs/architecture.md`.
+
+---
+
+## Roadmap
+
+### v1.1 (Next)
+- [x] Web UI for browsing memories
+- [x] Memory deduplication tool (`/memory/deduplicate`)
+- [x] MCP server (`mcp-server/index.js`)
+- [x] OpenClaw integration (`integrations/openclaw-skill.md`)
+- [ ] Auto-rebuild on file changes (watch mode)
+- [ ] Export formats (JSON, Markdown, CSV)
+
+### v1.2 (Future)
+- [x] Hybrid search (semantic + keyword via BM25 + RRF)
+- [ ] Multi-index support (different projects)
+- [ ] Memory tagging system
+- [ ] Search filters by date/type (source filter exists)
+- [ ] Scheduled index rebuilds via cron
+- [ ] Memory analytics dashboard
+
+---
+
+## Release Checklist
+
+- [ ] No hardcoded credentials in docs/examples
+- [ ] Public docs avoid product-specific assumptions unless the file is intentionally integration-specific
+- [ ] Benchmarks describe workload profile and caveats
+- [ ] Versioned behavior changes documented in README
