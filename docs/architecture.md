@@ -179,7 +179,55 @@ Local-only is the default. If exposed publicly, additionally use HTTPS + strong 
 
 ---
 
-## 8) Non-Goals (Current Scope)
+## 8) Efficacy Eval Harness
+
+The `eval/` package provides a benchmark framework to measure how much Memories improves AI assistant performance.
+
+### Architecture
+
+```text
+eval/__main__.py (CLI)
+  -> EvalRunner (runner.py)
+     -> MemoriesClient (memories_client.py) — seed/clear test memories
+     -> CCExecutor (cc_executor.py)         — run prompts via `claude -p`
+     -> scorer.py                           — deterministic rubric scoring
+     -> LLMJudge (judge.py)                — non-deterministic rubric scoring
+  -> reporter.py                            — JSON + summary output
+```
+
+### Per-scenario flow
+
+1. **Clear** eval memories (`eval/` prefix)
+2. **Create isolated project** — temp dir, no CLAUDE.md, no `.claude/`, no MCP config
+3. **Run prompt without Memories** via `claude -p --no-input`
+4. **Score** output against rubrics
+5. **Clear** again, **seed** scenario-specific memories
+6. **Create isolated project** — same temp dir pattern but with `.mcp.json` pointing to Memories
+7. **Run prompt with Memories**
+8. **Score** again, optionally resolve LLM-judged rubrics
+9. Compute **efficacy delta** = score_with - score_without
+
+### Isolation strategy
+
+Each run creates a fresh temp directory with:
+- No `CLAUDE.md` (prevents prior instructions leaking)
+- No `.claude/` directory (prevents auto-memory contamination)
+- No conversation history (fresh `claude -p` invocation)
+- Conditional `.mcp.json` only for "with memory" runs
+
+### Scenario design
+
+Test scenarios use fictional project context (e.g., "Voltis") with team-specific, non-generalizable decisions to avoid confounds from Claude's training data knowledge.
+
+### Scoring
+
+- **Deterministic rubrics**: `contains`, `not_contains`, `no_retry` — scored programmatically
+- **LLM-judged rubrics**: `correct_fix`, `recall_accuracy`, `match_convention` — scored by LLM-as-judge with structured JSON output
+- **Aggregation**: weighted average per category, category-weighted overall score
+
+---
+
+## 9) Non-Goals (Current Scope)
 
 - Distributed multi-writer consistency across replicas
 - Tenant isolation inside one process

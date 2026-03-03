@@ -1052,8 +1052,55 @@ memories/
     test_llm_extract.py   # Extraction pipeline tests
     test_extract_api.py   # API endpoint tests
     test_web_ui.py        # Web UI route/static tests
+  eval/
+    __main__.py           # CLI entrypoint (python -m eval)
+    models.py             # Pydantic data models (Scenario, EvalReport, etc.)
+    loader.py             # YAML scenario loader
+    scorer.py             # Deterministic rubric scorer
+    judge.py              # LLM-as-judge for non-deterministic rubrics
+    memories_client.py    # Memories API client for eval runner
+    cc_executor.py        # Claude Code executor with project isolation
+    runner.py             # Orchestrates with/without-memory runs
+    reporter.py           # JSON reporter and summary formatter
+    config.yaml           # Default eval configuration
+    scenarios/            # YAML test scenarios by category
+    results/              # JSON eval reports (.gitignored)
+    tests/                # 77 tests covering all eval components
   data/                   # .gitignored — persistent index + backups
 ```
+
+---
+
+## Efficacy Eval
+
+Memories includes a built-in eval harness that measures how much Memories improves AI assistant performance. It runs controlled A/B tests: each scenario executes via Claude Code (`claude -p`) both with and without Memories, then scores the outputs against rubrics.
+
+```bash
+# Run all scenarios
+python -m eval
+
+# Run a specific category
+python -m eval --category coding
+
+# Run a single scenario
+python -m eval --scenario coding-001 -v
+```
+
+**What it measures:**
+- **Coding tasks** — Does the agent apply known patterns and avoid known pitfalls?
+- **Knowledge recall** — Can the agent recall project-specific decisions and rationale?
+- **Multi-session continuity** — Does knowledge compound across sessions?
+
+**How it works:**
+1. Clears eval memories, creates an isolated temp project (no CLAUDE.md, no auto-memory)
+2. Runs the prompt **without** Memories → scores against rubrics
+3. Seeds scenario memories, runs the prompt **with** Memories → scores again
+4. Computes **efficacy delta** = score_with - score_without
+5. Aggregates across categories with configurable weights
+
+Results are saved as JSON in `eval/results/` and printed as a human-readable summary.
+
+See the [design doc](docs/plans/2026-03-03-efficacy-design.md) for full details.
 
 ---
 

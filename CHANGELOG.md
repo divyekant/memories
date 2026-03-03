@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Efficacy eval harness (`eval/`) — A/B benchmarking framework that measures how much Memories improves AI assistant performance
+- YAML-defined test scenarios across coding, recall, and compounding categories
+- Deterministic rubric scoring (contains, not_contains, no_retry) and LLM-as-judge for non-deterministic rubrics
+- Claude Code programmatic mode (`claude -p`) executor with full project isolation
+- Configurable category-weighted aggregation (coding 40%, recall 35%, compounding 25%)
+- JSON report output and human-readable summary formatter
+- CLI entrypoint: `python -m eval [--category] [--scenario] [-v]`
+- 77 tests covering all eval components
+
 ## [1.0.0] - 2026-02-28
 
 First stable release of Memories — a local-first memory layer for AI assistants.
