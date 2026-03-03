@@ -1065,7 +1065,7 @@ memories/
     config.yaml           # Default eval configuration
     scenarios/            # YAML test scenarios by category
     results/              # JSON eval reports (.gitignored)
-    tests/                # 77 tests covering all eval components
+    tests/                # 82 tests covering all eval components
   data/                   # .gitignored — persistent index + backups
 ```
 
