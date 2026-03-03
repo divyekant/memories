@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from eval.models import CategoryResult, EvalReport, TestResult
+from eval.models import CategoryResult, EvalReport, ScenarioResult
 from eval.reporter import format_summary, save_report
 
 
@@ -20,7 +20,7 @@ def sample_report():
             ),
         },
         tests=[
-            TestResult(
+            ScenarioResult(
                 scenario_id="coding-001",
                 scenario_name="Fix bug",
                 category="coding",

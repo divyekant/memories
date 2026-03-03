@@ -13,7 +13,7 @@ from eval.models import (
     EvalReport,
     RubricResult,
     Scenario,
-    TestResult,
+    ScenarioResult,
 )
 from eval.scorer import LLM_JUDGE_TYPES, score_all_rubrics
 
@@ -37,7 +37,7 @@ class EvalRunner:
         self.executor = cc_executor or CCExecutor(timeout=config.cc_timeout)
         self.judge = judge
 
-    def run_scenario(self, scenario: Scenario) -> TestResult:
+    def run_scenario(self, scenario: Scenario) -> ScenarioResult:
         """Run a single scenario with and without memories.
 
         1. Clear memories (eval/ prefix)
@@ -47,7 +47,7 @@ class EvalRunner:
         5. Create isolated project (with memories)
         6. Run prompt with memories, score
         7. If judge exists, fill in LLM-judged rubrics (score==-1 sentinel)
-        8. Return TestResult with both scores
+        8. Return ScenarioResult with both scores
         """
         # --- Phase 1: Without memories ---
         self.memories.clear_by_prefix(EVAL_PREFIX)
@@ -58,7 +58,7 @@ class EvalRunner:
         finally:
             self.executor.cleanup_project(project_without)
 
-        score_without, _ = score_all_rubrics(scenario.expected, output_without)
+        score_without, details_without = score_all_rubrics(scenario.expected, output_without)
 
         # --- Phase 2: With memories ---
         self.memories.clear_by_prefix(EVAL_PREFIX)
@@ -74,21 +74,19 @@ class EvalRunner:
 
         score_with, details_with = score_all_rubrics(scenario.expected, output_with)
 
-        # --- Phase 3: LLM judge for pending rubrics ---
+        # --- Phase 3: LLM judge for pending rubrics (both outputs) ---
         if self.judge:
-            resolved: list[RubricResult] = []
-            for i, detail in enumerate(details_with):
-                if detail.score < 0 and detail.rubric_type in LLM_JUDGE_TYPES:
-                    judged = self.judge.evaluate(
-                        scenario.expected[i], scenario.prompt, output_with
-                    )
-                    resolved.append(judged)
-                else:
-                    resolved.append(detail)
-            details_with = resolved
+            details_without = self._resolve_judge_rubrics(
+                details_without, scenario, output_without
+            )
+            score_without = self._weighted_avg(details_without)
+
+            details_with = self._resolve_judge_rubrics(
+                details_with, scenario, output_with
+            )
             score_with = self._weighted_avg(details_with)
 
-        return TestResult(
+        return ScenarioResult(
             scenario_id=scenario.id,
             scenario_name=scenario.name,
             category=scenario.category,
@@ -104,6 +102,21 @@ class EvalRunner:
         results = [self.run_scenario(s) for s in scenarios]
         return self._aggregate(results)
 
+    def _resolve_judge_rubrics(
+        self, details: list[RubricResult], scenario: Scenario, output: str
+    ) -> list[RubricResult]:
+        """Replace sentinel-scored rubrics with LLM judge evaluations."""
+        resolved: list[RubricResult] = []
+        for i, detail in enumerate(details):
+            if detail.score < 0 and detail.rubric_type in LLM_JUDGE_TYPES:
+                judged = self.judge.evaluate(
+                    scenario.expected[i], scenario.prompt, output
+                )
+                resolved.append(judged)
+            else:
+                resolved.append(detail)
+        return resolved
+
     def _weighted_avg(self, details: list[RubricResult]) -> float:
         """Weighted average of scored rubrics (score >= 0)."""
         scored = [d for d in details if d.score >= 0]
@@ -114,7 +127,7 @@ class EvalRunner:
             return 0.0
         return sum(d.score * d.weight for d in scored) / total_weight
 
-    def _aggregate(self, results: list[TestResult]) -> EvalReport:
+    def _aggregate(self, results: list[ScenarioResult]) -> EvalReport:
         """Aggregate results into category scores and overall scores using config weights."""
         if not results:
             return EvalReport(
@@ -122,7 +135,7 @@ class EvalRunner:
             )
 
         # Group by category
-        by_category: dict[str, list[TestResult]] = {}
+        by_category: dict[str, list[ScenarioResult]] = {}
         for r in results:
             by_category.setdefault(r.category, []).append(r)
 

@@ -57,7 +57,7 @@ class RubricResult(BaseModel):
     reasoning: str = ""
 
 
-class TestResult(BaseModel):
+class ScenarioResult(BaseModel):
     scenario_id: str
     scenario_name: str
     category: str
@@ -86,4 +86,4 @@ class EvalReport(BaseModel):
     overall_without_memory: float = 0.0
     overall_efficacy_delta: float = 0.0
     categories: dict[str, CategoryResult] = Field(default_factory=dict)
-    tests: list[TestResult] = Field(default_factory=list)
+    tests: list[ScenarioResult] = Field(default_factory=list)

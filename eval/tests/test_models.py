@@ -1,6 +1,6 @@
 import pytest
 import yaml
-from eval.models import Scenario, Rubric, MemorySeed, EvalConfig, TestResult, EvalReport
+from eval.models import Scenario, Rubric, MemorySeed, EvalConfig, ScenarioResult, EvalReport
 
 
 class TestRubric:
@@ -103,9 +103,9 @@ category_weights:
         assert c.cc_timeout == 120
 
 
-class TestTestResult:
+class TestScenarioResult:
     def test_efficacy_delta(self):
-        r = TestResult(
+        r = ScenarioResult(
             scenario_id="coding-001", scenario_name="Fix bug",
             category="coding",
             score_with_memory=0.85, score_without_memory=0.40,

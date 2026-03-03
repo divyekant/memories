@@ -14,7 +14,7 @@ from eval.models import (
     Rubric,
     RubricResult,
     Scenario,
-    TestResult,
+    ScenarioResult,
 )
 from eval.runner import EvalRunner
 
@@ -76,7 +76,7 @@ class TestRunSingleScenario:
 
         result = runner.run_scenario(scenario)
 
-        assert isinstance(result, TestResult)
+        assert isinstance(result, ScenarioResult)
         assert result.score_with_memory > result.score_without_memory
         assert result.efficacy_delta > 0
 
@@ -324,7 +324,7 @@ class TestAggregate:
         """Aggregate results for a single category."""
         runner = EvalRunner(config=config)
         results = [
-            TestResult(
+            ScenarioResult(
                 scenario_id="coding-001",
                 scenario_name="Fix bug",
                 category="coding",
@@ -334,7 +334,7 @@ class TestAggregate:
                 output_without_memory="dunno",
                 rubric_details=[],
             ),
-            TestResult(
+            ScenarioResult(
                 scenario_id="coding-002",
                 scenario_name="Add feature",
                 category="coding",
@@ -359,7 +359,7 @@ class TestAggregate:
         """Aggregate results across multiple categories with config weights."""
         runner = EvalRunner(config=config)
         results = [
-            TestResult(
+            ScenarioResult(
                 scenario_id="coding-001",
                 scenario_name="Fix bug",
                 category="coding",
@@ -369,7 +369,7 @@ class TestAggregate:
                 output_without_memory="dunno",
                 rubric_details=[],
             ),
-            TestResult(
+            ScenarioResult(
                 scenario_id="recall-001",
                 scenario_name="Recall decision",
                 category="recall",
@@ -401,7 +401,7 @@ class TestAggregate:
         """Timestamp should be a valid ISO format string."""
         runner = EvalRunner(config=config)
         results = [
-            TestResult(
+            ScenarioResult(
                 scenario_id="coding-001",
                 scenario_name="Fix bug",
                 category="coding",
