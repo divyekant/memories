@@ -29,12 +29,13 @@ class CCExecutor:
         """Create temp dir as isolated CC project.
 
         No CLAUDE.md, no .claude/ dir.
-        If with_memories=True and mcp_server_path set, writes .mcp.json
-        to enable Memories MCP.
+        If with_memories=True, stores MCP config JSON string for use
+        with --strict-mcp-config at runtime.
         """
         project_dir = tempfile.mkdtemp(prefix="cc_eval_")
 
         if with_memories and self.mcp_server_path:
+            # Write marker so run_prompt knows to include MCP
             mcp_config = {
                 "mcpServers": {
                     "memories": {
@@ -57,83 +58,37 @@ class CCExecutor:
         """Remove temp project dir."""
         shutil.rmtree(project_dir, ignore_errors=True)
 
-    def _create_clean_home(self) -> str:
-        """Create temp HOME with Claude config but no MCP servers.
-
-        Copies ~/.claude.json and ~/.claude/ with MCP configs neutralized:
-        - ~/.claude.json: mcpServers key removed
-        - ~/.claude/.mcp.json: overwritten with empty mcpServers
-        - ~/.claude/settings.json: mcpServers key removed
-        - All other config files and directories copied as-is
-        - Large data dirs (debug, file-history, paste-cache) skipped
-
-        Does NOT modify the user's real HOME — only the subprocess sees this.
-        """
-        real_home = os.environ.get("HOME", "")
-        clean_home = tempfile.mkdtemp(prefix="cc_eval_home_")
-
-        # Copy ~/.claude.json without mcpServers
-        claude_json = os.path.join(real_home, ".claude.json")
-        if os.path.exists(claude_json):
-            with open(claude_json) as f:
-                config = json.load(f)
-            config.pop("mcpServers", None)
-            with open(os.path.join(clean_home, ".claude.json"), "w") as f:
-                json.dump(config, f, indent=2)
-
-        # Copy ~/.claude/ directory, neutralizing MCP configs
-        claude_dir = os.path.join(real_home, ".claude")
-        clean_claude_dir = os.path.join(clean_home, ".claude")
-        # Skip large data dirs not needed for claude -p
-        skip_dirs = {"debug", "file-history", "paste-cache", "backups",
-                     "downloads", "plans", "projects"}
-        if os.path.isdir(claude_dir):
-            os.makedirs(clean_claude_dir, exist_ok=True)
-            for name in os.listdir(claude_dir):
-                src = os.path.join(claude_dir, name)
-                dst = os.path.join(clean_claude_dir, name)
-                if os.path.isdir(src):
-                    if name not in skip_dirs:
-                        shutil.copytree(src, dst, dirs_exist_ok=True)
-                elif os.path.isfile(src):
-                    if name == "history.jsonl":
-                        continue  # large, not needed
-                    shutil.copy2(src, dst)
-
-            # Overwrite .mcp.json with empty MCP config
-            with open(os.path.join(clean_claude_dir, ".mcp.json"), "w") as f:
-                json.dump({"mcpServers": {}}, f)
-
-            # Strip mcpServers from settings.json if present
-            settings = os.path.join(clean_claude_dir, "settings.json")
-            if os.path.exists(settings):
-                with open(settings) as f:
-                    sconfig = json.load(f)
-                if "mcpServers" in sconfig:
-                    sconfig.pop("mcpServers")
-                    with open(settings, "w") as f:
-                        json.dump(sconfig, f, indent=2)
-
-        return clean_home
-
     def run_prompt(self, prompt: str, project_dir: str) -> str:
-        """Run prompt via claude -p with isolated HOME (no global MCP).
+        """Run prompt via claude -p with strict MCP isolation.
 
-        Uses a temp HOME stripped of MCP server config so only the
-        project-level .mcp.json (if any) provides MCP access.
-        The user's real HOME is never modified.
+        Uses --strict-mcp-config to override ALL MCP configurations:
+        - If .mcp.json exists in project_dir (with-memory run):
+          loads that config exclusively
+        - If no .mcp.json (without-memory run):
+          passes empty config — no MCP servers available at all
         """
-        cmd = ["claude", "--dangerously-skip-permissions", "-p", prompt]
+        mcp_path = os.path.join(project_dir, ".mcp.json")
+        if os.path.exists(mcp_path):
+            mcp_arg = mcp_path
+        else:
+            mcp_arg = json.dumps({"mcpServers": {}})
+
+        cmd = [
+            "claude",
+            "--dangerously-skip-permissions",
+            "--strict-mcp-config",
+            "--mcp-config", mcp_arg,
+            "-p", prompt,
+        ]
         # Strip env vars that cause Claude Code to detect nesting
         env = {
             k: v
             for k, v in os.environ.items()
             if not k.startswith("CLAUDE_") and k != "MCP_CONTEXT"
         }
-        real_home = os.environ.get("HOME", "")
-        clean_home = self._create_clean_home()
-        env["PATH"] = os.environ.get("PATH", f"{real_home}/.local/bin:/usr/local/bin:/usr/bin:/bin")
-        env["HOME"] = clean_home
+        home = os.environ.get("HOME", "")
+        env["PATH"] = os.environ.get("PATH", f"{home}/.local/bin:/usr/local/bin:/usr/bin:/bin")
+        env["HOME"] = home
         try:
             result = subprocess.run(
                 cmd,
@@ -155,5 +110,3 @@ class CCExecutor:
             return f"[TIMEOUT] Claude Code timed out after {self.timeout}s"
         except FileNotFoundError:
             return "[ERROR] Claude Code CLI not found. Ensure 'claude' is on PATH."
-        finally:
-            shutil.rmtree(clean_home, ignore_errors=True)

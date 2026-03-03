@@ -61,27 +61,38 @@ class TestCreateIsolatedProject:
         finally:
             executor.cleanup_project(project_dir)
 
-    def test_clean_home_strips_mcp_servers(self, executor, tmp_path, monkeypatch):
-        """_create_clean_home copies claude config but removes mcpServers."""
-        fake_real_home = str(tmp_path)
-        monkeypatch.setenv("HOME", fake_real_home)
 
-        # Create a fake ~/.claude.json with mcpServers
-        config = {
-            "apiKey": "sk-test",
-            "mcpServers": {"memories": {"command": "node", "args": ["server.js"]}},
-        }
-        with open(os.path.join(fake_real_home, ".claude.json"), "w") as f:
-            json.dump(config, f)
-
-        clean_home = executor._create_clean_home()
+class TestStrictMcpConfig:
+    @patch("eval.cc_executor.subprocess.run")
+    def test_without_memory_uses_empty_mcp(self, mock_run, executor):
+        """Without-memory runs pass --strict-mcp-config with empty JSON."""
+        mock_run.return_value = MagicMock(stdout="response")
+        project_dir = executor.create_isolated_project(with_memories=False)
         try:
-            with open(os.path.join(clean_home, ".claude.json")) as f:
-                clean_config = json.load(f)
-            assert "apiKey" in clean_config
-            assert "mcpServers" not in clean_config
+            executor.run_prompt("test", project_dir)
+            cmd = mock_run.call_args[0][0]
+            assert "--strict-mcp-config" in cmd
+            mcp_idx = cmd.index("--mcp-config")
+            mcp_arg = cmd[mcp_idx + 1]
+            config = json.loads(mcp_arg)
+            assert config == {"mcpServers": {}}
         finally:
-            shutil.rmtree(clean_home, ignore_errors=True)
+            executor.cleanup_project(project_dir)
+
+    @patch("eval.cc_executor.subprocess.run")
+    def test_with_memory_uses_mcp_file(self, mock_run, executor):
+        """With-memory runs pass --strict-mcp-config with .mcp.json path."""
+        mock_run.return_value = MagicMock(stdout="response")
+        project_dir = executor.create_isolated_project(with_memories=True)
+        try:
+            executor.run_prompt("test", project_dir)
+            cmd = mock_run.call_args[0][0]
+            assert "--strict-mcp-config" in cmd
+            mcp_idx = cmd.index("--mcp-config")
+            mcp_arg = cmd[mcp_idx + 1]
+            assert mcp_arg.endswith(".mcp.json")
+        finally:
+            executor.cleanup_project(project_dir)
 
 
 class TestRunPrompt:
