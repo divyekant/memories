@@ -64,10 +64,7 @@ class CCExecutor:
         On timeout returns '[TIMEOUT]...' message.
         On FileNotFoundError returns '[ERROR] Claude Code CLI not found...'
         """
-        cmd = [
-            "claude", "--dangerously-skip-permissions",
-            "-p", prompt, "--project", project_dir, "--no-input",
-        ]
+        cmd = ["claude", "--dangerously-skip-permissions", "-p", prompt]
         # Strip env vars that cause Claude Code to detect nesting
         env = {
             k: v
