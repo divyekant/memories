@@ -39,7 +39,7 @@ fi
 
 echo "=== Memories Efficacy Eval ==="
 echo "Memories: http://localhost:8900 (healthy)"
-echo "API Key:  ${MEMORIES_API_KEY:+set}${MEMORIES_API_KEY:-NOT SET}"
+if [[ -n "${MEMORIES_API_KEY:-}" ]]; then echo "API Key:  [set]"; else echo "API Key:  NOT SET"; fi
 echo "MCP Path: ${EVAL_MCP_SERVER_PATH:-not set}"
 echo "Args:     $*"
 echo ""

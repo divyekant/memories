@@ -1,10 +1,13 @@
 """Claude Code executor with isolated project environments."""
 
 import json
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
+
+logger = logging.getLogger("eval.cc")
 
 
 class CCExecutor:
@@ -61,15 +64,19 @@ class CCExecutor:
         On timeout returns '[TIMEOUT]...' message.
         On FileNotFoundError returns '[ERROR] Claude Code CLI not found...'
         """
-        cmd = ["claude", "-p", prompt, "--project", project_dir, "--no-input"]
+        cmd = [
+            "claude", "--dangerously-skip-permissions",
+            "-p", prompt, "--project", project_dir, "--no-input",
+        ]
         # Strip env vars that cause Claude Code to detect nesting
         env = {
             k: v
             for k, v in os.environ.items()
             if not k.startswith("CLAUDE_") and k != "MCP_CONTEXT"
         }
-        env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin")
-        env["HOME"] = os.environ.get("HOME", "")
+        home = os.environ.get("HOME", "")
+        env["PATH"] = os.environ.get("PATH", f"{home}/.local/bin:/usr/local/bin:/usr/bin:/bin")
+        env["HOME"] = home
         try:
             result = subprocess.run(
                 cmd,
@@ -79,7 +86,14 @@ class CCExecutor:
                 cwd=project_dir,
                 env=env,
             )
-            return result.stdout
+            output = result.stdout.strip()
+            logger.debug("claude exit=%d stdout=%d chars stderr=%d chars",
+                         result.returncode, len(output), len(result.stderr or ""))
+            if result.stderr:
+                logger.debug("stderr: %s", result.stderr[:500])
+            if not output and result.stderr:
+                return f"[STDERR] {result.stderr.strip()}"
+            return output
         except subprocess.TimeoutExpired:
             return f"[TIMEOUT] Claude Code timed out after {self.timeout}s"
         except FileNotFoundError:
