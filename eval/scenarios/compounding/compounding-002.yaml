@@ -1,0 +1,20 @@
+id: compounding-002
+category: compounding
+name: "Synthesize auth format and error code to diagnose API error"
+description: "Agent must combine API key format (vtk_test_) with error code (VTIS-4032) to diagnose sandbox-on-production issue."
+memories:
+  - text: "Voltis API keys use prefix 'vtk_live_' for production and 'vtk_test_' for sandbox. Sandbox keys work on all endpoints except those that trigger external side effects (sending emails, processing payments, generating invoices)."
+    source: eval/compounding-002
+  - text: "Voltis error code VTIS-4032 means 'sandbox key used on restricted endpoint'. Returned when a vtk_test_ prefixed API key calls a production-only endpoint. Fix: use a vtk_live_ key, or remove the endpoint from config/restricted_endpoints.yaml."
+    source: eval/compounding-002
+prompt: "A developer integrating with the Voltis API is getting error VTIS-4032 when calling POST /api/invoices/send. What's wrong?"
+expected:
+  - type: contains
+    value: "vtk_test_"
+    weight: 0.4
+  - type: contains
+    value: "sandbox"
+    weight: 0.3
+  - type: contains
+    value: "vtk_live_"
+    weight: 0.3

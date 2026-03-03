@@ -1,0 +1,12 @@
+id: coding-003
+category: coding
+name: "Use project-specific test fixture"
+description: "Agent must recommend the custom 'hvt_client' fixture — an abbreviated internal name that cannot be derived from 'Voltis'."
+memories:
+  - text: "Voltis test convention: Always use the 'hvt_client' pytest fixture for API endpoint tests, never the standard FastAPI TestClient directly. The hvt_client fixture auto-configures multi-tenant context, injects test API keys, and seeds the rate limiter. Tests using bare TestClient pass locally but fail in CI because tenant_id is missing."
+    source: eval/coding-003
+prompt: "I'm writing pytest tests for a new Voltis API endpoint. How should I set up the test client?"
+expected:
+  - type: contains
+    value: "hvt_client"
+    weight: 1.0

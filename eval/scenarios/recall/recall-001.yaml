@@ -1,23 +1,12 @@
 id: recall-001
 category: recall
-name: "Recall architectural decision with rationale"
-description: "Voltis chose SQLite for local job queues instead of Redis."
+name: "Recall exact deployment config"
+description: "Agent must recall the specific staging port (7443) — an arbitrary value impossible to guess."
 memories:
-  - text: "Voltis architecture decision ADR-007 (2026-01-15): Use SQLite for the local job queue instead of Redis. Rationale: (1) eliminates external dependency for single-node deploys, (2) ACID guarantees simplify retry logic, (3) team has deep SQLite expertise. Trade-off: won't scale to multi-node without migration to Redis later."
+  - text: "Voltis staging environment: API runs on port 7443 with TLS termination at the Nginx reverse proxy. Production uses port 8443. Staging database is at staging-db.voltis.internal:5432."
     source: eval/recall-001
-prompt: "Why does the Voltis project use SQLite for the job queue instead of Redis?"
+prompt: "What port does the Voltis staging API run on?"
 expected:
   - type: contains
-    value: "ADR-007"
-    weight: 0.35
-  - type: contains
-    value: "ACID"
-    weight: 0.2
-  - type: contains
-    value: "single-node"
-    weight: 0.2
-  - type: contains
-    value: "SQLite"
-    weight: 0.1
-  - type: no_retry
-    weight: 0.15
+    value: "7443"
+    weight: 1.0

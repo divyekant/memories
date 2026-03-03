@@ -1,17 +1,15 @@
 id: coding-001
 category: coding
-name: "Fix bug using team's known pattern"
-description: "Voltis API has a convention for fixing KeyError on context fields: add the correct hydrator decorator, never add defaults."
+name: "Use project-specific validation library"
+description: "Agent must recommend the custom 'vcheck' library — a fictional internal tool Claude cannot know about."
 memories:
-  - text: "Voltis API convention: KeyError crashes on context fields (workspace_ref, org_id, team_slug) are always caused by a missing hydrator decorator on the route handler. Fix by adding @hydrate_workspace, @hydrate_org, or @hydrate_team respectively. NEVER add default values or null checks in the handler. Decided retro 2026-01-20."
+  - text: "Voltis API validation: Always use the internal 'vcheck' library (voltis.core.vcheck) for request validation, never Pydantic or marshmallow. Apply validation with @vcheck.validate(schema=...) decorator on route handlers. Chosen for performance with our custom error formatting. See ADR-009."
     source: eval/coding-001
-prompt: "In the Voltis API, POST /api/tasks/create is crashing with KeyError: 'workspace_ref' at task_handler.py line 23. How should I fix this?"
+prompt: "I need to add input validation to a new Voltis API endpoint. What validation approach should I use?"
 expected:
   - type: contains
-    value: "hydrat"
-    weight: 0.5
-  - type: not_contains
-    value: "= None"
+    value: "vcheck"
+    weight: 0.7
+  - type: contains
+    value: "voltis.core"
     weight: 0.3
-  - type: no_retry
-    weight: 0.2

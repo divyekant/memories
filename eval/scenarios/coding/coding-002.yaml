@@ -1,20 +1,18 @@
 id: coding-002
 category: coding
-name: "Avoid known broken dependency"
-description: "voltis-cache >= 3.0 breaks connection pooling. Team pins to 2.x."
+name: "Apply critical migration flag"
+description: "Agent must recall the exact --lock-timeout=5000 flag — a specific value impossible to derive."
 memories:
-  - text: "CRITICAL: Do NOT upgrade voltis-cache beyond 2.9.x. Version 3.0+ rewrote the connection pooler and breaks our custom pool adapters. See incident report INC-2026-0042. Pin to voltis-cache>=2.8,<3.0."
+  - text: "CRITICAL: Voltis migration 047_add_invoice_index must be run with --lock-timeout=5000 flag. Without this flag, it acquires an ACCESS EXCLUSIVE lock on the invoices table (12M+ rows) causing a full outage. Discovered during 23-minute outage on 2026-02-14 (postmortem PM-2026-003)."
     source: eval/coding-002
-prompt: "I'm seeing slow cache performance in the Voltis API. Someone suggested upgrading voltis-cache to the latest version (3.2). Should I do that?"
+prompt: "I need to run Voltis database migration 047_add_invoice_index in production. Anything I should know?"
 expected:
   - type: contains
-    value: "INC-2026-0042"
+    value: "lock-timeout"
+    weight: 0.4
+  - type: contains
+    value: "5000"
     weight: 0.3
   - type: contains
-    value: "<3.0"
+    value: "PM-2026-003"
     weight: 0.3
-  - type: not_contains
-    value: "upgrade to 3"
-    weight: 0.2
-  - type: no_retry
-    weight: 0.2

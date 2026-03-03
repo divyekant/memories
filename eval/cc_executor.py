@@ -35,7 +35,6 @@ class CCExecutor:
         project_dir = tempfile.mkdtemp(prefix="cc_eval_")
 
         if with_memories and self.mcp_server_path:
-            # Write marker so run_prompt knows to include MCP
             mcp_config = {
                 "mcpServers": {
                     "memories": {
@@ -55,8 +54,45 @@ class CCExecutor:
         return project_dir
 
     def cleanup_project(self, project_dir: str) -> None:
-        """Remove temp project dir."""
+        """Remove temp project dir and its Claude Code auto-memory."""
         shutil.rmtree(project_dir, ignore_errors=True)
+        self._cleanup_auto_memory(project_dir)
+
+    def _cleanup_auto_memory(self, project_dir: str) -> None:
+        """Remove Claude Code auto-memory for a project dir.
+
+        Claude Code stores per-project context in ~/.claude/projects/<mangled-path>/.
+        The mangled path is the absolute path with / replaced by - .
+        """
+        abs_path = os.path.realpath(project_dir)
+        mangled = "-" + abs_path.strip("/").replace("/", "-")
+        auto_memory_dir = os.path.join(
+            os.environ.get("HOME", ""), ".claude", "projects", mangled
+        )
+        if os.path.isdir(auto_memory_dir):
+            shutil.rmtree(auto_memory_dir, ignore_errors=True)
+            logger.debug("Cleaned auto-memory: %s", auto_memory_dir)
+
+    @staticmethod
+    def cleanup_stale_auto_memory() -> None:
+        """Remove all stale cc_eval auto-memory from ~/.claude/projects/.
+
+        Call at eval startup to purge leftover auto-memory from prior runs.
+        Claude Code mangles paths: underscores become hyphens, so we match both
+        'cc_eval' and 'cc-eval' patterns.
+        """
+        projects_dir = os.path.join(
+            os.environ.get("HOME", ""), ".claude", "projects"
+        )
+        if not os.path.isdir(projects_dir):
+            return
+        count = 0
+        for entry in os.listdir(projects_dir):
+            if "cc_eval" in entry or "cc-eval" in entry:
+                shutil.rmtree(os.path.join(projects_dir, entry), ignore_errors=True)
+                count += 1
+        if count:
+            logger.info("Cleaned %d stale cc_eval auto-memory dirs", count)
 
     def run_prompt(self, prompt: str, project_dir: str) -> str:
         """Run prompt via claude -p with strict MCP isolation.

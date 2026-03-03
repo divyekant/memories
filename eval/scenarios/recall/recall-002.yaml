@@ -1,17 +1,12 @@
 id: recall-002
 category: recall
-name: "Recall user preference"
-description: "Developer prefers uv over pip for Voltis."
+name: "Recall internal naming convention"
+description: "Agent must recall the custom 'Vx' prefix for background job classes — completely arbitrary."
 memories:
-  - text: "Voltis project preference: Always use 'uv' for package management, never pip or pip-tools. The project uses uv.lock for deterministic installs. Set by lead developer, 2026-02-01."
+  - text: "Voltis team convention: all background job classes must be prefixed with 'Vx' (e.g., VxEmailSender, VxReportGenerator, VxDataSync). Decided in retro 2026-01-20 to distinguish Voltis jobs from third-party library jobs in the shared Sidekiq dashboard."
     source: eval/recall-002
-prompt: "I need to add the 'httpx' library to the Voltis project. How do I install it?"
+prompt: "I'm adding a new background job to process CSV imports in the Voltis project. What should I name the job class?"
 expected:
   - type: contains
-    value: "uv add"
-    weight: 0.5
-  - type: not_contains
-    value: "pip install"
-    weight: 0.3
-  - type: no_retry
-    weight: 0.2
+    value: "Vx"
+    weight: 1.0

@@ -1,0 +1,18 @@
+id: recall-003
+category: recall
+name: "Recall custom error response format"
+description: "Agent must recall the VTIS- error code prefix — an arbitrary project-specific format."
+memories:
+  - text: "Voltis API error responses must use this exact format: {\"error\": {\"code\": \"VTIS-<number>\", \"message\": \"<human readable>\", \"request_id\": \"<uuid>\"}}. The VTIS prefix is mandatory per ADR-012. Never use RFC 7807 Problem Details or bare HTTP error bodies."
+    source: eval/recall-003
+prompt: "How should I format error responses for a new Voltis API endpoint?"
+expected:
+  - type: contains
+    value: "VTIS-"
+    weight: 0.5
+  - type: contains
+    value: "request_id"
+    weight: 0.3
+  - type: contains
+    value: "ADR-012"
+    weight: 0.2

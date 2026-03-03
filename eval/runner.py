@@ -99,6 +99,8 @@ class EvalRunner:
 
     def run_all(self, scenarios: list[Scenario]) -> EvalReport:
         """Run all scenarios, aggregate into EvalReport."""
+        # Purge stale auto-memory from prior eval runs
+        CCExecutor.cleanup_stale_auto_memory()
         results = [self.run_scenario(s) for s in scenarios]
         return self._aggregate(results)
 

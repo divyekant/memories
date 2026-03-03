@@ -4,13 +4,16 @@
 
 ### Added
 - Efficacy eval harness (`eval/`) — A/B benchmarking framework that measures how much Memories improves AI assistant performance
-- YAML-defined test scenarios across coding, recall, and compounding categories
-- Deterministic rubric scoring (contains, not_contains, no_retry) and LLM-as-judge for non-deterministic rubrics
-- Claude Code programmatic mode (`claude -p`) executor with full project isolation
+- 11 YAML-defined test scenarios across coding (4), recall (4), and compounding (3) categories
+- Deterministic rubric scoring (`contains` with weighted rubrics) and optional LLM-as-judge
+- Claude Code executor with `--strict-mcp-config` for full MCP isolation
+- Auto-memory cleanup: purges stale `~/.claude/projects/cc_eval*` dirs at startup and per-run
 - Configurable category-weighted aggregation (coding 40%, recall 35%, compounding 25%)
 - JSON report output and human-readable summary formatter
 - CLI entrypoint: `python -m eval [--category] [--scenario] [-v]`
-- 77 tests covering all eval components
+- Shell wrapper: `./eval/run.sh` with health checks and environment setup
+- 82 tests covering all eval components
+- Baseline results: overall delta **+0.86** (with=1.00, without=0.14)
 
 ## [1.0.0] - 2026-02-28
 

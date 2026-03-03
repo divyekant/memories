@@ -1,0 +1,23 @@
+id: compounding-003
+category: compounding
+name: "Synthesize deployment limits and cache behavior to diagnose OOM"
+description: "Agent must combine systemd memory limit with unbounded session cache to explain OOM kills."
+memories:
+  - text: "Voltis runs on a single 32GB Hetzner VPS. The Python process has a systemd MemoryMax=24G limit. The remaining 8GB is reserved for SQLite, OS, and monitoring."
+    source: eval/compounding-003
+  - text: "Voltis caches active user sessions in a process-level dict (voltis.core.session_cache). Sessions are ~8KB each and cached for the lifetime of the process — there is no TTL or max-size eviction. Written as a quick fix during the January launch rush, never revisited."
+    source: eval/compounding-003
+prompt: "The Voltis API process keeps getting OOM-killed by systemd every few days. Memory usage grows linearly from ~8GB at startup. What's the most likely cause?"
+expected:
+  - type: contains
+    value: "session"
+    weight: 0.3
+  - type: contains
+    value: "TTL"
+    weight: 0.3
+  - type: contains
+    value: "8KB"
+    weight: 0.2
+  - type: contains
+    value: "24"
+    weight: 0.2

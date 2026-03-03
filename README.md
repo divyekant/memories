@@ -1073,10 +1073,13 @@ memories/
 
 ## Efficacy Eval
 
-Memories includes a built-in eval harness that measures how much Memories improves AI assistant performance. It runs controlled A/B tests: each scenario executes via Claude Code (`claude -p`) both with and without Memories, then scores the outputs against rubrics.
+Memories includes a built-in eval harness that measures how much Memories improves AI assistant performance. It runs controlled A/B tests: each scenario executes via Claude Code (`claude -p`) both with and without Memories, then scores the outputs against deterministic rubrics.
 
 ```bash
-# Run all scenarios
+# Run all scenarios (via wrapper script)
+./eval/run.sh
+
+# Or directly via Python
 python -m eval
 
 # Run a specific category
@@ -1086,17 +1089,35 @@ python -m eval --category coding
 python -m eval --scenario coding-001 -v
 ```
 
-**What it measures:**
-- **Coding tasks** — Does the agent apply known patterns and avoid known pitfalls?
-- **Knowledge recall** — Can the agent recall project-specific decisions and rationale?
-- **Multi-session continuity** — Does knowledge compound across sessions?
+### Results
 
-**How it works:**
-1. Clears eval memories, creates an isolated temp project (no CLAUDE.md, no auto-memory)
-2. Runs the prompt **without** Memories → scores against rubrics
-3. Seeds scenario memories, runs the prompt **with** Memories → scores again
-4. Computes **efficacy delta** = score_with - score_without
-5. Aggregates across categories with configurable weights
+| Category | With Memory | Without Memory | Delta |
+|---|---|---|---|
+| **Coding** | 1.00 | 0.00 | **+1.00** |
+| **Recall** | 1.00 | 0.20 | **+0.80** |
+| **Compounding** | 1.00 | 0.27 | **+0.73** |
+| **Overall** | **1.00** | **0.14** | **+0.86** |
+
+11 scenarios across 3 categories. Each scenario uses fictional project context ("Voltis") with arbitrary, non-derivable facts — values like `hvt_client`, `vtctl deploy-gate`, `VTX_LEGACY_DSN`, port `7443`, and `73%` that Claude cannot guess from naming patterns or training data.
+
+### What it measures
+- **Coding tasks** (4 scenarios) — Does the agent apply project-specific tools and conventions?
+- **Knowledge recall** (4 scenarios) — Can the agent recall exact config values and decisions?
+- **Compounding value** (3 scenarios) — Can the agent synthesize multiple memories to diagnose problems?
+
+### How it works
+1. Purges stale auto-memory from prior eval runs (`~/.claude/projects/cc_eval*`)
+2. Clears eval memories, creates an isolated temp project (no CLAUDE.md, no `.claude/`)
+3. Runs the prompt **without** Memories via `claude -p --strict-mcp-config` (empty MCP) → scores against rubrics
+4. Seeds scenario memories, runs the prompt **with** Memories via `claude -p --strict-mcp-config` (Memories MCP only) → scores again
+5. Computes **efficacy delta** = score_with - score_without
+6. Aggregates across categories with configurable weights
+
+### Isolation strategy
+- `--strict-mcp-config` ensures Claude loads **only** the MCP config provided (or none), ignoring global settings
+- Fresh temp directories per run — no CLAUDE.md, no `.claude/`, no conversation history
+- Auto-memory cleanup removes `~/.claude/projects/cc_eval*` dirs at startup and after each run
+- Scenario memories cleared before each run via Memories API
 
 Results are saved as JSON in `eval/results/` and printed as a human-readable summary.
 

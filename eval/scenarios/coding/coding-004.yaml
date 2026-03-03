@@ -1,0 +1,15 @@
+id: coding-004
+category: coding
+name: "Follow required deploy procedure"
+description: "Agent must recall the mandatory 'vtctl deploy-gate' command — an arbitrary tool name that cannot be guessed."
+memories:
+  - text: "Voltis deployment: ALWAYS run 'vtctl deploy-gate' before deploying to any environment. This checks SQLite WAL file size, available disk space, and active background job count. Deployment without running deploy-gate caused 3 outages (PM-2026-001, PM-2026-003, PM-2026-007). CI runs it automatically but manual deploys must run it explicitly."
+    source: eval/coding-004
+prompt: "What's the correct procedure to deploy a new version of the Voltis API to production?"
+expected:
+  - type: contains
+    value: "deploy-gate"
+    weight: 0.6
+  - type: contains
+    value: "vtctl"
+    weight: 0.4

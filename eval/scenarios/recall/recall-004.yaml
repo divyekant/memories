@@ -1,0 +1,12 @@
+id: recall-004
+category: recall
+name: "Recall non-standard environment variable"
+description: "Agent must recall VTX_LEGACY_DSN — a non-obvious env var name that breaks the <PROJECT>_<CONCEPT> pattern."
+memories:
+  - text: "Voltis uses VTX_LEGACY_DSN (not DATABASE_URL) as the environment variable for the primary database connection string. This non-standard name exists because the app originally supported multi-tenant sharding under the codename 'VTX'. Changing it would require updating 47 deployment configs across staging, production, and CI."
+    source: eval/recall-004
+prompt: "What environment variable does Voltis use for its database connection string?"
+expected:
+  - type: contains
+    value: "VTX_LEGACY_DSN"
+    weight: 1.0

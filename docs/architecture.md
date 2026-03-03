@@ -181,49 +181,66 @@ Local-only is the default. If exposed publicly, additionally use HTTPS + strong 
 
 ## 8) Efficacy Eval Harness
 
-The `eval/` package provides a benchmark framework to measure how much Memories improves AI assistant performance.
+The `eval/` package provides a benchmark framework to measure how much Memories improves AI assistant performance. Baseline results: **+0.86 delta** (with=1.00, without=0.14) across 11 scenarios.
 
 ### Architecture
 
 ```text
-eval/__main__.py (CLI)
+eval/__main__.py (CLI) / eval/run.sh (wrapper)
   -> EvalRunner (runner.py)
-     -> MemoriesClient (memories_client.py) — seed/clear test memories
-     -> CCExecutor (cc_executor.py)         — run prompts via `claude -p`
-     -> scorer.py                           — deterministic rubric scoring
-     -> LLMJudge (judge.py)                — non-deterministic rubric scoring
-  -> reporter.py                            — JSON + summary output
+     -> CCExecutor.cleanup_stale_auto_memory()  — purge prior run artifacts
+     -> MemoriesClient (memories_client.py)      — seed/clear test memories
+     -> CCExecutor (cc_executor.py)              — run prompts via `claude -p`
+     -> scorer.py                                — deterministic rubric scoring
+     -> LLMJudge (judge.py)                     — optional LLM-judged scoring
+  -> reporter.py                                 — JSON + summary output
 ```
 
 ### Per-scenario flow
 
-1. **Clear** eval memories (`eval/` prefix)
-2. **Create isolated project** — temp dir, no CLAUDE.md, no `.claude/`, no MCP config
-3. **Run prompt without Memories** via `claude -p --no-input`
-4. **Score** output against rubrics
-5. **Clear** again, **seed** scenario-specific memories
-6. **Create isolated project** — same temp dir pattern but with `.mcp.json` pointing to Memories
-7. **Run prompt with Memories**
-8. **Score** again, optionally resolve LLM-judged rubrics
-9. Compute **efficacy delta** = score_with - score_without
+1. **Purge** stale auto-memory dirs (`~/.claude/projects/cc_eval*`) at startup
+2. **Clear** eval memories (`eval/` prefix)
+3. **Create isolated project** — temp dir, no CLAUDE.md, no `.claude/`, empty MCP config
+4. **Run prompt without Memories** via `claude -p --strict-mcp-config` (empty MCP)
+5. **Score** output against rubrics
+6. **Clear** again, **seed** scenario-specific memories
+7. **Create isolated project** — same pattern but `.mcp.json` pointing to Memories MCP
+8. **Run prompt with Memories** via `claude -p --strict-mcp-config` (Memories MCP only)
+9. **Score** again, optionally resolve LLM-judged rubrics
+10. Compute **efficacy delta** = score_with - score_without
 
 ### Isolation strategy
 
-Each run creates a fresh temp directory with:
-- No `CLAUDE.md` (prevents prior instructions leaking)
-- No `.claude/` directory (prevents auto-memory contamination)
-- No conversation history (fresh `claude -p` invocation)
-- Conditional `.mcp.json` only for "with memory" runs
+Isolation operates at three levels:
+
+1. **MCP isolation** — `--strict-mcp-config` ensures Claude loads **only** the provided MCP config, ignoring global `~/.claude/settings.json` and project `.mcp.json` files
+2. **Project isolation** — Fresh temp directory per run with no CLAUDE.md, no `.claude/`, no conversation history
+3. **Auto-memory cleanup** — `cleanup_stale_auto_memory()` removes `~/.claude/projects/` dirs matching `cc_eval` or `cc-eval` (Claude Code mangles underscores to hyphens in path names)
 
 ### Scenario design
 
-Test scenarios use fictional project context (e.g., "Voltis") with team-specific, non-generalizable decisions to avoid confounds from Claude's training data knowledge.
+Test scenarios use a fictional project context ("Voltis") with **arbitrary, non-derivable facts** that Claude cannot guess from naming conventions or training data:
+
+- **Arbitrary values**: port `7443`, prefix `Vx`, error codes `VTIS-`, threshold `73%`
+- **Fictional tools**: `vcheck` library, `vtctl deploy-gate`, `hvt_client` fixture
+- **Non-standard names**: `VTX_LEGACY_DSN` (not `DATABASE_URL`), `shed mode` (not `throttle`)
+
+This design principle ensures zero-delta scenarios are true negatives — if Claude scores well without memories, the scenario is too easy and needs tightening.
 
 ### Scoring
 
-- **Deterministic rubrics**: `contains`, `not_contains`, `no_retry` — scored programmatically
-- **LLM-judged rubrics**: `correct_fix`, `recall_accuracy`, `match_convention` — scored by LLM-as-judge with structured JSON output
+- **Deterministic rubrics**: `contains` with per-rubric weights — scored programmatically
+- **LLM-judged rubrics**: optional, scored by LLM-as-judge with structured JSON output
 - **Aggregation**: weighted average per category, category-weighted overall score
+
+### Baseline results
+
+| Category | With | Without | Delta | Scenarios |
+|---|---|---|---|---|
+| Coding | 1.00 | 0.00 | +1.00 | 4 |
+| Recall | 1.00 | 0.20 | +0.80 | 4 |
+| Compounding | 1.00 | 0.27 | +0.73 | 3 |
+| **Overall** | **1.00** | **0.14** | **+0.86** | **11** |
 
 ---
 

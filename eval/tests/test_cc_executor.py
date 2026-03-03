@@ -22,6 +22,14 @@ def executor():
     )
 
 
+@pytest.fixture
+def fake_claude_home(tmp_path):
+    """Create a fake ~/.claude/projects/ for auto-memory tests."""
+    projects_dir = tmp_path / ".claude" / "projects"
+    projects_dir.mkdir(parents=True)
+    return tmp_path
+
+
 class TestCreateIsolatedProject:
     def test_creates_temp_project(self, executor):
         """Dir exists, no CLAUDE.md, no .claude/ inside."""
@@ -137,3 +145,52 @@ class TestRunPrompt:
             assert "not found" in result.lower()
         finally:
             executor.cleanup_project(project_dir)
+
+
+class TestAutoMemoryCleanup:
+    def test_cleanup_project_removes_auto_memory(self, executor, fake_claude_home):
+        """cleanup_project removes the corresponding ~/.claude/projects/ entry."""
+        project_dir = executor.create_isolated_project(with_memories=False)
+        # Simulate Claude Code creating an auto-memory dir
+        abs_path = os.path.realpath(project_dir)
+        mangled = "-" + abs_path.strip("/").replace("/", "-")
+        auto_memory_dir = fake_claude_home / ".claude" / "projects" / mangled
+        auto_memory_dir.mkdir(parents=True)
+        (auto_memory_dir / "MEMORY.md").write_text("stale voltis knowledge")
+
+        with patch.dict(os.environ, {"HOME": str(fake_claude_home)}):
+            executor.cleanup_project(project_dir)
+
+        assert not auto_memory_dir.exists()
+        assert not os.path.isdir(project_dir)
+
+    def test_cleanup_stale_auto_memory(self, fake_claude_home):
+        """cleanup_stale_auto_memory removes both cc_eval_ and cc-eval- entries."""
+        projects_dir = fake_claude_home / ".claude" / "projects"
+        # Create stale dirs — both underscore (raw) and hyphen (mangled) variants
+        for name in [
+            "-private-var-folders-T-cc_eval_abc123",  # underscore variant
+            "-private-var-folders-T-cc-eval-def456",  # hyphen variant (mangled)
+            "-private-var-folders-T-cc-eval-ghi789",  # hyphen variant
+        ]:
+            d = projects_dir / name
+            d.mkdir()
+            (d / "MEMORY.md").write_text("stale")
+        # Create a non-eval dir that should NOT be deleted
+        keep = projects_dir / "-Users-divyekant-Projects-memories"
+        keep.mkdir()
+        (keep / "MEMORY.md").write_text("keep this")
+
+        with patch.dict(os.environ, {"HOME": str(fake_claude_home)}):
+            CCExecutor.cleanup_stale_auto_memory()
+
+        # All stale dirs gone (both variants)
+        remaining = os.listdir(projects_dir)
+        assert not any("cc_eval" in r or "cc-eval" in r for r in remaining)
+        # Non-eval dir preserved
+        assert keep.exists()
+
+    def test_cleanup_stale_no_projects_dir(self, tmp_path):
+        """cleanup_stale_auto_memory handles missing ~/.claude/projects/ gracefully."""
+        with patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            CCExecutor.cleanup_stale_auto_memory()  # should not raise
