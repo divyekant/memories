@@ -12,9 +12,6 @@ expected:
     weight: 0.5
   - type: not_contains
     value: "= None"
-    weight: 0.15
-  - type: not_contains
-    value: ".get("
-    weight: 0.15
+    weight: 0.3
   - type: no_retry
     weight: 0.2

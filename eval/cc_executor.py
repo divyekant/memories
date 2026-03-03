@@ -28,9 +28,10 @@ class CCExecutor:
     def create_isolated_project(self, with_memories: bool = False) -> str:
         """Create temp dir as isolated CC project.
 
-        No CLAUDE.md, no .claude/ dir.
-        If with_memories=True and mcp_server_path set, writes .mcp.json
-        to enable Memories MCP.
+        Always writes .mcp.json:
+        - with_memories=True: configures the Memories MCP server
+        - with_memories=False: disables the memories server by name so
+          any global config is overridden and the run is truly memory-free
         """
         project_dir = tempfile.mkdtemp(prefix="cc_eval_")
 
@@ -47,9 +48,19 @@ class CCExecutor:
                     }
                 }
             }
-            mcp_path = os.path.join(project_dir, ".mcp.json")
-            with open(mcp_path, "w") as f:
-                json.dump(mcp_config, f, indent=2)
+        else:
+            # Disable memories MCP by name — overrides any global config
+            mcp_config = {
+                "mcpServers": {
+                    "memories": {
+                        "disabled": True,
+                    }
+                }
+            }
+
+        mcp_path = os.path.join(project_dir, ".mcp.json")
+        with open(mcp_path, "w") as f:
+            json.dump(mcp_config, f, indent=2)
 
         return project_dir
 

@@ -52,11 +52,15 @@ class TestCreateIsolatedProject:
         finally:
             executor.cleanup_project(project_dir)
 
-    def test_no_mcp_config_without_memories(self, executor):
-        """with_memories=False produces no .mcp.json."""
+    def test_mcp_disabled_without_memories(self, executor):
+        """with_memories=False writes .mcp.json that disables memories server."""
         project_dir = executor.create_isolated_project(with_memories=False)
         try:
-            assert not os.path.exists(os.path.join(project_dir, ".mcp.json"))
+            mcp_path = os.path.join(project_dir, ".mcp.json")
+            assert os.path.exists(mcp_path)
+            with open(mcp_path) as f:
+                config = json.load(f)
+            assert config["mcpServers"]["memories"]["disabled"] is True
         finally:
             executor.cleanup_project(project_dir)
 
