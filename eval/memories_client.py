@@ -34,7 +34,7 @@ class MemoriesClient:
             json={"source_prefix": prefix},
         )
         resp.raise_for_status()
-        return resp.json()["deleted"]
+        return resp.json().get("deleted_count", resp.json().get("deleted", 0))
 
     def health_check(self) -> bool:
         """GET /health/ready. Returns True if 200, False on any error."""

@@ -62,6 +62,14 @@ class CCExecutor:
         On FileNotFoundError returns '[ERROR] Claude Code CLI not found...'
         """
         cmd = ["claude", "-p", prompt, "--project", project_dir, "--no-input"]
+        # Strip env vars that cause Claude Code to detect nesting
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("CLAUDE_") and k != "MCP_CONTEXT"
+        }
+        env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin")
+        env["HOME"] = os.environ.get("HOME", "")
         try:
             result = subprocess.run(
                 cmd,
@@ -69,6 +77,7 @@ class CCExecutor:
                 text=True,
                 timeout=self.timeout,
                 cwd=project_dir,
+                env=env,
             )
             return result.stdout
         except subprocess.TimeoutExpired:
