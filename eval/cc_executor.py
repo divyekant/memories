@@ -28,10 +28,9 @@ class CCExecutor:
     def create_isolated_project(self, with_memories: bool = False) -> str:
         """Create temp dir as isolated CC project.
 
-        Always writes .mcp.json:
-        - with_memories=True: configures the Memories MCP server
-        - with_memories=False: disables the memories server by name so
-          any global config is overridden and the run is truly memory-free
+        No CLAUDE.md, no .claude/ dir.
+        If with_memories=True and mcp_server_path set, writes .mcp.json
+        to enable Memories MCP.
         """
         project_dir = tempfile.mkdtemp(prefix="cc_eval_")
 
@@ -48,19 +47,9 @@ class CCExecutor:
                     }
                 }
             }
-        else:
-            # Disable memories MCP by name — overrides any global config
-            mcp_config = {
-                "mcpServers": {
-                    "memories": {
-                        "disabled": True,
-                    }
-                }
-            }
-
-        mcp_path = os.path.join(project_dir, ".mcp.json")
-        with open(mcp_path, "w") as f:
-            json.dump(mcp_config, f, indent=2)
+            mcp_path = os.path.join(project_dir, ".mcp.json")
+            with open(mcp_path, "w") as f:
+                json.dump(mcp_config, f, indent=2)
 
         return project_dir
 
@@ -68,12 +57,43 @@ class CCExecutor:
         """Remove temp project dir."""
         shutil.rmtree(project_dir, ignore_errors=True)
 
-    def run_prompt(self, prompt: str, project_dir: str) -> str:
-        """Run prompt via claude -p.
+    def _create_clean_home(self) -> str:
+        """Create temp HOME with Claude config but no MCP servers.
 
-        Returns stdout on success.
-        On timeout returns '[TIMEOUT]...' message.
-        On FileNotFoundError returns '[ERROR] Claude Code CLI not found...'
+        Copies ~/.claude.json (stripping mcpServers) and essential
+        ~/.claude/ config files so claude -p can authenticate.
+        Does NOT modify the user's real HOME — only the subprocess sees this.
+        """
+        real_home = os.environ.get("HOME", "")
+        clean_home = tempfile.mkdtemp(prefix="cc_eval_home_")
+
+        # Copy ~/.claude.json without mcpServers
+        claude_json = os.path.join(real_home, ".claude.json")
+        if os.path.exists(claude_json):
+            with open(claude_json) as f:
+                config = json.load(f)
+            config.pop("mcpServers", None)
+            with open(os.path.join(clean_home, ".claude.json"), "w") as f:
+                json.dump(config, f, indent=2)
+
+        # Copy essential ~/.claude/ files for auth/settings
+        claude_dir = os.path.join(real_home, ".claude")
+        clean_claude_dir = os.path.join(clean_home, ".claude")
+        if os.path.isdir(claude_dir):
+            os.makedirs(clean_claude_dir, exist_ok=True)
+            for name in os.listdir(claude_dir):
+                src = os.path.join(claude_dir, name)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(clean_claude_dir, name))
+
+        return clean_home
+
+    def run_prompt(self, prompt: str, project_dir: str) -> str:
+        """Run prompt via claude -p with isolated HOME (no global MCP).
+
+        Uses a temp HOME stripped of MCP server config so only the
+        project-level .mcp.json (if any) provides MCP access.
+        The user's real HOME is never modified.
         """
         cmd = ["claude", "--dangerously-skip-permissions", "-p", prompt]
         # Strip env vars that cause Claude Code to detect nesting
@@ -82,9 +102,10 @@ class CCExecutor:
             for k, v in os.environ.items()
             if not k.startswith("CLAUDE_") and k != "MCP_CONTEXT"
         }
-        home = os.environ.get("HOME", "")
-        env["PATH"] = os.environ.get("PATH", f"{home}/.local/bin:/usr/local/bin:/usr/bin:/bin")
-        env["HOME"] = home
+        real_home = os.environ.get("HOME", "")
+        clean_home = self._create_clean_home()
+        env["PATH"] = os.environ.get("PATH", f"{real_home}/.local/bin:/usr/local/bin:/usr/bin:/bin")
+        env["HOME"] = clean_home
         try:
             result = subprocess.run(
                 cmd,
@@ -106,3 +127,5 @@ class CCExecutor:
             return f"[TIMEOUT] Claude Code timed out after {self.timeout}s"
         except FileNotFoundError:
             return "[ERROR] Claude Code CLI not found. Ensure 'claude' is on PATH."
+        finally:
+            shutil.rmtree(clean_home, ignore_errors=True)

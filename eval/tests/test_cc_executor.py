@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from unittest.mock import patch, MagicMock
@@ -52,17 +53,35 @@ class TestCreateIsolatedProject:
         finally:
             executor.cleanup_project(project_dir)
 
-    def test_mcp_disabled_without_memories(self, executor):
-        """with_memories=False writes .mcp.json that disables memories server."""
+    def test_no_mcp_config_without_memories(self, executor):
+        """with_memories=False produces no .mcp.json."""
         project_dir = executor.create_isolated_project(with_memories=False)
         try:
-            mcp_path = os.path.join(project_dir, ".mcp.json")
-            assert os.path.exists(mcp_path)
-            with open(mcp_path) as f:
-                config = json.load(f)
-            assert config["mcpServers"]["memories"]["disabled"] is True
+            assert not os.path.exists(os.path.join(project_dir, ".mcp.json"))
         finally:
             executor.cleanup_project(project_dir)
+
+    def test_clean_home_strips_mcp_servers(self, executor, tmp_path, monkeypatch):
+        """_create_clean_home copies claude config but removes mcpServers."""
+        fake_real_home = str(tmp_path)
+        monkeypatch.setenv("HOME", fake_real_home)
+
+        # Create a fake ~/.claude.json with mcpServers
+        config = {
+            "apiKey": "sk-test",
+            "mcpServers": {"memories": {"command": "node", "args": ["server.js"]}},
+        }
+        with open(os.path.join(fake_real_home, ".claude.json"), "w") as f:
+            json.dump(config, f)
+
+        clean_home = executor._create_clean_home()
+        try:
+            with open(os.path.join(clean_home, ".claude.json")) as f:
+                clean_config = json.load(f)
+            assert "apiKey" in clean_config
+            assert "mcpServers" not in clean_config
+        finally:
+            shutil.rmtree(clean_home, ignore_errors=True)
 
 
 class TestRunPrompt:
