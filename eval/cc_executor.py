@@ -60,8 +60,13 @@ class CCExecutor:
     def _create_clean_home(self) -> str:
         """Create temp HOME with Claude config but no MCP servers.
 
-        Copies ~/.claude.json (stripping mcpServers) and essential
-        ~/.claude/ config files so claude -p can authenticate.
+        Copies ~/.claude.json and ~/.claude/ with MCP configs neutralized:
+        - ~/.claude.json: mcpServers key removed
+        - ~/.claude/.mcp.json: overwritten with empty mcpServers
+        - ~/.claude/settings.json: mcpServers key removed
+        - All other config files and directories copied as-is
+        - Large data dirs (debug, file-history, paste-cache) skipped
+
         Does NOT modify the user's real HOME — only the subprocess sees this.
         """
         real_home = os.environ.get("HOME", "")
@@ -76,20 +81,38 @@ class CCExecutor:
             with open(os.path.join(clean_home, ".claude.json"), "w") as f:
                 json.dump(config, f, indent=2)
 
-        # Create ~/.claude/ with only non-MCP config files
-        # Skip .mcp.json, settings.json (may contain mcpServers), and
-        # large/unnecessary files (history, debug, caches)
+        # Copy ~/.claude/ directory, neutralizing MCP configs
         claude_dir = os.path.join(real_home, ".claude")
         clean_claude_dir = os.path.join(clean_home, ".claude")
-        skip_files = {".mcp.json", "settings.json", "history.jsonl"}
+        # Skip large data dirs not needed for claude -p
+        skip_dirs = {"debug", "file-history", "paste-cache", "backups",
+                     "downloads", "plans", "projects"}
         if os.path.isdir(claude_dir):
             os.makedirs(clean_claude_dir, exist_ok=True)
             for name in os.listdir(claude_dir):
-                if name in skip_files:
-                    continue
                 src = os.path.join(claude_dir, name)
-                if os.path.isfile(src) and os.path.getsize(src) < 50_000:
-                    shutil.copy2(src, os.path.join(clean_claude_dir, name))
+                dst = os.path.join(clean_claude_dir, name)
+                if os.path.isdir(src):
+                    if name not in skip_dirs:
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
+                elif os.path.isfile(src):
+                    if name == "history.jsonl":
+                        continue  # large, not needed
+                    shutil.copy2(src, dst)
+
+            # Overwrite .mcp.json with empty MCP config
+            with open(os.path.join(clean_claude_dir, ".mcp.json"), "w") as f:
+                json.dump({"mcpServers": {}}, f)
+
+            # Strip mcpServers from settings.json if present
+            settings = os.path.join(clean_claude_dir, "settings.json")
+            if os.path.exists(settings):
+                with open(settings) as f:
+                    sconfig = json.load(f)
+                if "mcpServers" in sconfig:
+                    sconfig.pop("mcpServers")
+                    with open(settings, "w") as f:
+                        json.dump(sconfig, f, indent=2)
 
         return clean_home
 
