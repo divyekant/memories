@@ -42,7 +42,7 @@ class Scenario(BaseModel):
 
 class EvalConfig(BaseModel):
     memories_url: str = "http://localhost:8900"
-    memories_api_key: str = "test-key"
+    memories_api_key: str = ""
     judge_provider: str = "anthropic"
     cc_timeout: int = 120
     category_weights: dict[str, float] = Field(
@@ -80,10 +80,10 @@ class CategoryResult(BaseModel):
 
 
 class EvalReport(BaseModel):
-    version: str = "1.0"
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    version: str = "1.0.0"
+    timestamp: str = ""
     overall_with_memory: float = 0.0
     overall_without_memory: float = 0.0
-    overall_delta: float = 0.0
+    overall_efficacy_delta: float = 0.0
     categories: dict[str, CategoryResult] = Field(default_factory=dict)
     tests: list[TestResult] = Field(default_factory=list)
