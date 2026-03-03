@@ -8,8 +8,10 @@ memories:
 prompt: "I need to add the 'httpx' library to the Voltis project. How do I install it?"
 expected:
   - type: contains
-    value: "uv"
-    weight: 0.7
+    value: "uv add"
+    weight: 0.5
   - type: not_contains
     value: "pip install"
     weight: 0.3
+  - type: no_retry
+    weight: 0.2

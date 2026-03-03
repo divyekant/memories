@@ -1,10 +1,22 @@
 id: compounding-001
 category: compounding
-name: "Search quality at scale"
-description: "Tests whether search retrieval quality holds up as memory store grows. Runner seeds memories externally."
-memories: []
-prompt: "What is the Voltis API rate limit for free-tier users?"
+name: "Synthesize multiple memories to diagnose issue"
+description: "Agent must combine rate-limit knowledge with burst-mode behavior to diagnose latency spikes."
+memories:
+  - text: "Voltis API rate limits: Free tier = 1,200 requests/minute, Pro tier = 12,000 requests/minute, Enterprise = unlimited. Rate limit headers: X-RateLimit-Remaining, X-RateLimit-Reset."
+    source: eval/compounding-001
+  - text: "Voltis free-tier accounts are automatically throttled to burst mode after exceeding 80% of their rate limit. In burst mode, responses include X-Burst-Mode: true header and latency increases by ~200ms. To avoid burst mode, implement client-side rate smoothing."
+    source: eval/compounding-001
+prompt: "A Voltis free-tier user is complaining about intermittent 200ms latency spikes. Their app makes about 1,000 requests per minute. What's likely happening?"
 expected:
   - type: contains
-    value: "100 requests per minute"
-    weight: 1.0
+    value: "1,200"
+    weight: 0.25
+  - type: contains
+    value: "burst"
+    weight: 0.3
+  - type: contains
+    value: "80%"
+    weight: 0.25
+  - type: no_retry
+    weight: 0.2

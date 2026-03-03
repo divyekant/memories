@@ -7,6 +7,17 @@ memories:
     source: eval/recall-001
 prompt: "Why does the Voltis project use SQLite for the job queue instead of Redis?"
 expected:
-  - type: recall_accuracy
-    description: "Agent accurately recalls: (1) it was a deliberate decision (ADR-007), (2) at least 2 of the 3 rationale points, (3) acknowledges the trade-off"
-    weight: 1.0
+  - type: contains
+    value: "ADR-007"
+    weight: 0.35
+  - type: contains
+    value: "ACID"
+    weight: 0.2
+  - type: contains
+    value: "single-node"
+    weight: 0.2
+  - type: contains
+    value: "SQLite"
+    weight: 0.1
+  - type: no_retry
+    weight: 0.15

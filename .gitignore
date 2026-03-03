@@ -44,6 +44,9 @@ node_modules/
 .coverage
 htmlcov/
 
+# Eval results (generated, may contain raw LLM outputs)
+eval/results/
+
 # Local git worktrees
 .worktrees/
 

@@ -1,17 +1,20 @@
 id: coding-001
 category: coding
 name: "Fix bug using team's known pattern"
-description: "The Voltis API has a recurring bug where handlers crash with AttributeError when tenant_id is missing. The team fix is TenantGuard middleware."
+description: "Voltis API has a convention for fixing KeyError on context fields: add the correct hydrator decorator, never add defaults."
 memories:
-  - text: "Voltis API: AttributeError crashes in handlers are always caused by missing tenant_id in request context. The fix is to add TenantGuard middleware to the route, not to add null checks in the handler. Decided in team retro 2026-01-20."
+  - text: "Voltis API convention: KeyError crashes on context fields (workspace_ref, org_id, team_slug) are always caused by a missing hydrator decorator on the route handler. Fix by adding @hydrate_workspace, @hydrate_org, or @hydrate_team respectively. NEVER add default values or null checks in the handler. Decided retro 2026-01-20."
     source: eval/coding-001
-prompt: "In the Voltis task management API, the endpoint POST /api/tasks/create is crashing with AttributeError: 'NoneType' object has no attribute 'tenant_id' on line 47 of task_handler.py. How should I fix this?"
+prompt: "In the Voltis API, POST /api/tasks/create is crashing with KeyError: 'workspace_ref' at task_handler.py line 23. How should I fix this?"
 expected:
   - type: contains
-    value: "TenantGuard"
+    value: "hydrat"
     weight: 0.5
   - type: not_contains
-    value: "if tenant_id is None"
-    weight: 0.2
+    value: "= None"
+    weight: 0.15
+  - type: not_contains
+    value: ".get("
+    weight: 0.15
   - type: no_retry
-    weight: 0.3
+    weight: 0.2
