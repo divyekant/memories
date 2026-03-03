@@ -76,14 +76,19 @@ class CCExecutor:
             with open(os.path.join(clean_home, ".claude.json"), "w") as f:
                 json.dump(config, f, indent=2)
 
-        # Copy essential ~/.claude/ files for auth/settings
+        # Create ~/.claude/ with only non-MCP config files
+        # Skip .mcp.json, settings.json (may contain mcpServers), and
+        # large/unnecessary files (history, debug, caches)
         claude_dir = os.path.join(real_home, ".claude")
         clean_claude_dir = os.path.join(clean_home, ".claude")
+        skip_files = {".mcp.json", "settings.json", "history.jsonl"}
         if os.path.isdir(claude_dir):
             os.makedirs(clean_claude_dir, exist_ok=True)
             for name in os.listdir(claude_dir):
+                if name in skip_files:
+                    continue
                 src = os.path.join(claude_dir, name)
-                if os.path.isfile(src):
+                if os.path.isfile(src) and os.path.getsize(src) < 50_000:
                     shutil.copy2(src, os.path.join(clean_claude_dir, name))
 
         return clean_home
