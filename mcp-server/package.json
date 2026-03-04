@@ -1,7 +1,7 @@
 {
   "name": "memories-mcp",
-  "version": "2.0.0",
-  "description": "MCP server for Memories — semantic search, add, delete, browse",
+  "version": "2.1.0",
+  "description": "MCP server for Memories — semantic search, add, extract, delete, browse",
   "type": "module",
   "main": "index.js",
   "scripts": {

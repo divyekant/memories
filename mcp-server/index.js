@@ -261,6 +261,71 @@ server.tool(
   }
 );
 
+server.tool(
+  "memory_extract",
+  "Extract and store memories from conversation text using LLM-based AUDN (Add/Update/Delete/Noop). Costs ~$0.001 per call. Use when decisions change, deferred work completes, or rich conversation contains multiple facts worth remembering. Returns what was added, updated, deleted, or skipped.",
+  {
+    messages: z.string().min(1).describe("Conversation text to extract memories from"),
+    source: z.string().min(1).describe("Source identifier (e.g. 'claude-code/myapp')"),
+    context: z.enum(["stop", "pre_compact", "session_end"]).default("stop")
+      .describe("Extraction intensity: 'stop' (standard), 'pre_compact' (aggressive), 'session_end'"),
+  },
+  async ({ messages, source, context = "stop" }) => {
+    // Submit extraction job
+    const submitData = await memoriesRequest("/memory/extract", {
+      method: "POST",
+      body: JSON.stringify({ messages, source, context }),
+    });
+
+    const jobId = submitData.job_id;
+
+    // Poll until terminal state (exponential backoff: 200ms → 2s, 30s timeout)
+    let delay = 200;
+    const maxDelay = 2000;
+    const deadline = Date.now() + 30_000;
+    let jobState;
+
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, delay));
+      jobState = await memoriesRequest(`/memory/extract/${jobId}`);
+      if (jobState.status === "completed" || jobState.status === "failed") break;
+      delay = Math.min(delay * 2, maxDelay);
+    }
+
+    if (!jobState || (jobState.status !== "completed" && jobState.status !== "failed")) {
+      return {
+        content: [{ type: "text", text: `Extraction timed out (job ${jobId}). Check /memory/extract/${jobId} later.` }],
+      };
+    }
+
+    if (jobState.status === "failed") {
+      const err = jobState.result?.error || jobState.result?.error_message || "unknown error";
+      return {
+        content: [{ type: "text", text: `Extraction failed: ${err}` }],
+      };
+    }
+
+    // Format results
+    const r = jobState.result;
+    const noopCount = Math.max(0, r.extracted_count - r.stored_count - r.updated_count - r.deleted_count);
+    const lines = [];
+    lines.push(`Extracted ${r.extracted_count} facts: ${r.stored_count} added, ${r.updated_count} updated, ${r.deleted_count} deleted, ${noopCount} skipped`);
+
+    if (r.actions?.length) {
+      lines.push("");
+      for (const a of r.actions) {
+        if (a.action === "add") lines.push(`  + ADD: ${a.text}`);
+        else if (a.action === "update") lines.push(`  ~ UPDATE (was #${a.old_id}): ${a.text}`);
+        else if (a.action === "delete") lines.push(`  - DELETE #${a.old_id}`);
+        else if (a.action === "noop") lines.push(`  = SKIP (exists #${a.existing_id}): ${a.text}`);
+        else if (a.action === "error") lines.push(`  ! ERROR: ${a.text} — ${a.error}`);
+      }
+    }
+
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  }
+);
+
 // -- Start -------------------------------------------------------------------
 
 const transport = new StdioServerTransport();

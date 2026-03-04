@@ -20,12 +20,42 @@ This skill teaches you *when* and *how* to use it effectively. It complements �
 not replace — CC's built-in auto-memory (which handles project conventions passively) and
 session hooks (which provide baseline context at startup).
 
-Your job is the judgment layer: deciding what's worth storing, when to store it, and when
-to actively search for context that passive recall might have missed.
+Your job is the judgment layer: deciding what's worth storing, when to store it, when
+to actively search for context, and when to trigger lifecycle operations.
 
-## Two Responsibilities
+## Three Responsibilities
 
-### 1. Write — Capture at Natural Breakpoints
+### 1. Read — Proactive Recall
+
+This is where the skill makes the biggest difference. Without it, you only search when
+the user explicitly says "do you remember" — but most valuable recall opportunities
+don't come with that cue.
+
+**When to search (do this BEFORE asking questions or proposing solutions):**
+- When the user asks about a feature or system that might have prior context — even if
+  they don't reference a past session. "Add webhook support to the notifications service"
+  should trigger a search for any stored context about notifications, webhooks, or
+  related deferred work.
+- Before asking a clarifying question about project architecture or preferences
+- When picking up work in a domain where deferred tasks might exist
+- Before attempting something that feels like it might have failed before
+- When the user references a past decision or discussion you don't have context for
+- When passive startup recall feels insufficient for the current task
+
+**How to search:**
+- Use `memory_search` with natural language queries
+- Try 2-3 query angles if the first search doesn't find what you need
+- Search for deferred work: `"deferred TODO revisit later wip {project}"`
+- Search for past failures: `"failure fix gotcha {technology}"`
+- Search for decisions: `"decision chose selected approach {topic}"`
+- Search by domain: `"{project} {feature-area} architecture design"`
+
+**What to do with results:**
+- Surface relevant findings to the user before proposing solutions. If you find that
+  a feature was previously deferred pending a dependency, tell the user before diving in.
+- If no results found, proceed normally — but mention you checked if it's relevant context.
+
+### 2. Write — Capture at Natural Breakpoints
 
 Store memories when you encounter these moments during work:
 
@@ -58,35 +88,49 @@ Store memories when you encounter these moments during work:
 - Current task requests ("help me add a retry mechanism") — that's what you're doing
   right now, not something to remember
 
-### 2. Read — Proactive Recall
+#### Choosing the Right Tool
 
-This is where the skill makes the biggest difference. Without it, you only search when
-the user explicitly says "do you remember" — but most valuable recall opportunities
-don't come with that cue.
+You have two write paths — use the right one for the situation:
 
-**When to search (do this BEFORE asking questions or proposing solutions):**
-- When the user asks about a feature or system that might have prior context — even if
-  they don't reference a past session. "Add webhook support to the notifications service"
-  should trigger a search for any stored context about notifications, webhooks, or
-  related deferred work.
-- Before asking a clarifying question about project architecture or preferences
-- When picking up work in a domain where deferred tasks might exist
-- Before attempting something that feels like it might have failed before
-- When the user references a past decision or discussion you don't have context for
-- When passive startup recall feels insufficient for the current task
+| Situation | Tool | Cost | Why |
+|-----------|------|------|-----|
+| Single clear new fact, no prior context | `memory_add` | Free | Simple, fast, sufficient |
+| User says "remember X" (clear, novel) | `memory_add` | Free | Direct intent, no AUDN needed |
+| Decision changed or reversed | `memory_extract` | ~$0.001 | AUDN finds and updates the old memory |
+| Deferred work completed or updated | `memory_extract` | ~$0.001 | AUDN updates or deletes the wip/ entry |
+| Rich conversation, multiple facts | `memory_extract` | ~$0.001 | Server splits facts and handles each |
+| Contradiction found during recall | `memory_extract` | ~$0.001 | AUDN resolves old vs new |
+| Learning superseded by better fix | `memory_extract` | ~$0.001 | AUDN updates the old learning |
 
-**How to search:**
-- Use `memory_search` with natural language queries
-- Try 2-3 query angles if the first search doesn't find what you need
-- Search for deferred work: `"deferred TODO revisit later wip {project}"`
-- Search for past failures: `"failure fix gotcha {technology}"`
-- Search for decisions: `"decision chose selected approach {topic}"`
-- Search by domain: `"{project} {feature-area} architecture design"`
+**When using `memory_add`:** always check `memory_is_novel` first to prevent duplicates.
 
-**What to do with results:**
-- Surface relevant findings to the user before proposing solutions. If you find that
-  a feature was previously deferred pending a dependency, tell the user before diving in.
-- If no results found, proceed normally — but mention you checked if it's relevant context.
+**When using `memory_extract`:** skip the novelty check — AUDN handles dedup internally.
+Pass the relevant conversation chunk as `messages` and the appropriate source prefix.
+The server extracts facts, searches for similar existing memories, and decides per-fact
+whether to add, update, delete, or skip.
+
+### 3. Maintain — Lifecycle Management
+
+Memories aren't permanent records — they need maintenance as context evolves. Most
+maintenance happens automatically through `memory_extract`'s AUDN cycle, but some
+situations need direct action.
+
+**When to maintain directly:**
+- User says "forget this" or "don't remember that" → search for it with `memory_search`,
+  then delete by ID with `memory_delete`
+- Project sunset or namespace cleanup → `memory_delete_by_source` with the project prefix
+- Bulk cleanup of stale wip/ items → `memory_delete_by_source` with `wip/{project}`
+
+**When AUDN handles it for you:**
+- Decision reversed → `memory_extract` with the new context. AUDN sees the old decision
+  memory and the new contradicting fact, and issues an UPDATE (delete old + add new).
+- Deferred work done → `memory_extract` with the completion context. AUDN sees the
+  wip/ memory and the "completed" signal, and issues a DELETE.
+- Learning updated → `memory_extract` with the better fix. AUDN sees the old learning
+  and the improved version, and issues an UPDATE with `supersedes` metadata.
+
+Direct delete tools are for explicit user requests and bulk cleanup. For everything
+else, let `memory_extract` make the classification decision.
 
 ## How to Store
 
@@ -137,28 +181,35 @@ constraints before they can be designed.
 We talked about caching options and decided to go with Redis.
 ```
 
-### Before Storing
+### Before Storing (with `memory_add`)
 
 Always check novelty first:
 
 1. Call `memory_is_novel` with your candidate text
-2. If similar memory exists, either skip or update the existing one
+2. If similar memory exists, either skip or use `memory_extract` to update it
 3. If novel, store with appropriate source prefix
 
 This prevents duplicate memories from accumulating across sessions.
 
+When using `memory_extract`, skip this step — AUDN handles dedup internally.
+
 ### Multiple Decisions
 
 When the user makes several decisions in one message ("Next.js for frontend, tRPC for
-API, Drizzle for ORM"), store them as separate memories — one per decision. This makes
-each findable independently and avoids losing individual decisions in a combined blob.
+API, Drizzle for ORM"), use `memory_extract` with the full conversation chunk. The
+server will extract each fact separately and handle AUDN per-fact — more efficient
+than multiple `memory_add` calls and handles any superseded decisions automatically.
 
-Check novelty for each one, then store in parallel for efficiency.
+For simple cases (2 clear, novel facts), individual `memory_add` calls are fine.
 
 ## Integration with Other Systems
 
 - **Auto-memory** handles project conventions and patterns in local files — let it do its job
 - **Session hooks** provide baseline context at startup — don't duplicate that work
+- **Extraction hooks** (Stop, PreCompact, SessionEnd) already trigger `memory_extract`
+  via HTTP at lifecycle boundaries. The skill triggers extraction *within* a session at
+  natural breakpoints that hooks miss — like mid-conversation decision changes or
+  deferred work completions.
 - **Learning skill** captures failure-fix patterns — if both skills apply, the learning skill
   owns the detailed capture; you store a concise cross-reference
 - **Conductor** orchestrates skill sequencing — don't interfere with its flow

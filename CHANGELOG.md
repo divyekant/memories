@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `memory_extract` MCP tool — synchronous wrapper around async extraction API with internal polling and AUDN (Add/Update/Delete/Noop) lifecycle management
+
+### Changed
+- Memories skill v2: restructured from 2 to 3 responsibilities (Read, Write, Maintain)
+  - Write now uses hybrid approach: `memory_add` for simple facts, `memory_extract` for lifecycle operations
+  - New Maintain responsibility covers updates, deletes, and cleanup
+  - Decision table guides tool selection based on situation and cost
+
 ## [1.2.0] - 2026-03-04
 
 ### Added

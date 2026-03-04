@@ -70,7 +70,7 @@ Detailed docs:
 
 ### Claude Code (CLI)
 
-The MCP server gives Claude Code native `memory_search`, `memory_add`, `memory_delete`, `memory_delete_batch`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, and `memory_is_novel` tools.
+The MCP server gives Claude Code native `memory_search`, `memory_add`, `memory_extract`, `memory_delete`, `memory_delete_batch`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, and `memory_is_novel` tools.
 
 **Setup:**
 
@@ -202,7 +202,7 @@ MEMORIES_URL = "http://localhost:8900"
 MEMORIES_API_KEY = "your-api-key-here"
 ```
 
-3. Restart Codex. The `memory_search`, `memory_add`, `memory_delete`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, and other tools will be available.
+3. Restart Codex. The `memory_search`, `memory_add`, `memory_extract`, `memory_delete`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, and other tools will be available.
 
 **Automatic memory layer for Codex:**
 
@@ -647,6 +647,7 @@ When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools
 |------|-------------|
 | `memory_search` | Hybrid search (BM25 + vector). Default mode. |
 | `memory_add` | Store a memory with auto-dedup. |
+| `memory_extract` | LLM-based extraction with AUDN (Add/Update/Delete/Noop) from conversation text. |
 | `memory_delete` | Delete by ID. |
 | `memory_delete_batch` | Delete multiple IDs in one operation. |
 | `memory_delete_by_source` | Bulk delete all memories matching a source prefix. |
