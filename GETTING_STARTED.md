@@ -109,13 +109,13 @@ The Memories skill teaches Claude *when* to capture context and *when* to proact
 ln -s /path/to/memories/skills/memories ~/.claude/skills/memories
 ```
 
-**What it adds:**
-- Stores architectural decisions, deferred work, and non-obvious fixes at natural breakpoints
-- Proactively searches memories before asking clarifying questions or entering a domain with prior context
+**What it adds (three responsibilities):**
+- **Read**: Proactively searches memories before asking clarifying questions or entering a domain with prior context
+- **Write**: Hybrid approach — uses `memory_add` for simple facts, `memory_extract` for lifecycle operations (decision changes, deferred work completion, contradictions)
+- **Maintain**: Handles updates and deletes via AUDN, plus explicit cleanup with `memory_delete` / `memory_delete_by_source`
 - Enforces consistent source prefixes (`claude-code/{project}`, `learning/{project}`, `wip/{project}`)
-- Checks novelty before storing to prevent duplicates
 
-The skill does NOT replace hooks (passive baseline) or CC's built-in auto-memory. It complements them with active judgment about what's worth remembering.
+The skill does NOT replace hooks (passive baseline) or CC's built-in auto-memory. It complements them with active judgment about what's worth remembering and when to update or remove stale memories.
 
 ## 8) Where to go next
 

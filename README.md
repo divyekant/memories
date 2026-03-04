@@ -107,7 +107,7 @@ mkdir -p ~/.claude/skills/memories
 ln -s /path/to/memories/skills/memories ~/.claude/skills/memories
 ```
 
-The skill teaches Claude *when* to store (architectural decisions, deferred work, non-obvious fixes) and *when* to search (before asking clarifying questions, when entering a domain with prior context). It adds ~11% token overhead but improves memory discipline by ~43% in eval benchmarks.
+The skill teaches Claude three responsibilities: *when* to search (proactive recall), *when* and *how* to store (hybrid `memory_add` + `memory_extract`), and *when* to maintain (updates, deletes, cleanup via AUDN). It adds ~11% token overhead but improves memory discipline by ~43% in eval benchmarks.
 
 **Usage** (Claude Code will call these automatically when relevant):
 
