@@ -101,7 +101,23 @@ curl -X POST http://localhost:8900/search \
   -d '{"query":"TypeScript preferences","k":3,"hybrid":true}'
 ```
 
-## 7) Where to go next
+## 7) Install the Memories skill (Claude Code, optional)
+
+The Memories skill teaches Claude *when* to capture context and *when* to proactively search — the judgment layer that makes memory usage disciplined rather than ad-hoc.
+
+```bash
+ln -s /path/to/memories/skills/memories ~/.claude/skills/memories
+```
+
+**What it adds:**
+- Stores architectural decisions, deferred work, and non-obvious fixes at natural breakpoints
+- Proactively searches memories before asking clarifying questions or entering a domain with prior context
+- Enforces consistent source prefixes (`claude-code/{project}`, `learning/{project}`, `wip/{project}`)
+- Checks novelty before storing to prevent duplicates
+
+The skill does NOT replace hooks (passive baseline) or CC's built-in auto-memory. It complements them with active judgment about what's worth remembering.
+
+## 8) Where to go next
 
 - Full architecture: [`docs/architecture.md`](docs/architecture.md)
 - Decisions/tradeoffs: [`docs/decisions.md`](docs/decisions.md)

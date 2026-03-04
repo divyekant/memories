@@ -1,0 +1,167 @@
+---
+name: memories
+description: >-
+  Memory discipline for capturing and recalling important context across sessions
+  using Memories MCP. Use this skill whenever you make an architectural decision,
+  defer work for later, discover a non-obvious pattern or fix, or when the user
+  explicitly asks to remember something. Also use it when you're about to ask the
+  user a clarifying question or when entering a project domain where prior context
+  might exist — search memories first, the answer might already be stored. Triggers
+  on: "remember this", "store this", "save this for later", phase transitions,
+  post-decision moments, deferred work, implicit tech mentions, entering a new domain,
+  and before clarifying questions. Even if the user doesn't say "do you remember",
+  search proactively when the topic might have prior context.
+---
+
+# Memories
+
+You have access to a persistent, semantically searchable memory system via Memories MCP.
+This skill teaches you *when* and *how* to use it effectively. It complements — but does
+not replace — CC's built-in auto-memory (which handles project conventions passively) and
+session hooks (which provide baseline context at startup).
+
+Your job is the judgment layer: deciding what's worth storing, when to store it, and when
+to actively search for context that passive recall might have missed.
+
+## Two Responsibilities
+
+### 1. Write — Capture at Natural Breakpoints
+
+Store memories when you encounter these moments during work:
+
+**Hard triggers (always store):**
+- User explicitly says "remember this", "store this", "save for later", or similar
+- These bypass all judgment gates — capture immediately
+
+**Soft triggers (use judgment):**
+- An architectural decision was just made or confirmed — including *implicit* ones
+  where the user casually mentions a technology choice ("I've been using Postgres for
+  the user data") without formally deciding. If a future session would benefit from
+  knowing this, store it.
+- Work is being deferred ("we'll do this later", "parking this for now", "come back
+  to it next week"). Always capture *what* was deferred and *why* (what's blocking it).
+- You discovered a non-obvious fix, gotcha, or pattern. Store only the fix, not the
+  debugging journey that led to it.
+- A phase transition just happened (design -> implementation, debug -> fix)
+- A major commit just landed that changes how the project works
+- You're about to end a session with open threads
+- Multiple decisions in one message — store each decision as a separate memory so
+  they can be found independently. Don't combine three tech choices into one blob.
+
+**What NOT to store:**
+- Session-specific status ("currently working on X")
+- Generic knowledge Claude already knows
+- Anything that duplicates CLAUDE.md instructions
+- Intermediate debugging steps — the env var that didn't work, the logs you checked,
+  the error you saw along the way. Store only the resolution.
+- Information that will be stale by next session
+- Current task requests ("help me add a retry mechanism") — that's what you're doing
+  right now, not something to remember
+
+### 2. Read — Proactive Recall
+
+This is where the skill makes the biggest difference. Without it, you only search when
+the user explicitly says "do you remember" — but most valuable recall opportunities
+don't come with that cue.
+
+**When to search (do this BEFORE asking questions or proposing solutions):**
+- When the user asks about a feature or system that might have prior context — even if
+  they don't reference a past session. "Add webhook support to the notifications service"
+  should trigger a search for any stored context about notifications, webhooks, or
+  related deferred work.
+- Before asking a clarifying question about project architecture or preferences
+- When picking up work in a domain where deferred tasks might exist
+- Before attempting something that feels like it might have failed before
+- When the user references a past decision or discussion you don't have context for
+- When passive startup recall feels insufficient for the current task
+
+**How to search:**
+- Use `memory_search` with natural language queries
+- Try 2-3 query angles if the first search doesn't find what you need
+- Search for deferred work: `"deferred TODO revisit later wip {project}"`
+- Search for past failures: `"failure fix gotcha {technology}"`
+- Search for decisions: `"decision chose selected approach {topic}"`
+- Search by domain: `"{project} {feature-area} architecture design"`
+
+**What to do with results:**
+- Surface relevant findings to the user before proposing solutions. If you find that
+  a feature was previously deferred pending a dependency, tell the user before diving in.
+- If no results found, proceed normally — but mention you checked if it's relevant context.
+
+## How to Store
+
+### Source Prefix Convention
+
+Use consistent prefixes so memories can be found and cleaned up by scope:
+
+| Prefix | Use for |
+|--------|---------|
+| `claude-code/{project}` | Code decisions, architecture choices, project-specific context |
+| `learning/{project}` | Discovered patterns, gotchas, fixes, non-obvious behaviors |
+| `wip/{project}` | Deferred work, open threads, "revisit later" items |
+
+Never invent ad-hoc prefixes like `myapp/decisions` or `myapp/deployment`. Stick to
+these three categories — they enable reliable search and cleanup by scope.
+
+### Format
+
+Write memories that will be useful to a future Claude with zero context about the
+current session:
+
+- **Concise** — one to three sentences, focused on the actionable insight
+- **Self-contained** — include enough context to be useful without the original conversation
+- **Forward-looking** — what does a future session need to know?
+- **Include the why** — not just what was chosen, but why (especially rejection rationale)
+
+**Good:**
+```
+Selected Redis over Memcached for session caching because we need pub/sub
+for real-time invalidation. Config in services/cache/redis.yml.
+```
+
+**Good (implicit decision captured):**
+```
+myapp uses PostgreSQL for user data storage. Users table has an email
+column that needs indexing for search performance.
+```
+
+**Good (deferred work):**
+```
+Deferred: notification system design is parked until rate limiting is
+figured out. Rate limiting is a dependency — notifications need throughput
+constraints before they can be designed.
+```
+
+**Bad:**
+```
+We talked about caching options and decided to go with Redis.
+```
+
+### Before Storing
+
+Always check novelty first:
+
+1. Call `memory_is_novel` with your candidate text
+2. If similar memory exists, either skip or update the existing one
+3. If novel, store with appropriate source prefix
+
+This prevents duplicate memories from accumulating across sessions.
+
+### Multiple Decisions
+
+When the user makes several decisions in one message ("Next.js for frontend, tRPC for
+API, Drizzle for ORM"), store them as separate memories — one per decision. This makes
+each findable independently and avoids losing individual decisions in a combined blob.
+
+Check novelty for each one, then store in parallel for efficiency.
+
+## Integration with Other Systems
+
+- **Auto-memory** handles project conventions and patterns in local files — let it do its job
+- **Session hooks** provide baseline context at startup — don't duplicate that work
+- **Learning skill** captures failure-fix patterns — if both skills apply, the learning skill
+  owns the detailed capture; you store a concise cross-reference
+- **Conductor** orchestrates skill sequencing — don't interfere with its flow
+
+This skill activates at natural breakpoints *within* whatever workflow is running,
+not as a standalone phase.

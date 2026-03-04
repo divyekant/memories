@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Memories skill (`skills/memories/SKILL.md`) — Claude Code skill for disciplined memory capture and proactive recall
+  - Hard triggers: explicit "remember this" requests bypass judgment gates
+  - Soft triggers: architectural decisions (including implicit), deferred work, non-obvious fixes, phase transitions
+  - Proactive recall: searches memories before clarifying questions and when entering domains with prior context
+  - Source prefix convention: `claude-code/{project}`, `learning/{project}`, `wip/{project}`
+  - Eval results: +43.5% pass rate vs baseline across 8 scenarios, ~11% token overhead
+
 ## [1.1.0] - 2026-03-03
 
 ### Added

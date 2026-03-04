@@ -100,6 +100,15 @@ npm install
 
 3. Restart Claude Code. The tools are now available in every project.
 
+4. (Optional) Install the **Memories skill** for disciplined memory capture and proactive recall:
+
+```bash
+mkdir -p ~/.claude/skills/memories
+ln -s /path/to/memories/skills/memories ~/.claude/skills/memories
+```
+
+The skill teaches Claude *when* to store (architectural decisions, deferred work, non-obvious fixes) and *when* to search (before asking clarifying questions, when entering a domain with prior context). It adds ~11% token overhead but improves memory discipline by ~43% in eval benchmarks.
+
 **Usage** (Claude Code will call these automatically when relevant):
 
 - "Search my memory for authentication patterns"
@@ -1052,6 +1061,9 @@ memories/
     test_llm_extract.py   # Extraction pipeline tests
     test_extract_api.py   # API endpoint tests
     test_web_ui.py        # Web UI route/static tests
+  skills/
+    memories/
+      SKILL.md            # Claude Code skill for memory discipline
   eval/
     __main__.py           # CLI entrypoint (python -m eval)
     models.py             # Pydantic data models (Scenario, EvalReport, etc.)
