@@ -1,7 +1,7 @@
 ---
 name: memories
-version: 2.1.0
-description: Memories-based semantic memory search via Docker service. Fast (<20ms), local, with hybrid BM25+vector search, auto-dedup, and automatic backups. Includes OpenClaw QMD bridge for unified memory_search integration.
+version: 2.2.0
+description: Memories-based semantic memory with hybrid BM25+vector search. Three responsibilities — proactive recall, hybrid write (extract for lifecycle, add for simple facts), and maintain (updates, deletes, cleanup via AUDN). Includes OpenClaw QMD bridge for unified memory_search integration.
 metadata:
   clawdbot:
     emoji: "🧠"
@@ -686,37 +686,100 @@ memory_extract_memories "conversation text" "openclaw/my-project" "session_end"
 # }
 ```
 
-## Typical Workflows
+## Memory Discipline — Three Responsibilities
 
-### Daily Use (Automatic)
+Your job is the judgment layer: deciding what's worth storing, when to search, and when
+to trigger lifecycle operations. This complements automatic extraction (heartbeats) with
+active judgment about what matters.
 
-At the start of every task, recall relevant project context:
+### 1. Read — Proactive Recall
+
+Search memories BEFORE asking questions or proposing solutions — not just when explicitly
+asked to remember something.
+
+**When to search:**
+- When the user asks about a feature that might have prior context
+- Before asking a clarifying question about project architecture or preferences
+- When picking up work in a domain where deferred tasks might exist
+- Before attempting something that might have failed before
+
 ```bash
-memory_recall_memories
+memory_search_memories "notifications webhooks" 5
+memory_search_memories "deferred TODO revisit wip" 5
+memory_search_memories "failure fix gotcha postgres" 5
 ```
 
-When you need to search for something specific:
+Surface relevant findings to the user before proposing solutions. If nothing found,
+proceed normally but mention you checked.
+
+### 2. Write — Capture at Natural Breakpoints
+
+**Hard triggers (always store):**
+- User explicitly says "remember this", "store this", "save for later"
+
+**Soft triggers (use judgment):**
+- Architectural decision made (including implicit ones like "I use Postgres")
+- Work deferred ("we'll do this later", "parking this")
+- Non-obvious fix or gotcha discovered
+- Phase transition (design → implementation, debug → fix)
+- Multiple decisions in one message
+
+**What NOT to store:** session status, generic knowledge, debugging steps (only the fix),
+information stale by next session.
+
+#### Choosing the Right Tool
+
+| Situation | Tool | Cost | Why |
+|-----------|------|------|-----|
+| Single clear new fact | `memory_add_memories` | Free | Simple, fast |
+| User says "remember X" (novel) | `memory_add_memories` | Free | Direct intent |
+| Decision changed/reversed | `memory_extract_memories` | ~$0.001 | AUDN updates old memory |
+| Deferred work completed | `memory_extract_memories` | ~$0.001 | AUDN deletes wip entry |
+| Rich conversation, multiple facts | `memory_extract_memories` | ~$0.001 | Server splits and handles each |
+| Contradiction found during recall | `memory_extract_memories` | ~$0.001 | AUDN resolves conflicts |
+| Learning superseded by better fix | `memory_extract_memories` | ~$0.001 | AUDN updates old learning |
+
+**When using `memory_add_memories`:** check `memory_is_novel` first.
+**When using `memory_extract_memories`:** skip novelty check — AUDN handles it internally.
+
+### 3. Maintain — Lifecycle Management
+
+Most maintenance happens automatically through `memory_extract_memories`'s AUDN cycle,
+but some situations need direct action:
+
+- User says "forget this" → `memory_search_memories` to find it, then `memory_delete_memories` by ID
+- Project cleanup → `memory_delete_by_prefix "openclaw/old-project/"`
+- Stale deferred work → `memory_delete_by_prefix "wip/project"`
+
+### Source Prefix Convention
+
+| Prefix | Use for |
+|--------|---------|
+| `openclaw/{project}` | Code decisions, architecture choices |
+| `learning/{project}` | Patterns, gotchas, fixes |
+| `wip/{project}` | Deferred work, open threads |
+
+---
+
+## Typical Workflows
+
+### Task Start — Recall Context
 ```bash
+memory_recall_memories
 memory_search_memories "your query" 5
 ```
 
-### After Task Completion
-
-Extract and store new learnings from the conversation. The API returns categorized facts (`DECISION`, `LEARNING`, `DETAIL`) that pass a 30-day durability test:
+### After Task Completion — Extract Learnings
 ```bash
 memory_extract_memories "summary of conversation or key decisions"
 ```
 
-### Add Important Fact
-
-When storing new information (auto-dedup enabled by default):
+### Store Single Fact
 ```bash
-memory_add_memories "New preference or fact" "MEMORY.md:100"
+memory_add_memories "New preference or fact" "openclaw/my-project"
 ```
 
 ### Weekly Maintenance
-
-Rebuild index from updated files and deduplicate:
 ```bash
 memory_rebuild_index
 memory_dedup_memories true   # Preview
@@ -724,8 +787,6 @@ memory_dedup_memories false  # Execute
 ```
 
 ### Before OpenClaw Upgrade
-
-Create safety backup:
 ```bash
 memory_backup "before_openclaw_upgrade_$(date +%Y%m%d)"
 ```
@@ -734,7 +795,7 @@ memory_backup "before_openclaw_upgrade_$(date +%Y%m%d)"
 
 During heartbeats, I can:
 
-1. **Extract new learnings** using `memory_extract_memories` (preferred — sends conversation to the extract endpoint which categorizes facts as DECISION/LEARNING/DETAIL, applies a 30-day durability filter, and handles novelty checking and storage in one call)
+1. **Extract new learnings** using `memory_extract_memories` (preferred — sends conversation to the extract endpoint which categorizes facts as DECISION/LEARNING/DETAIL, applies a 30-day durability filter, and handles AUDN lifecycle in one call)
 2. **Manual alternative**: Check novelty with `memory_is_novel`, then add if novel with `memory_add_memories` (auto-dedup enabled)
 3. **Recall context** at task start with `memory_recall_memories`
 4. **Auto-backup** handled by service

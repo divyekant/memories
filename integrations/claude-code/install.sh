@@ -502,13 +502,13 @@ EOF
     local dev_instructions_block
     dev_instructions_block=$(cat <<'EOF'
 developer_instructions = """
-Use the Memories MCP tools as your memory layer.
+Use the Memories MCP tools as your memory layer with three responsibilities:
 
-On each user turn:
-1. Run one focused memory_search query before implementation-heavy responses.
-2. Reuse retrieved decisions/patterns to avoid asking for repeated project context.
-3. Store durable decisions with memory_add using stable source labels.
-4. Keep memory operations concise: usually 1 search, then proceed.
+1. READ: Run memory_search before implementation-heavy responses or clarifying questions.
+2. WRITE: Use memory_add for single clear facts (check memory_is_novel first). Use memory_extract for rich conversations, decision changes, or deferred work updates — it handles Add/Update/Delete/Noop automatically via AUDN.
+3. MAINTAIN: Use memory_delete for explicit forget requests. memory_extract handles most lifecycle updates automatically.
+
+Source prefixes: codex/{project} for decisions, learning/{project} for fixes, wip/{project} for deferred work.
 """
 EOF
 )
