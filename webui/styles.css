@@ -243,6 +243,28 @@ body {
   border-color: var(--color-primary);
 }
 
+.topbar-key-status {
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.topbar-key-status.key-active {
+  background: rgba(22, 163, 74, 0.12);
+  color: var(--color-success);
+  border: 1px solid rgba(22, 163, 74, 0.2);
+}
+
+.topbar-key-status.key-inactive {
+  background: rgba(202, 138, 4, 0.12);
+  color: var(--color-warning);
+  border: 1px solid rgba(202, 138, 4, 0.2);
+}
+
 .topbar-search {
   padding: 6px 12px;
   border: 1px solid var(--color-border);

@@ -64,11 +64,29 @@ export function getState() {
 
 export function setApiKey(key) {
   state.apiKey = key;
-  sessionStorage.setItem(API_KEY_STORAGE, key);
+  if (key) {
+    sessionStorage.setItem(API_KEY_STORAGE, key);
+  } else {
+    sessionStorage.removeItem(API_KEY_STORAGE);
+  }
+  syncKeyStatus();
+}
 
-  // Sync the topbar dropdown if it exists
-  const sel = document.getElementById("apiKeyFilter");
-  if (sel) sel.value = key;
+function syncKeyStatus() {
+  const el = document.getElementById("apiKeyStatus");
+  if (!el) return;
+  if (state.apiKey) {
+    const masked = state.apiKey.length > 8
+      ? state.apiKey.slice(0, 4) + "..." + state.apiKey.slice(-4)
+      : "****";
+    el.textContent = masked;
+    el.classList.add("key-active");
+    el.classList.remove("key-inactive");
+  } else {
+    el.textContent = "No key";
+    el.classList.add("key-inactive");
+    el.classList.remove("key-active");
+  }
 }
 
 // -- Theme System ----------------------------------------------------------
@@ -972,8 +990,7 @@ registerPage("keys", async (container) => {
       return;
     }
 
-    state.apiKey = val;
-    sessionStorage.setItem(API_KEY_STORAGE, state.apiKey);
+    setApiKey(val);
 
     statusEl.innerHTML = `<span class="text-muted" style="font-size:0.78rem;">Testing connection...</span>`;
 
@@ -990,8 +1007,7 @@ registerPage("keys", async (container) => {
   // Clear handler
   clearBtn.addEventListener("click", () => {
     keyInput.value = "";
-    state.apiKey = "";
-    sessionStorage.removeItem(API_KEY_STORAGE);
+    setApiKey("");
     statusEl.innerHTML = `<span class="badge badge-warning">Key cleared</span>`;
     showToast("API key cleared", "info");
   });
@@ -1264,5 +1280,6 @@ function initMobileSidebar() {
 // -- Boot ------------------------------------------------------------------
 
 initTheme();
+syncKeyStatus();
 initMobileSidebar();
 initRouter();
