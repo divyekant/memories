@@ -1276,6 +1276,90 @@ body,
   font-size: 0.78rem;
 }
 
+/* -- Key Management Table -------------------------------------------------- */
+
+.key-table {
+  font-size: 0.82rem;
+}
+
+.key-table td {
+  vertical-align: middle;
+}
+
+.key-table .badge + .badge {
+  margin-left: 4px;
+}
+
+.key-row-revoked {
+  opacity: 0.5;
+}
+
+.key-row-revoked:hover {
+  opacity: 0.65;
+}
+
+.key-name-revoked {
+  text-decoration: line-through;
+  color: var(--color-text-faint);
+}
+
+.key-actions-cell {
+  display: flex;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+/* -- Key Modal Input ------------------------------------------------------ */
+
+.key-modal-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.key-modal-input:focus {
+  border-color: var(--color-primary);
+}
+
+/* -- Key Created Display -------------------------------------------------- */
+
+.key-created-warning {
+  background: rgba(202, 138, 4, 0.12);
+  border: 1px solid rgba(202, 138, 4, 0.3);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--color-warning);
+  margin-bottom: 16px;
+}
+
+.key-created-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+
+.key-created-value {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--color-primary);
+  word-break: break-all;
+  user-select: all;
+}
+
 /* -- Reduced Motion -------------------------------------------------------- */
 
 @media (prefers-reduced-motion: reduce) {
