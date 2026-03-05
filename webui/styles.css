@@ -284,7 +284,7 @@ body {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   padding: 20px;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--transition-fast), background-color var(--transition-normal), color var(--transition-normal);
 }
 
 .stat-card:hover {
@@ -786,6 +786,43 @@ body {
   font-weight: 600;
 }
 
+/* -- Menu Button (hamburger) ----------------------------------------------- */
+
+.menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text);
+  font-size: 1.2rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.menu-btn:hover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-dim);
+}
+
+/* -- Sidebar Overlay (mobile) --------------------------------------------- */
+
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: var(--color-overlay);
+  z-index: 45;
+}
+
+.sidebar-overlay.visible {
+  display: block;
+}
+
 /* -- Responsive ------------------------------------------------------------ */
 
 /* -- Memories Page --------------------------------------------------------- */
@@ -820,7 +857,7 @@ body {
   border-radius: var(--radius-md);
   cursor: pointer;
   border-left: 3px solid transparent;
-  transition: background var(--transition-fast), border-color var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-normal);
 }
 
 .memory-item:hover {
@@ -909,7 +946,7 @@ body {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   padding: 16px;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--transition-fast), background-color var(--transition-normal), color var(--transition-normal);
 }
 
 .memory-card:hover {
@@ -1033,50 +1070,29 @@ body {
 /* -- Responsive (continued) ------------------------------------------------ */
 
 @media (max-width: 768px) {
+  .menu-btn {
+    display: flex;
+  }
+
   .app-layout {
     grid-template-columns: 1fr;
   }
 
   .sidebar {
-    position: static;
-    width: 100%;
-    height: auto;
-    flex-direction: row;
-    align-items: center;
-    border-right: none;
-    border-bottom: 1px solid var(--color-border);
-    padding: 8px;
-    overflow-x: auto;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 260px;
+    height: 100vh;
+    transform: translateX(-100%);
+    transition: transform 250ms ease;
+    z-index: 50;
+    flex-direction: column;
+    border-right: 1px solid var(--color-border);
   }
 
-  .sidebar-logo {
-    padding: 0 12px 0 8px;
-    font-size: 0.95rem;
-  }
-
-  .sidebar-nav {
-    flex-direction: row;
-    gap: 4px;
-    padding: 0;
-  }
-
-  .nav-item {
-    padding: 6px 10px;
-    border-left: none;
-    border-bottom: 2px solid transparent;
-    font-size: 0.78rem;
-  }
-
-  .nav-item.active {
-    border-left-color: transparent;
-    border-bottom-color: var(--color-primary);
-  }
-
-  .sidebar-footer {
-    border-top: none;
-    border-left: 1px solid var(--color-border);
-    padding: 0 8px;
-    margin-left: auto;
+  .sidebar.open {
+    transform: translateX(0);
   }
 
   .main-area {
@@ -1111,5 +1127,69 @@ body {
   .memories-list-panel,
   .memories-detail-panel {
     max-height: 50vh;
+  }
+}
+
+/* -- Animations ------------------------------------------------------------ */
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.stat-card,
+.memory-item,
+.memory-card,
+.info-item {
+  animation: rise-in 200ms ease forwards;
+}
+
+/* Stagger rise-in for sequential items (opacity: 0 prevents flash before delay) */
+.stat-card:nth-child(2),
+.memory-item:nth-child(2),
+.memory-card:nth-child(2) { opacity: 0; animation-delay: 40ms; }
+.stat-card:nth-child(3),
+.memory-item:nth-child(3),
+.memory-card:nth-child(3) { opacity: 0; animation-delay: 80ms; }
+.stat-card:nth-child(4),
+.memory-item:nth-child(4),
+.memory-card:nth-child(4) { opacity: 0; animation-delay: 120ms; }
+.stat-card:nth-child(n+5),
+.memory-item:nth-child(n+5),
+.memory-card:nth-child(n+5) { opacity: 0; animation-delay: 160ms; }
+
+/* Page content fade-in */
+.content-area > * {
+  animation: fade-in 200ms ease forwards;
+}
+
+/* -- Focus States ---------------------------------------------------------- */
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* -- Smooth Theme Transitions ---------------------------------------------- */
+
+body,
+.sidebar,
+.topbar,
+.content-area {
+  transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease;
+}
+
+/* -- Reduced Motion -------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
   }
 }

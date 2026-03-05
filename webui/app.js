@@ -1227,7 +1227,42 @@ registerPage("settings", async (container) => {
   }
 });
 
+// -- Mobile Sidebar --------------------------------------------------------
+
+function initMobileSidebar() {
+  const menuBtn = document.getElementById("menuBtn");
+  const sidebar = document.querySelector(".sidebar");
+  const overlay = document.getElementById("sidebarOverlay");
+  if (!menuBtn || !sidebar || !overlay) return;
+
+  function openSidebar() {
+    sidebar.classList.add("open");
+    overlay.classList.add("visible");
+  }
+
+  function closeSidebar() {
+    sidebar.classList.remove("open");
+    overlay.classList.remove("visible");
+  }
+
+  menuBtn.addEventListener("click", () => {
+    if (sidebar.classList.contains("open")) {
+      closeSidebar();
+    } else {
+      openSidebar();
+    }
+  });
+
+  overlay.addEventListener("click", closeSidebar);
+
+  // Close sidebar when a nav item is clicked (mobile)
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    item.addEventListener("click", closeSidebar);
+  });
+}
+
 // -- Boot ------------------------------------------------------------------
 
 initTheme();
+initMobileSidebar();
 initRouter();
