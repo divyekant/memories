@@ -12,13 +12,15 @@ const state = {
   currentPage: null,
 };
 
+// Page-scoped callbacks (set by active page, used by global search)
+const pageCallbacks = { search: null, reset: null };
+
 // -- API Helper ------------------------------------------------------------
 
-export function authHeaders() {
-  const headers = { "Content-Type": "application/json" };
-  if (state.apiKey) {
-    headers["X-API-Key"] = state.apiKey;
-  }
+export function authHeaders(hasBody = false) {
+  const headers = {};
+  if (hasBody) headers["Content-Type"] = "application/json";
+  if (state.apiKey) headers["X-API-Key"] = state.apiKey;
   return headers;
 }
 
@@ -34,7 +36,7 @@ function _cacheKey(path, options) {
 
 export async function api(path, options = {}) {
   const defaults = {
-    headers: authHeaders(),
+    headers: authHeaders(!!options.body),
   };
   const merged = {
     ...defaults,
@@ -397,15 +399,15 @@ registerPage("dashboard", async (container) => {
 
     statGrid.innerHTML = `
       <div class="stat-card">
-        <div class="stat-value">${formatNumber(stats.total_memories)}</div>
+        <div class="stat-value">${escHtml(formatNumber(stats.total_memories))}</div>
         <span class="stat-label">Total Memories</span>
       </div>
       <div class="stat-card">
-        <div class="stat-value">${formatNumber(extractionCalls)}</div>
+        <div class="stat-value">${escHtml(formatNumber(extractionCalls))}</div>
         <span class="stat-label">Extractions 7d</span>
       </div>
       <div class="stat-card">
-        <div class="stat-value">${formatNumber(opsTotal)}</div>
+        <div class="stat-value">${escHtml(formatNumber(opsTotal))}</div>
         <span class="stat-label">Operations 7d</span>
       </div>
       <div class="stat-card">
@@ -432,7 +434,7 @@ registerPage("dashboard", async (container) => {
       </div>
       <div class="info-item">
         <div class="info-item-label">Dimensions</div>
-        <div class="info-item-value">${stats.dimension ?? "N/A"}</div>
+        <div class="info-item-value">${escHtml(String(stats.dimension ?? "N/A"))}</div>
       </div>
       <div class="info-item">
         <div class="info-item-label">Index Size</div>
@@ -440,7 +442,7 @@ registerPage("dashboard", async (container) => {
       </div>
       <div class="info-item">
         <div class="info-item-label">Backups</div>
-        <div class="info-item-value">${stats.backup_count ?? 0}</div>
+        <div class="info-item-value">${escHtml(String(stats.backup_count ?? 0))}</div>
       </div>
     `;
 
@@ -468,7 +470,7 @@ registerPage("dashboard", async (container) => {
     async function loadUsage(period) {
       usageContainer.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
       try {
-        const usage = await api(`/usage?period=${period}`);
+        const usage = await api(`/usage?period=${encodeURIComponent(period)}`);
         usageContainer.innerHTML = "";
 
         // Usage stat cards
@@ -483,19 +485,19 @@ registerPage("dashboard", async (container) => {
 
         uStatGrid.innerHTML = `
           <div class="stat-card">
-            <div class="stat-value">${formatNumber(totalOps)}</div>
+            <div class="stat-value">${escHtml(formatNumber(totalOps))}</div>
             <span class="stat-label">Total Operations</span>
           </div>
           <div class="stat-card">
-            <div class="stat-value">${formatNumber(addOps)}</div>
+            <div class="stat-value">${escHtml(formatNumber(addOps))}</div>
             <span class="stat-label">Adds</span>
           </div>
           <div class="stat-card">
-            <div class="stat-value">${formatNumber(searchOps)}</div>
+            <div class="stat-value">${escHtml(formatNumber(searchOps))}</div>
             <span class="stat-label">Searches</span>
           </div>
           <div class="stat-card">
-            <div class="stat-value">${estCost != null ? "$" + estCost.toFixed(2) : "\u2014"}</div>
+            <div class="stat-value">${estCost != null ? "$" + escHtml(estCost.toFixed(2)) : "\u2014"}</div>
             <span class="stat-label">Est. Cost</span>
           </div>
         `;
@@ -514,9 +516,9 @@ registerPage("dashboard", async (container) => {
               .filter(([s]) => s !== "(unknown)")
               .sort((a, b) => b[1] - a[1])
               .slice(0, 3)
-              .map(([s, c]) => `<span class="badge badge-info">${escHtml(s)}</span> ${formatNumber(c)}`);
+              .map(([s, c]) => `<span class="badge badge-info">${escHtml(s)}</span> ${escHtml(formatNumber(c))}`);
             const srcHtml = topSources.length > 0 ? topSources.join(", ") : '<span class="text-muted">—</span>';
-            opHtml += `<tr><td class="font-mono">${escHtml(opType)}</td><td>${formatNumber(opData.total)}</td><td>${srcHtml}</td></tr>`;
+            opHtml += `<tr><td class="font-mono">${escHtml(opType)}</td><td>${escHtml(formatNumber(opData.total))}</td><td>${srcHtml}</td></tr>`;
           }
           opHtml += `</tbody></table>`;
           opTableWrap.innerHTML = opHtml;
@@ -531,12 +533,11 @@ registerPage("dashboard", async (container) => {
           const extTableWrap = h("div", { className: "table-wrap" });
           let extHtml = `<table class="data-table"><thead><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Est. Cost</th></tr></thead><tbody>`;
           for (const [model, data] of Object.entries(ext.by_model || {})) {
-            // Rough cost estimate per model
             const modelCost = ((data.input_tokens || 0) * 0.001 + (data.output_tokens || 0) * 0.005) / 1000;
-            extHtml += `<tr><td class="font-mono">${escHtml(model)}</td><td>${formatNumber(data.calls || 0)}</td><td>${formatNumber(data.input_tokens || 0)}</td><td>${formatNumber(data.output_tokens || 0)}</td><td>$${modelCost.toFixed(2)}</td></tr>`;
+            extHtml += `<tr><td class="font-mono">${escHtml(model)}</td><td>${escHtml(formatNumber(data.calls || 0))}</td><td>${escHtml(formatNumber(data.input_tokens || 0))}</td><td>${escHtml(formatNumber(data.output_tokens || 0))}</td><td>${escHtml("$" + modelCost.toFixed(2))}</td></tr>`;
           }
           if (ext.estimated_cost_usd != null) {
-            extHtml += `<tr style="font-weight:600;"><td>Total</td><td>${formatNumber(ext.total_calls)}</td><td>${formatNumber(ext.total_input_tokens || 0)}</td><td>${formatNumber(ext.total_output_tokens || 0)}</td><td>$${ext.estimated_cost_usd.toFixed(2)}</td></tr>`;
+            extHtml += `<tr style="font-weight:600;"><td>Total</td><td>${escHtml(formatNumber(ext.total_calls))}</td><td>${escHtml(formatNumber(ext.total_input_tokens || 0))}</td><td>${escHtml(formatNumber(ext.total_output_tokens || 0))}</td><td>${escHtml("$" + ext.estimated_cost_usd.toFixed(2))}</td></tr>`;
           }
           extHtml += `</tbody></table>`;
           extTableWrap.innerHTML = extHtml;
@@ -576,8 +577,8 @@ registerPage("dashboard", async (container) => {
 registerPage("memories", async (container) => {
   const memState = { offset: 0, limit: 20, source: "", total: 0, selected: null, view: "list", searchQuery: "", searchResults: null, sourcePrefixes: [] };
 
-  // -- Delete handler (exposed globally for innerHTML onclick) --
-  window.deleteMemory = async (id) => {
+  // -- Delete handler --
+  async function deleteMemory(id) {
     if (!confirm(`Delete memory #${id}?`)) return;
     try {
       await api(`/memory/${id}`, { method: "DELETE" });
@@ -589,7 +590,7 @@ registerPage("memories", async (container) => {
     } catch (err) {
       showToast(err.message, "error");
     }
-  };
+  }
 
   // -- Build page skeleton --
   function buildSkeleton() {
@@ -693,19 +694,18 @@ registerPage("memories", async (container) => {
 
       let scoreHtml = "";
       if (mem.similarity != null) {
-        scoreHtml = ` <span class="search-result-score">${(mem.similarity * 100).toFixed(1)}%</span>`;
+        scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.similarity * 100).toFixed(1)))}%</span>`;
       }
 
       item.innerHTML = `
         <div class="memory-item-header">
           <span class="memory-item-source">${escHtml(mem.source || "")}</span>
-          <span class="memory-item-id">#${mem.id}${scoreHtml}</span>
+          <span class="memory-item-id">#${escHtml(String(mem.id))}${scoreHtml}</span>
         </div>
         <div class="memory-item-text">${truncText}</div>
       `;
       item.addEventListener("click", () => {
         memState.selected = mem;
-        // Update active class without re-rendering the list
         listPanel.querySelectorAll(".memory-item").forEach((el) => {
           el.classList.toggle("active", el.dataset.memId === String(mem.id));
         });
@@ -736,13 +736,13 @@ registerPage("memories", async (container) => {
           <div>
             <span class="memory-item-source" style="font-size:0.85rem;">${escHtml(mem.source || "")}</span>
           </div>
-          <span class="memory-item-id" style="font-size:0.78rem;">#${mem.id}</span>
+          <span class="memory-item-id" style="font-size:0.78rem;">#${escHtml(String(mem.id))}</span>
         </div>
         <div class="detail-text">${escHtml(mem.text || "")}</div>
         <div class="detail-meta">
           <div class="meta-item">
             <div class="meta-label">ID</div>
-            <div class="meta-value font-mono">${mem.id}</div>
+            <div class="meta-value font-mono">${escHtml(String(mem.id))}</div>
           </div>
           <div class="meta-item">
             <div class="meta-label">Source</div>
@@ -753,10 +753,12 @@ registerPage("memories", async (container) => {
             <div class="meta-value">${mem.created_at ? timeAgo(mem.created_at) : "N/A"}</div>
           </div>
         </div>
-        <div class="detail-actions">
-          <button class="btn btn-danger btn-sm" onclick="deleteMemory(${mem.id})">Delete</button>
-        </div>
+        <div class="detail-actions"></div>
       `;
+      // Bind delete button via addEventListener (not inline onclick)
+      const deleteBtn = h("button", { className: "btn btn-danger btn-sm" }, "Delete");
+      deleteBtn.addEventListener("click", () => deleteMemory(mem.id));
+      detailPanel.querySelector(".detail-actions").appendChild(deleteBtn);
     } else {
       detailPanel.innerHTML = `
         <div class="empty-state" style="border:none;padding:60px 20px;">
@@ -777,7 +779,7 @@ registerPage("memories", async (container) => {
 
       let scoreHtml = "";
       if (mem.similarity != null) {
-        scoreHtml = ` <span class="search-result-score">${(mem.similarity * 100).toFixed(1)}%</span>`;
+        scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.similarity * 100).toFixed(1)))}%</span>`;
       }
 
       const card = document.createElement("div");
@@ -785,7 +787,7 @@ registerPage("memories", async (container) => {
       card.innerHTML = `
         <div class="memory-item-header">
           <span class="memory-item-source">${escHtml(mem.source || "")}</span>
-          <span class="memory-item-id">#${mem.id}${scoreHtml}</span>
+          <span class="memory-item-id">#${escHtml(String(mem.id))}${scoreHtml}</span>
         </div>
         <div class="memory-item-text mt-8">${truncText}</div>
       `;
@@ -969,8 +971,8 @@ registerPage("memories", async (container) => {
   }
 
   // -- Expose search trigger for global search integration --
-  window._memoriesPageSearch = searchMemories;
-  window._memoriesPageReset = () => {
+  pageCallbacks.search = searchMemories;
+  pageCallbacks.reset = () => {
     memState.searchQuery = "";
     memState.searchResults = null;
     memState.offset = 0;
@@ -1034,14 +1036,14 @@ registerPage("memories", async (container) => {
 
     if (!query) {
       // Reset to normal list if on memories page
-      if (state.currentPage === "memories" && window._memoriesPageReset) {
-        window._memoriesPageReset();
+      if (state.currentPage === "memories" && pageCallbacks.reset) {
+        pageCallbacks.reset();
       }
       return;
     }
 
-    if (state.currentPage === "memories" && window._memoriesPageSearch) {
-      window._memoriesPageSearch(query);
+    if (state.currentPage === "memories" && pageCallbacks.search) {
+      pageCallbacks.search(query);
     } else {
       // Navigate to memories page; the page will pick up the query from the input
       window.location.hash = "#/memories";
@@ -1050,8 +1052,8 @@ registerPage("memories", async (container) => {
 
   // Handle clearing via the search clear button (type=search)
   globalSearch.addEventListener("search", () => {
-    if (globalSearch.value === "" && state.currentPage === "memories" && window._memoriesPageReset) {
-      window._memoriesPageReset();
+    if (globalSearch.value === "" && state.currentPage === "memories" && pageCallbacks.reset) {
+      pageCallbacks.reset();
     }
   });
 })();
@@ -1072,20 +1074,8 @@ registerPage("extractions", async (container) => {
     const totalCalls = usage.extraction?.total_calls ?? 0;
     const byModel = usage.extraction?.by_model || {};
 
-    // Compute success rate from by_model data if available
-    let successRate = "\u2014";
-    if (totalCalls > 0) {
-      let totalSuccess = 0;
-      let totalAttempts = 0;
-      for (const m of Object.values(byModel)) {
-        totalAttempts += m.calls || 0;
-        // If there's no error breakdown, assume all calls succeeded
-        totalSuccess += m.calls || 0;
-      }
-      if (totalAttempts > 0) {
-        successRate = ((totalSuccess / totalAttempts) * 100).toFixed(1) + "%";
-      }
-    }
+    // Success rate: only show if error data is available, otherwise N/A
+    const successRate = "\u2014";
 
     const statusLabel = extractStatus.enabled ? "Active" : "Inactive";
     const statusBadgeClass = extractStatus.enabled ? "badge-success" : "badge-warning";
@@ -1099,7 +1089,7 @@ registerPage("extractions", async (container) => {
 
     statGrid.innerHTML = `
       <div class="stat-card">
-        <div class="stat-value">${formatNumber(totalCalls)}</div>
+        <div class="stat-value">${escHtml(formatNumber(totalCalls))}</div>
         <span class="stat-label">Jobs 7d</span>
       </div>
       <div class="stat-card">
@@ -1163,9 +1153,9 @@ registerPage("extractions", async (container) => {
         tableHtml += `
             <tr>
               <td class="font-mono">${escHtml(model)}</td>
-              <td>${formatNumber(data.calls || 0)}</td>
-              <td>${formatNumber(data.input_tokens || 0)}</td>
-              <td>${formatNumber(data.output_tokens || 0)}</td>
+              <td>${escHtml(formatNumber(data.calls || 0))}</td>
+              <td>${escHtml(formatNumber(data.input_tokens || 0))}</td>
+              <td>${escHtml(formatNumber(data.output_tokens || 0))}</td>
             </tr>
         `;
       }
@@ -1358,7 +1348,7 @@ registerPage("settings", async (container) => {
       </div>
       <div class="info-item">
         <div class="info-item-label">Backups</div>
-        <div class="info-item-value">${stats.backup_count ?? 0}</div>
+        <div class="info-item-value">${escHtml(String(stats.backup_count ?? 0))}</div>
       </div>
       <div class="info-item">
         <div class="info-item-label">Auto-Reload</div>
