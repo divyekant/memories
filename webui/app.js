@@ -1,587 +1,1527 @@
-// -- Theme toggle (runs first to avoid flash) --------------------------------
+/* ==========================================================================
+   Memories Web UI v2 — App Module
+   ========================================================================== */
 
-(function initTheme() {
-  const stored = localStorage.getItem("theme");
-  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const theme = stored || (prefersDark ? "dark" : "light");
-  document.documentElement.dataset.theme = theme;
+// -- Config & State --------------------------------------------------------
 
-  const btn = document.getElementById("themeToggle");
-  if (btn) {
-    btn.textContent = theme === "dark" ? "🌙" : "☀️";
-    btn.addEventListener("click", () => {
-      const current = document.documentElement.dataset.theme;
-      const next = current === "dark" ? "light" : "dark";
-      document.documentElement.dataset.theme = next;
-      btn.textContent = next === "dark" ? "🌙" : "☀️";
-      localStorage.setItem("theme", next);
-    });
-  }
-
-  // Listen for OS theme changes (only when no manual override)
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
-    if (localStorage.getItem("theme")) return; // manual override active
-    const auto = e.matches ? "dark" : "light";
-    document.documentElement.dataset.theme = auto;
-    if (btn) btn.textContent = auto === "dark" ? "🌙" : "☀️";
-  });
-})();
+const API_KEY_STORAGE = "memories-api-key";
+const THEME_STORAGE = "memories-theme";
 
 const state = {
-  offset: 0,
-  limit: 20,
-  source: "",
-  total: 0,
-  apiKey: sessionStorage.getItem("faiss_ui_api_key") || "",
-  activeFolder: null, // null = all, string = folder name
-  folders: [],        // [{name, count}, ...]
-  folderTotal: 0,
+  apiKey: localStorage.getItem(API_KEY_STORAGE) || "",
+  currentPage: null,
 };
 
-const els = {
-  apiKey: document.getElementById("apiKey"),
-  source: document.getElementById("source"),
-  limit: document.getElementById("limit"),
-  refresh: document.getElementById("refresh"),
-  prev: document.getElementById("prev"),
-  next: document.getElementById("next"),
-  status: document.getElementById("status"),
-  memoryList: document.getElementById("memoryList"),
-  visibleCount: document.getElementById("visibleCount"),
-  totalCount: document.getElementById("totalCount"),
-  offsetInput: document.getElementById("offsetInput"),
-  cardTemplate: document.getElementById("memoryCardTemplate"),
-  folderList: document.getElementById("folderList"),
-  folderAllCount: document.getElementById("folderAllCount"),
-  renameFolderModal: document.getElementById("renameFolderModal"),
-  renameFolderInput: document.getElementById("renameFolderInput"),
-  renameFolderConfirm: document.getElementById("renameFolderConfirm"),
-  renameFolderCancel: document.getElementById("renameFolderCancel"),
-};
+// Page-scoped callbacks (set by active page, used by global search)
+const pageCallbacks = { search: null, reset: null };
 
-let renamingFolder = null; // folder name being renamed
+// -- API Helper ------------------------------------------------------------
 
-function setStatus(message, isError = false) {
-  els.status.textContent = message;
-  els.status.classList.toggle("error", isError);
+export function authHeaders(hasBody = false) {
+  const headers = {};
+  if (hasBody) headers["Content-Type"] = "application/json";
+  if (state.apiKey) headers["X-API-Key"] = state.apiKey;
+  return headers;
 }
 
-function authHeaders() {
-  return state.apiKey ? { "X-API-Key": state.apiKey } : {};
+// Simple response cache (30s TTL) to avoid re-fetching on page navigation
+const _apiCache = new Map();
+const CACHE_TTL = 30_000;
+
+function _cacheKey(path, options) {
+  if (options?.method && options.method !== "GET") return null;
+  if (options?.body) return null;
+  return path;
 }
 
-function syncApiKeyFromInput() {
-  state.apiKey = (els.apiKey.value || "").trim();
-  sessionStorage.setItem("faiss_ui_api_key", state.apiKey);
-}
+export async function api(path, options = {}) {
+  const defaults = {
+    headers: authHeaders(!!options.body),
+  };
+  const merged = {
+    ...defaults,
+    ...options,
+    headers: { ...defaults.headers, ...(options.headers || {}) },
+  };
 
-async function parseErrorDetail(resp) {
-  const contentType = resp.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    try {
-      const data = await resp.json();
-      if (typeof data.detail === "string") {
-        return data.detail;
+  // Check cache for GET requests
+  const ck = _cacheKey(path, options);
+  if (ck && _apiCache.has(ck)) {
+    const cached = _apiCache.get(ck);
+    if (Date.now() - cached.ts < CACHE_TTL) return cached.data;
+    _apiCache.delete(ck);
+  }
+
+  const resp = await fetch(path, merged);
+  if (!resp.ok) {
+    let detail;
+    const ct = resp.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      try {
+        const data = await resp.json();
+        detail = typeof data.detail === "string"
+          ? data.detail
+          : data.detail?.message || JSON.stringify(data);
+      } catch {
+        detail = `HTTP ${resp.status}`;
       }
-      if (data.detail && typeof data.detail.message === "string") {
-        return data.detail.message;
+    } else {
+      detail = await resp.text();
+    }
+    throw new Error(detail || `HTTP ${resp.status}`);
+  }
+  const ct = resp.headers.get("content-type") || "";
+  let result;
+  if (ct.includes("application/json")) {
+    result = await resp.json();
+  } else {
+    result = await resp.text();
+  }
+
+  // Cache GET responses
+  if (ck) _apiCache.set(ck, { data: result, ts: Date.now() });
+
+  return result;
+}
+
+// Bust cache for a path (after mutations)
+export function invalidateCache(path) {
+  if (path) _apiCache.delete(path);
+  else _apiCache.clear();
+}
+
+// -- State Accessors -------------------------------------------------------
+
+export function getState() {
+  return state;
+}
+
+export function setApiKey(key) {
+  state.apiKey = key;
+  if (key) {
+    localStorage.setItem(API_KEY_STORAGE, key);
+  } else {
+    localStorage.removeItem(API_KEY_STORAGE);
+  }
+  invalidateCache();
+  syncKeyStatus();
+}
+
+function syncKeyStatus() {
+  const el = document.getElementById("apiKeyStatus");
+  if (!el) return;
+  if (state.apiKey) {
+    const masked = state.apiKey.length > 8
+      ? state.apiKey.slice(0, 4) + "..." + state.apiKey.slice(-4)
+      : "****";
+    el.textContent = masked;
+    el.classList.add("key-active");
+    el.classList.remove("key-inactive");
+  } else {
+    el.textContent = "No key";
+    el.classList.add("key-inactive");
+    el.classList.remove("key-active");
+  }
+}
+
+// -- Theme System ----------------------------------------------------------
+
+function getSystemTheme() {
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+function applyTheme(theme) {
+  if (theme === "system") {
+    document.documentElement.setAttribute("data-theme", getSystemTheme());
+  } else {
+    document.documentElement.setAttribute("data-theme", theme);
+  }
+}
+
+function syncThemeButtons(choice) {
+  document.querySelectorAll(".theme-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.themeChoice === choice);
+  });
+}
+
+function initTheme() {
+  const saved = localStorage.getItem(THEME_STORAGE) || "system";
+  applyTheme(saved);
+  syncThemeButtons(saved);
+
+  // Bind theme buttons
+  document.querySelectorAll(".theme-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const choice = btn.dataset.themeChoice;
+      localStorage.setItem(THEME_STORAGE, choice);
+      applyTheme(choice);
+      syncThemeButtons(choice);
+    });
+  });
+
+  // Listen for OS theme changes (applies when preference is "system")
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    const current = localStorage.getItem(THEME_STORAGE) || "system";
+    if (current === "system") {
+      applyTheme("system");
+    }
+  });
+}
+
+// -- DOM Helpers -----------------------------------------------------------
+
+/**
+ * Create a DOM element with attributes and children.
+ * @param {string} tag - HTML tag name
+ * @param {Object|null} attrs - Attributes, className, event handlers (on...)
+ * @param {...(string|Node)} children - Text or child nodes
+ * @returns {HTMLElement}
+ */
+export function h(tag, attrs, ...children) {
+  const el = document.createElement(tag);
+  if (attrs) {
+    for (const [key, val] of Object.entries(attrs)) {
+      if (key === "className") {
+        el.className = val;
+      } else if (key === "style" && typeof val === "object") {
+        Object.assign(el.style, val);
+      } else if (key.startsWith("on") && typeof val === "function") {
+        el.addEventListener(key.slice(2).toLowerCase(), val);
+      } else if (key === "htmlFor") {
+        el.setAttribute("for", val);
+      } else if (key === "dataset" && typeof val === "object") {
+        for (const [dk, dv] of Object.entries(val)) {
+          el.dataset[dk] = dv;
+        }
+      } else {
+        el.setAttribute(key, val);
       }
-      return JSON.stringify(data);
-    } catch (_) {
-      return `HTTP ${resp.status}`;
     }
   }
-  return resp.text();
-}
-
-// -- Folder sidebar -----------------------------------------------------------
-
-async function loadFolders() {
-  try {
-    const resp = await fetch("/folders", { headers: authHeaders() });
-    if (!resp.ok) return;
-    const data = await resp.json();
-    state.folders = data.folders || [];
-    state.folderTotal = data.total || 0;
-    renderFolders();
-  } catch (_) {
-    // Silently fail — folders are supplementary
-  }
-}
-
-function renderFolders() {
-  els.folderList.innerHTML = "";
-
-  // "All Memories" item
-  const allLi = document.createElement("li");
-  allLi.className = "folder-item" + (state.activeFolder === null ? " active" : "");
-  allLi.dataset.folder = "";
-  allLi.innerHTML = `
-    <span class="folder-name">All Memories</span>
-    <span class="folder-count">${state.folderTotal}</span>
-  `;
-  allLi.addEventListener("click", () => {
-    state.activeFolder = null;
-    state.source = "";
-    els.source.value = "";
-    state.offset = 0;
-    renderFolders();
-    loadMemories();
-  });
-  els.folderList.appendChild(allLi);
-
-  // Individual folders
-  state.folders.forEach((folder) => {
-    const li = document.createElement("li");
-    li.className = "folder-item" + (state.activeFolder === folder.name ? " active" : "");
-    li.dataset.folder = folder.name;
-
-    const nameSpan = document.createElement("span");
-    nameSpan.className = "folder-name";
-    nameSpan.textContent = folder.name;
-
-    const countSpan = document.createElement("span");
-    countSpan.className = "folder-count";
-    countSpan.textContent = String(folder.count);
-
-    const actionsSpan = document.createElement("span");
-    actionsSpan.className = "folder-actions";
-
-    const renameBtn = document.createElement("button");
-    renameBtn.className = "folder-action-btn";
-    renameBtn.textContent = "Rename";
-    renameBtn.title = "Rename folder";
-    renameBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openRenameModal(folder.name);
-    });
-
-    const deleteBtn = document.createElement("button");
-    deleteBtn.className = "folder-action-btn delete";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.title = "Delete all memories in this folder";
-    deleteBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      deleteFolder(folder.name);
-    });
-
-    actionsSpan.appendChild(renameBtn);
-    actionsSpan.appendChild(deleteBtn);
-
-    li.appendChild(nameSpan);
-    li.appendChild(countSpan);
-    li.appendChild(actionsSpan);
-
-    li.addEventListener("click", () => {
-      state.activeFolder = folder.name;
-      state.source = folder.name;
-      els.source.value = folder.name;
-      state.offset = 0;
-      renderFolders();
-      loadMemories();
-    });
-
-    els.folderList.appendChild(li);
-  });
-}
-
-// -- Rename modal -------------------------------------------------------------
-
-function openRenameModal(folderName) {
-  renamingFolder = folderName;
-  els.renameFolderInput.value = folderName;
-  els.renameFolderModal.hidden = false;
-  els.renameFolderInput.focus();
-  els.renameFolderInput.select();
-}
-
-function closeRenameModal() {
-  renamingFolder = null;
-  els.renameFolderModal.hidden = true;
-  els.renameFolderInput.value = "";
-}
-
-async function confirmRename() {
-  const newName = els.renameFolderInput.value.trim();
-  if (!newName || !renamingFolder || newName === renamingFolder) {
-    closeRenameModal();
-    return;
-  }
-
-  setStatus(`Renaming folder "${renamingFolder}" to "${newName}"...`);
-  try {
-    const resp = await fetch("/folders/rename", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ old_name: renamingFolder, new_name: newName }),
-    });
-    if (!resp.ok) {
-      const detail = await parseErrorDetail(resp);
-      throw new Error(detail);
+  for (const child of children) {
+    if (child == null) continue;
+    if (typeof child === "string" || typeof child === "number") {
+      el.appendChild(document.createTextNode(String(child)));
+    } else if (child instanceof Node) {
+      el.appendChild(child);
     }
-    const data = await resp.json();
-    setStatus(`Renamed: ${data.updated} memories updated.`);
-    if (state.activeFolder === renamingFolder) {
-      state.activeFolder = newName;
-      state.source = newName;
-      els.source.value = newName;
-    }
-    closeRenameModal();
-    await loadFolders();
-    await loadMemories();
-  } catch (err) {
-    setStatus(`Rename failed: ${err.message}`, true);
   }
+  return el;
 }
 
-// -- Delete folder ------------------------------------------------------------
-
-async function deleteFolder(folderName) {
-  if (!confirm(`Delete ALL memories in folder "${folderName}"? This cannot be undone.`)) {
-    return;
-  }
-
-  setStatus(`Deleting folder "${folderName}"...`);
-  try {
-    const resp = await fetch("/memory/delete-by-prefix", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ source_prefix: folderName }),
-    });
-    if (!resp.ok) {
-      const detail = await parseErrorDetail(resp);
-      throw new Error(detail);
-    }
-    const data = await resp.json();
-    setStatus(`Deleted folder "${folderName}": ${data.deleted || 0} memories removed.`);
-    if (state.activeFolder === folderName) {
-      state.activeFolder = null;
-      state.source = "";
-      els.source.value = "";
-    }
-    await loadFolders();
-    state.offset = 0;
-    await loadMemories();
-  } catch (err) {
-    setStatus(`Delete failed: ${err.message}`, true);
-  }
-}
-
-// -- Move to folder -----------------------------------------------------------
-
-async function moveToFolder(memoryId, newFolder) {
-  if (!newFolder) return;
-
-  setStatus(`Moving memory #${memoryId} to "${newFolder}"...`);
-  try {
-    const resp = await fetch(`/memory/${memoryId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ source: newFolder }),
-    });
-    if (!resp.ok) {
-      const detail = await parseErrorDetail(resp);
-      throw new Error(detail);
-    }
-    setStatus(`Moved memory #${memoryId} to "${newFolder}".`);
-    await loadFolders();
-    await loadMemories();
-  } catch (err) {
-    setStatus(`Move failed: ${err.message}`, true);
-  }
-}
-
-// -- Render memories ----------------------------------------------------------
-
-function renderMemories(memories) {
-  els.memoryList.innerHTML = "";
-
-  if (!memories.length) {
-    const notice = document.createElement("div");
-    notice.className = "notice";
-    notice.textContent = "No memories matched this filter.";
-    els.memoryList.appendChild(notice);
-    return;
-  }
-
-  memories.forEach((mem, idx) => {
-    const frag = els.cardTemplate.content.cloneNode(true);
-    frag.querySelector(".memory-id").textContent = `#${mem.id}`;
-    frag.querySelector(".memory-source").textContent = mem.source || "(no source)";
-    frag.querySelector(".memory-text").textContent = mem.text;
-
-    // Populate the move-to-folder dropdown
-    const moveSelect = frag.querySelector(".move-folder-select");
-    state.folders.forEach((folder) => {
-      const opt = document.createElement("option");
-      opt.value = folder.name;
-      opt.textContent = folder.name;
-      moveSelect.appendChild(opt);
-    });
-    moveSelect.addEventListener("change", () => {
-      if (moveSelect.value) {
-        moveToFolder(mem.id, moveSelect.value);
-      }
-    });
-
-    const card = frag.querySelector(".memory-card");
-    card.style.animationDelay = `${idx * 14}ms`;
-    els.memoryList.appendChild(frag);
-  });
-}
-
-function updatePagingState(visibleCount) {
-  els.visibleCount.textContent = String(visibleCount);
-  els.totalCount.textContent = String(state.total);
-  els.offsetInput.value = state.offset;
-  els.offsetInput.max = Math.max(0, state.total - 1);
-
-  els.prev.disabled = state.offset <= 0;
-  els.next.disabled = state.offset + visibleCount >= state.total;
-}
-
-async function loadMemories() {
-  syncApiKeyFromInput();
-
-  const params = new URLSearchParams({
-    offset: String(state.offset),
-    limit: String(state.limit),
-  });
-
-  if (state.source.trim()) {
-    params.set("source", state.source.trim());
-  }
-
-  setStatus("Loading memories...");
-
-  try {
-    const resp = await fetch(`/memories?${params.toString()}`, {
-      headers: authHeaders(),
-    });
-
-    if (!resp.ok) {
-      const detail = await parseErrorDetail(resp);
-      throw new Error(`Request failed (${resp.status}): ${detail}`);
-    }
-
-    const data = await resp.json();
-    const memories = data.memories || [];
-    state.total = data.total || 0;
-
-    renderMemories(memories);
-    updatePagingState(memories.length);
-    setStatus(`Loaded ${memories.length} memories.`);
-  } catch (err) {
-    renderMemories([]);
-    updatePagingState(0);
-    setStatus(err.message || "Failed to load memories.", true);
-  }
-}
-
-// -- Event bindings -----------------------------------------------------------
-
-function bindEvents() {
-  els.apiKey.value = state.apiKey;
-
-  els.apiKey.addEventListener("input", () => {
-    syncApiKeyFromInput();
-  });
-
-  els.apiKey.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
-    state.offset = 0;
-    loadFolders();
-    loadMemories();
-  });
-
-  els.source.addEventListener("change", () => {
-    state.source = els.source.value;
-    state.activeFolder = null; // manual source filter clears folder selection
-    state.offset = 0;
-    renderFolders();
-    loadMemories();
-  });
-
-  els.limit.addEventListener("change", () => {
-    state.limit = Number(els.limit.value);
-    state.offset = 0;
-    loadMemories();
-  });
-
-  els.offsetInput.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter") return;
-    const val = Math.max(0, Math.min(parseInt(els.offsetInput.value, 10) || 0, state.total - 1));
-    state.offset = val;
-    loadMemories();
-  });
-
-  els.refresh.addEventListener("click", () => {
-    loadFolders();
-    loadMemories();
-  });
-
-  els.prev.addEventListener("click", () => {
-    state.offset = Math.max(0, state.offset - state.limit);
-    loadMemories();
-  });
-
-  els.next.addEventListener("click", () => {
-    state.offset += state.limit;
-    loadMemories();
-  });
-
-  // Rename modal
-  els.renameFolderConfirm.addEventListener("click", confirmRename);
-  els.renameFolderCancel.addEventListener("click", closeRenameModal);
-  els.renameFolderInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") confirmRename();
-    if (e.key === "Escape") closeRenameModal();
-  });
-  els.renameFolderModal.addEventListener("click", (e) => {
-    if (e.target === els.renameFolderModal) closeRenameModal();
-  });
-}
-
-// -- Tab navigation -----------------------------------------------------------
-
-const tabBtns = document.querySelectorAll(".tab-btn");
-const tabContents = document.querySelectorAll(".tab-content");
-
-tabBtns.forEach((btn) => {
-  btn.addEventListener("click", () => {
-    tabBtns.forEach((b) => b.classList.remove("active"));
-    tabContents.forEach((c) => c.classList.remove("active"));
-    btn.classList.add("active");
-    const target = document.getElementById(
-      btn.dataset.tab === "memories" ? "tabMemories" : "tabUsage"
-    );
-    if (target) target.classList.add("active");
-
-    if (btn.dataset.tab === "usage" && !usageLoaded) {
-      loadUsage();
-    }
-  });
-});
-
-// -- Usage dashboard ----------------------------------------------------------
-
-let usageLoaded = false;
-
-const usageEls = {
-  period: document.getElementById("usagePeriod"),
-  refresh: document.getElementById("usageRefresh"),
-  status: document.getElementById("usageStatus"),
-  totalOps: document.getElementById("usageTotalOps"),
-  extractCalls: document.getElementById("usageExtractCalls"),
-  estCost: document.getElementById("usageEstCost"),
-  opsTable: document.getElementById("usageOpsTable"),
-  tokensTable: document.getElementById("usageTokensTable"),
-};
-
-function setUsageStatus(msg, isError = false) {
-  usageEls.status.textContent = msg;
-  usageEls.status.classList.toggle("error", isError);
-}
-
-function formatNumber(n) {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+/**
+ * Format large numbers compactly: 1234 -> "1.2K", 1500000 -> "1.5M"
+ */
+export function formatNumber(n) {
+  if (n == null) return "0";
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, "") + "K";
   return String(n);
 }
 
-function renderOpsTable(operations) {
-  if (!operations || Object.keys(operations).length === 0) {
-    usageEls.opsTable.innerHTML = '<p class="notice">No operations recorded.</p>';
-    return;
-  }
-
-  let html = '<table class="usage-table"><thead><tr><th>Operation</th><th>Count</th><th>Sources</th></tr></thead><tbody>';
-  for (const [op, data] of Object.entries(operations)) {
-    const sources = data.by_source || {};
-    const sourceList = Object.entries(sources)
-      .sort((a, b) => b[1] - a[1])
-      .map(([s, c]) => `<span class="source-tag">${escHtml(s)} <b>${c}</b></span>`)
-      .join(" ");
-    html += `<tr><td class="op-name">${escHtml(op)}</td><td class="op-count">${formatNumber(data.total || 0)}</td><td class="op-sources">${sourceList || '<span class="text-soft">—</span>'}</td></tr>`;
-  }
-  html += "</tbody></table>";
-  usageEls.opsTable.innerHTML = html;
+/**
+ * Human-friendly relative time: "5m ago", "2h ago", "3d ago"
+ */
+export function timeAgo(dateStr) {
+  if (!dateStr) return "";
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diff = Math.max(0, now - then);
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  const years = Math.floor(months / 12);
+  return `${years}y ago`;
 }
 
-function renderTokensTable(extraction) {
-  if (!extraction || extraction.total_calls === 0) {
-    usageEls.tokensTable.innerHTML = '<p class="notice">No extraction calls recorded.</p>';
-    return;
-  }
-
-  const byModel = extraction.by_model || {};
-  let html = '<table class="usage-table"><thead><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th></tr></thead><tbody>';
-  for (const [model, data] of Object.entries(byModel)) {
-    html += `<tr><td class="model-name">${escHtml(model)}</td><td>${data.calls || 0}</td><td>${formatNumber(data.input_tokens || 0)}</td><td>${formatNumber(data.output_tokens || 0)}</td></tr>`;
-  }
-  html += "</tbody></table>";
-  usageEls.tokensTable.innerHTML = html;
-}
-
-function escHtml(str) {
+/**
+ * Escape a string for safe insertion as innerHTML.
+ */
+export function escHtml(str) {
   const d = document.createElement("div");
   d.textContent = str;
   return d.innerHTML;
 }
 
-async function loadUsage() {
-  syncApiKeyFromInput();
-  const period = usageEls.period.value;
-  setUsageStatus("Loading usage data...");
+// -- Router ----------------------------------------------------------------
 
-  try {
-    const resp = await fetch(`/usage?period=${period}`, {
-      headers: authHeaders(),
-    });
+const pages = {};
 
-    if (!resp.ok) {
-      const detail = await parseErrorDetail(resp);
-      throw new Error(`Request failed (${resp.status}): ${detail}`);
-    }
+export function registerPage(name, renderFn) {
+  pages[name] = renderFn;
+}
 
-    const data = await resp.json();
+function navigate(page) {
+  const contentEl = document.getElementById("content");
+  const titleEl = document.getElementById("pageTitle");
+  if (!contentEl) return;
 
-    if (data.enabled === false) {
-      setUsageStatus("Usage tracking is disabled. Set USAGE_TRACKING=true to enable.", true);
-      usageEls.totalOps.textContent = "—";
-      usageEls.extractCalls.textContent = "—";
-      usageEls.estCost.textContent = "—";
-      usageEls.opsTable.innerHTML = '<p class="notice">Usage tracking is disabled on this server.</p>';
-      usageEls.tokensTable.innerHTML = '<p class="notice">Usage tracking is disabled on this server.</p>';
-      return;
-    }
+  // Clean up old content
+  contentEl.innerHTML = "";
 
-    // Summary metrics
-    const ops = data.operations || {};
-    let totalOps = 0;
-    for (const v of Object.values(ops)) totalOps += v.total || 0;
-    usageEls.totalOps.textContent = formatNumber(totalOps);
+  // Update nav active state
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    item.classList.toggle("active", item.dataset.page === page);
+  });
 
-    const extraction = data.extraction || {};
-    usageEls.extractCalls.textContent = formatNumber(extraction.total_calls || 0);
-    const cost = extraction.estimated_cost_usd || 0;
-    usageEls.estCost.textContent = cost < 0.01 && cost > 0
-      ? `$${cost.toFixed(4)}`
-      : `$${cost.toFixed(2)}`;
+  // Update page title
+  const titles = {
+    dashboard: "Dashboard",
+    memories: "Memories",
+    extractions: "Extractions",
+    keys: "API Keys",
+    settings: "Settings",
+  };
+  if (titleEl) {
+    titleEl.textContent = titles[page] || page;
+  }
 
-    renderOpsTable(ops);
-    renderTokensTable(extraction);
+  state.currentPage = page;
 
-    usageLoaded = true;
-    setUsageStatus(`Loaded usage data for period: ${period}`);
-  } catch (err) {
-    setUsageStatus(err.message || "Failed to load usage data.", true);
+  // Call the registered renderer, or show placeholder
+  if (pages[page]) {
+    pages[page](contentEl);
+  } else {
+    contentEl.appendChild(
+      h("div", { className: "empty-state" },
+        h("div", { className: "empty-state-icon" }, "\u25C6"),
+        h("div", { className: "empty-state-title" }, titles[page] || page),
+        h("div", { className: "empty-state-text" }, "Coming soon.")
+      )
+    );
   }
 }
 
-usageEls.refresh.addEventListener("click", loadUsage);
-usageEls.period.addEventListener("change", loadUsage);
+function parseHash() {
+  const hash = window.location.hash || "#/dashboard";
+  const page = hash.replace("#/", "").split("?")[0].split("/")[0];
+  return page || "dashboard";
+}
 
-bindEvents();
-loadFolders();
-loadMemories();
+function initRouter() {
+  window.addEventListener("hashchange", () => {
+    navigate(parseHash());
+  });
+
+  // Initial route
+  navigate(parseHash());
+}
+
+// -- Toast Notifications ---------------------------------------------------
+
+/**
+ * Show a toast notification.
+ * @param {string} message - Toast text
+ * @param {"success"|"error"|"warning"|"info"} [type="info"] - Toast type
+ */
+export function showToast(message, type = "info") {
+  const container = document.getElementById("toastContainer");
+  if (!container) return;
+
+  const toast = h("div", { className: `toast toast-${type}` }, message);
+  container.appendChild(toast);
+
+  // Auto-dismiss after 4 seconds
+  setTimeout(() => {
+    toast.classList.add("toast-exit");
+    toast.addEventListener("animationend", () => {
+      toast.remove();
+    });
+  }, 4000);
+}
+
+// -- Modal Helper ----------------------------------------------------------
+
+export function showModal(renderFn) {
+  const overlay = document.getElementById("modalOverlay");
+  const content = document.getElementById("modalContent");
+  if (!overlay || !content) return;
+
+  content.innerHTML = "";
+  renderFn(content);
+  overlay.hidden = false;
+
+  // Close on overlay click
+  const closeHandler = (e) => {
+    if (e.target === overlay) {
+      hideModal();
+      overlay.removeEventListener("click", closeHandler);
+    }
+  };
+  overlay.addEventListener("click", closeHandler);
+}
+
+export function hideModal() {
+  const overlay = document.getElementById("modalOverlay");
+  if (overlay) overlay.hidden = true;
+}
+
+// -- Boot ------------------------------------------------------------------
+
+// ==========================================================================
+//  Dashboard Page
+// ==========================================================================
+
+registerPage("dashboard", async (container) => {
+  container.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+
+  try {
+    const [stats, usage, extractStatus] = await Promise.all([
+      api("/stats"),
+      api("/usage?period=7d"),
+      api("/extract/status"),
+    ]);
+
+    // Compute operations total from usage.operations
+    let opsTotal = 0;
+    if (usage.operations) {
+      for (const op of Object.values(usage.operations)) {
+        opsTotal += op.total || 0;
+      }
+    }
+
+    const extractionCalls = usage.extraction?.total_calls ?? 0;
+    const statusLabel = extractStatus.enabled ? "Active" : "Inactive";
+    const statusBadgeClass = extractStatus.enabled ? "badge-success" : "badge-warning";
+
+    container.innerHTML = "";
+
+    // Section: Stat cards
+    const statSection = h("div", { className: "section-title" }, "Overview");
+    const statGrid = h("div", { className: "stat-grid" });
+
+    statGrid.innerHTML = `
+      <div class="stat-card">
+        <div class="stat-value">${escHtml(formatNumber(stats.total_memories))}</div>
+        <span class="stat-label">Total Memories</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${escHtml(formatNumber(extractionCalls))}</div>
+        <span class="stat-label">Extractions 7d</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${escHtml(formatNumber(opsTotal))}</div>
+        <span class="stat-label">Operations 7d</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value"><span class="badge ${statusBadgeClass}">${escHtml(statusLabel)}</span></div>
+        <span class="stat-label">Extraction Status</span>
+      </div>
+    `;
+
+    container.appendChild(statSection);
+    container.appendChild(statGrid);
+
+    // Section: Server Info
+    const infoSection = h("div", { className: "section-title mt-24" }, "Server Info");
+    const infoGrid = h("div", { className: "info-grid" });
+
+    const indexKB = stats.index_size_bytes != null
+      ? (stats.index_size_bytes / 1024).toFixed(1) + " KB"
+      : "N/A";
+
+    infoGrid.innerHTML = `
+      <div class="info-item">
+        <div class="info-item-label">Embedder Model</div>
+        <div class="info-item-value">${escHtml(stats.model || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Dimensions</div>
+        <div class="info-item-value">${escHtml(String(stats.dimension ?? "N/A"))}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Index Size</div>
+        <div class="info-item-value">${escHtml(indexKB)}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Backups</div>
+        <div class="info-item-value">${escHtml(String(stats.backup_count ?? 0))}</div>
+      </div>
+    `;
+
+    container.appendChild(infoSection);
+    container.appendChild(infoGrid);
+
+    // Section: Usage Analytics
+    const usageSection = h("div", { className: "section-title mt-24" }, "Usage Analytics");
+    container.appendChild(usageSection);
+
+    // Period selector
+    const periodBar = h("div", { className: "filter-bar mb-16" });
+    const periodSelect = h("select", { className: "period-select" });
+    ["today", "7d", "30d", "all"].forEach((p) => {
+      const opt = h("option", { value: p }, p === "today" ? "Today" : p === "all" ? "All Time" : `Last ${p}`);
+      if (p === "7d") opt.selected = true;
+      periodSelect.appendChild(opt);
+    });
+    periodBar.appendChild(periodSelect);
+    container.appendChild(periodBar);
+
+    const usageContainer = h("div", { id: "dashboardUsage" });
+    container.appendChild(usageContainer);
+
+    async function loadUsage(period) {
+      usageContainer.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+      try {
+        const usage = await api(`/usage?period=${encodeURIComponent(period)}`);
+        usageContainer.innerHTML = "";
+
+        // Usage stat cards
+        const uStatGrid = h("div", { className: "stat-grid mb-16" });
+        const ops = usage.operations || {};
+        const totalOps = Object.values(ops).reduce((sum, o) => sum + (o.total || 0), 0);
+        const addOps = ops.add?.total || 0;
+        const searchOps = ops.search?.total || 0;
+        const deleteOps = ops.delete?.total || 0;
+        const extractOps = ops.extract?.total || 0;
+        const estCost = usage.extraction?.estimated_cost_usd;
+
+        uStatGrid.innerHTML = `
+          <div class="stat-card">
+            <div class="stat-value">${escHtml(formatNumber(totalOps))}</div>
+            <span class="stat-label">Total Operations</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">${escHtml(formatNumber(addOps))}</div>
+            <span class="stat-label">Adds</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">${escHtml(formatNumber(searchOps))}</div>
+            <span class="stat-label">Searches</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">${estCost != null ? "$" + escHtml(estCost.toFixed(2)) : "\u2014"}</div>
+            <span class="stat-label">Est. Cost</span>
+          </div>
+        `;
+        usageContainer.appendChild(uStatGrid);
+
+        // Operations breakdown table
+        const opTypes = Object.keys(ops).filter((k) => ops[k].total > 0);
+        if (opTypes.length > 0) {
+          const opTitle = h("div", { className: "text-muted mb-8", style: { fontSize: "0.84rem", fontWeight: "600" } }, "Operations Breakdown");
+          const opTableWrap = h("div", { className: "table-wrap mb-16" });
+          let opHtml = `<table class="data-table"><thead><tr><th>Operation</th><th>Total</th><th>Top Sources</th></tr></thead><tbody>`;
+          for (const opType of opTypes) {
+            const opData = ops[opType];
+            const bySrc = opData.by_source || {};
+            const topSources = Object.entries(bySrc)
+              .filter(([s]) => s !== "(unknown)")
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 3)
+              .map(([s, c]) => `<span class="badge badge-info">${escHtml(s)}</span> ${escHtml(formatNumber(c))}`);
+            const srcHtml = topSources.length > 0 ? topSources.join(", ") : '<span class="text-muted">—</span>';
+            opHtml += `<tr><td class="font-mono">${escHtml(opType)}</td><td>${escHtml(formatNumber(opData.total))}</td><td>${srcHtml}</td></tr>`;
+          }
+          opHtml += `</tbody></table>`;
+          opTableWrap.innerHTML = opHtml;
+          usageContainer.appendChild(opTitle);
+          usageContainer.appendChild(opTableWrap);
+        }
+
+        // Extraction token usage
+        const ext = usage.extraction;
+        if (ext && ext.total_calls > 0) {
+          const extTitle = h("div", { className: "text-muted mb-8", style: { fontSize: "0.84rem", fontWeight: "600" } }, "Extraction Tokens");
+          const extTableWrap = h("div", { className: "table-wrap" });
+          let extHtml = `<table class="data-table"><thead><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Est. Cost</th></tr></thead><tbody>`;
+          for (const [model, data] of Object.entries(ext.by_model || {})) {
+            const modelCost = ((data.input_tokens || 0) * 0.001 + (data.output_tokens || 0) * 0.005) / 1000;
+            extHtml += `<tr><td class="font-mono">${escHtml(model)}</td><td>${escHtml(formatNumber(data.calls || 0))}</td><td>${escHtml(formatNumber(data.input_tokens || 0))}</td><td>${escHtml(formatNumber(data.output_tokens || 0))}</td><td>${escHtml("$" + modelCost.toFixed(2))}</td></tr>`;
+          }
+          if (ext.estimated_cost_usd != null) {
+            extHtml += `<tr style="font-weight:600;"><td>Total</td><td>${escHtml(formatNumber(ext.total_calls))}</td><td>${escHtml(formatNumber(ext.total_input_tokens || 0))}</td><td>${escHtml(formatNumber(ext.total_output_tokens || 0))}</td><td>${escHtml("$" + ext.estimated_cost_usd.toFixed(2))}</td></tr>`;
+          }
+          extHtml += `</tbody></table>`;
+          extTableWrap.innerHTML = extHtml;
+          usageContainer.appendChild(extTitle);
+          usageContainer.appendChild(extTableWrap);
+        }
+      } catch (err) {
+        usageContainer.innerHTML = "";
+        usageContainer.appendChild(
+          h("div", { className: "empty-state", style: { border: "none", padding: "24px" } },
+            h("div", { className: "empty-state-icon" }, "\u26A0"),
+            h("div", { className: "empty-state-text" }, "Failed to load usage: " + escHtml(err.message))
+          )
+        );
+      }
+    }
+
+    periodSelect.addEventListener("change", () => loadUsage(periodSelect.value));
+    await loadUsage("7d");
+  } catch (err) {
+    container.innerHTML = "";
+    container.appendChild(
+      h("div", { className: "empty-state" },
+        h("div", { className: "empty-state-icon" }, "\u26A0"),
+        h("div", { className: "empty-state-title" }, "Failed to load dashboard"),
+        h("div", { className: "empty-state-text" }, escHtml(err.message))
+      )
+    );
+    showToast(err.message, "error");
+  }
+});
+
+// ==========================================================================
+//  Memories Page
+// ==========================================================================
+
+registerPage("memories", async (container) => {
+  const memState = { offset: 0, limit: 20, source: "", total: 0, selected: null, view: "list", searchQuery: "", searchResults: null, sourcePrefixes: [] };
+
+  // -- Delete handler --
+  async function deleteMemory(id) {
+    if (!confirm(`Delete memory #${id}?`)) return;
+    try {
+      await api(`/memory/${id}`, { method: "DELETE" });
+      invalidateCache();
+      showToast("Memory deleted", "success");
+      memState.selected = null;
+      memState.offset = 0;
+      await loadMemories();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  }
+
+  // -- Build page skeleton --
+  function buildSkeleton() {
+    container.innerHTML = "";
+
+    // Filter bar
+    const filterBar = h("div", { className: "filter-bar mb-16" });
+
+    const sourceSelect = h("select", { className: "source-select", id: "sourceSelect" });
+    const allOpt = h("option", { value: "" }, "All sources");
+    sourceSelect.appendChild(allOpt);
+    // Populate dynamically after load
+    memState.sourcePrefixes.forEach((prefix) => {
+      const opt = h("option", { value: prefix }, prefix);
+      if (prefix === memState.source) opt.selected = true;
+      sourceSelect.appendChild(opt);
+    });
+    sourceSelect.addEventListener("change", (e) => {
+      memState.source = e.target.value;
+      memState.offset = 0;
+      memState.searchQuery = "";
+      memState.searchResults = null;
+      const globalSearch = document.getElementById("globalSearch");
+      if (globalSearch) globalSearch.value = "";
+      loadMemories();
+    });
+
+    const viewToggle = h("div", { className: "view-toggle" });
+    const listBtn = h("button", {
+      className: `btn ${memState.view === "list" ? "active" : ""}`,
+      onClick: () => { memState.view = "list"; renderContent(); },
+    }, "List");
+    const gridBtn = h("button", {
+      className: `btn ${memState.view === "grid" ? "active" : ""}`,
+      onClick: () => { memState.view = "grid"; renderContent(); },
+    }, "Grid");
+    viewToggle.appendChild(listBtn);
+    viewToggle.appendChild(gridBtn);
+
+    filterBar.appendChild(sourceSelect);
+    filterBar.appendChild(viewToggle);
+    container.appendChild(filterBar);
+
+    // Content container
+    const contentDiv = h("div", { id: "memoriesContent" });
+    container.appendChild(contentDiv);
+
+    // Pagination
+    const pag = h("div", { className: "pagination", id: "memoriesPagination" });
+    container.appendChild(pag);
+  }
+
+  // -- Render content based on current view mode --
+  function renderContent() {
+    const contentDiv = document.getElementById("memoriesContent");
+    if (!contentDiv) return;
+    contentDiv.innerHTML = "";
+
+    // Update view toggle button active states
+    container.querySelectorAll(".view-toggle .btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.textContent.toLowerCase() === memState.view);
+    });
+
+    const memories = memState.searchResults || memState.memories || [];
+
+    if (memories.length === 0) {
+      contentDiv.appendChild(
+        h("div", { className: "empty-state" },
+          h("div", { className: "empty-state-icon" }, "\u25C6"),
+          h("div", { className: "empty-state-title" }, memState.searchQuery ? "No search results" : "No memories found"),
+          h("div", { className: "empty-state-text" }, memState.searchQuery ? "Try a different search query." : "Memories will appear here once added.")
+        )
+      );
+      renderPagination();
+      return;
+    }
+
+    if (memState.view === "grid") {
+      renderGridView(contentDiv, memories);
+    } else {
+      renderListView(contentDiv, memories);
+    }
+
+    renderPagination();
+  }
+
+  // -- List view (split layout) --
+  function renderListView(contentDiv, memories) {
+    const layout = h("div", { className: "memories-layout" });
+
+    // Left: list panel
+    const listPanel = h("div", { className: "memories-list-panel" });
+    memories.forEach((mem) => {
+      const isActive = memState.selected && memState.selected.id === mem.id;
+      const item = document.createElement("div");
+      item.className = `memory-item${isActive ? " active" : ""}`;
+      item.dataset.memId = mem.id;
+      const truncText = (mem.text || "").length > 120
+        ? escHtml((mem.text || "").slice(0, 120)) + "..."
+        : escHtml(mem.text || "");
+
+      let scoreHtml = "";
+      if (mem.similarity != null) {
+        scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.similarity * 100).toFixed(1)))}%</span>`;
+      }
+
+      item.innerHTML = `
+        <div class="memory-item-header">
+          <span class="memory-item-source">${escHtml(mem.source || "")}</span>
+          <span class="memory-item-id">#${escHtml(String(mem.id))}${scoreHtml}</span>
+        </div>
+        <div class="memory-item-text">${truncText}</div>
+      `;
+      item.addEventListener("click", () => {
+        memState.selected = mem;
+        listPanel.querySelectorAll(".memory-item").forEach((el) => {
+          el.classList.toggle("active", el.dataset.memId === String(mem.id));
+        });
+        updateDetailPanel();
+      });
+      listPanel.appendChild(item);
+    });
+
+    // Right: detail panel
+    const detailPanel = h("div", { className: "memories-detail-panel", id: "memoryDetailPanel" });
+
+    layout.appendChild(listPanel);
+    layout.appendChild(detailPanel);
+    contentDiv.appendChild(layout);
+
+    updateDetailPanel();
+  }
+
+  // -- Update detail panel only (no list re-render) --
+  function updateDetailPanel() {
+    const detailPanel = document.getElementById("memoryDetailPanel");
+    if (!detailPanel) return;
+
+    if (memState.selected) {
+      const mem = memState.selected;
+      detailPanel.innerHTML = `
+        <div class="detail-header">
+          <div>
+            <span class="memory-item-source" style="font-size:0.85rem;">${escHtml(mem.source || "")}</span>
+          </div>
+          <span class="memory-item-id" style="font-size:0.78rem;">#${escHtml(String(mem.id))}</span>
+        </div>
+        <div class="detail-text">${escHtml(mem.text || "")}</div>
+        <div class="detail-meta">
+          <div class="meta-item">
+            <div class="meta-label">ID</div>
+            <div class="meta-value font-mono">${escHtml(String(mem.id))}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-label">Source</div>
+            <div class="meta-value">${escHtml(mem.source || "N/A")}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-label">Created</div>
+            <div class="meta-value">${mem.created_at ? timeAgo(mem.created_at) : "N/A"}</div>
+          </div>
+        </div>
+        <div class="detail-actions"></div>
+      `;
+      // Bind delete button via addEventListener (not inline onclick)
+      const deleteBtn = h("button", { className: "btn btn-danger btn-sm" }, "Delete");
+      deleteBtn.addEventListener("click", () => deleteMemory(mem.id));
+      detailPanel.querySelector(".detail-actions").appendChild(deleteBtn);
+    } else {
+      detailPanel.innerHTML = `
+        <div class="empty-state" style="border:none;padding:60px 20px;">
+          <div class="empty-state-icon">\u25C6</div>
+          <div class="empty-state-text">Select a memory to view details</div>
+        </div>
+      `;
+    }
+  }
+
+  // -- Grid view --
+  function renderGridView(contentDiv, memories) {
+    const grid = h("div", { className: "memory-grid-view" });
+    memories.forEach((mem) => {
+      const truncText = (mem.text || "").length > 200
+        ? escHtml((mem.text || "").slice(0, 200)) + "..."
+        : escHtml(mem.text || "");
+
+      let scoreHtml = "";
+      if (mem.similarity != null) {
+        scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.similarity * 100).toFixed(1)))}%</span>`;
+      }
+
+      const card = document.createElement("div");
+      card.className = "memory-card";
+      card.innerHTML = `
+        <div class="memory-item-header">
+          <span class="memory-item-source">${escHtml(mem.source || "")}</span>
+          <span class="memory-item-id">#${escHtml(String(mem.id))}${scoreHtml}</span>
+        </div>
+        <div class="memory-item-text mt-8">${truncText}</div>
+      `;
+      grid.appendChild(card);
+    });
+    contentDiv.appendChild(grid);
+  }
+
+  // -- Pagination with jump-to-page --
+  function renderPagination() {
+    const pag = document.getElementById("memoriesPagination");
+    if (!pag) return;
+    pag.innerHTML = "";
+
+    // Don't show pagination for search results
+    if (memState.searchResults) {
+      const info = h("span", { className: "pagination-info" },
+        `${memState.searchResults.length} search result${memState.searchResults.length !== 1 ? "s" : ""}`
+      );
+      pag.appendChild(info);
+      return;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(memState.total / memState.limit));
+    const currentPage = Math.floor(memState.offset / memState.limit) + 1;
+    const start = memState.total > 0 ? memState.offset + 1 : 0;
+    const end = Math.min(memState.offset + memState.limit, memState.total);
+
+    const info = h("span", { className: "pagination-info" },
+      `${start}\u2013${end} of ${memState.total}`
+    );
+
+    const controls = h("div", { className: "pagination-controls" });
+
+    const prevBtn = h("button", {
+      className: "btn btn-sm",
+      onClick: () => {
+        memState.offset = Math.max(0, memState.offset - memState.limit);
+        loadMemories();
+      },
+    }, "\u2190");
+    if (memState.offset === 0) prevBtn.disabled = true;
+
+    // Jump-to-page input
+    const jumpWrap = h("div", { className: "pagination-jump" });
+    const jumpLabel = h("span", { className: "text-muted", style: { fontSize: "0.78rem" } }, "Page");
+    const jumpInput = h("input", {
+      type: "number",
+      className: "page-jump-input",
+      value: currentPage,
+      min: 1,
+      max: totalPages,
+    });
+    const jumpTotal = h("span", { className: "text-muted", style: { fontSize: "0.78rem" } }, `of ${totalPages}`);
+
+    jumpInput.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      const page = parseInt(jumpInput.value, 10);
+      if (isNaN(page) || page < 1 || page > totalPages) {
+        jumpInput.value = currentPage;
+        return;
+      }
+      memState.offset = (page - 1) * memState.limit;
+      loadMemories();
+    });
+    jumpInput.addEventListener("blur", () => {
+      const page = parseInt(jumpInput.value, 10);
+      if (isNaN(page) || page < 1 || page > totalPages) {
+        jumpInput.value = currentPage;
+        return;
+      }
+      if (page !== currentPage) {
+        memState.offset = (page - 1) * memState.limit;
+        loadMemories();
+      }
+    });
+
+    jumpWrap.appendChild(jumpLabel);
+    jumpWrap.appendChild(jumpInput);
+    jumpWrap.appendChild(jumpTotal);
+
+    const nextBtn = h("button", {
+      className: "btn btn-sm",
+      onClick: () => {
+        memState.offset += memState.limit;
+        loadMemories();
+      },
+    }, "\u2192");
+    if (memState.offset + memState.limit >= memState.total) nextBtn.disabled = true;
+
+    // Page size selector
+    const sizeWrap = h("div", { className: "pagination-jump" });
+    const sizeLabel = h("span", { className: "text-muted", style: { fontSize: "0.78rem" } }, "Per page");
+    const sizeSelect = h("select", { className: "page-size-select" });
+    [20, 50, 100, 200].forEach((n) => {
+      const opt = h("option", { value: n }, String(n));
+      if (n === memState.limit) opt.selected = true;
+      sizeSelect.appendChild(opt);
+    });
+    sizeSelect.addEventListener("change", () => {
+      memState.limit = parseInt(sizeSelect.value, 10);
+      memState.offset = 0;
+      loadMemories();
+    });
+    sizeWrap.appendChild(sizeLabel);
+    sizeWrap.appendChild(sizeSelect);
+
+    controls.appendChild(prevBtn);
+    controls.appendChild(jumpWrap);
+    controls.appendChild(nextBtn);
+    controls.appendChild(sizeWrap);
+
+    pag.appendChild(info);
+    pag.appendChild(controls);
+  }
+
+  // -- Load memories from API --
+  async function loadMemories() {
+    const contentDiv = document.getElementById("memoriesContent");
+    if (contentDiv) {
+      contentDiv.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+    }
+
+    try {
+      let url = `/memories?offset=${memState.offset}&limit=${memState.limit}`;
+      if (memState.source) {
+        url += `&source=${encodeURIComponent(memState.source)}`;
+      }
+      const data = await api(url);
+      memState.memories = data.memories || [];
+      memState.total = data.total || 0;
+      memState.searchResults = null;
+      memState.searchQuery = "";
+      renderContent();
+    } catch (err) {
+      const contentDiv = document.getElementById("memoriesContent");
+      if (contentDiv) {
+        contentDiv.innerHTML = "";
+        contentDiv.appendChild(
+          h("div", { className: "empty-state" },
+            h("div", { className: "empty-state-icon" }, "\u26A0"),
+            h("div", { className: "empty-state-title" }, "Failed to load memories"),
+            h("div", { className: "empty-state-text" }, escHtml(err.message))
+          )
+        );
+      }
+      showToast(err.message, "error");
+    }
+  }
+
+  // -- Search memories --
+  async function searchMemories(query) {
+    const contentDiv = document.getElementById("memoriesContent");
+    if (contentDiv) {
+      contentDiv.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+    }
+
+    try {
+      const data = await api("/search", {
+        method: "POST",
+        body: JSON.stringify({ query, k: 20, hybrid: true }),
+      });
+      memState.searchQuery = query;
+      memState.searchResults = data.results || [];
+      memState.selected = null;
+      renderContent();
+    } catch (err) {
+      const contentDiv = document.getElementById("memoriesContent");
+      if (contentDiv) {
+        contentDiv.innerHTML = "";
+        contentDiv.appendChild(
+          h("div", { className: "empty-state" },
+            h("div", { className: "empty-state-icon" }, "\u26A0"),
+            h("div", { className: "empty-state-title" }, "Search failed"),
+            h("div", { className: "empty-state-text" }, escHtml(err.message))
+          )
+        );
+      }
+      showToast(err.message, "error");
+    }
+  }
+
+  // -- Expose search trigger for global search integration --
+  pageCallbacks.search = searchMemories;
+  pageCallbacks.reset = () => {
+    memState.searchQuery = "";
+    memState.searchResults = null;
+    memState.offset = 0;
+    loadMemories();
+  };
+
+  // -- Fetch source prefixes for dropdown --
+  async function loadSourcePrefixes() {
+    try {
+      const usage = await api("/usage?period=all");
+      const prefixSet = new Set();
+      for (const opData of Object.values(usage.operations || {})) {
+        for (const src of Object.keys(opData.by_source || {})) {
+          if (src === "(unknown)") continue;
+          const prefix = src.includes("/") ? src.split("/")[0] : src;
+          prefixSet.add(prefix);
+        }
+      }
+      memState.sourcePrefixes = [...prefixSet].sort();
+      // Update dropdown
+      const sel = document.getElementById("sourceSelect");
+      if (sel) {
+        // Keep first "All sources" option, replace rest
+        while (sel.options.length > 1) sel.remove(1);
+        memState.sourcePrefixes.forEach((p) => {
+          const opt = h("option", { value: p }, p);
+          if (p === memState.source) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }
+    } catch { /* non-critical */ }
+  }
+
+  // -- Initial render --
+  buildSkeleton();
+
+  // Load prefixes in background
+  loadSourcePrefixes();
+
+  // If navigated here with a pending search query, run it
+  const globalSearch = document.getElementById("globalSearch");
+  const pendingQuery = globalSearch?.value?.trim();
+  if (pendingQuery) {
+    await searchMemories(pendingQuery);
+  } else {
+    await loadMemories();
+  }
+});
+
+// ==========================================================================
+//  Global Search Wiring
+// ==========================================================================
+
+(function initGlobalSearch() {
+  const globalSearch = document.getElementById("globalSearch");
+  if (!globalSearch) return;
+
+  globalSearch.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const query = globalSearch.value.trim();
+
+    if (!query) {
+      // Reset to normal list if on memories page
+      if (state.currentPage === "memories" && pageCallbacks.reset) {
+        pageCallbacks.reset();
+      }
+      return;
+    }
+
+    if (state.currentPage === "memories" && pageCallbacks.search) {
+      pageCallbacks.search(query);
+    } else {
+      // Navigate to memories page; the page will pick up the query from the input
+      window.location.hash = "#/memories";
+    }
+  });
+
+  // Handle clearing via the search clear button (type=search)
+  globalSearch.addEventListener("search", () => {
+    if (globalSearch.value === "" && state.currentPage === "memories" && pageCallbacks.reset) {
+      pageCallbacks.reset();
+    }
+  });
+})();
+
+// ==========================================================================
+//  Extractions Page
+// ==========================================================================
+
+registerPage("extractions", async (container) => {
+  container.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+
+  try {
+    const [extractStatus, usage] = await Promise.all([
+      api("/extract/status"),
+      api("/usage?period=7d"),
+    ]);
+
+    const totalCalls = usage.extraction?.total_calls ?? 0;
+    const byModel = usage.extraction?.by_model || {};
+
+    // Success rate: only show if error data is available, otherwise N/A
+    const successRate = "\u2014";
+
+    const statusLabel = extractStatus.enabled ? "Active" : "Inactive";
+    const statusBadgeClass = extractStatus.enabled ? "badge-success" : "badge-warning";
+    const providerLabel = extractStatus.provider || "N/A";
+
+    container.innerHTML = "";
+
+    // Section: Stat cards
+    const statSection = h("div", { className: "section-title" }, "Overview");
+    const statGrid = h("div", { className: "stat-grid" });
+
+    statGrid.innerHTML = `
+      <div class="stat-card">
+        <div class="stat-value">${escHtml(formatNumber(totalCalls))}</div>
+        <span class="stat-label">Jobs 7d</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${escHtml(successRate)}</div>
+        <span class="stat-label">Success Rate</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value"><span class="badge ${statusBadgeClass}">${escHtml(statusLabel)}</span></div>
+        <span class="stat-label">Status</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" style="font-size:1.1rem;">${escHtml(providerLabel)}</div>
+        <span class="stat-label">Provider</span>
+      </div>
+    `;
+
+    container.appendChild(statSection);
+    container.appendChild(statGrid);
+
+    // Section: Configuration
+    const configSection = h("div", { className: "section-title mt-24" }, "Configuration");
+    const configGrid = h("div", { className: "info-grid" });
+
+    configGrid.innerHTML = `
+      <div class="info-item">
+        <div class="info-item-label">Provider</div>
+        <div class="info-item-value">${escHtml(extractStatus.provider || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Model</div>
+        <div class="info-item-value">${escHtml(extractStatus.model || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Enabled</div>
+        <div class="info-item-value"><span class="badge ${statusBadgeClass}">${escHtml(statusLabel)}</span></div>
+      </div>
+    `;
+
+    container.appendChild(configSection);
+    container.appendChild(configGrid);
+
+    // Section: Token Usage by Model
+    const modelKeys = Object.keys(byModel);
+    if (modelKeys.length > 0) {
+      const tableSection = h("div", { className: "section-title mt-24" }, "Token Usage by Model");
+      const tableWrap = h("div", { className: "table-wrap" });
+
+      let tableHtml = `
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Calls</th>
+              <th>Input Tokens</th>
+              <th>Output Tokens</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+      for (const [model, data] of Object.entries(byModel)) {
+        tableHtml += `
+            <tr>
+              <td class="font-mono">${escHtml(model)}</td>
+              <td>${escHtml(formatNumber(data.calls || 0))}</td>
+              <td>${escHtml(formatNumber(data.input_tokens || 0))}</td>
+              <td>${escHtml(formatNumber(data.output_tokens || 0))}</td>
+            </tr>
+        `;
+      }
+      tableHtml += `
+          </tbody>
+        </table>
+      `;
+
+      tableWrap.innerHTML = tableHtml;
+      container.appendChild(tableSection);
+      container.appendChild(tableWrap);
+    }
+  } catch (err) {
+    container.innerHTML = "";
+    container.appendChild(
+      h("div", { className: "empty-state" },
+        h("div", { className: "empty-state-icon" }, "\u26A0"),
+        h("div", { className: "empty-state-title" }, "Failed to load extractions"),
+        h("div", { className: "empty-state-text" }, escHtml(err.message))
+      )
+    );
+    showToast(err.message, "error");
+  }
+});
+
+// ==========================================================================
+//  API Keys Page
+// ==========================================================================
+
+registerPage("keys", async (container) => {
+  container.innerHTML = "";
+
+  // Section: API Key Configuration
+  const configSection = h("div", { className: "settings-section" });
+  const configTitle = h("div", { className: "section-title" }, "API Key Configuration");
+
+  const keyForm = document.createElement("div");
+  keyForm.className = "key-form";
+
+  const description = h("div", { className: "key-description mb-16" },
+    "Configure the API key used to authenticate requests to the Memories server. " +
+    "The key is stored in your browser session and sent as an X-API-Key header."
+  );
+
+  const inputRow = h("div", { className: "key-input-row" });
+  const keyInput = h("input", {
+    type: "password",
+    placeholder: "Enter API key...",
+    value: state.apiKey || "",
+    style: { flex: "1" },
+  });
+  keyInput.className = "key-input";
+
+  const saveBtn = h("button", { className: "btn btn-primary" }, "Save Key");
+  const clearBtn = h("button", { className: "btn" }, "Clear");
+
+  inputRow.appendChild(keyInput);
+  inputRow.appendChild(saveBtn);
+  inputRow.appendChild(clearBtn);
+
+  const statusEl = h("div", { className: "key-status", id: "keyStatus" });
+
+  // Show current status on load
+  if (state.apiKey) {
+    statusEl.innerHTML = `<span class="badge badge-info">Key configured</span>`;
+  }
+
+  // Save handler
+  saveBtn.addEventListener("click", async () => {
+    const val = keyInput.value.trim();
+    if (!val) {
+      statusEl.innerHTML = `<span class="badge badge-warning">Please enter a key</span>`;
+      return;
+    }
+
+    setApiKey(val);
+
+    statusEl.innerHTML = `<span class="text-muted" style="font-size:0.78rem;">Testing connection...</span>`;
+
+    try {
+      await api("/health");
+      statusEl.innerHTML = `<span class="badge badge-success">Connected</span>`;
+      showToast("API key saved and verified", "success");
+    } catch (err) {
+      statusEl.innerHTML = `<span class="badge badge-error">${escHtml(err.message)}</span>`;
+      showToast("Key saved but connection test failed", "warning");
+    }
+  });
+
+  // Clear handler
+  clearBtn.addEventListener("click", () => {
+    keyInput.value = "";
+    setApiKey("");
+    statusEl.innerHTML = `<span class="badge badge-warning">Key cleared</span>`;
+    showToast("API key cleared", "info");
+  });
+
+  keyForm.appendChild(description);
+  keyForm.appendChild(inputRow);
+  keyForm.appendChild(statusEl);
+
+  configSection.appendChild(configTitle);
+  configSection.appendChild(keyForm);
+  container.appendChild(configSection);
+
+  // Section: Key Management Placeholder
+  const mgmtSection = h("div", { className: "settings-section" });
+  const mgmtTitle = h("div", { className: "section-title" }, "Key Management");
+
+  const placeholder = h("div", { className: "empty-state" },
+    h("div", { className: "empty-state-icon" }, "\u26B6"),
+    h("div", { className: "empty-state-title" }, "Multi-key management coming soon"),
+    h("div", { className: "empty-state-text" },
+      "The server currently uses a single API_KEY environment variable. " +
+      "Once the backend adds multi-key endpoints, you will be able to create, rotate, and revoke keys here."
+    )
+  );
+
+  mgmtSection.appendChild(mgmtTitle);
+  mgmtSection.appendChild(placeholder);
+  container.appendChild(mgmtSection);
+});
+
+// ==========================================================================
+//  Settings Page
+// ==========================================================================
+
+registerPage("settings", async (container) => {
+  container.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+
+  try {
+    const [extractStatus, stats, metrics] = await Promise.all([
+      api("/extract/status"),
+      api("/stats"),
+      api("/metrics").catch(() => null),
+    ]);
+
+    container.innerHTML = "";
+
+    // Section: Extraction Provider
+    const extractSection = h("div", { className: "settings-section" });
+    const extractTitle = h("div", { className: "section-title" }, "Extraction Provider");
+    const extractGrid = h("div", { className: "info-grid" });
+
+    const exStatusLabel = extractStatus.enabled ? "Active" : "Inactive";
+    const exStatusBadge = extractStatus.enabled ? "badge-success" : "badge-warning";
+
+    extractGrid.innerHTML = `
+      <div class="info-item">
+        <div class="info-item-label">Provider</div>
+        <div class="info-item-value">${escHtml(extractStatus.provider || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Model</div>
+        <div class="info-item-value">${escHtml(extractStatus.model || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Status</div>
+        <div class="info-item-value"><span class="badge ${exStatusBadge}">${escHtml(exStatusLabel)}</span></div>
+      </div>
+    `;
+
+    extractSection.appendChild(extractTitle);
+    extractSection.appendChild(extractGrid);
+    container.appendChild(extractSection);
+
+    // Section: Server Info
+    const serverSection = h("div", { className: "settings-section" });
+    const serverTitle = h("div", { className: "section-title" }, "Server Info");
+    const serverGrid = h("div", { className: "info-grid" });
+
+    const indexKB = stats.index_size_bytes != null
+      ? (stats.index_size_bytes / 1024).toFixed(1) + " KB"
+      : "N/A";
+
+    const autoReload = metrics?.auto_reload_enabled != null
+      ? (metrics.auto_reload_enabled ? "Enabled" : "Disabled")
+      : (stats.auto_reload_enabled != null
+        ? (stats.auto_reload_enabled ? "Enabled" : "Disabled")
+        : "N/A");
+
+    serverGrid.innerHTML = `
+      <div class="info-item">
+        <div class="info-item-label">Embedder Model</div>
+        <div class="info-item-value">${escHtml(stats.model || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Index Size</div>
+        <div class="info-item-value">${escHtml(indexKB)}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Backups</div>
+        <div class="info-item-value">${escHtml(String(stats.backup_count ?? 0))}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Auto-Reload</div>
+        <div class="info-item-value">${escHtml(autoReload)}</div>
+      </div>
+    `;
+
+    serverSection.appendChild(serverTitle);
+    serverSection.appendChild(serverGrid);
+    container.appendChild(serverSection);
+
+    // Section: Appearance
+    const appearSection = h("div", { className: "settings-section" });
+    const appearTitle = h("div", { className: "section-title" }, "Appearance");
+    const appearDesc = h("div", { className: "text-muted mb-16", style: { fontSize: "0.84rem" } },
+      "Choose your preferred color theme. This syncs with the sidebar theme switcher."
+    );
+
+    const themeSwitcher = h("div", { className: "theme-switcher-large" });
+    const currentTheme = localStorage.getItem(THEME_STORAGE) || "system";
+
+    const themes = [
+      { value: "system", label: "System" },
+      { value: "dark", label: "Dark" },
+      { value: "light", label: "Light" },
+    ];
+
+    themes.forEach(({ value, label }) => {
+      const btn = h("button", {
+        className: `theme-btn-lg${currentTheme === value ? " active" : ""}`,
+        dataset: { themeChoice: value },
+      }, label);
+
+      btn.addEventListener("click", () => {
+        // Update localStorage and apply
+        localStorage.setItem(THEME_STORAGE, value);
+        applyTheme(value);
+
+        // Sync sidebar theme buttons
+        syncThemeButtons(value);
+
+        // Update large theme button active states
+        themeSwitcher.querySelectorAll(".theme-btn-lg").forEach((b) => {
+          b.classList.toggle("active", b.dataset.themeChoice === value);
+        });
+      });
+
+      themeSwitcher.appendChild(btn);
+    });
+
+    appearSection.appendChild(appearTitle);
+    appearSection.appendChild(appearDesc);
+    appearSection.appendChild(themeSwitcher);
+    container.appendChild(appearSection);
+
+    // Section: Danger Zone
+    const dangerSection = h("div", { className: "settings-section" });
+    const dangerTitle = h("div", { className: "section-title" }, "Danger Zone");
+    const dangerZone = h("div", { className: "danger-zone" });
+
+    const dangerHeading = h("div", {
+      style: { fontSize: "0.9rem", fontWeight: "600", color: "var(--color-error)", marginBottom: "8px" },
+    }, "Danger Zone");
+    const dangerDesc = h("div", { className: "text-muted mb-16", style: { fontSize: "0.84rem" } },
+      "These actions are irreversible. Proceed with caution."
+    );
+
+    const dangerActions = h("div", { className: "flex gap-8", style: { flexWrap: "wrap" } });
+
+    // Export All Memories
+    const exportBtn = h("button", { className: "btn" }, "Export All Memories");
+    exportBtn.addEventListener("click", async () => {
+      exportBtn.disabled = true;
+      exportBtn.textContent = "Exporting...";
+      try {
+        const data = await api("/memories?limit=10000");
+        const memories = data.memories || [];
+        const blob = new Blob([JSON.stringify(memories, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `memories-export-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast(`Exported ${memories.length} memories`, "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      } finally {
+        exportBtn.disabled = false;
+        exportBtn.textContent = "Export All Memories";
+      }
+    });
+
+    // Rebuild Index
+    const rebuildBtn = h("button", { className: "btn btn-danger" }, "Rebuild Index");
+    rebuildBtn.addEventListener("click", async () => {
+      if (!confirm("Are you sure you want to rebuild the entire index? This may take a while.")) return;
+      rebuildBtn.disabled = true;
+      rebuildBtn.textContent = "Rebuilding...";
+      try {
+        await api("/index/build", { method: "POST" });
+        invalidateCache();
+        showToast("Index rebuild started", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      } finally {
+        rebuildBtn.disabled = false;
+        rebuildBtn.textContent = "Rebuild Index";
+      }
+    });
+
+    dangerActions.appendChild(exportBtn);
+    dangerActions.appendChild(rebuildBtn);
+
+    dangerZone.appendChild(dangerHeading);
+    dangerZone.appendChild(dangerDesc);
+    dangerZone.appendChild(dangerActions);
+
+    dangerSection.appendChild(dangerTitle);
+    dangerSection.appendChild(dangerZone);
+    container.appendChild(dangerSection);
+  } catch (err) {
+    container.innerHTML = "";
+    container.appendChild(
+      h("div", { className: "empty-state" },
+        h("div", { className: "empty-state-icon" }, "\u26A0"),
+        h("div", { className: "empty-state-title" }, "Failed to load settings"),
+        h("div", { className: "empty-state-text" }, escHtml(err.message))
+      )
+    );
+    showToast(err.message, "error");
+  }
+});
+
+// -- Mobile Sidebar --------------------------------------------------------
+
+function initMobileSidebar() {
+  const menuBtn = document.getElementById("menuBtn");
+  const sidebar = document.querySelector(".sidebar");
+  const overlay = document.getElementById("sidebarOverlay");
+  if (!menuBtn || !sidebar || !overlay) return;
+
+  function openSidebar() {
+    sidebar.classList.add("open");
+    overlay.classList.add("visible");
+  }
+
+  function closeSidebar() {
+    sidebar.classList.remove("open");
+    overlay.classList.remove("visible");
+  }
+
+  menuBtn.addEventListener("click", () => {
+    if (sidebar.classList.contains("open")) {
+      closeSidebar();
+    } else {
+      openSidebar();
+    }
+  });
+
+  overlay.addEventListener("click", closeSidebar);
+
+  // Close sidebar when a nav item is clicked (mobile)
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    item.addEventListener("click", closeSidebar);
+  });
+}
+
+// -- Boot ------------------------------------------------------------------
+
+initTheme();
+syncKeyStatus();
+initMobileSidebar();
+initRouter();

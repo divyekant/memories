@@ -3,185 +3,97 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Memory Observatory</title>
+  <title>Memories</title>
   <link rel="icon" type="image/svg+xml" href="/ui/static/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/ui/static/styles.css">
   <script>
-    // Apply theme immediately to prevent flash
-    (function(){var t=localStorage.getItem("theme")||
-      (window.matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
-      document.documentElement.dataset.theme=t})();
+    // Immediate theme application to prevent flash of wrong theme
+    (function() {
+      var saved = localStorage.getItem("memories-theme");
+      if (saved === "dark") {
+        document.documentElement.setAttribute("data-theme", "dark");
+      } else if (saved === "light") {
+        document.documentElement.setAttribute("data-theme", "light");
+      } else {
+        // System preference
+        var prefersLight = window.matchMedia("(prefers-color-scheme: light)").matches;
+        document.documentElement.setAttribute("data-theme", prefersLight ? "light" : "dark");
+      }
+    })();
   </script>
 </head>
 <body>
-  <div class="backdrop"></div>
-  <main class="shell">
-    <header class="hero">
-      <div class="hero-row">
-        <div>
-          <p class="eyebrow">Memories MEMORY</p>
-          <h1>Memory Observatory</h1>
-          <p class="subtitle">Browse, filter, and inspect stored memories without leaving the browser.</p>
-        </div>
-        <button id="themeToggle" class="theme-toggle" title="Toggle light/dark mode" aria-label="Toggle theme">🌙</button>
-      </div>
-    </header>
+  <div id="app" class="app-layout">
 
-    <nav class="tab-bar">
-      <button class="tab-btn active" data-tab="memories">Memories</button>
-      <button class="tab-btn" data-tab="usage">Usage</button>
-    </nav>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">Memories</div>
 
-    <div id="tabMemories" class="tab-content active">
+      <nav class="sidebar-nav">
+        <a href="#/dashboard" class="nav-item" data-page="dashboard">
+          <span class="nav-icon">&#9670;</span>
+          <span class="nav-label">Dashboard</span>
+        </a>
+        <a href="#/memories" class="nav-item" data-page="memories">
+          <span class="nav-icon">&#9672;</span>
+          <span class="nav-label">Memories</span>
+        </a>
+        <a href="#/extractions" class="nav-item" data-page="extractions">
+          <span class="nav-icon">&#8645;</span>
+          <span class="nav-label">Extractions</span>
+        </a>
+        <a href="#/keys" class="nav-item" data-page="keys">
+          <span class="nav-icon">&#9919;</span>
+          <span class="nav-label">API Keys</span>
+        </a>
+        <a href="#/settings" class="nav-item" data-page="settings">
+          <span class="nav-icon">&#9881;</span>
+          <span class="nav-label">Settings</span>
+        </a>
+      </nav>
 
-    <section class="panel controls">
-      <div class="control-row">
-        <label>
-          API key
-          <input id="apiKey" type="password" placeholder="Optional if auth is disabled">
-        </label>
-        <label>
-          Source filter
-          <input id="source" type="text" placeholder="e.g. bug-fixes">
-        </label>
-      </div>
-
-      <div class="control-row">
-        <label>
-          Page size
-          <select id="limit">
-            <option value="10">10</option>
-            <option value="20" selected>20</option>
-            <option value="50">50</option>
-            <option value="100">100</option>
-            <option value="200">200</option>
-            <option value="500">500</option>
-          </select>
-        </label>
-
-        <div class="buttons">
-          <button id="refresh" class="btn primary">Refresh</button>
-          <button id="prev" class="btn" disabled>Previous</button>
-          <button id="next" class="btn" disabled>Next</button>
+      <div class="sidebar-footer">
+        <div class="theme-switcher">
+          <button class="theme-btn" data-theme-choice="system" title="Follow system preference">System</button>
+          <button class="theme-btn" data-theme-choice="dark" title="Dark theme">Dark</button>
+          <button class="theme-btn" data-theme-choice="light" title="Light theme">Light</button>
         </div>
       </div>
+    </aside>
 
-      <div id="status" class="status">Ready.</div>
-    </section>
+    <!-- Sidebar overlay (mobile) -->
+    <div id="sidebarOverlay" class="sidebar-overlay"></div>
 
-    <section class="panel summary">
-      <div class="metric">
-        <span class="metric-label">Visible</span>
-        <span id="visibleCount" class="metric-value">0</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">Total</span>
-        <span id="totalCount" class="metric-value">0</span>
-      </div>
-      <div class="metric metric-offset">
-        <label class="metric-label" for="offsetInput">Offset</label>
-        <input id="offsetInput" class="metric-value offset-input" type="number" min="0" value="0" title="Type an offset and press Enter to jump">
-      </div>
-    </section>
+    <!-- Main area -->
+    <div class="main-area">
 
-    <div class="content-with-sidebar">
-      <aside id="folderSidebar" class="folder-sidebar panel">
-        <h3 class="folder-heading">Folders</h3>
-        <ul id="folderList" class="folder-list">
-          <li class="folder-item active" data-folder="">
-            <span class="folder-name">All Memories</span>
-            <span id="folderAllCount" class="folder-count">0</span>
-          </li>
-        </ul>
-      </aside>
-
-      <section id="memoryList" class="memory-grid"></section>
-    </div>
-
-    </div><!-- /tabMemories -->
-
-    <div id="tabUsage" class="tab-content">
-      <section class="panel controls">
-        <div class="control-row">
-          <label>
-            Period
-            <select id="usagePeriod">
-              <option value="today">Today</option>
-              <option value="7d" selected>Last 7 days</option>
-              <option value="30d">Last 30 days</option>
-              <option value="all">All time</option>
-            </select>
-          </label>
-          <div class="buttons">
-            <button id="usageRefresh" class="btn primary">Refresh</button>
-          </div>
+      <!-- Topbar -->
+      <header class="topbar">
+        <button id="menuBtn" class="menu-btn" aria-label="Menu">&#9776;</button>
+        <h1 id="pageTitle" class="topbar-title">Dashboard</h1>
+        <div class="topbar-actions">
+          <span id="apiKeyStatus" class="topbar-key-status" title="API key status">No key</span>
+          <input id="globalSearch" type="search" class="topbar-search" placeholder="Search...">
         </div>
-        <div id="usageStatus" class="status">Ready.</div>
-      </section>
+      </header>
 
-      <section id="usageSummary" class="panel summary usage-summary">
-        <div class="metric">
-          <span class="metric-label">Total Ops</span>
-          <span id="usageTotalOps" class="metric-value">0</span>
-        </div>
-        <div class="metric">
-          <span class="metric-label">Extraction Calls</span>
-          <span id="usageExtractCalls" class="metric-value">0</span>
-        </div>
-        <div class="metric">
-          <span class="metric-label">Est. Cost</span>
-          <span id="usageEstCost" class="metric-value">$0.00</span>
-        </div>
-      </section>
+      <!-- Content -->
+      <div id="content" class="content-area"></div>
 
-      <div class="usage-grid">
-        <section class="panel usage-section">
-          <h3 class="usage-heading">Operations</h3>
-          <div id="usageOpsTable" class="usage-table-wrap">
-            <p class="notice">No data yet.</p>
-          </div>
-        </section>
-
-        <section class="panel usage-section">
-          <h3 class="usage-heading">Extraction Tokens</h3>
-          <div id="usageTokensTable" class="usage-table-wrap">
-            <p class="notice">No data yet.</p>
-          </div>
-        </section>
-      </div>
-    </div><!-- /tabUsage -->
-
-  </main>
-
-  <div id="renameFolderModal" class="modal-overlay" hidden>
-    <div class="modal panel">
-      <h3>Rename Folder</h3>
-      <label>
-        New name
-        <input id="renameFolderInput" type="text" placeholder="New folder name">
-      </label>
-      <div class="modal-actions">
-        <button id="renameFolderConfirm" class="btn primary">Rename</button>
-        <button id="renameFolderCancel" class="btn">Cancel</button>
-      </div>
     </div>
   </div>
 
-  <template id="memoryCardTemplate">
-    <article class="memory-card">
-      <div class="card-head">
-        <span class="memory-id"></span>
-        <span class="memory-source"></span>
-      </div>
-      <p class="memory-text"></p>
-      <div class="card-actions">
-        <select class="move-folder-select" title="Move to folder">
-          <option value="">Move to...</option>
-        </select>
-      </div>
-    </article>
-  </template>
+  <!-- Modal overlay -->
+  <div id="modalOverlay" class="modal-overlay" hidden>
+    <div id="modalContent" class="modal-content"></div>
+  </div>
 
-  <script src="/ui/static/app.js" defer></script>
+  <!-- Toast container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="/ui/static/app.js" type="module"></script>
 </body>
 </html>

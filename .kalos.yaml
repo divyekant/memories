@@ -1,0 +1,75 @@
+version: 0.2.0
+extends: minimal
+
+tokens:
+  colors:
+    primary: "#b8960f"
+    secondary: "#d4af37"
+    neutral: "stone"
+    semantic:
+      success: "#16A34A"
+      warning: "#CA8A04"
+      error: "#DC2626"
+      info: "#2563EB"
+  typography:
+    font_family: "Inter, system-ui, sans-serif"
+    display_font_family: "Philosopher, serif"
+    scale: "1.25"
+    base_size: 16
+  spacing:
+    base: 4
+    scale: [0, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32]
+  radii:
+    none: 0
+    sm: 4
+    md: 8
+    lg: 12
+    full: 9999
+
+rules:
+  colors:
+    max_unique: 12
+    require_semantic: true
+  typography:
+    max_font_families: 2
+    require_scale: true
+  spacing:
+    require_base_unit: true
+  accessibility:
+    min_contrast: 4.5
+    require_alt_text: true
+
+brands:
+  active: "dark"
+  palettes:
+    dark:
+      colors:
+        primary: "#d4af37"
+        secondary: "#f5d060"
+        neutral: "neutral"
+        background: "#0a0a0a"
+        background_elevated: "#111111"
+        text: "#e5e5e5"
+        text_muted: "#a3a3a3"
+        text_faint: "#666666"
+        border: "rgba(212,175,55,0.15)"
+        accent_border: "rgba(212,175,55,0.15)"
+      typography:
+        font_family: "Inter, system-ui, sans-serif"
+    light:
+      colors:
+        primary: "#b8960f"
+        secondary: "#d4af37"
+        neutral: "stone"
+        background: "#FAF9F6"
+        background_elevated: "#FFFEF9"
+        text: "#2C2418"
+        text_muted: "#7A7060"
+        text_faint: "#A69E90"
+        border: "#E8E2D6"
+        accent_border: "rgba(184,150,15,0.18)"
+      typography:
+        font_family: "Inter, system-ui, sans-serif"
+
+adapters:
+  - pencil

@@ -32,7 +32,18 @@ curl -X POST http://localhost:8900/search \
   -d '{"query": "TypeScript config", "k": 3, "hybrid": true}'
 ```
 
-The service runs at **http://localhost:8900**. API docs at http://localhost:8900/docs. Memory browser UI at http://localhost:8900/ui.
+The service runs at **http://localhost:8900**. API docs at http://localhost:8900/docs. Web UI at http://localhost:8900/ui.
+
+### Web UI
+
+The built-in UI at `/ui` provides:
+- **Dashboard** — memory stats, extraction metrics, server info
+- **Memories** — browse, search, filter, and manage memories with list+detail or grid view
+- **Extractions** — extraction job stats and token usage
+- **API Keys** — configure authentication
+- **Settings** — provider config, server info, theme toggle (dark/light/system), export and maintenance
+
+No build step — vanilla JS + CSS served directly from `webui/`.
 
 ---
 
