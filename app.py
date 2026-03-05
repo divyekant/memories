@@ -25,7 +25,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from auth_context import AuthContext
 from embedder_reloader import EmbedderAutoReloadController
+from key_store import KeyStore
 from memory_engine import MemoryEngine
 from runtime_memory import MemoryTrimmer
 from usage_tracker import UsageTracker, NullTracker
@@ -60,6 +62,7 @@ except Exception as e:
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/workspace")
 API_KEY = os.getenv("API_KEY", "")  # Empty = no auth (local-only)
+key_store: KeyStore = None  # type: ignore  — initialized in lifespan
 PORT = int(os.getenv("PORT", "8000"))
 BASE_DIR = Path(__file__).resolve().parent
 UI_DIR = BASE_DIR / "webui"
@@ -215,14 +218,19 @@ embedder_reload_metrics: Dict[str, Any] = {
 _auth_failures: Dict[str, list] = defaultdict(list)
 
 async def verify_api_key(request: Request):
-    """Check X-API-Key header if API_KEY is configured.
+    """Check X-API-Key header against env key and managed key store.
 
-    Uses constant-time comparison and per-IP rate limiting on failures.
+    Uses constant-time comparison for the env key and per-IP rate limiting
+    on failures.  Sets ``request.state.auth`` to an :class:`AuthContext`.
     """
-    if not API_KEY:
-        return  # No auth configured
+    # No auth configured at all → unrestricted
+    if not API_KEY and key_store is None:
+        request.state.auth = AuthContext.unrestricted()
+        return
+
     path = request.url.path
     if path in {"/health", "/health/ready", "/ui"} or path.startswith("/ui/"):
+        request.state.auth = AuthContext.unrestricted()
         return  # Allow unauthenticated health checks + UI shell/static files
 
     # Rate limit failed auth attempts (10 per minute per IP)
@@ -232,10 +240,53 @@ async def verify_api_key(request: Request):
     if len(_auth_failures[ip]) >= 10:
         raise HTTPException(status_code=429, detail="Too many failed authentication attempts")
 
-    key = request.headers.get("X-API-Key", "")
-    if not hmac.compare_digest(key.encode(), API_KEY.encode()):
+    raw_key = request.headers.get("X-API-Key", "")
+
+    # No key supplied
+    if not raw_key:
+        if not API_KEY:
+            request.state.auth = AuthContext.unrestricted()
+            return
         _auth_failures[ip].append(now)
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+    # Path 1: constant-time compare against env API_KEY
+    if API_KEY and hmac.compare_digest(raw_key.encode(), API_KEY.encode()):
+        request.state.auth = AuthContext(
+            role="admin", prefixes=None, key_type="env",
+        )
+        return
+
+    # Path 2: look up in managed key store
+    if key_store is not None:
+        record = await run_in_threadpool(key_store.lookup, raw_key)
+        if record is not None:
+            request.state.auth = AuthContext(
+                role=record["role"],
+                prefixes=record["prefixes"] or None,
+                key_type="managed",
+                key_id=record["id"],
+                key_name=record["name"],
+            )
+            return
+
+    # No match
+    _auth_failures[ip].append(now)
+    raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+def _get_auth(request: Request) -> AuthContext:
+    return getattr(request.state, "auth", AuthContext.unrestricted())
+
+
+def _require_write(auth: AuthContext, source: str) -> None:
+    if not auth.can_write(source):
+        raise HTTPException(status_code=403, detail=f"Key does not have write access to source: {source}")
+
+
+def _require_admin(auth: AuthContext) -> None:
+    if not auth.can_manage_keys:
+        raise HTTPException(status_code=403, detail="Admin key required")
 
 
 # -- App lifecycle ------------------------------------------------------------
@@ -794,6 +845,9 @@ async def lifespan(app: FastAPI):
     if _env_bool("USAGE_TRACKING", False):
         usage_tracker = UsageTracker(os.path.join(DATA_DIR, "usage.db"))
         logger.info("Usage tracking enabled")
+    global key_store
+    key_store = KeyStore(os.path.join(DATA_DIR, "keys.db"))
+    logger.info("Key store initialized")
     _ensure_extract_workers_started()
     background_tasks: List[asyncio.Task] = [
         asyncio.create_task(_periodic_job_cleanup(), name="job-cleanup"),
@@ -999,6 +1053,13 @@ async def health_ready():
     return status
 
 
+@app.get("/api/keys/me")
+async def get_my_key(request: Request):
+    """Returns the caller's role, type, and allowed prefixes."""
+    auth = _get_auth(request)
+    return auth.to_me_response()
+
+
 @app.get("/ui", include_in_schema=False)
 async def ui():
     """Serve the memory browser UI."""
@@ -1126,45 +1187,48 @@ async def prune(dry_run: bool = Query(True)):
 # -- Search -------------------------------------------------------------------
 
 @app.post("/search")
-async def search(request: SearchRequest):
+async def search(request_body: SearchRequest, request: Request):
     """Search for similar memories (vector-only or hybrid)"""
-    logger.info("Search: q=%r k=%d hybrid=%s", request.query[:80], request.k, request.hybrid)
+    auth = _get_auth(request)
+    logger.info("Search: q=%r k=%d hybrid=%s", request_body.query[:80], request_body.k, request_body.hybrid)
     try:
-        if request.hybrid:
+        if request_body.hybrid:
             results = memory.hybrid_search(
-                query=request.query,
-                k=request.k,
-                threshold=request.threshold,
-                vector_weight=request.vector_weight,
-                source_prefix=request.source_prefix,
+                query=request_body.query,
+                k=request_body.k,
+                threshold=request_body.threshold,
+                vector_weight=request_body.vector_weight,
+                source_prefix=request_body.source_prefix,
             )
         else:
             results = memory.search(
-                query=request.query,
-                k=request.k,
-                threshold=request.threshold,
-                source_prefix=request.source_prefix,
+                query=request_body.query,
+                k=request_body.k,
+                threshold=request_body.threshold,
+                source_prefix=request_body.source_prefix,
             )
-        usage_tracker.log_api_event("search", request.source)
+        results = auth.filter_results(results)
+        usage_tracker.log_api_event("search", request_body.source)
         for r in results:
             if "id" in r:
                 usage_tracker.log_retrieval(
                     memory_id=r["id"],
-                    query=request.query[:200],
-                    source=request.source,
+                    query=request_body.query[:200],
+                    source=request_body.source,
                 )
-        return {"query": request.query, "results": results, "count": len(results)}
+        return {"query": request_body.query, "results": results, "count": len(results)}
     except Exception as e:
         logger.exception("Search failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/search/batch")
-async def search_batch(request: SearchBatchRequest):
+async def search_batch(request_body: SearchBatchRequest, request: Request):
     """Run multiple searches in one request."""
+    auth = _get_auth(request)
     try:
         outputs = []
-        for item in request.queries:
+        for item in request_body.queries:
             if item.hybrid:
                 results = memory.hybrid_search(
                     query=item.query,
@@ -1180,6 +1244,7 @@ async def search_batch(request: SearchBatchRequest):
                     threshold=item.threshold,
                     source_prefix=item.source_prefix,
                 )
+            results = auth.filter_results(results)
             for r in results:
                 if "id" in r:
                     usage_tracker.log_retrieval(
@@ -1188,7 +1253,7 @@ async def search_batch(request: SearchBatchRequest):
                         source=item.source,
                     )
             outputs.append({"query": item.query, "results": results, "count": len(results)})
-        usage_tracker.log_api_event("search_batch", count=len(request.queries))
+        usage_tracker.log_api_event("search_batch", count=len(request_body.queries))
         return {"results": outputs, "count": len(outputs)}
     except Exception as e:
         logger.exception("Batch search failed")
@@ -1265,10 +1330,16 @@ async def delete_memory(memory_id: int):
 
 
 @app.get("/memory/{memory_id}")
-async def get_memory(memory_id: int):
+async def get_memory(memory_id: int, request: Request):
     """Fetch a single memory by ID."""
+    auth = _get_auth(request)
     try:
-        return memory.get_memory(memory_id)
+        result = memory.get_memory(memory_id)
+        if not auth.can_read(result.get("source", "")):
+            raise HTTPException(status_code=403, detail="Access denied to this memory's source")
+        return result
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -1277,10 +1348,12 @@ async def get_memory(memory_id: int):
 
 
 @app.post("/memory/get-batch")
-async def get_memory_batch(request: MemoryGetBatchRequest):
+async def get_memory_batch(request_body: MemoryGetBatchRequest, request: Request):
     """Fetch multiple memories by IDs."""
+    auth = _get_auth(request)
     try:
-        result = memory.get_memories(request.ids)
+        result = memory.get_memories(request_body.ids)
+        result["memories"] = auth.filter_results(result.get("memories", []))
         return {**result, "count": len(result["memories"])}
     except Exception as e:
         logger.exception("Get batch failed")
@@ -1426,24 +1499,31 @@ async def count_memories(
 
 @app.get("/memories")
 async def list_memories(
+    request: Request,
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=5000),
     source: Optional[str] = Query(None, max_length=500),
 ):
     """List memories with pagination and optional source filter"""
-    return memory.list_memories(offset=offset, limit=limit, source_filter=source)
+    auth = _get_auth(request)
+    result = memory.list_memories(offset=offset, limit=limit, source_filter=source)
+    result["memories"] = auth.filter_results(result.get("memories", []))
+    return result
 
 
 @app.get("/folders")
-async def list_folders():
+async def list_folders(request: Request):
     """List unique source-based folders with memory counts."""
+    auth = _get_auth(request)
     folder_counts: Dict[str, int] = {}
     for m in memory.metadata:
         source = m.get("source", "")
+        if not auth.can_read(source):
+            continue
         folder = source.split("/")[0] if "/" in source else source if source else "(ungrouped)"
         folder_counts[folder] = folder_counts.get(folder, 0) + 1
     folders = [{"name": k, "count": v} for k, v in sorted(folder_counts.items())]
-    return {"folders": folders, "total": len(memory.metadata)}
+    return {"folders": folders, "total": sum(folder_counts.values())}
 
 
 @app.post("/folders/rename")
