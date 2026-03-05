@@ -1206,6 +1206,76 @@ body,
   transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease;
 }
 
+/* -- Period & Source Select ------------------------------------------------- */
+
+.period-select,
+.source-select,
+.page-size-select {
+  background: var(--color-bg-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 0.84rem;
+  font-family: var(--font-body);
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+
+.period-select:hover,
+.source-select:hover,
+.page-size-select:hover {
+  border-color: var(--color-primary);
+}
+
+.source-select {
+  min-width: 180px;
+  max-width: 260px;
+}
+
+/* -- Pagination Controls --------------------------------------------------- */
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pagination-jump {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.page-jump-input {
+  width: 56px;
+  background: var(--color-bg-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+.page-jump-input::-webkit-outer-spin-button,
+.page-jump-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.page-jump-input:focus {
+  border-color: var(--color-primary);
+  outline: none;
+}
+
+.page-size-select {
+  padding: 4px 6px;
+  font-size: 0.78rem;
+}
+
 /* -- Reduced Motion -------------------------------------------------------- */
 
 @media (prefers-reduced-motion: reduce) {

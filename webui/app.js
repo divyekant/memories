@@ -22,6 +22,16 @@ export function authHeaders() {
   return headers;
 }
 
+// Simple response cache (30s TTL) to avoid re-fetching on page navigation
+const _apiCache = new Map();
+const CACHE_TTL = 30_000;
+
+function _cacheKey(path, options) {
+  if (options?.method && options.method !== "GET") return null;
+  if (options?.body) return null;
+  return path;
+}
+
 export async function api(path, options = {}) {
   const defaults = {
     headers: authHeaders(),
@@ -31,6 +41,15 @@ export async function api(path, options = {}) {
     ...options,
     headers: { ...defaults.headers, ...(options.headers || {}) },
   };
+
+  // Check cache for GET requests
+  const ck = _cacheKey(path, options);
+  if (ck && _apiCache.has(ck)) {
+    const cached = _apiCache.get(ck);
+    if (Date.now() - cached.ts < CACHE_TTL) return cached.data;
+    _apiCache.delete(ck);
+  }
+
   const resp = await fetch(path, merged);
   if (!resp.ok) {
     let detail;
@@ -50,10 +69,23 @@ export async function api(path, options = {}) {
     throw new Error(detail || `HTTP ${resp.status}`);
   }
   const ct = resp.headers.get("content-type") || "";
+  let result;
   if (ct.includes("application/json")) {
-    return resp.json();
+    result = await resp.json();
+  } else {
+    result = await resp.text();
   }
-  return resp.text();
+
+  // Cache GET responses
+  if (ck) _apiCache.set(ck, { data: result, ts: Date.now() });
+
+  return result;
+}
+
+// Bust cache for a path (after mutations)
+export function invalidateCache(path) {
+  if (path) _apiCache.delete(path);
+  else _apiCache.clear();
 }
 
 // -- State Accessors -------------------------------------------------------
@@ -69,6 +101,7 @@ export function setApiKey(key) {
   } else {
     sessionStorage.removeItem(API_KEY_STORAGE);
   }
+  invalidateCache();
   syncKeyStatus();
 }
 
@@ -413,6 +446,116 @@ registerPage("dashboard", async (container) => {
 
     container.appendChild(infoSection);
     container.appendChild(infoGrid);
+
+    // Section: Usage Analytics
+    const usageSection = h("div", { className: "section-title mt-24" }, "Usage Analytics");
+    container.appendChild(usageSection);
+
+    // Period selector
+    const periodBar = h("div", { className: "filter-bar mb-16" });
+    const periodSelect = h("select", { className: "period-select" });
+    ["today", "7d", "30d", "all"].forEach((p) => {
+      const opt = h("option", { value: p }, p === "today" ? "Today" : p === "all" ? "All Time" : `Last ${p}`);
+      if (p === "7d") opt.selected = true;
+      periodSelect.appendChild(opt);
+    });
+    periodBar.appendChild(periodSelect);
+    container.appendChild(periodBar);
+
+    const usageContainer = h("div", { id: "dashboardUsage" });
+    container.appendChild(usageContainer);
+
+    async function loadUsage(period) {
+      usageContainer.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+      try {
+        const usage = await api(`/usage?period=${period}`);
+        usageContainer.innerHTML = "";
+
+        // Usage stat cards
+        const uStatGrid = h("div", { className: "stat-grid mb-16" });
+        const ops = usage.operations || {};
+        const totalOps = Object.values(ops).reduce((sum, o) => sum + (o.total || 0), 0);
+        const addOps = ops.add?.total || 0;
+        const searchOps = ops.search?.total || 0;
+        const deleteOps = ops.delete?.total || 0;
+        const extractOps = ops.extract?.total || 0;
+        const estCost = usage.extraction?.estimated_cost_usd;
+
+        uStatGrid.innerHTML = `
+          <div class="stat-card">
+            <div class="stat-value">${formatNumber(totalOps)}</div>
+            <span class="stat-label">Total Operations</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">${formatNumber(addOps)}</div>
+            <span class="stat-label">Adds</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">${formatNumber(searchOps)}</div>
+            <span class="stat-label">Searches</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">${estCost != null ? "$" + estCost.toFixed(2) : "\u2014"}</div>
+            <span class="stat-label">Est. Cost</span>
+          </div>
+        `;
+        usageContainer.appendChild(uStatGrid);
+
+        // Operations breakdown table
+        const opTypes = Object.keys(ops).filter((k) => ops[k].total > 0);
+        if (opTypes.length > 0) {
+          const opTitle = h("div", { className: "text-muted mb-8", style: { fontSize: "0.84rem", fontWeight: "600" } }, "Operations Breakdown");
+          const opTableWrap = h("div", { className: "table-wrap mb-16" });
+          let opHtml = `<table class="data-table"><thead><tr><th>Operation</th><th>Total</th><th>Top Sources</th></tr></thead><tbody>`;
+          for (const opType of opTypes) {
+            const opData = ops[opType];
+            const bySrc = opData.by_source || {};
+            const topSources = Object.entries(bySrc)
+              .filter(([s]) => s !== "(unknown)")
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 3)
+              .map(([s, c]) => `<span class="badge badge-info">${escHtml(s)}</span> ${formatNumber(c)}`);
+            const srcHtml = topSources.length > 0 ? topSources.join(", ") : '<span class="text-muted">—</span>';
+            opHtml += `<tr><td class="font-mono">${escHtml(opType)}</td><td>${formatNumber(opData.total)}</td><td>${srcHtml}</td></tr>`;
+          }
+          opHtml += `</tbody></table>`;
+          opTableWrap.innerHTML = opHtml;
+          usageContainer.appendChild(opTitle);
+          usageContainer.appendChild(opTableWrap);
+        }
+
+        // Extraction token usage
+        const ext = usage.extraction;
+        if (ext && ext.total_calls > 0) {
+          const extTitle = h("div", { className: "text-muted mb-8", style: { fontSize: "0.84rem", fontWeight: "600" } }, "Extraction Tokens");
+          const extTableWrap = h("div", { className: "table-wrap" });
+          let extHtml = `<table class="data-table"><thead><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Est. Cost</th></tr></thead><tbody>`;
+          for (const [model, data] of Object.entries(ext.by_model || {})) {
+            // Rough cost estimate per model
+            const modelCost = ((data.input_tokens || 0) * 0.001 + (data.output_tokens || 0) * 0.005) / 1000;
+            extHtml += `<tr><td class="font-mono">${escHtml(model)}</td><td>${formatNumber(data.calls || 0)}</td><td>${formatNumber(data.input_tokens || 0)}</td><td>${formatNumber(data.output_tokens || 0)}</td><td>$${modelCost.toFixed(2)}</td></tr>`;
+          }
+          if (ext.estimated_cost_usd != null) {
+            extHtml += `<tr style="font-weight:600;"><td>Total</td><td>${formatNumber(ext.total_calls)}</td><td>${formatNumber(ext.total_input_tokens || 0)}</td><td>${formatNumber(ext.total_output_tokens || 0)}</td><td>$${ext.estimated_cost_usd.toFixed(2)}</td></tr>`;
+          }
+          extHtml += `</tbody></table>`;
+          extTableWrap.innerHTML = extHtml;
+          usageContainer.appendChild(extTitle);
+          usageContainer.appendChild(extTableWrap);
+        }
+      } catch (err) {
+        usageContainer.innerHTML = "";
+        usageContainer.appendChild(
+          h("div", { className: "empty-state", style: { border: "none", padding: "24px" } },
+            h("div", { className: "empty-state-icon" }, "\u26A0"),
+            h("div", { className: "empty-state-text" }, "Failed to load usage: " + escHtml(err.message))
+          )
+        );
+      }
+    }
+
+    periodSelect.addEventListener("change", () => loadUsage(periodSelect.value));
+    await loadUsage("7d");
   } catch (err) {
     container.innerHTML = "";
     container.appendChild(
@@ -431,13 +574,14 @@ registerPage("dashboard", async (container) => {
 // ==========================================================================
 
 registerPage("memories", async (container) => {
-  const memState = { offset: 0, limit: 20, source: "", total: 0, selected: null, view: "list", searchQuery: "", searchResults: null };
+  const memState = { offset: 0, limit: 20, source: "", total: 0, selected: null, view: "list", searchQuery: "", searchResults: null, sourcePrefixes: [] };
 
   // -- Delete handler (exposed globally for innerHTML onclick) --
   window.deleteMemory = async (id) => {
     if (!confirm(`Delete memory #${id}?`)) return;
     try {
       await api(`/memory/${id}`, { method: "DELETE" });
+      invalidateCache();
       showToast("Memory deleted", "success");
       memState.selected = null;
       memState.offset = 0;
@@ -454,18 +598,20 @@ registerPage("memories", async (container) => {
     // Filter bar
     const filterBar = h("div", { className: "filter-bar mb-16" });
 
-    const sourceInput = h("input", {
-      type: "text",
-      placeholder: "Filter by source prefix...",
-      value: memState.source,
-      style: { width: "220px" },
+    const sourceSelect = h("select", { className: "source-select", id: "sourceSelect" });
+    const allOpt = h("option", { value: "" }, "All sources");
+    sourceSelect.appendChild(allOpt);
+    // Populate dynamically after load
+    memState.sourcePrefixes.forEach((prefix) => {
+      const opt = h("option", { value: prefix }, prefix);
+      if (prefix === memState.source) opt.selected = true;
+      sourceSelect.appendChild(opt);
     });
-    sourceInput.addEventListener("input", (e) => {
+    sourceSelect.addEventListener("change", (e) => {
       memState.source = e.target.value;
       memState.offset = 0;
       memState.searchQuery = "";
       memState.searchResults = null;
-      // Clear global search input when using source filter
       const globalSearch = document.getElementById("globalSearch");
       if (globalSearch) globalSearch.value = "";
       loadMemories();
@@ -483,7 +629,7 @@ registerPage("memories", async (container) => {
     viewToggle.appendChild(listBtn);
     viewToggle.appendChild(gridBtn);
 
-    filterBar.appendChild(sourceInput);
+    filterBar.appendChild(sourceSelect);
     filterBar.appendChild(viewToggle);
     container.appendChild(filterBar);
 
@@ -634,7 +780,7 @@ registerPage("memories", async (container) => {
     contentDiv.appendChild(grid);
   }
 
-  // -- Pagination --
+  // -- Pagination with jump-to-page --
   function renderPagination() {
     const pag = document.getElementById("memoriesPagination");
     if (!pag) return;
@@ -649,21 +795,63 @@ registerPage("memories", async (container) => {
       return;
     }
 
+    const totalPages = Math.max(1, Math.ceil(memState.total / memState.limit));
+    const currentPage = Math.floor(memState.offset / memState.limit) + 1;
     const start = memState.total > 0 ? memState.offset + 1 : 0;
     const end = Math.min(memState.offset + memState.limit, memState.total);
+
     const info = h("span", { className: "pagination-info" },
       `${start}\u2013${end} of ${memState.total}`
     );
 
-    const btns = h("div", { className: "pagination-buttons" });
+    const controls = h("div", { className: "pagination-controls" });
+
     const prevBtn = h("button", {
       className: "btn btn-sm",
       onClick: () => {
         memState.offset = Math.max(0, memState.offset - memState.limit);
         loadMemories();
       },
-    }, "Previous");
+    }, "\u2190");
     if (memState.offset === 0) prevBtn.disabled = true;
+
+    // Jump-to-page input
+    const jumpWrap = h("div", { className: "pagination-jump" });
+    const jumpLabel = h("span", { className: "text-muted", style: { fontSize: "0.78rem" } }, "Page");
+    const jumpInput = h("input", {
+      type: "number",
+      className: "page-jump-input",
+      value: currentPage,
+      min: 1,
+      max: totalPages,
+    });
+    const jumpTotal = h("span", { className: "text-muted", style: { fontSize: "0.78rem" } }, `of ${totalPages}`);
+
+    jumpInput.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      const page = parseInt(jumpInput.value, 10);
+      if (isNaN(page) || page < 1 || page > totalPages) {
+        jumpInput.value = currentPage;
+        return;
+      }
+      memState.offset = (page - 1) * memState.limit;
+      loadMemories();
+    });
+    jumpInput.addEventListener("blur", () => {
+      const page = parseInt(jumpInput.value, 10);
+      if (isNaN(page) || page < 1 || page > totalPages) {
+        jumpInput.value = currentPage;
+        return;
+      }
+      if (page !== currentPage) {
+        memState.offset = (page - 1) * memState.limit;
+        loadMemories();
+      }
+    });
+
+    jumpWrap.appendChild(jumpLabel);
+    jumpWrap.appendChild(jumpInput);
+    jumpWrap.appendChild(jumpTotal);
 
     const nextBtn = h("button", {
       className: "btn btn-sm",
@@ -671,14 +859,33 @@ registerPage("memories", async (container) => {
         memState.offset += memState.limit;
         loadMemories();
       },
-    }, "Next");
+    }, "\u2192");
     if (memState.offset + memState.limit >= memState.total) nextBtn.disabled = true;
 
-    btns.appendChild(prevBtn);
-    btns.appendChild(nextBtn);
+    // Page size selector
+    const sizeWrap = h("div", { className: "pagination-jump" });
+    const sizeLabel = h("span", { className: "text-muted", style: { fontSize: "0.78rem" } }, "Per page");
+    const sizeSelect = h("select", { className: "page-size-select" });
+    [20, 50, 100, 200].forEach((n) => {
+      const opt = h("option", { value: n }, String(n));
+      if (n === memState.limit) opt.selected = true;
+      sizeSelect.appendChild(opt);
+    });
+    sizeSelect.addEventListener("change", () => {
+      memState.limit = parseInt(sizeSelect.value, 10);
+      memState.offset = 0;
+      loadMemories();
+    });
+    sizeWrap.appendChild(sizeLabel);
+    sizeWrap.appendChild(sizeSelect);
+
+    controls.appendChild(prevBtn);
+    controls.appendChild(jumpWrap);
+    controls.appendChild(nextBtn);
+    controls.appendChild(sizeWrap);
 
     pag.appendChild(info);
-    pag.appendChild(btns);
+    pag.appendChild(controls);
   }
 
   // -- Load memories from API --
@@ -756,8 +963,38 @@ registerPage("memories", async (container) => {
     loadMemories();
   };
 
+  // -- Fetch source prefixes for dropdown --
+  async function loadSourcePrefixes() {
+    try {
+      const usage = await api("/usage?period=all");
+      const prefixSet = new Set();
+      for (const opData of Object.values(usage.operations || {})) {
+        for (const src of Object.keys(opData.by_source || {})) {
+          if (src === "(unknown)") continue;
+          const prefix = src.includes("/") ? src.split("/")[0] : src;
+          prefixSet.add(prefix);
+        }
+      }
+      memState.sourcePrefixes = [...prefixSet].sort();
+      // Update dropdown
+      const sel = document.getElementById("sourceSelect");
+      if (sel) {
+        // Keep first "All sources" option, replace rest
+        while (sel.options.length > 1) sel.remove(1);
+        memState.sourcePrefixes.forEach((p) => {
+          const opt = h("option", { value: p }, p);
+          if (p === memState.source) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }
+    } catch { /* non-critical */ }
+  }
+
   // -- Initial render --
   buildSkeleton();
+
+  // Load prefixes in background
+  loadSourcePrefixes();
 
   // If navigated here with a pending search query, run it
   const globalSearch = document.getElementById("globalSearch");
@@ -1211,6 +1448,7 @@ registerPage("settings", async (container) => {
       rebuildBtn.textContent = "Rebuilding...";
       try {
         await api("/index/build", { method: "POST" });
+        invalidateCache();
         showToast("Index rebuild started", "success");
       } catch (err) {
         showToast(err.message, "error");
