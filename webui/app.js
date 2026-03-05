@@ -8,7 +8,7 @@ const API_KEY_STORAGE = "memories-api-key";
 const THEME_STORAGE = "memories-theme";
 
 const state = {
-  apiKey: sessionStorage.getItem(API_KEY_STORAGE) || "",
+  apiKey: localStorage.getItem(API_KEY_STORAGE) || "",
   currentPage: null,
 };
 
@@ -97,9 +97,9 @@ export function getState() {
 export function setApiKey(key) {
   state.apiKey = key;
   if (key) {
-    sessionStorage.setItem(API_KEY_STORAGE, key);
+    localStorage.setItem(API_KEY_STORAGE, key);
   } else {
-    sessionStorage.removeItem(API_KEY_STORAGE);
+    localStorage.removeItem(API_KEY_STORAGE);
   }
   invalidateCache();
   syncKeyStatus();
