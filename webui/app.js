@@ -312,5 +312,482 @@ export function hideModal() {
 
 // -- Boot ------------------------------------------------------------------
 
+// ==========================================================================
+//  Dashboard Page
+// ==========================================================================
+
+registerPage("dashboard", async (container) => {
+  container.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+
+  try {
+    const [stats, usage, extractStatus] = await Promise.all([
+      api("/stats"),
+      api("/usage?period=7d"),
+      api("/extract/status"),
+    ]);
+
+    // Compute operations total from usage.operations
+    let opsTotal = 0;
+    if (usage.operations) {
+      for (const op of Object.values(usage.operations)) {
+        opsTotal += op.total || 0;
+      }
+    }
+
+    const extractionCalls = usage.extraction?.total_calls ?? 0;
+    const statusLabel = extractStatus.enabled ? "Active" : "Inactive";
+    const statusBadgeClass = extractStatus.enabled ? "badge-success" : "badge-warning";
+
+    container.innerHTML = "";
+
+    // Section: Stat cards
+    const statSection = h("div", { className: "section-title" }, "Overview");
+    const statGrid = h("div", { className: "stat-grid" });
+
+    statGrid.innerHTML = `
+      <div class="stat-card">
+        <div class="stat-value">${formatNumber(stats.total_memories)}</div>
+        <span class="stat-label">Total Memories</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${formatNumber(extractionCalls)}</div>
+        <span class="stat-label">Extractions 7d</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${formatNumber(opsTotal)}</div>
+        <span class="stat-label">Operations 7d</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value"><span class="badge ${statusBadgeClass}">${escHtml(statusLabel)}</span></div>
+        <span class="stat-label">Extraction Status</span>
+      </div>
+    `;
+
+    container.appendChild(statSection);
+    container.appendChild(statGrid);
+
+    // Section: Server Info
+    const infoSection = h("div", { className: "section-title mt-24" }, "Server Info");
+    const infoGrid = h("div", { className: "info-grid" });
+
+    const indexKB = stats.index_size_bytes != null
+      ? (stats.index_size_bytes / 1024).toFixed(1) + " KB"
+      : "N/A";
+
+    infoGrid.innerHTML = `
+      <div class="info-item">
+        <div class="info-item-label">Embedder Model</div>
+        <div class="info-item-value">${escHtml(stats.model || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Dimensions</div>
+        <div class="info-item-value">${stats.dimension ?? "N/A"}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Index Size</div>
+        <div class="info-item-value">${escHtml(indexKB)}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Backups</div>
+        <div class="info-item-value">${stats.backup_count ?? 0}</div>
+      </div>
+    `;
+
+    container.appendChild(infoSection);
+    container.appendChild(infoGrid);
+  } catch (err) {
+    container.innerHTML = "";
+    container.appendChild(
+      h("div", { className: "empty-state" },
+        h("div", { className: "empty-state-icon" }, "\u26A0"),
+        h("div", { className: "empty-state-title" }, "Failed to load dashboard"),
+        h("div", { className: "empty-state-text" }, escHtml(err.message))
+      )
+    );
+    showToast(err.message, "error");
+  }
+});
+
+// ==========================================================================
+//  Memories Page
+// ==========================================================================
+
+registerPage("memories", async (container) => {
+  const memState = { offset: 0, limit: 20, source: "", total: 0, selected: null, view: "list", searchQuery: "", searchResults: null };
+
+  // -- Delete handler (exposed globally for innerHTML onclick) --
+  window.deleteMemory = async (id) => {
+    if (!confirm(`Delete memory #${id}?`)) return;
+    try {
+      await api(`/memory/${id}`, { method: "DELETE" });
+      showToast("Memory deleted", "success");
+      memState.selected = null;
+      memState.offset = 0;
+      await loadMemories();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  };
+
+  // -- Build page skeleton --
+  function buildSkeleton() {
+    container.innerHTML = "";
+
+    // Filter bar
+    const filterBar = h("div", { className: "filter-bar mb-16" });
+
+    const sourceInput = h("input", {
+      type: "text",
+      placeholder: "Filter by source prefix...",
+      value: memState.source,
+      style: { width: "220px" },
+    });
+    sourceInput.addEventListener("input", (e) => {
+      memState.source = e.target.value;
+      memState.offset = 0;
+      memState.searchQuery = "";
+      memState.searchResults = null;
+      // Clear global search input when using source filter
+      const globalSearch = document.getElementById("globalSearch");
+      if (globalSearch) globalSearch.value = "";
+      loadMemories();
+    });
+
+    const viewToggle = h("div", { className: "view-toggle" });
+    const listBtn = h("button", {
+      className: `btn ${memState.view === "list" ? "active" : ""}`,
+      onClick: () => { memState.view = "list"; renderContent(); },
+    }, "List");
+    const gridBtn = h("button", {
+      className: `btn ${memState.view === "grid" ? "active" : ""}`,
+      onClick: () => { memState.view = "grid"; renderContent(); },
+    }, "Grid");
+    viewToggle.appendChild(listBtn);
+    viewToggle.appendChild(gridBtn);
+
+    filterBar.appendChild(sourceInput);
+    filterBar.appendChild(viewToggle);
+    container.appendChild(filterBar);
+
+    // Content container
+    const contentDiv = h("div", { id: "memoriesContent" });
+    container.appendChild(contentDiv);
+
+    // Pagination
+    const pag = h("div", { className: "pagination", id: "memoriesPagination" });
+    container.appendChild(pag);
+  }
+
+  // -- Render content based on current view mode --
+  function renderContent() {
+    const contentDiv = document.getElementById("memoriesContent");
+    if (!contentDiv) return;
+    contentDiv.innerHTML = "";
+
+    // Update view toggle button active states
+    container.querySelectorAll(".view-toggle .btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.textContent.toLowerCase() === memState.view);
+    });
+
+    const memories = memState.searchResults || memState.memories || [];
+
+    if (memories.length === 0) {
+      contentDiv.appendChild(
+        h("div", { className: "empty-state" },
+          h("div", { className: "empty-state-icon" }, "\u25C6"),
+          h("div", { className: "empty-state-title" }, memState.searchQuery ? "No search results" : "No memories found"),
+          h("div", { className: "empty-state-text" }, memState.searchQuery ? "Try a different search query." : "Memories will appear here once added.")
+        )
+      );
+      renderPagination();
+      return;
+    }
+
+    if (memState.view === "grid") {
+      renderGridView(contentDiv, memories);
+    } else {
+      renderListView(contentDiv, memories);
+    }
+
+    renderPagination();
+  }
+
+  // -- List view (split layout) --
+  function renderListView(contentDiv, memories) {
+    const layout = h("div", { className: "memories-layout" });
+
+    // Left: list panel
+    const listPanel = h("div", { className: "memories-list-panel" });
+    memories.forEach((mem) => {
+      const isActive = memState.selected && memState.selected.id === mem.id;
+      const item = document.createElement("div");
+      item.className = `memory-item${isActive ? " active" : ""}`;
+      const truncText = (mem.text || "").length > 120
+        ? escHtml((mem.text || "").slice(0, 120)) + "..."
+        : escHtml(mem.text || "");
+
+      let scoreHtml = "";
+      if (mem.similarity != null) {
+        scoreHtml = ` <span class="search-result-score">${(mem.similarity * 100).toFixed(1)}%</span>`;
+      }
+
+      item.innerHTML = `
+        <div class="memory-item-header">
+          <span class="memory-item-source">${escHtml(mem.source || "")}</span>
+          <span class="memory-item-id">#${mem.id}${scoreHtml}</span>
+        </div>
+        <div class="memory-item-text">${truncText}</div>
+      `;
+      item.addEventListener("click", () => {
+        memState.selected = mem;
+        renderContent();
+      });
+      listPanel.appendChild(item);
+    });
+
+    // Right: detail panel
+    const detailPanel = h("div", { className: "memories-detail-panel" });
+    if (memState.selected) {
+      const mem = memState.selected;
+      detailPanel.innerHTML = `
+        <div class="detail-header">
+          <div>
+            <span class="memory-item-source" style="font-size:0.85rem;">${escHtml(mem.source || "")}</span>
+          </div>
+          <span class="memory-item-id" style="font-size:0.78rem;">#${mem.id}</span>
+        </div>
+        <div class="detail-text">${escHtml(mem.text || "")}</div>
+        <div class="detail-meta">
+          <div class="meta-item">
+            <div class="meta-label">ID</div>
+            <div class="meta-value font-mono">${mem.id}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-label">Source</div>
+            <div class="meta-value">${escHtml(mem.source || "N/A")}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-label">Created</div>
+            <div class="meta-value">${mem.created_at ? timeAgo(mem.created_at) : "N/A"}</div>
+          </div>
+        </div>
+        <div class="detail-actions">
+          <button class="btn btn-danger btn-sm" onclick="deleteMemory(${mem.id})">Delete</button>
+        </div>
+      `;
+    } else {
+      detailPanel.innerHTML = `
+        <div class="empty-state" style="border:none;padding:60px 20px;">
+          <div class="empty-state-icon">\u25C6</div>
+          <div class="empty-state-text">Select a memory to view details</div>
+        </div>
+      `;
+    }
+
+    layout.appendChild(listPanel);
+    layout.appendChild(detailPanel);
+    contentDiv.appendChild(layout);
+  }
+
+  // -- Grid view --
+  function renderGridView(contentDiv, memories) {
+    const grid = h("div", { className: "memory-grid-view" });
+    memories.forEach((mem) => {
+      const truncText = (mem.text || "").length > 200
+        ? escHtml((mem.text || "").slice(0, 200)) + "..."
+        : escHtml(mem.text || "");
+
+      let scoreHtml = "";
+      if (mem.similarity != null) {
+        scoreHtml = ` <span class="search-result-score">${(mem.similarity * 100).toFixed(1)}%</span>`;
+      }
+
+      const card = document.createElement("div");
+      card.className = "memory-card";
+      card.innerHTML = `
+        <div class="memory-item-header">
+          <span class="memory-item-source">${escHtml(mem.source || "")}</span>
+          <span class="memory-item-id">#${mem.id}${scoreHtml}</span>
+        </div>
+        <div class="memory-item-text mt-8">${truncText}</div>
+      `;
+      grid.appendChild(card);
+    });
+    contentDiv.appendChild(grid);
+  }
+
+  // -- Pagination --
+  function renderPagination() {
+    const pag = document.getElementById("memoriesPagination");
+    if (!pag) return;
+    pag.innerHTML = "";
+
+    // Don't show pagination for search results
+    if (memState.searchResults) {
+      const info = h("span", { className: "pagination-info" },
+        `${memState.searchResults.length} search result${memState.searchResults.length !== 1 ? "s" : ""}`
+      );
+      pag.appendChild(info);
+      return;
+    }
+
+    const start = memState.total > 0 ? memState.offset + 1 : 0;
+    const end = Math.min(memState.offset + memState.limit, memState.total);
+    const info = h("span", { className: "pagination-info" },
+      `${start}\u2013${end} of ${memState.total}`
+    );
+
+    const btns = h("div", { className: "pagination-buttons" });
+    const prevBtn = h("button", {
+      className: "btn btn-sm",
+      onClick: () => {
+        memState.offset = Math.max(0, memState.offset - memState.limit);
+        loadMemories();
+      },
+    }, "Previous");
+    if (memState.offset === 0) prevBtn.disabled = true;
+
+    const nextBtn = h("button", {
+      className: "btn btn-sm",
+      onClick: () => {
+        memState.offset += memState.limit;
+        loadMemories();
+      },
+    }, "Next");
+    if (memState.offset + memState.limit >= memState.total) nextBtn.disabled = true;
+
+    btns.appendChild(prevBtn);
+    btns.appendChild(nextBtn);
+
+    pag.appendChild(info);
+    pag.appendChild(btns);
+  }
+
+  // -- Load memories from API --
+  async function loadMemories() {
+    const contentDiv = document.getElementById("memoriesContent");
+    if (contentDiv) {
+      contentDiv.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+    }
+
+    try {
+      let url = `/memories?offset=${memState.offset}&limit=${memState.limit}`;
+      if (memState.source) {
+        url += `&source=${encodeURIComponent(memState.source)}`;
+      }
+      const data = await api(url);
+      memState.memories = data.memories || [];
+      memState.total = data.total || 0;
+      memState.searchResults = null;
+      memState.searchQuery = "";
+      renderContent();
+    } catch (err) {
+      const contentDiv = document.getElementById("memoriesContent");
+      if (contentDiv) {
+        contentDiv.innerHTML = "";
+        contentDiv.appendChild(
+          h("div", { className: "empty-state" },
+            h("div", { className: "empty-state-icon" }, "\u26A0"),
+            h("div", { className: "empty-state-title" }, "Failed to load memories"),
+            h("div", { className: "empty-state-text" }, escHtml(err.message))
+          )
+        );
+      }
+      showToast(err.message, "error");
+    }
+  }
+
+  // -- Search memories --
+  async function searchMemories(query) {
+    const contentDiv = document.getElementById("memoriesContent");
+    if (contentDiv) {
+      contentDiv.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+    }
+
+    try {
+      const data = await api("/search", {
+        method: "POST",
+        body: JSON.stringify({ query, k: 20, hybrid: true }),
+      });
+      memState.searchQuery = query;
+      memState.searchResults = data.results || [];
+      memState.selected = null;
+      renderContent();
+    } catch (err) {
+      const contentDiv = document.getElementById("memoriesContent");
+      if (contentDiv) {
+        contentDiv.innerHTML = "";
+        contentDiv.appendChild(
+          h("div", { className: "empty-state" },
+            h("div", { className: "empty-state-icon" }, "\u26A0"),
+            h("div", { className: "empty-state-title" }, "Search failed"),
+            h("div", { className: "empty-state-text" }, escHtml(err.message))
+          )
+        );
+      }
+      showToast(err.message, "error");
+    }
+  }
+
+  // -- Expose search trigger for global search integration --
+  window._memoriesPageSearch = searchMemories;
+  window._memoriesPageReset = () => {
+    memState.searchQuery = "";
+    memState.searchResults = null;
+    memState.offset = 0;
+    loadMemories();
+  };
+
+  // -- Initial render --
+  buildSkeleton();
+
+  // If navigated here with a pending search query, run it
+  const globalSearch = document.getElementById("globalSearch");
+  const pendingQuery = globalSearch?.value?.trim();
+  if (pendingQuery) {
+    await searchMemories(pendingQuery);
+  } else {
+    await loadMemories();
+  }
+});
+
+// ==========================================================================
+//  Global Search Wiring
+// ==========================================================================
+
+(function initGlobalSearch() {
+  const globalSearch = document.getElementById("globalSearch");
+  if (!globalSearch) return;
+
+  globalSearch.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const query = globalSearch.value.trim();
+
+    if (!query) {
+      // Reset to normal list if on memories page
+      if (state.currentPage === "memories" && window._memoriesPageReset) {
+        window._memoriesPageReset();
+      }
+      return;
+    }
+
+    if (state.currentPage === "memories" && window._memoriesPageSearch) {
+      window._memoriesPageSearch(query);
+    } else {
+      // Navigate to memories page; the page will pick up the query from the input
+      window.location.hash = "#/memories";
+    }
+  });
+
+  // Handle clearing via the search clear button (type=search)
+  globalSearch.addEventListener("search", () => {
+    if (globalSearch.value === "" && state.currentPage === "memories" && window._memoriesPageReset) {
+      window._memoriesPageReset();
+    }
+  });
+})();
+
+// -- Boot ------------------------------------------------------------------
+
 initTheme();
 initRouter();
