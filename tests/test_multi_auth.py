@@ -182,3 +182,73 @@ class TestWriteEnforcement:
             headers={"X-API-Key": created["key"]},
         )
         assert resp.status_code == 403
+
+
+class TestKeyManagementAPI:
+    def test_create_key_with_admin(self, app_with_keys):
+        client, _, _ = app_with_keys
+        resp = client.post(
+            "/api/keys",
+            json={"name": "new-key", "role": "read-write", "prefixes": ["test/*"]},
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["key"].startswith("mem_")
+        assert body["name"] == "new-key"
+        assert body["role"] == "read-write"
+
+    def test_create_key_without_admin_returns_403(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="non-admin", role="read-write", prefixes=["a/*"])
+        resp = client.post(
+            "/api/keys",
+            json={"name": "sneaky", "role": "admin", "prefixes": []},
+            headers={"X-API-Key": created["key"]},
+        )
+        assert resp.status_code == 403
+
+    def test_list_keys_with_admin(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        key_store.create_key(name="k1", role="read-only", prefixes=["a/*"])
+        resp = client.get("/api/keys", headers={"X-API-Key": "admin-env-key"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["keys"]) >= 1
+        # Ensure raw key is NOT in list response
+        for k in body["keys"]:
+            assert "key" not in k
+
+    def test_list_keys_without_admin_returns_403(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="reader", role="read-only", prefixes=["a/*"])
+        resp = client.get("/api/keys", headers={"X-API-Key": created["key"]})
+        assert resp.status_code == 403
+
+    def test_revoke_key_with_admin(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="to-revoke", role="read-write", prefixes=["b/*"])
+        resp = client.delete(
+            f"/api/keys/{created['id']}",
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["revoked"] is True
+
+    def test_update_key_with_admin(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="old-name", role="read-only", prefixes=["c/*"])
+        resp = client.patch(
+            f"/api/keys/{created['id']}",
+            json={"name": "new-name", "role": "read-write"},
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert resp.status_code == 200
+
+    def test_revoke_nonexistent_returns_404(self, app_with_keys):
+        client, _, _ = app_with_keys
+        resp = client.delete(
+            "/api/keys/nonexistent-id",
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert resp.status_code == 404

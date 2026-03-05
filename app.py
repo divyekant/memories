@@ -1026,6 +1026,18 @@ class SupersedeRequest(BaseModel):
     source: str = Field(default="", description="Source identifier")
 
 
+class CreateKeyRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    role: str = Field(..., pattern="^(read-only|read-write|admin)$")
+    prefixes: List[str] = Field(default_factory=list)
+
+
+class UpdateKeyRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    role: Optional[str] = Field(None, pattern="^(read-only|read-write|admin)$")
+    prefixes: Optional[List[str]] = None
+
+
 # -- Endpoints ----------------------------------------------------------------
 
 @app.get("/health")
@@ -1058,6 +1070,57 @@ async def get_my_key(request: Request):
     """Returns the caller's role, type, and allowed prefixes."""
     auth = _get_auth(request)
     return auth.to_me_response()
+
+
+@app.post("/api/keys")
+async def create_key(request_body: CreateKeyRequest, request: Request):
+    """Create a new API key. Admin only. Returns raw key once."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    result = key_store.create_key(
+        name=request_body.name,
+        role=request_body.role,
+        prefixes=request_body.prefixes,
+    )
+    return result
+
+
+@app.get("/api/keys")
+async def list_keys(request: Request):
+    """List all API keys (masked). Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    keys = key_store.list_keys()
+    return {"keys": keys, "count": len(keys)}
+
+
+@app.patch("/api/keys/{key_id}")
+async def update_key(key_id: str, request_body: UpdateKeyRequest, request: Request):
+    """Update key name, role, or prefixes. Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    try:
+        result = key_store.update_key(
+            key_id,
+            name=request_body.name,
+            role=request_body.role,
+            prefixes=request_body.prefixes,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/keys/{key_id}")
+async def revoke_key(key_id: str, request: Request):
+    """Revoke an API key (soft-delete). Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    try:
+        key_store.revoke(key_id)
+        return {"id": key_id, "revoked": True}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/ui", include_in_schema=False)
