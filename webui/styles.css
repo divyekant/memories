@@ -934,7 +934,103 @@ body {
   font-family: var(--font-mono);
 }
 
-/* -- Responsive ------------------------------------------------------------ */
+/* -- Table Wrap ------------------------------------------------------------ */
+
+.table-wrap {
+  overflow-x: auto;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+/* -- Settings Section ------------------------------------------------------ */
+
+.settings-section {
+  margin-bottom: 32px;
+}
+
+/* -- Danger Zone ----------------------------------------------------------- */
+
+.danger-zone {
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+}
+
+/* -- Theme Switcher Large -------------------------------------------------- */
+
+.theme-switcher-large {
+  display: flex;
+  gap: 8px;
+}
+
+.theme-btn-lg {
+  padding: 10px 24px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-muted);
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast),
+              background var(--transition-fast);
+}
+
+.theme-btn-lg:hover {
+  border-color: var(--color-primary);
+  color: var(--color-text);
+}
+
+.theme-btn-lg.active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-dim);
+}
+
+/* -- API Key Form ---------------------------------------------------------- */
+
+.key-form {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+}
+
+.key-description {
+  font-size: 0.84rem;
+  color: var(--color-text-muted);
+}
+
+.key-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.key-input-row input {
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.key-input-row input:focus {
+  border-color: var(--color-primary);
+}
+
+.key-status {
+  font-size: 0.8rem;
+  margin-top: 8px;
+}
+
+/* -- Responsive (continued) ------------------------------------------------ */
 
 @media (max-width: 768px) {
   .app-layout {

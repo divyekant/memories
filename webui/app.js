@@ -787,6 +787,446 @@ registerPage("memories", async (container) => {
   });
 })();
 
+// ==========================================================================
+//  Extractions Page
+// ==========================================================================
+
+registerPage("extractions", async (container) => {
+  container.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+
+  try {
+    const [extractStatus, usage] = await Promise.all([
+      api("/extract/status"),
+      api("/usage?period=7d"),
+    ]);
+
+    const totalCalls = usage.extraction?.total_calls ?? 0;
+    const byModel = usage.extraction?.by_model || {};
+
+    // Compute success rate from by_model data if available
+    let successRate = "\u2014";
+    if (totalCalls > 0) {
+      let totalSuccess = 0;
+      let totalAttempts = 0;
+      for (const m of Object.values(byModel)) {
+        totalAttempts += m.calls || 0;
+        // If there's no error breakdown, assume all calls succeeded
+        totalSuccess += m.calls || 0;
+      }
+      if (totalAttempts > 0) {
+        successRate = ((totalSuccess / totalAttempts) * 100).toFixed(1) + "%";
+      }
+    }
+
+    const statusLabel = extractStatus.enabled ? "Active" : "Inactive";
+    const statusBadgeClass = extractStatus.enabled ? "badge-success" : "badge-warning";
+    const providerLabel = extractStatus.provider || "N/A";
+
+    container.innerHTML = "";
+
+    // Section: Stat cards
+    const statSection = h("div", { className: "section-title" }, "Overview");
+    const statGrid = h("div", { className: "stat-grid" });
+
+    statGrid.innerHTML = `
+      <div class="stat-card">
+        <div class="stat-value">${formatNumber(totalCalls)}</div>
+        <span class="stat-label">Jobs 7d</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${escHtml(successRate)}</div>
+        <span class="stat-label">Success Rate</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value"><span class="badge ${statusBadgeClass}">${escHtml(statusLabel)}</span></div>
+        <span class="stat-label">Status</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" style="font-size:1.1rem;">${escHtml(providerLabel)}</div>
+        <span class="stat-label">Provider</span>
+      </div>
+    `;
+
+    container.appendChild(statSection);
+    container.appendChild(statGrid);
+
+    // Section: Configuration
+    const configSection = h("div", { className: "section-title mt-24" }, "Configuration");
+    const configGrid = h("div", { className: "info-grid" });
+
+    configGrid.innerHTML = `
+      <div class="info-item">
+        <div class="info-item-label">Provider</div>
+        <div class="info-item-value">${escHtml(extractStatus.provider || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Model</div>
+        <div class="info-item-value">${escHtml(extractStatus.model || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Enabled</div>
+        <div class="info-item-value"><span class="badge ${statusBadgeClass}">${escHtml(statusLabel)}</span></div>
+      </div>
+    `;
+
+    container.appendChild(configSection);
+    container.appendChild(configGrid);
+
+    // Section: Token Usage by Model
+    const modelKeys = Object.keys(byModel);
+    if (modelKeys.length > 0) {
+      const tableSection = h("div", { className: "section-title mt-24" }, "Token Usage by Model");
+      const tableWrap = h("div", { className: "table-wrap" });
+
+      let tableHtml = `
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Calls</th>
+              <th>Input Tokens</th>
+              <th>Output Tokens</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+      for (const [model, data] of Object.entries(byModel)) {
+        tableHtml += `
+            <tr>
+              <td class="font-mono">${escHtml(model)}</td>
+              <td>${formatNumber(data.calls || 0)}</td>
+              <td>${formatNumber(data.input_tokens || 0)}</td>
+              <td>${formatNumber(data.output_tokens || 0)}</td>
+            </tr>
+        `;
+      }
+      tableHtml += `
+          </tbody>
+        </table>
+      `;
+
+      tableWrap.innerHTML = tableHtml;
+      container.appendChild(tableSection);
+      container.appendChild(tableWrap);
+    }
+  } catch (err) {
+    container.innerHTML = "";
+    container.appendChild(
+      h("div", { className: "empty-state" },
+        h("div", { className: "empty-state-icon" }, "\u26A0"),
+        h("div", { className: "empty-state-title" }, "Failed to load extractions"),
+        h("div", { className: "empty-state-text" }, escHtml(err.message))
+      )
+    );
+    showToast(err.message, "error");
+  }
+});
+
+// ==========================================================================
+//  API Keys Page
+// ==========================================================================
+
+registerPage("keys", async (container) => {
+  container.innerHTML = "";
+
+  // Section: API Key Configuration
+  const configSection = h("div", { className: "settings-section" });
+  const configTitle = h("div", { className: "section-title" }, "API Key Configuration");
+
+  const keyForm = document.createElement("div");
+  keyForm.className = "key-form";
+
+  const description = h("div", { className: "key-description mb-16" },
+    "Configure the API key used to authenticate requests to the Memories server. " +
+    "The key is stored in your browser session and sent as an X-API-Key header."
+  );
+
+  const inputRow = h("div", { className: "key-input-row" });
+  const keyInput = h("input", {
+    type: "password",
+    placeholder: "Enter API key...",
+    value: state.apiKey || "",
+    style: { flex: "1" },
+  });
+  keyInput.className = "key-input";
+
+  const saveBtn = h("button", { className: "btn btn-primary" }, "Save Key");
+  const clearBtn = h("button", { className: "btn" }, "Clear");
+
+  inputRow.appendChild(keyInput);
+  inputRow.appendChild(saveBtn);
+  inputRow.appendChild(clearBtn);
+
+  const statusEl = h("div", { className: "key-status", id: "keyStatus" });
+
+  // Show current status on load
+  if (state.apiKey) {
+    statusEl.innerHTML = `<span class="badge badge-info">Key configured</span>`;
+  }
+
+  // Save handler
+  saveBtn.addEventListener("click", async () => {
+    const val = keyInput.value.trim();
+    if (!val) {
+      statusEl.innerHTML = `<span class="badge badge-warning">Please enter a key</span>`;
+      return;
+    }
+
+    state.apiKey = val;
+    sessionStorage.setItem(API_KEY_STORAGE, state.apiKey);
+
+    statusEl.innerHTML = `<span class="text-muted" style="font-size:0.78rem;">Testing connection...</span>`;
+
+    try {
+      await api("/health");
+      statusEl.innerHTML = `<span class="badge badge-success">Connected</span>`;
+      showToast("API key saved and verified", "success");
+    } catch (err) {
+      statusEl.innerHTML = `<span class="badge badge-error">${escHtml(err.message)}</span>`;
+      showToast("Key saved but connection test failed", "warning");
+    }
+  });
+
+  // Clear handler
+  clearBtn.addEventListener("click", () => {
+    keyInput.value = "";
+    state.apiKey = "";
+    sessionStorage.removeItem(API_KEY_STORAGE);
+    statusEl.innerHTML = `<span class="badge badge-warning">Key cleared</span>`;
+    showToast("API key cleared", "info");
+  });
+
+  keyForm.appendChild(description);
+  keyForm.appendChild(inputRow);
+  keyForm.appendChild(statusEl);
+
+  configSection.appendChild(configTitle);
+  configSection.appendChild(keyForm);
+  container.appendChild(configSection);
+
+  // Section: Key Management Placeholder
+  const mgmtSection = h("div", { className: "settings-section" });
+  const mgmtTitle = h("div", { className: "section-title" }, "Key Management");
+
+  const placeholder = h("div", { className: "empty-state" },
+    h("div", { className: "empty-state-icon" }, "\u26B6"),
+    h("div", { className: "empty-state-title" }, "Multi-key management coming soon"),
+    h("div", { className: "empty-state-text" },
+      "The server currently uses a single API_KEY environment variable. " +
+      "Once the backend adds multi-key endpoints, you will be able to create, rotate, and revoke keys here."
+    )
+  );
+
+  mgmtSection.appendChild(mgmtTitle);
+  mgmtSection.appendChild(placeholder);
+  container.appendChild(mgmtSection);
+});
+
+// ==========================================================================
+//  Settings Page
+// ==========================================================================
+
+registerPage("settings", async (container) => {
+  container.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+
+  try {
+    const [extractStatus, stats, metrics] = await Promise.all([
+      api("/extract/status"),
+      api("/stats"),
+      api("/metrics").catch(() => null),
+    ]);
+
+    container.innerHTML = "";
+
+    // Section: Extraction Provider
+    const extractSection = h("div", { className: "settings-section" });
+    const extractTitle = h("div", { className: "section-title" }, "Extraction Provider");
+    const extractGrid = h("div", { className: "info-grid" });
+
+    const exStatusLabel = extractStatus.enabled ? "Active" : "Inactive";
+    const exStatusBadge = extractStatus.enabled ? "badge-success" : "badge-warning";
+
+    extractGrid.innerHTML = `
+      <div class="info-item">
+        <div class="info-item-label">Provider</div>
+        <div class="info-item-value">${escHtml(extractStatus.provider || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Model</div>
+        <div class="info-item-value">${escHtml(extractStatus.model || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Status</div>
+        <div class="info-item-value"><span class="badge ${exStatusBadge}">${escHtml(exStatusLabel)}</span></div>
+      </div>
+    `;
+
+    extractSection.appendChild(extractTitle);
+    extractSection.appendChild(extractGrid);
+    container.appendChild(extractSection);
+
+    // Section: Server Info
+    const serverSection = h("div", { className: "settings-section" });
+    const serverTitle = h("div", { className: "section-title" }, "Server Info");
+    const serverGrid = h("div", { className: "info-grid" });
+
+    const indexKB = stats.index_size_bytes != null
+      ? (stats.index_size_bytes / 1024).toFixed(1) + " KB"
+      : "N/A";
+
+    const autoReload = metrics?.auto_reload_enabled != null
+      ? (metrics.auto_reload_enabled ? "Enabled" : "Disabled")
+      : (stats.auto_reload_enabled != null
+        ? (stats.auto_reload_enabled ? "Enabled" : "Disabled")
+        : "N/A");
+
+    serverGrid.innerHTML = `
+      <div class="info-item">
+        <div class="info-item-label">Embedder Model</div>
+        <div class="info-item-value">${escHtml(stats.model || "N/A")}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Index Size</div>
+        <div class="info-item-value">${escHtml(indexKB)}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Backups</div>
+        <div class="info-item-value">${stats.backup_count ?? 0}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-item-label">Auto-Reload</div>
+        <div class="info-item-value">${escHtml(autoReload)}</div>
+      </div>
+    `;
+
+    serverSection.appendChild(serverTitle);
+    serverSection.appendChild(serverGrid);
+    container.appendChild(serverSection);
+
+    // Section: Appearance
+    const appearSection = h("div", { className: "settings-section" });
+    const appearTitle = h("div", { className: "section-title" }, "Appearance");
+    const appearDesc = h("div", { className: "text-muted mb-16", style: { fontSize: "0.84rem" } },
+      "Choose your preferred color theme. This syncs with the sidebar theme switcher."
+    );
+
+    const themeSwitcher = h("div", { className: "theme-switcher-large" });
+    const currentTheme = localStorage.getItem(THEME_STORAGE) || "system";
+
+    const themes = [
+      { value: "system", label: "System" },
+      { value: "dark", label: "Dark" },
+      { value: "light", label: "Light" },
+    ];
+
+    themes.forEach(({ value, label }) => {
+      const btn = h("button", {
+        className: `theme-btn-lg${currentTheme === value ? " active" : ""}`,
+        dataset: { themeChoice: value },
+      }, label);
+
+      btn.addEventListener("click", () => {
+        // Update localStorage and apply
+        localStorage.setItem(THEME_STORAGE, value);
+        applyTheme(value);
+
+        // Sync sidebar theme buttons
+        syncThemeButtons(value);
+
+        // Update large theme button active states
+        themeSwitcher.querySelectorAll(".theme-btn-lg").forEach((b) => {
+          b.classList.toggle("active", b.dataset.themeChoice === value);
+        });
+      });
+
+      themeSwitcher.appendChild(btn);
+    });
+
+    appearSection.appendChild(appearTitle);
+    appearSection.appendChild(appearDesc);
+    appearSection.appendChild(themeSwitcher);
+    container.appendChild(appearSection);
+
+    // Section: Danger Zone
+    const dangerSection = h("div", { className: "settings-section" });
+    const dangerTitle = h("div", { className: "section-title" }, "Danger Zone");
+    const dangerZone = h("div", { className: "danger-zone" });
+
+    const dangerHeading = h("div", {
+      style: { fontSize: "0.9rem", fontWeight: "600", color: "var(--color-error)", marginBottom: "8px" },
+    }, "Danger Zone");
+    const dangerDesc = h("div", { className: "text-muted mb-16", style: { fontSize: "0.84rem" } },
+      "These actions are irreversible. Proceed with caution."
+    );
+
+    const dangerActions = h("div", { className: "flex gap-8", style: { flexWrap: "wrap" } });
+
+    // Export All Memories
+    const exportBtn = h("button", { className: "btn" }, "Export All Memories");
+    exportBtn.addEventListener("click", async () => {
+      exportBtn.disabled = true;
+      exportBtn.textContent = "Exporting...";
+      try {
+        const data = await api("/memories?limit=10000");
+        const memories = data.memories || [];
+        const blob = new Blob([JSON.stringify(memories, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `memories-export-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast(`Exported ${memories.length} memories`, "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      } finally {
+        exportBtn.disabled = false;
+        exportBtn.textContent = "Export All Memories";
+      }
+    });
+
+    // Rebuild Index
+    const rebuildBtn = h("button", { className: "btn btn-danger" }, "Rebuild Index");
+    rebuildBtn.addEventListener("click", async () => {
+      if (!confirm("Are you sure you want to rebuild the entire index? This may take a while.")) return;
+      rebuildBtn.disabled = true;
+      rebuildBtn.textContent = "Rebuilding...";
+      try {
+        await api("/index/build", { method: "POST" });
+        showToast("Index rebuild started", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      } finally {
+        rebuildBtn.disabled = false;
+        rebuildBtn.textContent = "Rebuild Index";
+      }
+    });
+
+    dangerActions.appendChild(exportBtn);
+    dangerActions.appendChild(rebuildBtn);
+
+    dangerZone.appendChild(dangerHeading);
+    dangerZone.appendChild(dangerDesc);
+    dangerZone.appendChild(dangerActions);
+
+    dangerSection.appendChild(dangerTitle);
+    dangerSection.appendChild(dangerZone);
+    container.appendChild(dangerSection);
+  } catch (err) {
+    container.innerHTML = "";
+    container.appendChild(
+      h("div", { className: "empty-state" },
+        h("div", { className: "empty-state-icon" }, "\u26A0"),
+        h("div", { className: "empty-state-title" }, "Failed to load settings"),
+        h("div", { className: "empty-state-text" }, escHtml(err.message))
+      )
+    );
+    showToast(err.message, "error");
+  }
+});
+
 // -- Boot ------------------------------------------------------------------
 
 initTheme();
