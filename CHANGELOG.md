@@ -1,9 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [1.4.0] - 2026-03-04
 
 ### Changed
 - **Web UI v2**: Complete redesign with sidebar navigation, 5 pages (Dashboard, Memories, Extractions, API Keys, Settings), Arkos-inspired dark/light theme with CSS custom properties, list+detail memory view with grid toggle, global semantic search, responsive mobile layout with collapsible sidebar, and toast notifications
+- Usage analytics dashboard with period selector, operations breakdown, and extraction token costs
+- Jump-to-page pagination with page size selector and source prefix dropdown filter
+- Security hardened: XSS prevention via escHtml(), no global function pollution, encoded query params, Content-Type only on POST/PUT
 
 ## [1.3.0] - 2026-03-04
 
