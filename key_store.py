@@ -162,7 +162,7 @@ class KeyStore:
     def update_key(self, key_id: str, **fields: Any) -> None:
         """Update name, role, or prefixes on a non-revoked key."""
         allowed = {"name", "role", "prefixes"}
-        updates = {k: v for k, v in fields.items() if k in allowed}
+        updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
 
         if "role" in updates and updates["role"] not in VALID_ROLES:
             raise ValueError(f"Invalid role '{updates['role']}'. Must be one of: {VALID_ROLES}")

@@ -1343,7 +1343,7 @@ registerPage("keys", async (container) => {
       }
 
       for (const k of keys) {
-        const isRevoked = !!k.revoked_at;
+        const isRevoked = !!k.revoked;
         const tr = document.createElement("tr");
         if (isRevoked) tr.className = "key-row-revoked";
 
@@ -1361,7 +1361,7 @@ registerPage("keys", async (container) => {
 
         const created = k.created_at ? timeAgo(k.created_at) : "-";
         const lastUsed = k.last_used_at ? timeAgo(k.last_used_at) : "Never";
-        const usage = k.use_count != null ? formatNumber(k.use_count) : "0";
+        const usage = k.usage_count != null ? formatNumber(k.usage_count) : "0";
 
         const statusBadge = isRevoked ? ` <span class="badge badge-error">Revoked</span>` : "";
 

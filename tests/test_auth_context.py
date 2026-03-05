@@ -82,6 +82,16 @@ class TestPrefixMatching:
         assert ctx.can_read("anything/at/all") is True
         assert ctx.can_read("") is True
 
+    def test_path_traversal_blocked(self):
+        ctx = AuthContext(role="read-write", prefixes=["myapp/*"], key_type="managed")
+        assert not ctx.can_read("myapp/../kai/secret")
+        assert not ctx.can_write("myapp/../kai/secret")
+
+    def test_exact_source_match(self):
+        ctx = AuthContext(role="read-write", prefixes=["myapp/*"], key_type="managed")
+        assert ctx.can_read("myapp")
+        assert ctx.can_write("myapp")
+
 
 # ---------------------------------------------------------------------------
 # Role-based access: read-only

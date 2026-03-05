@@ -28,13 +28,17 @@ class AuthContext:
 
         If prefixes is None the caller is unrestricted → always True.
         Otherwise each prefix is normalised (strip trailing ``/*`` and ``/``)
-        then tested with ``source.startswith(base + "/")``.
+        then tested with ``source == base`` or ``source.startswith(base + "/")``.
+        Path traversal attempts (``..`` components) are rejected.
         """
         if self.prefixes is None:
             return True
+        # Reject path traversal attempts
+        if '..' in source.split('/'):
+            return False
         for pfx in self.prefixes:
             base = pfx.rstrip("/").removesuffix("/*").rstrip("/")
-            if source.startswith(base + "/"):
+            if source == base or source.startswith(base + "/"):
                 return True
         return False
 

@@ -263,7 +263,7 @@ async def verify_api_key(request: Request):
         if record is not None:
             request.state.auth = AuthContext(
                 role=record["role"],
-                prefixes=record["prefixes"] or None,
+                prefixes=record["prefixes"],
                 key_type="managed",
                 key_id=record["id"],
                 key_name=record["name"],
@@ -1077,6 +1077,8 @@ async def create_key(request_body: CreateKeyRequest, request: Request):
     """Create a new API key. Admin only. Returns raw key once."""
     auth = _get_auth(request)
     _require_admin(auth)
+    if request_body.role != "admin" and not request_body.prefixes:
+        raise HTTPException(status_code=400, detail="Non-admin keys must have at least one prefix")
     result = key_store.create_key(
         name=request_body.name,
         role=request_body.role,
@@ -1100,13 +1102,13 @@ async def update_key(key_id: str, request_body: UpdateKeyRequest, request: Reque
     auth = _get_auth(request)
     _require_admin(auth)
     try:
-        result = key_store.update_key(
+        key_store.update_key(
             key_id,
             name=request_body.name,
             role=request_body.role,
             prefixes=request_body.prefixes,
         )
-        return result
+        return {"success": True, "id": key_id}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -1133,14 +1135,18 @@ async def ui():
 
 
 @app.get("/stats")
-async def stats():
+async def stats(request: Request):
     """Full index statistics"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     return memory.stats()
 
 
 @app.get("/metrics")
-async def metrics():
+async def metrics(request: Request):
     """Service-level metrics (latency, errors, queue depth, memory trend, process RSS)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     light = memory.stats_light()
     current_total = int(light.get("total_memories", 0))
     _record_memory_sample(current_total)
@@ -1173,8 +1179,10 @@ async def usage(period: str = Query("7d", regex="^(today|7d|30d|all)$")):
 
 
 @app.post("/maintenance/embedder/reload")
-async def reload_embedder():
+async def reload_embedder(request: Request):
     """Reload in-process embedder runtime and release old inference objects."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     started_at = _utc_now_iso()
     started_monotonic = time.perf_counter()
     with metrics_lock:
@@ -1210,10 +1218,13 @@ async def reload_embedder():
 
 @app.post("/maintenance/consolidate")
 async def consolidate(
+    request: Request,
     dry_run: bool = Query(True),
     source_prefix: str = Query(""),
 ):
     """Run memory consolidation. Merges redundant memory clusters."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not extract_provider:
         raise HTTPException(503, "No LLM provider configured for consolidation")
     from consolidator import find_clusters, consolidate_cluster
@@ -1228,8 +1239,10 @@ async def consolidate(
 
 
 @app.post("/maintenance/prune")
-async def prune(dry_run: bool = Query(True)):
+async def prune(request: Request, dry_run: bool = Query(True)):
     """Prune stale unretrieved memories."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     all_mems = [m for m in memory.metadata if m]
     all_ids = [m["id"] for m in all_mems]
     unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
@@ -1627,10 +1640,12 @@ async def list_folders(request: Request):
 
 
 @app.post("/folders/rename")
-async def rename_folder(request: RenameFolderRequest):
+async def rename_folder(request_body: RenameFolderRequest, request: Request):
     """Batch-rename a folder by updating the source prefix on all matching memories."""
-    old_prefix = request.old_name
-    new_prefix = request.new_name
+    auth = _get_auth(request)
+    _require_admin(auth)
+    old_prefix = request_body.old_name
+    new_prefix = request_body.new_name
 
     # Collect matching IDs first to avoid mutation during iteration
     targets = []
@@ -1658,11 +1673,13 @@ async def rename_folder(request: RenameFolderRequest):
 # -- Index operations ---------------------------------------------------------
 
 @app.post("/index/build")
-async def build_index(request: BuildIndexRequest):
+async def build_index(request_body: BuildIndexRequest, request: Request):
     """Rebuild index from workspace files using markdown-aware chunking"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     logger.info("Rebuilding index...")
     try:
-        if not request.sources:
+        if not request_body.sources:
             workspace = Path(WORKSPACE_DIR)
             sources = [
                 str(workspace / "MEMORY.md"),
@@ -1672,7 +1689,7 @@ async def build_index(request: BuildIndexRequest):
         else:
             workspace = Path(WORKSPACE_DIR).resolve()
             sources = []
-            for s in request.sources:
+            for s in request_body.sources:
                 full_path = (workspace / s).resolve()
                 if full_path.is_relative_to(workspace):
                     sources.append(str(full_path))
@@ -1692,12 +1709,14 @@ async def build_index(request: BuildIndexRequest):
 # -- Deduplication ------------------------------------------------------------
 
 @app.post("/memory/deduplicate")
-async def deduplicate(request: DeduplicateRequest):
+async def deduplicate(request_body: DeduplicateRequest, request: Request):
     """Find and optionally remove near-duplicate memories"""
-    logger.info("Deduplicate: threshold=%.2f dry_run=%s", request.threshold, request.dry_run)
+    auth = _get_auth(request)
+    _require_admin(auth)
+    logger.info("Deduplicate: threshold=%.2f dry_run=%s", request_body.threshold, request_body.dry_run)
     try:
         result = memory.deduplicate(
-            threshold=request.threshold, dry_run=request.dry_run
+            threshold=request_body.threshold, dry_run=request_body.dry_run
         )
         return result
     except Exception as e:
@@ -1726,8 +1745,10 @@ async def list_backups():
 
 
 @app.post("/backup")
-async def create_backup(prefix: str = Query("manual", max_length=50)):
+async def create_backup(request: Request, prefix: str = Query("manual", max_length=50)):
     """Create manual backup"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     try:
         backup_path = memory.create_backup(prefix=prefix)
         return {
@@ -1741,11 +1762,13 @@ async def create_backup(prefix: str = Query("manual", max_length=50)):
 
 
 @app.post("/restore")
-async def restore_backup(request: RestoreRequest):
+async def restore_backup(request_body: RestoreRequest, request: Request):
     """Restore index and metadata from a named backup"""
-    logger.info("Restoring from backup: %s", request.backup_name)
+    auth = _get_auth(request)
+    _require_admin(auth)
+    logger.info("Restoring from backup: %s", request_body.backup_name)
     try:
-        result = memory.restore_from_backup(request.backup_name)
+        result = memory.restore_from_backup(request_body.backup_name)
         return {"success": True, **result, "message": "Restored successfully"}
     except HTTPException:
         raise
@@ -1761,8 +1784,10 @@ async def restore_backup(request: RestoreRequest):
 # -- Cloud Sync ---------------------------------------------------------------
 
 @app.get("/sync/status")
-async def sync_status():
+async def sync_status(request: Request):
     """Get cloud sync status"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not memory.get_cloud_sync():
         return {"enabled": False, "message": "Cloud sync not configured"}
 
@@ -1788,8 +1813,10 @@ async def sync_status():
 
 
 @app.post("/sync/upload")
-async def sync_upload():
+async def sync_upload(request: Request):
     """Manually trigger backup upload to cloud"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
@@ -1811,8 +1838,10 @@ async def sync_upload():
 
 
 @app.post("/sync/download")
-async def sync_download(backup_name: Optional[str] = None, confirm: bool = False):
+async def sync_download(request: Request, backup_name: Optional[str] = None, confirm: bool = False):
     """Download a backup from cloud (requires confirmation)"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
@@ -1849,8 +1878,10 @@ async def sync_download(backup_name: Optional[str] = None, confirm: bool = False
 
 
 @app.get("/sync/snapshots")
-async def sync_snapshots():
+async def sync_snapshots(request: Request):
     """List remote snapshots in cloud storage"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
@@ -1863,8 +1894,10 @@ async def sync_snapshots():
 
 
 @app.post("/sync/restore/{backup_name}")
-async def sync_restore(backup_name: str, confirm: bool = False):
+async def sync_restore(backup_name: str, request: Request, confirm: bool = False):
     """Download and restore a backup from cloud in one step"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
@@ -1908,6 +1941,8 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
     auth = _get_auth(request)
     if request_body.source:
         _require_write(auth, request_body.source)
+    elif auth.role == "read-only":
+        raise HTTPException(status_code=403, detail="Read-only keys cannot trigger extraction")
     if extract_provider is None or run_extraction is None:
         if not EXTRACT_FALLBACK_ADD_ENABLED:
             raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
@@ -2029,6 +2064,9 @@ async def memory_supersede(request_body: SupersedeRequest, request: Request):
     """Replace a memory with an updated version (audit trail preserved)."""
     auth = _get_auth(request)
     _require_write(auth, request_body.source)
+    if auth.prefixes is not None:
+        existing = memory.get_memory(request_body.old_id)
+        _require_write(auth, existing.get("source", ""))
     logger.info("Supersede: old_id=%d, source=%s", request_body.old_id, request_body.source)
     try:
         result = memory.supersede(

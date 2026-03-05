@@ -252,3 +252,26 @@ class TestKeyManagementAPI:
             headers={"X-API-Key": "admin-env-key"},
         )
         assert resp.status_code == 404
+
+    def test_create_non_admin_key_requires_prefixes(self, app_with_keys):
+        client, _, _ = app_with_keys
+        resp = client.post(
+            "/api/keys",
+            json={"name": "empty", "role": "read-write", "prefixes": []},
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert resp.status_code == 400
+
+
+class TestSupersedeAuthCheck:
+    def test_supersede_checks_old_memory_source(self, app_with_keys):
+        client, mock_engine, key_store = app_with_keys
+        mock_engine.get_memory.return_value = {"id": 1, "text": "x", "source": "kai/secret"}
+        mock_engine.supersede_memory.return_value = {"id": 2, "action": "superseded"}
+        created = key_store.create_key(name="writer", role="read-write", prefixes=["claude-code/*"])
+        resp = client.post(
+            "/memory/supersede",
+            json={"old_id": 1, "new_text": "new", "source": "claude-code/x"},
+            headers={"X-API-Key": created["key"]},
+        )
+        assert resp.status_code == 403
