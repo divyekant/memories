@@ -686,6 +686,7 @@ registerPage("memories", async (container) => {
       const isActive = memState.selected && memState.selected.id === mem.id;
       const item = document.createElement("div");
       item.className = `memory-item${isActive ? " active" : ""}`;
+      item.dataset.memId = mem.id;
       const truncText = (mem.text || "").length > 120
         ? escHtml((mem.text || "").slice(0, 120)) + "..."
         : escHtml(mem.text || "");
@@ -704,13 +705,30 @@ registerPage("memories", async (container) => {
       `;
       item.addEventListener("click", () => {
         memState.selected = mem;
-        renderContent();
+        // Update active class without re-rendering the list
+        listPanel.querySelectorAll(".memory-item").forEach((el) => {
+          el.classList.toggle("active", el.dataset.memId === String(mem.id));
+        });
+        updateDetailPanel();
       });
       listPanel.appendChild(item);
     });
 
     // Right: detail panel
-    const detailPanel = h("div", { className: "memories-detail-panel" });
+    const detailPanel = h("div", { className: "memories-detail-panel", id: "memoryDetailPanel" });
+
+    layout.appendChild(listPanel);
+    layout.appendChild(detailPanel);
+    contentDiv.appendChild(layout);
+
+    updateDetailPanel();
+  }
+
+  // -- Update detail panel only (no list re-render) --
+  function updateDetailPanel() {
+    const detailPanel = document.getElementById("memoryDetailPanel");
+    if (!detailPanel) return;
+
     if (memState.selected) {
       const mem = memState.selected;
       detailPanel.innerHTML = `
@@ -747,10 +765,6 @@ registerPage("memories", async (container) => {
         </div>
       `;
     }
-
-    layout.appendChild(listPanel);
-    layout.appendChild(detailPanel);
-    contentDiv.appendChild(layout);
   }
 
   // -- Grid view --
