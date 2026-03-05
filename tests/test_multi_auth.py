@@ -112,3 +112,73 @@ class TestReadOnlyEnforcement:
             headers={"X-API-Key": created["key"]},
         )
         assert resp.status_code == 200
+
+    def test_read_only_cannot_add(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="reader", role="read-only", prefixes=["claude-code/*"])
+        resp = client.post(
+            "/memory/add",
+            json={"text": "hello", "source": "claude-code/test"},
+            headers={"X-API-Key": created["key"]},
+        )
+        assert resp.status_code == 403
+
+    def test_read_only_cannot_delete(self, app_with_keys):
+        client, mock_engine, key_store = app_with_keys
+        mock_engine.get_memory.return_value = {"id": 1, "text": "x", "source": "claude-code/test"}
+        created = key_store.create_key(name="reader", role="read-only", prefixes=["claude-code/*"])
+        resp = client.delete("/memory/1", headers={"X-API-Key": created["key"]})
+        assert resp.status_code == 403
+
+
+class TestWriteEnforcement:
+    def test_write_to_allowed_prefix_succeeds(self, app_with_keys):
+        client, mock_engine, key_store = app_with_keys
+        mock_engine.add_memories.return_value = [42]
+        created = key_store.create_key(name="writer", role="read-write", prefixes=["claude-code/*"])
+        resp = client.post(
+            "/memory/add",
+            json={"text": "hello", "source": "claude-code/test"},
+            headers={"X-API-Key": created["key"]},
+        )
+        assert resp.status_code == 200
+
+    def test_write_to_disallowed_prefix_returns_403(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="scoped", role="read-write", prefixes=["claude-code/*"])
+        resp = client.post(
+            "/memory/add",
+            json={"text": "sneaky", "source": "kai/secret"},
+            headers={"X-API-Key": created["key"]},
+        )
+        assert resp.status_code == 403
+
+    def test_delete_checks_memory_source(self, app_with_keys):
+        client, mock_engine, key_store = app_with_keys
+        mock_engine.get_memory.return_value = {"id": 1, "text": "x", "source": "kai/secret"}
+        created = key_store.create_key(name="writer", role="read-write", prefixes=["claude-code/*"])
+        resp = client.delete("/memory/1", headers={"X-API-Key": created["key"]})
+        assert resp.status_code == 403
+
+    def test_batch_add_rejects_if_any_source_disallowed(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="writer", role="read-write", prefixes=["claude-code/*"])
+        resp = client.post(
+            "/memory/add-batch",
+            json={"memories": [
+                {"text": "ok", "source": "claude-code/a"},
+                {"text": "sneaky", "source": "kai/b"},
+            ]},
+            headers={"X-API-Key": created["key"]},
+        )
+        assert resp.status_code == 403
+
+    def test_upsert_checks_source(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="writer", role="read-write", prefixes=["claude-code/*"])
+        resp = client.post(
+            "/memory/upsert",
+            json={"text": "hello", "source": "kai/secret", "key": "k1"},
+            headers={"X-API-Key": created["key"]},
+        )
+        assert resp.status_code == 403

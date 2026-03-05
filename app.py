@@ -1263,17 +1263,19 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
 # -- Memory CRUD --------------------------------------------------------------
 
 @app.post("/memory/add")
-async def add_memory(request: AddMemoryRequest):
+async def add_memory(request_body: AddMemoryRequest, request: Request):
     """Add a new memory"""
-    logger.info("Add memory: source=%s len=%d", request.source, len(request.text))
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source)
+    logger.info("Add memory: source=%s len=%d", request_body.source, len(request_body.text))
     try:
         ids = memory.add_memories(
-            texts=[request.text],
-            sources=[request.source],
-            metadata_list=[request.metadata] if request.metadata else None,
-            deduplicate=request.deduplicate,
+            texts=[request_body.text],
+            sources=[request_body.source],
+            metadata_list=[request_body.metadata] if request_body.metadata else None,
+            deduplicate=request_body.deduplicate,
         )
-        usage_tracker.log_api_event("add", request.source)
+        usage_tracker.log_api_event("add", request_body.source)
         return {
             "success": True,
             "id": ids[0] if ids else None,
@@ -1285,14 +1287,17 @@ async def add_memory(request: AddMemoryRequest):
 
 
 @app.post("/memory/add-batch")
-async def add_batch(request: AddBatchRequest):
+async def add_batch(request_body: AddBatchRequest, request: Request):
     """Add multiple memories at once"""
-    logger.info("Add batch: count=%d", len(request.memories))
+    auth = _get_auth(request)
+    for m in request_body.memories:
+        _require_write(auth, m.source)
+    logger.info("Add batch: count=%d", len(request_body.memories))
     try:
-        texts = [m.text for m in request.memories]
-        sources = [m.source for m in request.memories]
+        texts = [m.text for m in request_body.memories]
+        sources = [m.source for m in request_body.memories]
         # Preserve per-item metadata (None for rows without metadata)
-        metadata_list = [m.metadata for m in request.memories]
+        metadata_list = [m.metadata for m in request_body.memories]
         if not any(metadata_list):
             metadata_list = None
 
@@ -1300,9 +1305,9 @@ async def add_batch(request: AddBatchRequest):
             texts=texts,
             sources=sources,
             metadata_list=metadata_list,
-            deduplicate=request.deduplicate,
+            deduplicate=request_body.deduplicate,
         )
-        usage_tracker.log_api_event("add", count=len(request.memories))
+        usage_tracker.log_api_event("add", count=len(request_body.memories))
         return {
             "success": True,
             "ids": ids,
@@ -1315,13 +1320,19 @@ async def add_batch(request: AddBatchRequest):
 
 
 @app.delete("/memory/{memory_id}")
-async def delete_memory(memory_id: int):
+async def delete_memory(memory_id: int, request: Request):
     """Delete a single memory by ID"""
+    auth = _get_auth(request)
     logger.info("Delete memory: id=%d", memory_id)
     try:
+        if auth.prefixes is not None:
+            existing = memory.get_memory(memory_id)
+            _require_write(auth, existing.get("source", ""))
         result = memory.delete_memory(memory_id)
         usage_tracker.log_api_event("delete")
         return {"success": True, **result}
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -1361,11 +1372,13 @@ async def get_memory_batch(request_body: MemoryGetBatchRequest, request: Request
 
 
 @app.post("/memory/delete-by-source")
-async def delete_by_source(request: DeleteBySourceRequest):
+async def delete_by_source(request_body: DeleteBySourceRequest, request: Request):
     """Delete all memories matching a source pattern"""
-    logger.info("Delete by source: pattern=%s", request.source_pattern)
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source_pattern)
+    logger.info("Delete by source: pattern=%s", request_body.source_pattern)
     try:
-        result = memory.delete_by_source(request.source_pattern)
+        result = memory.delete_by_source(request_body.source_pattern)
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete by source failed")
@@ -1374,9 +1387,12 @@ async def delete_by_source(request: DeleteBySourceRequest):
 
 @app.delete("/memories")
 async def delete_memories_by_prefix(
+    request: Request,
     source: str = Query(..., min_length=1, max_length=500),
 ):
     """Bulk-delete all memories whose source starts with the given prefix."""
+    auth = _get_auth(request)
+    _require_write(auth, source)
     logger.info("Bulk delete by source prefix: %s", source)
     try:
         result = memory.delete_by_prefix(source)
@@ -1388,12 +1404,20 @@ async def delete_memories_by_prefix(
 
 
 @app.post("/memory/delete-batch")
-async def delete_batch(request: DeleteBatchRequest):
+async def delete_batch(request_body: DeleteBatchRequest, request: Request):
     """Delete multiple memories in one operation."""
-    logger.info("Delete batch: count=%d", len(request.ids))
+    auth = _get_auth(request)
+    if auth.prefixes is not None:
+        for mid in request_body.ids:
+            try:
+                existing = memory.get_memory(mid)
+                _require_write(auth, existing.get("source", ""))
+            except ValueError:
+                pass  # will fail on delete anyway
+    logger.info("Delete batch: count=%d", len(request_body.ids))
     try:
-        result = memory.delete_memories(request.ids)
-        usage_tracker.log_api_event("delete", count=len(request.ids))
+        result = memory.delete_memories(request_body.ids)
+        usage_tracker.log_api_event("delete", count=len(request_body.ids))
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete batch failed")
@@ -1401,11 +1425,13 @@ async def delete_batch(request: DeleteBatchRequest):
 
 
 @app.post("/memory/delete-by-prefix")
-async def delete_by_prefix(request: DeleteByPrefixRequest):
+async def delete_by_prefix(request_body: DeleteByPrefixRequest, request: Request):
     """Delete all memories whose source starts with a prefix."""
-    logger.info("Delete by prefix: prefix=%s", request.source_prefix)
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source_prefix)
+    logger.info("Delete by prefix: prefix=%s", request_body.source_prefix)
     try:
-        result = memory.delete_by_prefix(request.source_prefix)
+        result = memory.delete_by_prefix(request_body.source_prefix)
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete by prefix failed")
@@ -1413,16 +1439,22 @@ async def delete_by_prefix(request: DeleteByPrefixRequest):
 
 
 @app.patch("/memory/{memory_id}")
-async def patch_memory(memory_id: int, request: PatchMemoryRequest):
+async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request: Request):
     """Patch selected fields on an existing memory."""
-    if request.text is None and request.source is None and not request.metadata_patch:
+    auth = _get_auth(request)
+    if request_body.text is None and request_body.source is None and not request_body.metadata_patch:
         raise HTTPException(status_code=400, detail="At least one field must be provided")
     try:
+        if auth.prefixes is not None:
+            existing = memory.get_memory(memory_id)
+            _require_write(auth, existing.get("source", ""))
+            if request_body.source is not None:
+                _require_write(auth, request_body.source)
         result = memory.update_memory(
             memory_id=memory_id,
-            text=request.text,
-            source=request.source,
-            metadata_patch=request.metadata_patch,
+            text=request_body.text,
+            source=request_body.source,
+            metadata_patch=request_body.metadata_patch,
         )
         return result
     except ValueError as e:
@@ -1433,14 +1465,16 @@ async def patch_memory(memory_id: int, request: PatchMemoryRequest):
 
 
 @app.post("/memory/upsert")
-async def upsert_memory(request: UpsertMemoryRequest):
+async def upsert_memory(request_body: UpsertMemoryRequest, request: Request):
     """Upsert a memory by stable key + source."""
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source)
     try:
         result = memory.upsert_memory(
-            text=request.text,
-            source=request.source,
-            key=request.key,
-            metadata=request.metadata,
+            text=request_body.text,
+            source=request_body.source,
+            key=request_body.key,
+            metadata=request_body.metadata,
         )
         return {"success": True, **result}
     except Exception as e:
@@ -1449,8 +1483,11 @@ async def upsert_memory(request: UpsertMemoryRequest):
 
 
 @app.post("/memory/upsert-batch")
-async def upsert_memory_batch(request: UpsertBatchRequest):
+async def upsert_memory_batch(request_body: UpsertBatchRequest, request: Request):
     """Bulk upsert memories by stable keys."""
+    auth = _get_auth(request)
+    for item in request_body.memories:
+        _require_write(auth, item.source)
     try:
         entries = [
             {
@@ -1459,7 +1496,7 @@ async def upsert_memory_batch(request: UpsertBatchRequest):
                 "key": item.key,
                 "metadata": item.metadata,
             }
-            for item in request.memories
+            for item in request_body.memories
         ]
         result = memory.upsert_memories(entries)
         return {"success": True, **result}
@@ -1803,8 +1840,11 @@ async def sync_restore(backup_name: str, confirm: bool = False):
 # -- Extraction endpoints -----------------------------------------------------
 
 @app.post("/memory/extract", status_code=202)
-async def memory_extract(request: ExtractRequest):
+async def memory_extract(request_body: ExtractRequest, request: Request):
     """Queue extraction and return immediately."""
+    auth = _get_auth(request)
+    if request_body.source:
+        _require_write(auth, request_body.source)
     if extract_provider is None or run_extraction is None:
         if not EXTRACT_FALLBACK_ADD_ENABLED:
             raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
@@ -1813,9 +1853,9 @@ async def memory_extract(request: ExtractRequest):
         extract_jobs[job_id] = {
             "job_id": job_id,
             "status": "running",
-            "source": request.source,
-            "context": request.context,
-            "message_length": len(request.messages),
+            "source": request_body.source,
+            "context": request_body.context,
+            "message_length": len(request_body.messages),
             "created_at": _utc_now_iso(),
             "started_at": _utc_now_iso(),
             "mode": "fallback_add",
@@ -1823,9 +1863,9 @@ async def memory_extract(request: ExtractRequest):
         try:
             result = await run_in_threadpool(
                 _run_fallback_extraction,
-                request.messages,
-                request.source,
-                request.context,
+                request_body.messages,
+                request_body.source,
+                request_body.context,
             )
             extract_jobs[job_id]["status"] = "completed"
             extract_jobs[job_id]["completed_at"] = _utc_now_iso()
@@ -1833,8 +1873,8 @@ async def memory_extract(request: ExtractRequest):
             logger.info(
                 "Extract fallback completed: job_id=%s source=%s context=%s extracted=%d stored=%d",
                 job_id,
-                request.source,
-                request.context,
+                request_body.source,
+                request_body.context,
                 result.get("extracted_count", 0),
                 result.get("stored_count", 0),
             )
@@ -1854,14 +1894,14 @@ async def memory_extract(request: ExtractRequest):
         }
 
     _ensure_extract_workers_started()
-    usage_tracker.log_api_event("extract", request.source)
+    usage_tracker.log_api_event("extract", request_body.source)
     job_id = uuid4().hex
     extract_jobs[job_id] = {
         "job_id": job_id,
         "status": "queued",
-        "source": request.source,
-        "context": request.context,
-        "message_length": len(request.messages),
+        "source": request_body.source,
+        "context": request_body.context,
+        "message_length": len(request_body.messages),
         "created_at": _utc_now_iso(),
     }
     try:
@@ -1869,9 +1909,9 @@ async def memory_extract(request: ExtractRequest):
             {
                 "job_id": job_id,
                 "request": {
-                    "messages": request.messages,
-                    "source": request.source,
-                    "context": request.context,
+                    "messages": request_body.messages,
+                    "source": request_body.source,
+                    "context": request_body.context,
                 },
             }
         )
@@ -1900,8 +1940,8 @@ async def memory_extract(request: ExtractRequest):
     logger.info(
         "Extract queued: job_id=%s source=%s context=%s queue_depth=%d",
         job_id,
-        request.source,
-        request.context,
+        request_body.source,
+        request_body.context,
         extract_queue.qsize(),
     )
     return {
@@ -1922,14 +1962,16 @@ async def memory_extract_job(job_id: str):
 
 
 @app.post("/memory/supersede")
-async def memory_supersede(request: SupersedeRequest):
+async def memory_supersede(request_body: SupersedeRequest, request: Request):
     """Replace a memory with an updated version (audit trail preserved)."""
-    logger.info("Supersede: old_id=%d, source=%s", request.old_id, request.source)
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source)
+    logger.info("Supersede: old_id=%d, source=%s", request_body.old_id, request_body.source)
     try:
         result = memory.supersede(
-            old_id=request.old_id,
-            new_text=request.new_text,
-            source=request.source,
+            old_id=request_body.old_id,
+            new_text=request_body.new_text,
+            source=request_body.source,
         )
         return {"success": True, **result}
     except ValueError as e:
