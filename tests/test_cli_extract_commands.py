@@ -44,10 +44,11 @@ class TestExtractSubmit:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["data"]["job_id"] == "abc-123"
+        assert isinstance(captured["body"]["messages"], str)
         assert captured["body"]["source"] == "test/"
         assert captured["body"]["context"] == "stop"
 
-    def test_submit_json_messages(self):
+    def test_submit_plain_text(self):
         captured = {}
 
         def handler(request: httpx.Request):
@@ -56,17 +57,14 @@ class TestExtractSubmit:
                 "job_id": "def-456", "status": "submitted",
             })
 
-        messages = json.dumps([
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi there"},
-        ])
         result = _invoke(
             ["extract", "submit", "-s", "test/", "--context", "session_end", "-"],
             handler,
-            input=messages,
+            input="User: hello\nAssistant: hi there\n",
         )
         assert result.exit_code == 0
-        assert len(captured["body"]["messages"]) == 2
+        assert isinstance(captured["body"]["messages"], str)
+        assert "hello" in captured["body"]["messages"]
         assert captured["body"]["context"] == "session_end"
 
     def test_submit_requires_source(self):

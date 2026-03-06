@@ -46,7 +46,7 @@ class TestDeleteBySource:
         data = json.loads(result.output)
         assert data["ok"] is True
         assert data["data"]["deleted"] == 5
-        assert captured["body"]["source"] == "test/"
+        assert captured["body"]["source_pattern"] == "test/"
 
     def test_delete_by_source_abort_without_yes(self):
         def handler(request: httpx.Request):
@@ -78,7 +78,7 @@ class TestDeleteByPrefix:
         data = json.loads(result.output)
         assert data["ok"] is True
         assert data["data"]["deleted"] == 3
-        assert captured["body"]["prefix"] == "old/"
+        assert captured["body"]["source_prefix"] == "old/"
 
     def test_delete_by_prefix_abort_without_yes(self):
         def handler(request: httpx.Request):

@@ -113,11 +113,11 @@ class MemoriesClient:
 
     def delete_by_source(self, pattern: str):
         return self._request("POST", "/memory/delete-by-source",
-                             json={"source": pattern})
+                             json={"source_pattern": pattern})
 
     def delete_by_prefix(self, prefix: str):
         return self._request("POST", "/memory/delete-by-prefix",
-                             json={"prefix": prefix})
+                             json={"source_prefix": prefix})
 
     def delete_bulk(self, source: str):
         return self._request("DELETE", "/memories", params={"source": source})
@@ -232,7 +232,7 @@ class MemoriesClient:
 
     # --- Extract ---
 
-    def extract_submit(self, messages: list[dict], source: str = "cli",
+    def extract_submit(self, messages: str, source: str = "cli",
                        context: str | None = None):
         body: dict = {"messages": messages, "source": source}
         if context is not None:

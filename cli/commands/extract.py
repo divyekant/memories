@@ -1,6 +1,5 @@
 """Extract CLI commands -- submit, status, poll."""
 
-import json
 import sys
 from pathlib import Path
 
@@ -39,15 +38,9 @@ def extract_submit(ctx, file, source, context):
     Pass a file path or '-' to read from stdin.
     """
     raw = read_file_or_stdin(file)
-    # Parse as JSON array of messages, or wrap plain text
-    try:
-        messages = json.loads(raw)
-        if not isinstance(messages, list):
-            messages = [{"role": "user", "content": raw}]
-    except (json.JSONDecodeError, ValueError):
-        messages = [{"role": "user", "content": raw}]
-
-    data = ctx.client.extract_submit(messages, source, context)
+    if not raw or not raw.strip():
+        raise click.UsageError("No transcript provided")
+    data = ctx.client.extract_submit(raw.strip(), source, context)
 
     def human(d):
         job_id = d.get("job_id", d.get("id", "?"))

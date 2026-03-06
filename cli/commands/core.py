@@ -65,7 +65,7 @@ def search(ctx, query, limit, hybrid, threshold, source):
             click.echo("No results.")
             return
         for r in results:
-            sim = r.get("similarity", r.get("score", 0))
+            sim = r.get("similarity", r.get("rrf_score", r.get("score", 0)))
             pct = f"{sim * 100:.0f}%"
             rid = r.get("id", "?")
             src = r.get("source", "")
