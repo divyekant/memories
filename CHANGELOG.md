@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Full CLI with 30+ commands covering all API endpoints (`memories` command)
+- Agent-first output: auto-detect TTY for human-friendly display, JSON when piped
+- Command groups: core, batch, delete-by, admin, backup, sync, extract, auth, config
+- Layered configuration: CLI flags > config file > env vars > defaults
+- Stdin support for piped input on add, upsert, batch, and extract commands
+- Shell completion support via Click
+
 ## [1.5.0] - 2026-03-05
 
 ### Added

@@ -47,6 +47,79 @@ No build step — vanilla JS + CSS served directly from `webui/`.
 
 ---
 
+## CLI
+
+The `memories` CLI provides full access to the API from your terminal.
+
+### Install
+
+```bash
+pip install -e .
+# Or if using the Docker image, the CLI is included
+```
+
+### Usage
+
+```bash
+# Search
+memories search "TypeScript config"
+
+# Add a memory
+memories add "Always use strict mode" --source standards
+
+# List memories
+memories list --source standards
+
+# Check novelty before adding
+memories is-novel "TypeScript strict mode"
+
+# Batch operations
+memories batch add memories.jsonl
+
+# Admin
+memories admin stats
+memories admin health
+
+# Backups
+memories backup create
+memories backup list
+
+# Full help
+memories --help
+```
+
+### Agent Integration
+
+The CLI auto-detects when piped and outputs JSON:
+
+```bash
+# JSON output for agents (automatic when piped)
+memories search "auth" | jq '.data.results[0].text'
+
+# Force JSON in any context
+memories --json search "auth"
+
+# Force human-readable when piped
+memories --pretty list
+```
+
+### Configuration
+
+```bash
+# Set server URL
+memories config set url http://localhost:8900
+
+# Set API key
+memories config set api_key your-key-here
+
+# View resolved config
+memories config show
+```
+
+Config resolution: CLI flags > `~/.config/memories/config.json` > env vars > defaults.
+
+---
+
 ## Architecture
 
 ```

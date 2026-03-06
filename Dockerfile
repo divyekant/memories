@@ -69,6 +69,7 @@ COPY consolidator.py .
 COPY key_store.py .
 COPY auth_context.py .
 COPY app.py .
+COPY cli/ cli/
 COPY webui ./webui
 
 # Create non-root user for runtime

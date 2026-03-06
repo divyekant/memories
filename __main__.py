@@ -1,9 +1,5 @@
 """Entry point for `python -m memories`."""
-import sys
+from cli import app
 
-if len(sys.argv) >= 2 and sys.argv[1] == "auth":
-    from memories_auth import main
-    main(sys.argv[2:])
-else:
-    print("Usage: python -m memories auth [chatgpt|status]")
-    sys.exit(1)
+if __name__ == "__main__":
+    app()
