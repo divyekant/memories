@@ -66,6 +66,8 @@ COPY llm_provider.py .
 COPY llm_extract.py .
 COPY usage_tracker.py .
 COPY consolidator.py .
+COPY key_store.py .
+COPY auth_context.py .
 COPY app.py .
 COPY webui ./webui
 
