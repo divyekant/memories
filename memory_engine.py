@@ -1104,7 +1104,9 @@ class MemoryEngine:
         lines:
             NDJSON strings — first line must be a header with ``_header: true``.
         strategy:
-            Import strategy. Currently only ``"add"`` is supported.
+            ``"add"`` — bulk-add all records without novelty check.
+            ``"smart"`` / ``"smart+extract"`` — similarity-based novelty
+            check with timestamp resolution for borderline matches.
         source_remap:
             Optional ``(old_prefix, new_prefix)`` tuple.  If a record's
             ``source`` starts with *old_prefix* it is replaced with
@@ -1149,8 +1151,7 @@ class MemoryEngine:
             result["backup"] = backup_name
 
         # --- parse records ---
-        texts: List[str] = []
-        sources: List[str] = []
+        parsed: List[Dict[str, Any]] = []
         for idx, line in enumerate(lines[1:], start=2):
             try:
                 record = json.loads(line)
@@ -1166,15 +1167,104 @@ class MemoryEngine:
             if source_remap and source.startswith(source_remap[0]):
                 source = source_remap[1] + source[len(source_remap[0]):]
 
-            texts.append(record["text"])
-            sources.append(source)
+            parsed.append({
+                "text": record["text"],
+                "source": source,
+                "created_at": record.get("created_at", ""),
+                "updated_at": record.get("updated_at", ""),
+            })
 
-        # --- add strategy ---
-        if texts:
-            self.add_memories(texts=texts, sources=sources, deduplicate=False)
-            result["imported"] = len(texts)
+        # --- dispatch by strategy ---
+        if strategy == "add":
+            self._import_add(parsed, result)
+        elif strategy in ("smart", "smart+extract"):
+            self._import_smart(parsed, result)
+        else:
+            result["errors"].append({"line": 0, "error": f"Unknown strategy: {strategy}"})
 
         return result
+
+    # ------------------------------------------------------------------
+    # Import strategies (private helpers)
+    # ------------------------------------------------------------------
+
+    def _import_add(
+        self, parsed: List[Dict[str, Any]], result: Dict[str, Any]
+    ) -> None:
+        """Bulk-add all parsed records without novelty checking."""
+        if not parsed:
+            return
+        texts = [r["text"] for r in parsed]
+        sources = [r["source"] for r in parsed]
+        self.add_memories(texts=texts, sources=sources, deduplicate=False)
+        result["imported"] = len(texts)
+
+    def _import_smart(
+        self, parsed: List[Dict[str, Any]], result: Dict[str, Any]
+    ) -> None:
+        """Add records with similarity-based novelty checking.
+
+        Thresholds
+        ----------
+        * similarity >= 0.95  →  skip (definite duplicate)
+        * similarity <  0.80  →  add  (clearly novel)
+        * 0.80 <= sim < 0.95  →  borderline — newer timestamp wins
+        """
+        _SKIP_THRESHOLD = 0.95
+        _NOVEL_THRESHOLD = 0.80
+
+        novel_texts: List[str] = []
+        novel_sources: List[str] = []
+
+        for rec in parsed:
+            text = rec["text"]
+            source = rec["source"]
+            import_created = rec.get("created_at", "")
+
+            # Empty engine — everything is novel
+            if not self.metadata:
+                novel_texts.append(text)
+                novel_sources.append(source)
+                continue
+
+            hits = self.search(text, k=1)
+
+            if not hits:
+                novel_texts.append(text)
+                novel_sources.append(source)
+                continue
+
+            best = hits[0]
+            similarity = best.get("similarity", 0.0)
+
+            if similarity >= _SKIP_THRESHOLD:
+                # Definite duplicate — skip
+                result["skipped"] += 1
+            elif similarity < _NOVEL_THRESHOLD:
+                # Clearly novel — add
+                novel_texts.append(text)
+                novel_sources.append(source)
+            else:
+                # Borderline (0.80 <= sim < 0.95) — timestamp resolution
+                existing_created = best.get("created_at", "")
+                if import_created > existing_created:
+                    # Import record is newer — replace old with new
+                    match_id = best.get("id")
+                    if match_id is not None:
+                        self.delete_memory(match_id)
+                    novel_texts.append(text)
+                    novel_sources.append(source)
+                    result["updated"] += 1
+                else:
+                    # Existing is newer or same — skip
+                    result["skipped"] += 1
+
+        # Batch-add all novel records at once
+        if novel_texts:
+            self.add_memories(
+                texts=novel_texts, sources=novel_sources, deduplicate=False,
+            )
+            result["imported"] = len(novel_texts)
 
     # ------------------------------------------------------------------
     # Persistence

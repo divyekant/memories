@@ -168,3 +168,54 @@ class TestImportMemories:
 
         assert result["imported"] == 0
         assert len(result["errors"]) == 2
+
+
+class TestImportSmart:
+    def test_smart_skips_exact_duplicates(self, engine):
+        """Importing the exact same text should be skipped."""
+        engine.add_memories(texts=["The sky is blue"], sources=["s/"])
+        lines = [
+            json.dumps({"_header": True, "count": 1, "version": "2.0.0",
+                         "exported_at": "2026-01-01T00:00:00Z",
+                         "source_filter": None, "since": None, "until": None}),
+            json.dumps({"text": "The sky is blue", "source": "s/",
+                         "created_at": "2026-01-01T00:00:00Z",
+                         "updated_at": "2026-01-01T00:00:00Z"}),
+        ]
+        result = engine.import_memories(lines, strategy="smart")
+        assert result["skipped"] >= 1
+        assert result["imported"] == 0
+        assert engine.count_memories() == 1  # no duplicate added
+
+    def test_smart_adds_novel(self, engine):
+        """Clearly different text should be added."""
+        engine.add_memories(texts=["The sky is blue"], sources=["s/"])
+        lines = [
+            json.dumps({"_header": True, "count": 1, "version": "2.0.0",
+                         "exported_at": "2026-01-01T00:00:00Z",
+                         "source_filter": None, "since": None, "until": None}),
+            json.dumps({"text": "Python uses indentation for blocks and scoping",
+                         "source": "s/",
+                         "created_at": "2026-02-01T00:00:00Z",
+                         "updated_at": "2026-02-01T00:00:00Z"}),
+        ]
+        result = engine.import_memories(lines, strategy="smart")
+        assert result["imported"] == 1
+        assert engine.count_memories() == 2
+
+    def test_smart_into_empty_engine(self, engine):
+        """Importing into empty engine adds everything."""
+        lines = [
+            json.dumps({"_header": True, "count": 2, "version": "2.0.0",
+                         "exported_at": "2026-01-01T00:00:00Z",
+                         "source_filter": None, "since": None, "until": None}),
+            json.dumps({"text": "fact one", "source": "s/",
+                         "created_at": "2026-01-01T00:00:00Z",
+                         "updated_at": "2026-01-01T00:00:00Z"}),
+            json.dumps({"text": "fact two", "source": "s/",
+                         "created_at": "2026-01-02T00:00:00Z",
+                         "updated_at": "2026-01-02T00:00:00Z"}),
+        ]
+        result = engine.import_memories(lines, strategy="smart")
+        assert result["imported"] == 2
+        assert engine.count_memories() == 2
