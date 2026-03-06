@@ -42,3 +42,5 @@ from cli.commands import admin  # noqa: E402, F401
 from cli.commands import backup  # noqa: E402, F401
 from cli.commands import sync  # noqa: E402, F401
 from cli.commands import extract  # noqa: E402, F401
+from cli.commands import auth  # noqa: E402, F401
+from cli.commands import config_cmd  # noqa: E402, F401
