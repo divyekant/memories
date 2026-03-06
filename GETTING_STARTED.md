@@ -134,7 +134,22 @@ ln -s /path/to/memories/skills/memories ~/.claude/skills/memories
 
 The skill does NOT replace hooks (passive baseline) or CC's built-in auto-memory. It complements them with active judgment about what's worth remembering and when to update or remove stale memories.
 
-## 8) Where to go next
+## 8) Route memory away from MEMORY.md (Claude Code, recommended)
+
+Claude Code has a built-in auto-memory that writes to `MEMORY.md` files. With Memories MCP running, this creates duplicate stores and bloated files. Add this to your **global** `~/.claude/CLAUDE.md` to redirect:
+
+```markdown
+## Memory Routing
+
+This environment has Memories MCP for persistent, searchable memory.
+Keep MEMORY.md for quick-reference only (ports, credentials, commands).
+Store decisions, learnings, deferred work, and architecture context
+via Memories MCP tools (memory_add, memory_extract) — NOT in MEMORY.md.
+```
+
+This tells Claude Code to prefer Memories MCP for durable facts and keep `MEMORY.md` minimal.
+
+## 9) Where to go next
 
 - Full architecture: [`docs/architecture.md`](docs/architecture.md)
 - Decisions/tradeoffs: [`docs/decisions.md`](docs/decisions.md)

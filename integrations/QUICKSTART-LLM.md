@@ -145,7 +145,20 @@ Edit `~/.claude/settings.json` and merge in:
 
 If you already have hooks in `settings.json`, merge the arrays — don't replace them.
 
-**Step 4: Verify**
+**Step 4: Route memory to Memories MCP**
+
+Claude Code has built-in auto-memory that writes to `MEMORY.md` files. With Memories running, this creates duplicate stores and bloated files. Add this to your global `~/.claude/CLAUDE.md`:
+
+```markdown
+## Memory Routing
+
+This environment has Memories MCP for persistent, searchable memory.
+Keep MEMORY.md for quick-reference only (ports, credentials, commands).
+Store decisions, learnings, deferred work, and architecture context
+via Memories MCP tools (memory_add, memory_extract) — NOT in MEMORY.md.
+```
+
+**Step 5: Verify**
 
 Start a new Claude Code session. You should see "Relevant Memories" injected at the top if you have existing memories for the project.
 
