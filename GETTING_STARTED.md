@@ -50,6 +50,18 @@ docker compose up -d --build memories
 
 ## 4) Install integrations (recommended)
 
+Prerequisites for installer mode:
+- `jq` and `curl` installed
+- running Memories service (`/health` responds)
+
+If you plan to install Codex integration, install MCP server deps first:
+
+```bash
+cd mcp-server
+npm install
+cd ..
+```
+
 ```bash
 ./integrations/claude-code/install.sh --auto
 ```
@@ -60,6 +72,11 @@ This auto-detects and configures:
 - OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
 
 Cursor is supported via MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`) and is currently manual.
+
+Note for Codex: if `~/.codex/config.toml` already contains a `notify` entry, merge
+`~/.codex/hooks/memory/memory-codex-notify.sh` into that list manually.
+For scoped API keys, set `MEMORIES_SOURCE_PREFIX` (or `MEMORIES_SOURCE`) in
+`~/.config/memories/env` so notify writes stay inside authorized prefixes.
 
 The installer writes:
 - hook runtime vars to `~/.config/memories/env` (`MEMORIES_URL`, optional `MEMORIES_API_KEY`)
@@ -113,7 +130,7 @@ ln -s /path/to/memories/skills/memories ~/.claude/skills/memories
 - **Read**: Proactively searches memories before asking clarifying questions or entering a domain with prior context
 - **Write**: Hybrid approach — uses `memory_add` for simple facts, `memory_extract` for lifecycle operations (decision changes, deferred work completion, contradictions)
 - **Maintain**: Handles updates and deletes via AUDN, plus explicit cleanup with `memory_delete` / `memory_delete_by_source`
-- Enforces consistent source prefixes (`claude-code/{project}`, `learning/{project}`, `wip/{project}`)
+- Enforces consistent source prefixes (`claude-code/{project}` or `codex/{project}`, plus `learning/{project}` and `wip/{project}`)
 
 The skill does NOT replace hooks (passive baseline) or CC's built-in auto-memory. It complements them with active judgment about what's worth remembering and when to update or remove stale memories.
 

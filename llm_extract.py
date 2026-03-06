@@ -10,7 +10,9 @@ Usage:
 import json
 import logging
 import os
-from typing import Optional
+from typing import Optional, List
+
+from auth_context import source_matches_prefixes
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ EXTRACT_MAX_FACTS = _env_int("EXTRACT_MAX_FACTS", 30)
 EXTRACT_MAX_FACT_CHARS = _env_int("EXTRACT_MAX_FACT_CHARS", 500, minimum=40)
 EXTRACT_SIMILAR_TEXT_CHARS = _env_int("EXTRACT_SIMILAR_TEXT_CHARS", 280, minimum=40)
 EXTRACT_SIMILAR_PER_FACT = _env_int("EXTRACT_SIMILAR_PER_FACT", 5)
+
 
 # --- Prompts ---
 
@@ -209,7 +212,13 @@ def extract_facts(
         return []
 
 
-def run_audn(provider, engine, facts: list[dict], source: str) -> tuple[list[dict], dict]:
+def run_audn(
+    provider,
+    engine,
+    facts: list[dict],
+    source: str,
+    allowed_prefixes: Optional[List[str]] = None,
+) -> tuple[list[dict], dict]:
     """Run AUDN cycle on extracted facts.
 
     For providers with supports_audn=True: uses LLM to decide action per fact.
@@ -241,6 +250,11 @@ def run_audn(provider, engine, facts: list[dict], source: str) -> tuple[list[dic
         fact_text = fact["text"] if isinstance(fact, dict) else str(fact)
         try:
             results = engine.hybrid_search(fact_text, k=EXTRACT_SIMILAR_PER_FACT)
+            if allowed_prefixes is not None:
+                results = [
+                    r for r in results
+                    if source_matches_prefixes(str(r.get("source", "")), allowed_prefixes)
+                ]
             similar_per_fact[i] = results
         except Exception:
             similar_per_fact[i] = []
@@ -282,7 +296,13 @@ def run_audn(provider, engine, facts: list[dict], source: str) -> tuple[list[dic
         return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}
 
 
-def execute_actions(engine, actions: list[dict], facts: list[dict], source: str) -> dict:
+def execute_actions(
+    engine,
+    actions: list[dict],
+    facts: list[dict],
+    source: str,
+    allowed_prefixes: Optional[List[str]] = None,
+) -> dict:
     """Execute AUDN decisions against the memory engine.
 
     Args:
@@ -301,6 +321,8 @@ def execute_actions(engine, actions: list[dict], facts: list[dict], source: str)
 
         try:
             if act == "ADD":
+                if not source_matches_prefixes(source, allowed_prefixes):
+                    raise PermissionError(f"source not authorized for add: {source}")
                 fact_meta = {"category": fact.get("category", "detail")} if isinstance(fact, dict) else {}
                 added_ids = engine.add_memories(
                     texts=[fact_text],
@@ -315,6 +337,13 @@ def execute_actions(engine, actions: list[dict], facts: list[dict], source: str)
             elif act == "UPDATE":
                 old_id = action.get("old_id")
                 new_text = action.get("new_text", fact_text)
+                if old_id is not None and allowed_prefixes is not None:
+                    existing = engine.get_memory(old_id)
+                    existing_source = str(existing.get("source", ""))
+                    if not source_matches_prefixes(existing_source, allowed_prefixes):
+                        raise PermissionError(f"old_id not authorized for update: {old_id}")
+                if not source_matches_prefixes(source, allowed_prefixes):
+                    raise PermissionError(f"source not authorized for update: {source}")
                 if old_id is not None:
                     engine.delete_memory(old_id)
                 fact_meta = {"category": fact.get("category", "detail"), "supersedes": old_id} if isinstance(fact, dict) else {"supersedes": old_id}
@@ -331,6 +360,11 @@ def execute_actions(engine, actions: list[dict], facts: list[dict], source: str)
             elif act == "DELETE":
                 old_id = action.get("old_id")
                 if old_id is not None:
+                    if allowed_prefixes is not None:
+                        existing = engine.get_memory(old_id)
+                        existing_source = str(existing.get("source", ""))
+                        if not source_matches_prefixes(existing_source, allowed_prefixes):
+                            raise PermissionError(f"old_id not authorized for delete: {old_id}")
                     engine.delete_memory(old_id)
                     result_actions.append({"action": "delete", "old_id": old_id})
                     deleted_count += 1
@@ -356,7 +390,8 @@ def run_extraction(
     engine,
     messages: str,
     source: str,
-    context: str = "stop"
+    context: str = "stop",
+    allowed_prefixes: Optional[List[str]] = None,
 ) -> dict:
     """Full extraction pipeline: extract facts -> AUDN -> execute.
 
@@ -404,10 +439,22 @@ def run_extraction(
         }
 
     # Step 2: AUDN decisions
-    decisions, audn_tokens = run_audn(provider, engine, facts, source)
+    decisions, audn_tokens = run_audn(
+        provider,
+        engine,
+        facts,
+        source,
+        allowed_prefixes=allowed_prefixes,
+    )
 
     # Step 3: Execute
-    result = execute_actions(engine, decisions, facts, source)
+    result = execute_actions(
+        engine,
+        decisions,
+        facts,
+        source,
+        allowed_prefixes=allowed_prefixes,
+    )
     result["extracted_count"] = len(facts)
     result["tokens"] = {"extract": extract_tokens, "audn": audn_tokens}
 

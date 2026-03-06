@@ -213,7 +213,7 @@ mkdir -p ~/.claude/skills/memories
 ln -s /path/to/memories/skills/memories ~/.claude/skills/memories
 ```
 
-The skill teaches Claude three responsibilities: *when* to search (proactive recall), *when* and *how* to store (hybrid `memory_add` + `memory_extract`), and *when* to maintain (updates, deletes, cleanup via AUDN). It adds ~11% token overhead but improves memory discipline by ~43% in eval benchmarks.
+The skill teaches the assistant three responsibilities: *when* to search (proactive recall), *when* and *how* to store (hybrid `memory_add` + `memory_extract`), and *when* to maintain (updates, deletes, cleanup via AUDN). It adds ~11% token overhead but improves memory discipline by ~43% in eval benchmarks.
 
 **Usage** (Claude Code will call these automatically when relevant):
 
@@ -308,11 +308,22 @@ MEMORIES_URL = "http://localhost:8900"
 MEMORIES_API_KEY = "your-api-key-here"
 ```
 
+If your API key is prefix-scoped and does not allow `codex/*`, set hook source overrides in `~/.config/memories/env`:
+
+```bash
+MEMORIES_SOURCE_PREFIX="your-authorized-prefix"
+# or exact source:
+# MEMORIES_SOURCE="your-authorized-prefix/your-project"
+```
+
 3. Restart Codex. The `memory_search`, `memory_add`, `memory_extract`, `memory_delete`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, and other tools will be available.
 
 **Automatic memory layer for Codex:**
 
 ```bash
+cd memories/mcp-server
+npm install
+cd ..
 ./integrations/claude-code/install.sh --codex
 ```
 
@@ -320,6 +331,12 @@ This configures:
 - MCP server registration in `~/.codex/config.toml`
 - `notify` hook script at `~/.codex/hooks/memory/memory-codex-notify.sh` for after-turn extraction
 - default `developer_instructions` (if not already set) to bias `memory_search` usage on each turn
+- hook env loading from `~/.config/memories/env` (or `MEMORIES_ENV_FILE`) for `MEMORIES_URL`, `MEMORIES_API_KEY`, and optional source overrides (`MEMORIES_SOURCE_PREFIX`, `MEMORIES_SOURCE`)
+
+The installer requires `jq`, `curl`, and a running Memories service (`/health` must respond).
+If `~/.codex/config.toml` already has a `notify = [...]` entry, the installer will not overwrite it —
+merge the Memories notify script into that array manually.
+For scoped API keys, set `MEMORIES_SOURCE_PREFIX` (or `MEMORIES_SOURCE`) so hook writes stay inside authorized prefixes.
 
 Codex currently exposes an after-turn `notify` hook, not Claude's 5-event hook surface.
 
@@ -852,12 +869,22 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 
 | Event | Mechanism | What happens |
 |-------|-----------|--------------|
-| After each completed turn | `notify` -> `memory-codex-notify.sh` | Sends user+assistant exchange to `/memory/extract` asynchronously |
+| After each completed turn | `notify` -> `memory-codex-notify.sh` | Sends user+assistant exchange to `/memory/extract` asynchronously (loads hook env file, handles snake/camel/kebab payload variants, supports transcript fallback and source overrides) |
 | On new turns | MCP tools + developer instructions | Encourages focused `memory_search` before implementation-heavy responses |
 
 Codex does not currently expose the Claude-style SessionStart/UserPromptSubmit/PreCompact/SessionEnd hook callbacks in `config.toml`.
 
 ### Quick setup
+
+**Prerequisites:**
+- `jq` and `curl` installed (required by installer)
+- running Memories service (`curl -s http://localhost:8900/health | jq .`)
+- if installing Codex integration, MCP deps installed:
+
+```bash
+cd memories/mcp-server
+npm install
+```
 
 **One-command auto-detect installer (recommended):**
 ```bash
@@ -872,7 +899,7 @@ This detects and configures any available targets on your machine:
 Cursor is supported via manual MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`).
 
 The installer writes runtime config to:
-- `~/.config/memories/env` for hook vars (`MEMORIES_URL`, optional `MEMORIES_API_KEY`)
+- `~/.config/memories/env` for hook vars (`MEMORIES_URL`, optional `MEMORIES_API_KEY`, optional `MEMORIES_SOURCE_PREFIX` / `MEMORIES_SOURCE` for Codex notify source control)
 - repo `.env` for extraction vars (`EXTRACT_PROVIDER`, provider keys/URL)
 
 **Target only Claude, Cursor, or Codex:**

@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Scoped extraction hardening:
+  - `/memory/extract` now requires explicit `source` for scoped non-admin keys
+  - extraction AUDN flow now scopes similar-memory context and update/delete execution to allowed prefixes
+  - `/memory/extract/{job_id}` now enforces job visibility by admin/owner/source scope
+- Scoped read/write hardening:
+  - `/memory/delete-by-source` now enforces per-memory source authorization for scoped keys
+  - `/memories` now returns scope-correct `total` for scoped keys
+  - `/memories/count` now counts only accessible memories and rejects disallowed source filters
+- Admin-only endpoint hardening:
+  - `/usage` now requires admin privileges
+  - `/backups` now requires admin privileges
+- Codex notify parity hardening:
+  - `memory-codex-notify.sh` now supports transcript fallback, broader payload variants, and scoped-source overrides via `MEMORIES_SOURCE_PREFIX` / `MEMORIES_SOURCE`
+
+### Docs
+- Clarified Codex setup prerequisites (`npm install` in `mcp-server`, `jq`/`curl`, running service)
+- Added explicit guidance for merging Codex `notify` config when an existing `notify` entry is already present
+- Added scoped-key guidance for Codex notify source overrides and client-aware source-prefix conventions in skill/setup docs
+
 ## [2.0.0] - 2026-03-05
 
 ### Added

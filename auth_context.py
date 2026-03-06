@@ -6,6 +6,25 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
+def source_matches_prefixes(source: str, prefixes: Optional[List[str]]) -> bool:
+    """Check *source* against allowed prefixes.
+
+    If prefixes is None the caller is unrestricted → always True.
+    Otherwise each prefix is normalised (strip trailing ``/*`` and ``/``)
+    then tested with ``source == base`` or ``source.startswith(base + "/")``.
+    Path traversal attempts (``..`` components) are rejected.
+    """
+    if prefixes is None:
+        return True
+    if ".." in source.split("/"):
+        return False
+    for pfx in prefixes:
+        base = pfx.rstrip("/").removesuffix("/*").rstrip("/")
+        if source == base or source.startswith(base + "/"):
+            return True
+    return False
+
+
 @dataclass
 class AuthContext:
     role: str  # "admin", "read-write", "read-only"
@@ -24,32 +43,20 @@ class AuthContext:
     # -- prefix helpers ------------------------------------------------------
 
     def _matches_prefix(self, source: str) -> bool:
-        """Check *source* against allowed prefixes.
-
-        If prefixes is None the caller is unrestricted → always True.
-        Otherwise each prefix is normalised (strip trailing ``/*`` and ``/``)
-        then tested with ``source == base`` or ``source.startswith(base + "/")``.
-        Path traversal attempts (``..`` components) are rejected.
-        """
-        if self.prefixes is None:
-            return True
-        # Reject path traversal attempts
-        if '..' in source.split('/'):
-            return False
-        for pfx in self.prefixes:
-            base = pfx.rstrip("/").removesuffix("/*").rstrip("/")
-            if source == base or source.startswith(base + "/"):
-                return True
-        return False
+        return source_matches_prefixes(source, self.prefixes)
 
     # -- permission checks ---------------------------------------------------
 
     def can_read(self, source: str) -> bool:
+        if self.role == "admin":
+            return True
         return self._matches_prefix(source)
 
     def can_write(self, source: str) -> bool:
         if self.role == "read-only":
             return False
+        if self.role == "admin":
+            return True
         return self._matches_prefix(source)
 
     @property
