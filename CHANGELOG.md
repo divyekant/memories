@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.5.0] - 2026-03-05
+
+### Added
+- **Multi-auth**: prefix-scoped API keys with three role tiers (`read-only`, `read-write`, `admin`)
+  - `POST /api/keys` — create keys (admin-only, shown once)
+  - `GET /api/keys` — list keys with usage stats
+  - `PATCH /api/keys/{id}` — update name, role, prefixes
+  - `DELETE /api/keys/{id}` — revoke keys (soft-delete)
+  - `GET /api/keys/me` — caller identity and role
+- Prefix enforcement on all read/write endpoints — scoped keys only see/modify their allowed prefixes
+- Web UI: API Keys management page (admin-gated)
+- `key_store.py` — SQLite-backed key store with SHA-256 hashing
+- `auth_context.py` — request-scoped role and prefix enforcement
+
+### Changed
+- `verify_api_key` now checks both env `API_KEY` (implicit admin) and DB-managed keys
+- All API endpoints now receive `AuthContext` via `request.state.auth`
+- Existing `API_KEY` env var continues to work unchanged (backward compatible)
+
 ## [1.4.0] - 2026-03-04
 
 ### Changed

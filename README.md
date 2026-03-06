@@ -531,9 +531,22 @@ Now every client — Claude Code on your laptop, Cursor, Claude Desktop on your 
 
 ---
 
+## Authentication
+
+Memories supports **multiple API keys** with role-based access control:
+
+- **Three tiers**: `read-only` (search/list), `read-write` (search/list + add/delete), `admin` (full access + key management)
+- **Prefix scoping**: keys can be restricted to specific source prefixes for tenant isolation
+- **Key management**: create, list, update, and revoke keys via `POST/GET/PATCH/DELETE /api/keys` or the Web UI (admin-only)
+- **Backward compatible**: the existing `API_KEY` env var still works as an implicit admin key
+
+See the [multi-auth design doc](docs/plans/2026-03-05-multi-auth-design.md) for details.
+
+---
+
 ## API Reference
 
-All endpoints accept/return JSON. Optional auth via `X-API-Key` header.
+All endpoints accept/return JSON. Auth via `X-API-Key` header.
 
 ### Search
 
@@ -1034,6 +1047,8 @@ memories/
   llm_provider.py         # LLM provider abstraction (Anthropic/OpenAI/ChatGPT Subscription/Ollama)
   llm_extract.py          # Extraction pipeline with AUDN
   chatgpt_oauth.py        # ChatGPT OAuth2+PKCE token exchange helpers
+  key_store.py            # SQLite-backed API key store (SHA-256 hashing)
+  auth_context.py         # Request-scoped role and prefix enforcement
   memories_auth.py        # CLI auth tool (python -m memories auth chatgpt/status)
   __main__.py             # Entry point for python -m memories
   Dockerfile              # Multi-stage Docker build (core/extract targets)

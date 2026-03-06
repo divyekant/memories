@@ -25,7 +25,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from auth_context import AuthContext
 from embedder_reloader import EmbedderAutoReloadController
+from key_store import KeyStore
 from memory_engine import MemoryEngine
 from runtime_memory import MemoryTrimmer
 from usage_tracker import UsageTracker, NullTracker
@@ -60,6 +62,7 @@ except Exception as e:
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/workspace")
 API_KEY = os.getenv("API_KEY", "")  # Empty = no auth (local-only)
+key_store: KeyStore = None  # type: ignore  — initialized in lifespan
 PORT = int(os.getenv("PORT", "8000"))
 BASE_DIR = Path(__file__).resolve().parent
 UI_DIR = BASE_DIR / "webui"
@@ -215,14 +218,19 @@ embedder_reload_metrics: Dict[str, Any] = {
 _auth_failures: Dict[str, list] = defaultdict(list)
 
 async def verify_api_key(request: Request):
-    """Check X-API-Key header if API_KEY is configured.
+    """Check X-API-Key header against env key and managed key store.
 
-    Uses constant-time comparison and per-IP rate limiting on failures.
+    Uses constant-time comparison for the env key and per-IP rate limiting
+    on failures.  Sets ``request.state.auth`` to an :class:`AuthContext`.
     """
-    if not API_KEY:
-        return  # No auth configured
+    # No auth configured at all → unrestricted
+    if not API_KEY and key_store is None:
+        request.state.auth = AuthContext.unrestricted()
+        return
+
     path = request.url.path
     if path in {"/health", "/health/ready", "/ui"} or path.startswith("/ui/"):
+        request.state.auth = AuthContext.unrestricted()
         return  # Allow unauthenticated health checks + UI shell/static files
 
     # Rate limit failed auth attempts (10 per minute per IP)
@@ -232,10 +240,53 @@ async def verify_api_key(request: Request):
     if len(_auth_failures[ip]) >= 10:
         raise HTTPException(status_code=429, detail="Too many failed authentication attempts")
 
-    key = request.headers.get("X-API-Key", "")
-    if not hmac.compare_digest(key.encode(), API_KEY.encode()):
+    raw_key = request.headers.get("X-API-Key", "")
+
+    # No key supplied
+    if not raw_key:
+        if not API_KEY:
+            request.state.auth = AuthContext.unrestricted()
+            return
         _auth_failures[ip].append(now)
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+    # Path 1: constant-time compare against env API_KEY
+    if API_KEY and hmac.compare_digest(raw_key.encode(), API_KEY.encode()):
+        request.state.auth = AuthContext(
+            role="admin", prefixes=None, key_type="env",
+        )
+        return
+
+    # Path 2: look up in managed key store
+    if key_store is not None:
+        record = await run_in_threadpool(key_store.lookup, raw_key)
+        if record is not None:
+            request.state.auth = AuthContext(
+                role=record["role"],
+                prefixes=record["prefixes"],
+                key_type="managed",
+                key_id=record["id"],
+                key_name=record["name"],
+            )
+            return
+
+    # No match
+    _auth_failures[ip].append(now)
+    raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+def _get_auth(request: Request) -> AuthContext:
+    return getattr(request.state, "auth", AuthContext.unrestricted())
+
+
+def _require_write(auth: AuthContext, source: str) -> None:
+    if not auth.can_write(source):
+        raise HTTPException(status_code=403, detail=f"Key does not have write access to source: {source}")
+
+
+def _require_admin(auth: AuthContext) -> None:
+    if not auth.can_manage_keys:
+        raise HTTPException(status_code=403, detail="Admin key required")
 
 
 # -- App lifecycle ------------------------------------------------------------
@@ -794,6 +845,9 @@ async def lifespan(app: FastAPI):
     if _env_bool("USAGE_TRACKING", False):
         usage_tracker = UsageTracker(os.path.join(DATA_DIR, "usage.db"))
         logger.info("Usage tracking enabled")
+    global key_store
+    key_store = KeyStore(os.path.join(DATA_DIR, "keys.db"))
+    logger.info("Key store initialized")
     _ensure_extract_workers_started()
     background_tasks: List[asyncio.Task] = [
         asyncio.create_task(_periodic_job_cleanup(), name="job-cleanup"),
@@ -972,6 +1026,18 @@ class SupersedeRequest(BaseModel):
     source: str = Field(default="", description="Source identifier")
 
 
+class CreateKeyRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    role: str = Field(..., pattern="^(read-only|read-write|admin)$")
+    prefixes: List[str] = Field(default_factory=list)
+
+
+class UpdateKeyRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    role: Optional[str] = Field(None, pattern="^(read-only|read-write|admin)$")
+    prefixes: Optional[List[str]] = None
+
+
 # -- Endpoints ----------------------------------------------------------------
 
 @app.get("/health")
@@ -999,6 +1065,66 @@ async def health_ready():
     return status
 
 
+@app.get("/api/keys/me")
+async def get_my_key(request: Request):
+    """Returns the caller's role, type, and allowed prefixes."""
+    auth = _get_auth(request)
+    return auth.to_me_response()
+
+
+@app.post("/api/keys")
+async def create_key(request_body: CreateKeyRequest, request: Request):
+    """Create a new API key. Admin only. Returns raw key once."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    if request_body.role != "admin" and not request_body.prefixes:
+        raise HTTPException(status_code=400, detail="Non-admin keys must have at least one prefix")
+    result = key_store.create_key(
+        name=request_body.name,
+        role=request_body.role,
+        prefixes=request_body.prefixes,
+    )
+    return result
+
+
+@app.get("/api/keys")
+async def list_keys(request: Request):
+    """List all API keys (masked). Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    keys = key_store.list_keys()
+    return {"keys": keys, "count": len(keys)}
+
+
+@app.patch("/api/keys/{key_id}")
+async def update_key(key_id: str, request_body: UpdateKeyRequest, request: Request):
+    """Update key name, role, or prefixes. Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    try:
+        key_store.update_key(
+            key_id,
+            name=request_body.name,
+            role=request_body.role,
+            prefixes=request_body.prefixes,
+        )
+        return {"success": True, "id": key_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/keys/{key_id}")
+async def revoke_key(key_id: str, request: Request):
+    """Revoke an API key (soft-delete). Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    try:
+        key_store.revoke(key_id)
+        return {"id": key_id, "revoked": True}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @app.get("/ui", include_in_schema=False)
 async def ui():
     """Serve the memory browser UI."""
@@ -1009,14 +1135,18 @@ async def ui():
 
 
 @app.get("/stats")
-async def stats():
+async def stats(request: Request):
     """Full index statistics"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     return memory.stats()
 
 
 @app.get("/metrics")
-async def metrics():
+async def metrics(request: Request):
     """Service-level metrics (latency, errors, queue depth, memory trend, process RSS)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     light = memory.stats_light()
     current_total = int(light.get("total_memories", 0))
     _record_memory_sample(current_total)
@@ -1049,8 +1179,10 @@ async def usage(period: str = Query("7d", regex="^(today|7d|30d|all)$")):
 
 
 @app.post("/maintenance/embedder/reload")
-async def reload_embedder():
+async def reload_embedder(request: Request):
     """Reload in-process embedder runtime and release old inference objects."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     started_at = _utc_now_iso()
     started_monotonic = time.perf_counter()
     with metrics_lock:
@@ -1086,10 +1218,13 @@ async def reload_embedder():
 
 @app.post("/maintenance/consolidate")
 async def consolidate(
+    request: Request,
     dry_run: bool = Query(True),
     source_prefix: str = Query(""),
 ):
     """Run memory consolidation. Merges redundant memory clusters."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not extract_provider:
         raise HTTPException(503, "No LLM provider configured for consolidation")
     from consolidator import find_clusters, consolidate_cluster
@@ -1104,8 +1239,10 @@ async def consolidate(
 
 
 @app.post("/maintenance/prune")
-async def prune(dry_run: bool = Query(True)):
+async def prune(request: Request, dry_run: bool = Query(True)):
     """Prune stale unretrieved memories."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     all_mems = [m for m in memory.metadata if m]
     all_ids = [m["id"] for m in all_mems]
     unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
@@ -1126,45 +1263,48 @@ async def prune(dry_run: bool = Query(True)):
 # -- Search -------------------------------------------------------------------
 
 @app.post("/search")
-async def search(request: SearchRequest):
+async def search(request_body: SearchRequest, request: Request):
     """Search for similar memories (vector-only or hybrid)"""
-    logger.info("Search: q=%r k=%d hybrid=%s", request.query[:80], request.k, request.hybrid)
+    auth = _get_auth(request)
+    logger.info("Search: q=%r k=%d hybrid=%s", request_body.query[:80], request_body.k, request_body.hybrid)
     try:
-        if request.hybrid:
+        if request_body.hybrid:
             results = memory.hybrid_search(
-                query=request.query,
-                k=request.k,
-                threshold=request.threshold,
-                vector_weight=request.vector_weight,
-                source_prefix=request.source_prefix,
+                query=request_body.query,
+                k=request_body.k,
+                threshold=request_body.threshold,
+                vector_weight=request_body.vector_weight,
+                source_prefix=request_body.source_prefix,
             )
         else:
             results = memory.search(
-                query=request.query,
-                k=request.k,
-                threshold=request.threshold,
-                source_prefix=request.source_prefix,
+                query=request_body.query,
+                k=request_body.k,
+                threshold=request_body.threshold,
+                source_prefix=request_body.source_prefix,
             )
-        usage_tracker.log_api_event("search", request.source)
+        results = auth.filter_results(results)
+        usage_tracker.log_api_event("search", request_body.source)
         for r in results:
             if "id" in r:
                 usage_tracker.log_retrieval(
                     memory_id=r["id"],
-                    query=request.query[:200],
-                    source=request.source,
+                    query=request_body.query[:200],
+                    source=request_body.source,
                 )
-        return {"query": request.query, "results": results, "count": len(results)}
+        return {"query": request_body.query, "results": results, "count": len(results)}
     except Exception as e:
         logger.exception("Search failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/search/batch")
-async def search_batch(request: SearchBatchRequest):
+async def search_batch(request_body: SearchBatchRequest, request: Request):
     """Run multiple searches in one request."""
+    auth = _get_auth(request)
     try:
         outputs = []
-        for item in request.queries:
+        for item in request_body.queries:
             if item.hybrid:
                 results = memory.hybrid_search(
                     query=item.query,
@@ -1180,6 +1320,7 @@ async def search_batch(request: SearchBatchRequest):
                     threshold=item.threshold,
                     source_prefix=item.source_prefix,
                 )
+            results = auth.filter_results(results)
             for r in results:
                 if "id" in r:
                     usage_tracker.log_retrieval(
@@ -1188,7 +1329,7 @@ async def search_batch(request: SearchBatchRequest):
                         source=item.source,
                     )
             outputs.append({"query": item.query, "results": results, "count": len(results)})
-        usage_tracker.log_api_event("search_batch", count=len(request.queries))
+        usage_tracker.log_api_event("search_batch", count=len(request_body.queries))
         return {"results": outputs, "count": len(outputs)}
     except Exception as e:
         logger.exception("Batch search failed")
@@ -1198,17 +1339,19 @@ async def search_batch(request: SearchBatchRequest):
 # -- Memory CRUD --------------------------------------------------------------
 
 @app.post("/memory/add")
-async def add_memory(request: AddMemoryRequest):
+async def add_memory(request_body: AddMemoryRequest, request: Request):
     """Add a new memory"""
-    logger.info("Add memory: source=%s len=%d", request.source, len(request.text))
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source)
+    logger.info("Add memory: source=%s len=%d", request_body.source, len(request_body.text))
     try:
         ids = memory.add_memories(
-            texts=[request.text],
-            sources=[request.source],
-            metadata_list=[request.metadata] if request.metadata else None,
-            deduplicate=request.deduplicate,
+            texts=[request_body.text],
+            sources=[request_body.source],
+            metadata_list=[request_body.metadata] if request_body.metadata else None,
+            deduplicate=request_body.deduplicate,
         )
-        usage_tracker.log_api_event("add", request.source)
+        usage_tracker.log_api_event("add", request_body.source)
         return {
             "success": True,
             "id": ids[0] if ids else None,
@@ -1220,14 +1363,17 @@ async def add_memory(request: AddMemoryRequest):
 
 
 @app.post("/memory/add-batch")
-async def add_batch(request: AddBatchRequest):
+async def add_batch(request_body: AddBatchRequest, request: Request):
     """Add multiple memories at once"""
-    logger.info("Add batch: count=%d", len(request.memories))
+    auth = _get_auth(request)
+    for m in request_body.memories:
+        _require_write(auth, m.source)
+    logger.info("Add batch: count=%d", len(request_body.memories))
     try:
-        texts = [m.text for m in request.memories]
-        sources = [m.source for m in request.memories]
+        texts = [m.text for m in request_body.memories]
+        sources = [m.source for m in request_body.memories]
         # Preserve per-item metadata (None for rows without metadata)
-        metadata_list = [m.metadata for m in request.memories]
+        metadata_list = [m.metadata for m in request_body.memories]
         if not any(metadata_list):
             metadata_list = None
 
@@ -1235,9 +1381,9 @@ async def add_batch(request: AddBatchRequest):
             texts=texts,
             sources=sources,
             metadata_list=metadata_list,
-            deduplicate=request.deduplicate,
+            deduplicate=request_body.deduplicate,
         )
-        usage_tracker.log_api_event("add", count=len(request.memories))
+        usage_tracker.log_api_event("add", count=len(request_body.memories))
         return {
             "success": True,
             "ids": ids,
@@ -1250,13 +1396,19 @@ async def add_batch(request: AddBatchRequest):
 
 
 @app.delete("/memory/{memory_id}")
-async def delete_memory(memory_id: int):
+async def delete_memory(memory_id: int, request: Request):
     """Delete a single memory by ID"""
+    auth = _get_auth(request)
     logger.info("Delete memory: id=%d", memory_id)
     try:
+        if auth.prefixes is not None:
+            existing = memory.get_memory(memory_id)
+            _require_write(auth, existing.get("source", ""))
         result = memory.delete_memory(memory_id)
         usage_tracker.log_api_event("delete")
         return {"success": True, **result}
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -1265,10 +1417,16 @@ async def delete_memory(memory_id: int):
 
 
 @app.get("/memory/{memory_id}")
-async def get_memory(memory_id: int):
+async def get_memory(memory_id: int, request: Request):
     """Fetch a single memory by ID."""
+    auth = _get_auth(request)
     try:
-        return memory.get_memory(memory_id)
+        result = memory.get_memory(memory_id)
+        if not auth.can_read(result.get("source", "")):
+            raise HTTPException(status_code=403, detail="Access denied to this memory's source")
+        return result
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -1277,10 +1435,12 @@ async def get_memory(memory_id: int):
 
 
 @app.post("/memory/get-batch")
-async def get_memory_batch(request: MemoryGetBatchRequest):
+async def get_memory_batch(request_body: MemoryGetBatchRequest, request: Request):
     """Fetch multiple memories by IDs."""
+    auth = _get_auth(request)
     try:
-        result = memory.get_memories(request.ids)
+        result = memory.get_memories(request_body.ids)
+        result["memories"] = auth.filter_results(result.get("memories", []))
         return {**result, "count": len(result["memories"])}
     except Exception as e:
         logger.exception("Get batch failed")
@@ -1288,11 +1448,13 @@ async def get_memory_batch(request: MemoryGetBatchRequest):
 
 
 @app.post("/memory/delete-by-source")
-async def delete_by_source(request: DeleteBySourceRequest):
+async def delete_by_source(request_body: DeleteBySourceRequest, request: Request):
     """Delete all memories matching a source pattern"""
-    logger.info("Delete by source: pattern=%s", request.source_pattern)
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source_pattern)
+    logger.info("Delete by source: pattern=%s", request_body.source_pattern)
     try:
-        result = memory.delete_by_source(request.source_pattern)
+        result = memory.delete_by_source(request_body.source_pattern)
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete by source failed")
@@ -1301,9 +1463,12 @@ async def delete_by_source(request: DeleteBySourceRequest):
 
 @app.delete("/memories")
 async def delete_memories_by_prefix(
+    request: Request,
     source: str = Query(..., min_length=1, max_length=500),
 ):
     """Bulk-delete all memories whose source starts with the given prefix."""
+    auth = _get_auth(request)
+    _require_write(auth, source)
     logger.info("Bulk delete by source prefix: %s", source)
     try:
         result = memory.delete_by_prefix(source)
@@ -1315,12 +1480,20 @@ async def delete_memories_by_prefix(
 
 
 @app.post("/memory/delete-batch")
-async def delete_batch(request: DeleteBatchRequest):
+async def delete_batch(request_body: DeleteBatchRequest, request: Request):
     """Delete multiple memories in one operation."""
-    logger.info("Delete batch: count=%d", len(request.ids))
+    auth = _get_auth(request)
+    if auth.prefixes is not None:
+        for mid in request_body.ids:
+            try:
+                existing = memory.get_memory(mid)
+                _require_write(auth, existing.get("source", ""))
+            except ValueError:
+                pass  # will fail on delete anyway
+    logger.info("Delete batch: count=%d", len(request_body.ids))
     try:
-        result = memory.delete_memories(request.ids)
-        usage_tracker.log_api_event("delete", count=len(request.ids))
+        result = memory.delete_memories(request_body.ids)
+        usage_tracker.log_api_event("delete", count=len(request_body.ids))
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete batch failed")
@@ -1328,11 +1501,13 @@ async def delete_batch(request: DeleteBatchRequest):
 
 
 @app.post("/memory/delete-by-prefix")
-async def delete_by_prefix(request: DeleteByPrefixRequest):
+async def delete_by_prefix(request_body: DeleteByPrefixRequest, request: Request):
     """Delete all memories whose source starts with a prefix."""
-    logger.info("Delete by prefix: prefix=%s", request.source_prefix)
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source_prefix)
+    logger.info("Delete by prefix: prefix=%s", request_body.source_prefix)
     try:
-        result = memory.delete_by_prefix(request.source_prefix)
+        result = memory.delete_by_prefix(request_body.source_prefix)
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete by prefix failed")
@@ -1340,16 +1515,22 @@ async def delete_by_prefix(request: DeleteByPrefixRequest):
 
 
 @app.patch("/memory/{memory_id}")
-async def patch_memory(memory_id: int, request: PatchMemoryRequest):
+async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request: Request):
     """Patch selected fields on an existing memory."""
-    if request.text is None and request.source is None and not request.metadata_patch:
+    auth = _get_auth(request)
+    if request_body.text is None and request_body.source is None and not request_body.metadata_patch:
         raise HTTPException(status_code=400, detail="At least one field must be provided")
     try:
+        if auth.prefixes is not None:
+            existing = memory.get_memory(memory_id)
+            _require_write(auth, existing.get("source", ""))
+            if request_body.source is not None:
+                _require_write(auth, request_body.source)
         result = memory.update_memory(
             memory_id=memory_id,
-            text=request.text,
-            source=request.source,
-            metadata_patch=request.metadata_patch,
+            text=request_body.text,
+            source=request_body.source,
+            metadata_patch=request_body.metadata_patch,
         )
         return result
     except ValueError as e:
@@ -1360,14 +1541,16 @@ async def patch_memory(memory_id: int, request: PatchMemoryRequest):
 
 
 @app.post("/memory/upsert")
-async def upsert_memory(request: UpsertMemoryRequest):
+async def upsert_memory(request_body: UpsertMemoryRequest, request: Request):
     """Upsert a memory by stable key + source."""
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source)
     try:
         result = memory.upsert_memory(
-            text=request.text,
-            source=request.source,
-            key=request.key,
-            metadata=request.metadata,
+            text=request_body.text,
+            source=request_body.source,
+            key=request_body.key,
+            metadata=request_body.metadata,
         )
         return {"success": True, **result}
     except Exception as e:
@@ -1376,8 +1559,11 @@ async def upsert_memory(request: UpsertMemoryRequest):
 
 
 @app.post("/memory/upsert-batch")
-async def upsert_memory_batch(request: UpsertBatchRequest):
+async def upsert_memory_batch(request_body: UpsertBatchRequest, request: Request):
     """Bulk upsert memories by stable keys."""
+    auth = _get_auth(request)
+    for item in request_body.memories:
+        _require_write(auth, item.source)
     try:
         entries = [
             {
@@ -1386,7 +1572,7 @@ async def upsert_memory_batch(request: UpsertBatchRequest):
                 "key": item.key,
                 "metadata": item.metadata,
             }
-            for item in request.memories
+            for item in request_body.memories
         ]
         result = memory.upsert_memories(entries)
         return {"success": True, **result}
@@ -1426,31 +1612,40 @@ async def count_memories(
 
 @app.get("/memories")
 async def list_memories(
+    request: Request,
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=5000),
     source: Optional[str] = Query(None, max_length=500),
 ):
     """List memories with pagination and optional source filter"""
-    return memory.list_memories(offset=offset, limit=limit, source_filter=source)
+    auth = _get_auth(request)
+    result = memory.list_memories(offset=offset, limit=limit, source_filter=source)
+    result["memories"] = auth.filter_results(result.get("memories", []))
+    return result
 
 
 @app.get("/folders")
-async def list_folders():
+async def list_folders(request: Request):
     """List unique source-based folders with memory counts."""
+    auth = _get_auth(request)
     folder_counts: Dict[str, int] = {}
     for m in memory.metadata:
         source = m.get("source", "")
+        if not auth.can_read(source):
+            continue
         folder = source.split("/")[0] if "/" in source else source if source else "(ungrouped)"
         folder_counts[folder] = folder_counts.get(folder, 0) + 1
     folders = [{"name": k, "count": v} for k, v in sorted(folder_counts.items())]
-    return {"folders": folders, "total": len(memory.metadata)}
+    return {"folders": folders, "total": sum(folder_counts.values())}
 
 
 @app.post("/folders/rename")
-async def rename_folder(request: RenameFolderRequest):
+async def rename_folder(request_body: RenameFolderRequest, request: Request):
     """Batch-rename a folder by updating the source prefix on all matching memories."""
-    old_prefix = request.old_name
-    new_prefix = request.new_name
+    auth = _get_auth(request)
+    _require_admin(auth)
+    old_prefix = request_body.old_name
+    new_prefix = request_body.new_name
 
     # Collect matching IDs first to avoid mutation during iteration
     targets = []
@@ -1478,11 +1673,13 @@ async def rename_folder(request: RenameFolderRequest):
 # -- Index operations ---------------------------------------------------------
 
 @app.post("/index/build")
-async def build_index(request: BuildIndexRequest):
+async def build_index(request_body: BuildIndexRequest, request: Request):
     """Rebuild index from workspace files using markdown-aware chunking"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     logger.info("Rebuilding index...")
     try:
-        if not request.sources:
+        if not request_body.sources:
             workspace = Path(WORKSPACE_DIR)
             sources = [
                 str(workspace / "MEMORY.md"),
@@ -1492,7 +1689,7 @@ async def build_index(request: BuildIndexRequest):
         else:
             workspace = Path(WORKSPACE_DIR).resolve()
             sources = []
-            for s in request.sources:
+            for s in request_body.sources:
                 full_path = (workspace / s).resolve()
                 if full_path.is_relative_to(workspace):
                     sources.append(str(full_path))
@@ -1512,12 +1709,14 @@ async def build_index(request: BuildIndexRequest):
 # -- Deduplication ------------------------------------------------------------
 
 @app.post("/memory/deduplicate")
-async def deduplicate(request: DeduplicateRequest):
+async def deduplicate(request_body: DeduplicateRequest, request: Request):
     """Find and optionally remove near-duplicate memories"""
-    logger.info("Deduplicate: threshold=%.2f dry_run=%s", request.threshold, request.dry_run)
+    auth = _get_auth(request)
+    _require_admin(auth)
+    logger.info("Deduplicate: threshold=%.2f dry_run=%s", request_body.threshold, request_body.dry_run)
     try:
         result = memory.deduplicate(
-            threshold=request.threshold, dry_run=request.dry_run
+            threshold=request_body.threshold, dry_run=request_body.dry_run
         )
         return result
     except Exception as e:
@@ -1546,8 +1745,10 @@ async def list_backups():
 
 
 @app.post("/backup")
-async def create_backup(prefix: str = Query("manual", max_length=50)):
+async def create_backup(request: Request, prefix: str = Query("manual", max_length=50)):
     """Create manual backup"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     try:
         backup_path = memory.create_backup(prefix=prefix)
         return {
@@ -1561,11 +1762,13 @@ async def create_backup(prefix: str = Query("manual", max_length=50)):
 
 
 @app.post("/restore")
-async def restore_backup(request: RestoreRequest):
+async def restore_backup(request_body: RestoreRequest, request: Request):
     """Restore index and metadata from a named backup"""
-    logger.info("Restoring from backup: %s", request.backup_name)
+    auth = _get_auth(request)
+    _require_admin(auth)
+    logger.info("Restoring from backup: %s", request_body.backup_name)
     try:
-        result = memory.restore_from_backup(request.backup_name)
+        result = memory.restore_from_backup(request_body.backup_name)
         return {"success": True, **result, "message": "Restored successfully"}
     except HTTPException:
         raise
@@ -1581,8 +1784,10 @@ async def restore_backup(request: RestoreRequest):
 # -- Cloud Sync ---------------------------------------------------------------
 
 @app.get("/sync/status")
-async def sync_status():
+async def sync_status(request: Request):
     """Get cloud sync status"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not memory.get_cloud_sync():
         return {"enabled": False, "message": "Cloud sync not configured"}
 
@@ -1608,8 +1813,10 @@ async def sync_status():
 
 
 @app.post("/sync/upload")
-async def sync_upload():
+async def sync_upload(request: Request):
     """Manually trigger backup upload to cloud"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
@@ -1631,8 +1838,10 @@ async def sync_upload():
 
 
 @app.post("/sync/download")
-async def sync_download(backup_name: Optional[str] = None, confirm: bool = False):
+async def sync_download(request: Request, backup_name: Optional[str] = None, confirm: bool = False):
     """Download a backup from cloud (requires confirmation)"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
@@ -1669,8 +1878,10 @@ async def sync_download(backup_name: Optional[str] = None, confirm: bool = False
 
 
 @app.get("/sync/snapshots")
-async def sync_snapshots():
+async def sync_snapshots(request: Request):
     """List remote snapshots in cloud storage"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
@@ -1683,8 +1894,10 @@ async def sync_snapshots():
 
 
 @app.post("/sync/restore/{backup_name}")
-async def sync_restore(backup_name: str, confirm: bool = False):
+async def sync_restore(backup_name: str, request: Request, confirm: bool = False):
     """Download and restore a backup from cloud in one step"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     if not memory.get_cloud_sync():
         raise HTTPException(status_code=400, detail="Cloud sync not configured")
 
@@ -1723,8 +1936,13 @@ async def sync_restore(backup_name: str, confirm: bool = False):
 # -- Extraction endpoints -----------------------------------------------------
 
 @app.post("/memory/extract", status_code=202)
-async def memory_extract(request: ExtractRequest):
+async def memory_extract(request_body: ExtractRequest, request: Request):
     """Queue extraction and return immediately."""
+    auth = _get_auth(request)
+    if request_body.source:
+        _require_write(auth, request_body.source)
+    elif auth.role == "read-only":
+        raise HTTPException(status_code=403, detail="Read-only keys cannot trigger extraction")
     if extract_provider is None or run_extraction is None:
         if not EXTRACT_FALLBACK_ADD_ENABLED:
             raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
@@ -1733,9 +1951,9 @@ async def memory_extract(request: ExtractRequest):
         extract_jobs[job_id] = {
             "job_id": job_id,
             "status": "running",
-            "source": request.source,
-            "context": request.context,
-            "message_length": len(request.messages),
+            "source": request_body.source,
+            "context": request_body.context,
+            "message_length": len(request_body.messages),
             "created_at": _utc_now_iso(),
             "started_at": _utc_now_iso(),
             "mode": "fallback_add",
@@ -1743,9 +1961,9 @@ async def memory_extract(request: ExtractRequest):
         try:
             result = await run_in_threadpool(
                 _run_fallback_extraction,
-                request.messages,
-                request.source,
-                request.context,
+                request_body.messages,
+                request_body.source,
+                request_body.context,
             )
             extract_jobs[job_id]["status"] = "completed"
             extract_jobs[job_id]["completed_at"] = _utc_now_iso()
@@ -1753,8 +1971,8 @@ async def memory_extract(request: ExtractRequest):
             logger.info(
                 "Extract fallback completed: job_id=%s source=%s context=%s extracted=%d stored=%d",
                 job_id,
-                request.source,
-                request.context,
+                request_body.source,
+                request_body.context,
                 result.get("extracted_count", 0),
                 result.get("stored_count", 0),
             )
@@ -1774,14 +1992,14 @@ async def memory_extract(request: ExtractRequest):
         }
 
     _ensure_extract_workers_started()
-    usage_tracker.log_api_event("extract", request.source)
+    usage_tracker.log_api_event("extract", request_body.source)
     job_id = uuid4().hex
     extract_jobs[job_id] = {
         "job_id": job_id,
         "status": "queued",
-        "source": request.source,
-        "context": request.context,
-        "message_length": len(request.messages),
+        "source": request_body.source,
+        "context": request_body.context,
+        "message_length": len(request_body.messages),
         "created_at": _utc_now_iso(),
     }
     try:
@@ -1789,9 +2007,9 @@ async def memory_extract(request: ExtractRequest):
             {
                 "job_id": job_id,
                 "request": {
-                    "messages": request.messages,
-                    "source": request.source,
-                    "context": request.context,
+                    "messages": request_body.messages,
+                    "source": request_body.source,
+                    "context": request_body.context,
                 },
             }
         )
@@ -1820,8 +2038,8 @@ async def memory_extract(request: ExtractRequest):
     logger.info(
         "Extract queued: job_id=%s source=%s context=%s queue_depth=%d",
         job_id,
-        request.source,
-        request.context,
+        request_body.source,
+        request_body.context,
         extract_queue.qsize(),
     )
     return {
@@ -1842,14 +2060,19 @@ async def memory_extract_job(job_id: str):
 
 
 @app.post("/memory/supersede")
-async def memory_supersede(request: SupersedeRequest):
+async def memory_supersede(request_body: SupersedeRequest, request: Request):
     """Replace a memory with an updated version (audit trail preserved)."""
-    logger.info("Supersede: old_id=%d, source=%s", request.old_id, request.source)
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source)
+    if auth.prefixes is not None:
+        existing = memory.get_memory(request_body.old_id)
+        _require_write(auth, existing.get("source", ""))
+    logger.info("Supersede: old_id=%d, source=%s", request_body.old_id, request_body.source)
     try:
         result = memory.supersede(
-            old_id=request.old_id,
-            new_text=request.new_text,
-            source=request.source,
+            old_id=request_body.old_id,
+            new_text=request_body.new_text,
+            source=request_body.source,
         )
         return {"success": True, **result}
     except ValueError as e:

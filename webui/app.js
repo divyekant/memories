@@ -1261,22 +1261,380 @@ registerPage("keys", async (container) => {
   configSection.appendChild(keyForm);
   container.appendChild(configSection);
 
-  // Section: Key Management Placeholder
+  // Section: Key Management (admin-gated)
   const mgmtSection = h("div", { className: "settings-section" });
+
+  // Check caller's role
+  let callerInfo = null;
+  try {
+    callerInfo = await api("/api/keys/me");
+  } catch {
+    // Not authenticated or endpoint unavailable
+  }
+
+  if (!callerInfo || callerInfo.role !== "admin") {
+    const noAccess = h("div", { className: "empty-state" },
+      h("div", { className: "empty-state-icon" }, "\u26B6"),
+      h("div", { className: "empty-state-title" }, "Key Management"),
+      h("div", { className: "empty-state-text" },
+        "Key management requires admin access."
+      )
+    );
+    mgmtSection.appendChild(noAccess);
+    container.appendChild(mgmtSection);
+    return;
+  }
+
+  // --- Admin: full key management UI ---
+
   const mgmtTitle = h("div", { className: "section-title" }, "Key Management");
-
-  const placeholder = h("div", { className: "empty-state" },
-    h("div", { className: "empty-state-icon" }, "\u26B6"),
-    h("div", { className: "empty-state-title" }, "Multi-key management coming soon"),
-    h("div", { className: "empty-state-text" },
-      "The server currently uses a single API_KEY environment variable. " +
-      "Once the backend adds multi-key endpoints, you will be able to create, rotate, and revoke keys here."
-    )
-  );
-
   mgmtSection.appendChild(mgmtTitle);
-  mgmtSection.appendChild(placeholder);
+
+  // Create Key button
+  const createBtn = h("button", { className: "btn btn-primary mb-16" }, "+ Create Key");
+  mgmtSection.appendChild(createBtn);
+
+  // Key table container
+  const tableWrap = h("div", { className: "table-wrap" });
+  const keyTable = h("table", { className: "data-table key-table" });
+  keyTable.innerHTML = `
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Prefix</th>
+        <th>Role</th>
+        <th>Prefixes</th>
+        <th>Created</th>
+        <th>Last Used</th>
+        <th>Usage</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+  tableWrap.appendChild(keyTable);
+  mgmtSection.appendChild(tableWrap);
   container.appendChild(mgmtSection);
+
+  // Role badge helper
+  function roleBadge(role) {
+    const map = {
+      "read-only": "badge-info",
+      "read-write": "badge-success",
+      "admin": "badge-warning",
+    };
+    return `<span class="badge ${map[role] || "badge-info"}">${escHtml(role)}</span>`;
+  }
+
+  // Render key rows
+  async function loadKeys() {
+    const tbody = keyTable.querySelector("tbody");
+    tbody.innerHTML = '<tr><td colspan="8" class="loading-state"><div class="loading-spinner"></div></td></tr>';
+
+    try {
+      invalidateCache("/api/keys");
+      const data = await api("/api/keys");
+      const keys = data.keys || [];
+      tbody.innerHTML = "";
+
+      if (keys.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;" class="text-muted">No managed keys yet. Click "Create Key" to get started.</td></tr>';
+        return;
+      }
+
+      for (const k of keys) {
+        const isRevoked = !!k.revoked;
+        const tr = document.createElement("tr");
+        if (isRevoked) tr.className = "key-row-revoked";
+
+        const nameCell = isRevoked
+          ? `<td><span class="key-name-revoked">${escHtml(k.name || "Unnamed")}</span></td>`
+          : `<td>${escHtml(k.name || "Unnamed")}</td>`;
+
+        const prefix = k.key_prefix
+          ? `<code class="font-mono text-muted">${escHtml(k.key_prefix)}...</code>`
+          : `<span class="text-faint">-</span>`;
+
+        const prefixes = k.prefixes && k.prefixes.length > 0
+          ? k.prefixes.map(p => `<span class="badge badge-primary">${escHtml(p)}</span>`).join(" ")
+          : `<span class="text-faint">all</span>`;
+
+        const created = k.created_at ? timeAgo(k.created_at) : "-";
+        const lastUsed = k.last_used_at ? timeAgo(k.last_used_at) : "Never";
+        const usage = k.usage_count != null ? formatNumber(k.usage_count) : "0";
+
+        const statusBadge = isRevoked ? ` <span class="badge badge-error">Revoked</span>` : "";
+
+        tr.innerHTML = `
+          ${nameCell}
+          <td>${prefix}</td>
+          <td>${roleBadge(k.role)}${statusBadge}</td>
+          <td>${prefixes}</td>
+          <td title="${escHtml(k.created_at || "")}">${created}</td>
+          <td title="${escHtml(k.last_used_at || "")}">${lastUsed}</td>
+          <td>${usage}</td>
+          <td class="key-actions-cell"></td>
+        `;
+
+        // Action buttons (only for non-revoked keys)
+        const actionsCell = tr.querySelector(".key-actions-cell");
+        if (!isRevoked) {
+          const editBtn = h("button", {
+            className: "btn btn-sm",
+            title: "Edit key",
+            onClick: () => openEditModal(k),
+          }, "\u270E");
+
+          const revokeBtn = h("button", {
+            className: "btn btn-sm btn-danger",
+            title: "Revoke key",
+            onClick: () => openRevokeModal(k),
+          }, "\u2715");
+
+          actionsCell.appendChild(editBtn);
+          actionsCell.appendChild(revokeBtn);
+        }
+
+        tbody.appendChild(tr);
+      }
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="8" class="text-error" style="padding:16px;">${escHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  // Create Key modal
+  createBtn.addEventListener("click", () => {
+    showModal((content) => {
+      content.appendChild(h("div", { className: "modal-title" }, "Create API Key"));
+
+      const form = h("div", { className: "flex flex-col gap-16" });
+
+      const nameLabel = h("label", { className: "text-muted", style: { fontSize: "0.78rem", fontWeight: "600" } }, "Name");
+      const nameInput = h("input", {
+        type: "text",
+        placeholder: "e.g. CI Pipeline",
+        className: "key-modal-input",
+      });
+
+      const roleLabel = h("label", { className: "text-muted", style: { fontSize: "0.78rem", fontWeight: "600" } }, "Role");
+      const roleSelect = document.createElement("select");
+      roleSelect.className = "key-modal-input";
+      roleSelect.innerHTML = `
+        <option value="read-only">read-only</option>
+        <option value="read-write" selected>read-write</option>
+        <option value="admin">admin</option>
+      `;
+
+      const prefixLabel = h("label", { className: "text-muted", style: { fontSize: "0.78rem", fontWeight: "600" } }, "Prefixes (comma-separated, leave empty for all)");
+      const prefixInput = h("input", {
+        type: "text",
+        placeholder: "e.g. myapp/, shared/",
+        className: "key-modal-input",
+      });
+
+      form.appendChild(nameLabel);
+      form.appendChild(nameInput);
+      form.appendChild(roleLabel);
+      form.appendChild(roleSelect);
+      form.appendChild(prefixLabel);
+      form.appendChild(prefixInput);
+
+      const actions = h("div", { className: "modal-actions" });
+      const cancelBtn = h("button", { className: "btn", onClick: hideModal }, "Cancel");
+      const submitBtn = h("button", { className: "btn btn-primary" }, "Create");
+
+      actions.appendChild(cancelBtn);
+      actions.appendChild(submitBtn);
+
+      content.appendChild(form);
+      content.appendChild(actions);
+
+      submitBtn.addEventListener("click", async () => {
+        const name = nameInput.value.trim();
+        if (!name) {
+          showToast("Name is required", "warning");
+          return;
+        }
+
+        const role = roleSelect.value;
+        const prefixesRaw = prefixInput.value.trim();
+        const prefixes = prefixesRaw
+          ? prefixesRaw.split(",").map(s => s.trim()).filter(Boolean)
+          : [];
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Creating...";
+
+        try {
+          const result = await api("/api/keys", {
+            method: "POST",
+            body: JSON.stringify({ name, role, prefixes }),
+          });
+
+          invalidateCache();
+
+          // Show the created key (one-time display)
+          content.innerHTML = "";
+          content.appendChild(h("div", { className: "modal-title" }, "Key Created"));
+
+          const warning = h("div", { className: "key-created-warning" },
+            "This key will only be shown once. Copy it now."
+          );
+          content.appendChild(warning);
+
+          const keyDisplay = h("div", { className: "key-created-display" });
+          const keyCode = h("code", { className: "key-created-value" }, result.key);
+          const copyBtn = h("button", { className: "btn btn-sm", title: "Copy to clipboard" }, "Copy");
+
+          copyBtn.addEventListener("click", () => {
+            navigator.clipboard.writeText(result.key).then(() => {
+              copyBtn.textContent = "Copied!";
+              showToast("Key copied to clipboard", "success");
+              setTimeout(() => { copyBtn.textContent = "Copy"; }, 2000);
+            }).catch(() => {
+              showToast("Failed to copy", "error");
+            });
+          });
+
+          keyDisplay.appendChild(keyCode);
+          keyDisplay.appendChild(copyBtn);
+          content.appendChild(keyDisplay);
+
+          const meta = h("div", { className: "mt-16", style: { fontSize: "0.82rem" } });
+          meta.innerHTML = `
+            <div class="text-muted mb-8"><strong>Name:</strong> ${escHtml(result.name)}</div>
+            <div class="text-muted mb-8"><strong>Role:</strong> ${roleBadge(result.role)}</div>
+            <div class="text-muted mb-8"><strong>Prefix:</strong> <code class="font-mono">${escHtml(result.key_prefix)}...</code></div>
+          `;
+          content.appendChild(meta);
+
+          const doneBtn = h("button", { className: "btn btn-primary mt-16", onClick: () => { hideModal(); loadKeys(); } }, "Done");
+          content.appendChild(h("div", { className: "modal-actions" }, doneBtn));
+
+        } catch (err) {
+          showToast(err.message, "error");
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Create";
+        }
+      });
+    });
+  });
+
+  // Edit Key modal
+  function openEditModal(key) {
+    showModal((content) => {
+      content.appendChild(h("div", { className: "modal-title" }, `Edit Key: ${key.name || "Unnamed"}`));
+
+      const form = h("div", { className: "flex flex-col gap-16" });
+
+      const nameLabel = h("label", { className: "text-muted", style: { fontSize: "0.78rem", fontWeight: "600" } }, "Name");
+      const nameInput = h("input", {
+        type: "text",
+        value: key.name || "",
+        className: "key-modal-input",
+      });
+
+      const roleLabel = h("label", { className: "text-muted", style: { fontSize: "0.78rem", fontWeight: "600" } }, "Role");
+      const roleSelect = document.createElement("select");
+      roleSelect.className = "key-modal-input";
+      roleSelect.innerHTML = `
+        <option value="read-only"${key.role === "read-only" ? " selected" : ""}>read-only</option>
+        <option value="read-write"${key.role === "read-write" ? " selected" : ""}>read-write</option>
+        <option value="admin"${key.role === "admin" ? " selected" : ""}>admin</option>
+      `;
+
+      const prefixLabel = h("label", { className: "text-muted", style: { fontSize: "0.78rem", fontWeight: "600" } }, "Prefixes (comma-separated, leave empty for all)");
+      const prefixInput = h("input", {
+        type: "text",
+        value: (key.prefixes || []).join(", "),
+        className: "key-modal-input",
+      });
+
+      form.appendChild(nameLabel);
+      form.appendChild(nameInput);
+      form.appendChild(roleLabel);
+      form.appendChild(roleSelect);
+      form.appendChild(prefixLabel);
+      form.appendChild(prefixInput);
+
+      const actions = h("div", { className: "modal-actions" });
+      const cancelBtn = h("button", { className: "btn", onClick: hideModal }, "Cancel");
+      const saveBtn = h("button", { className: "btn btn-primary" }, "Save");
+
+      actions.appendChild(cancelBtn);
+      actions.appendChild(saveBtn);
+
+      content.appendChild(form);
+      content.appendChild(actions);
+
+      saveBtn.addEventListener("click", async () => {
+        const name = nameInput.value.trim();
+        const role = roleSelect.value;
+        const prefixesRaw = prefixInput.value.trim();
+        const prefixes = prefixesRaw
+          ? prefixesRaw.split(",").map(s => s.trim()).filter(Boolean)
+          : [];
+
+        saveBtn.disabled = true;
+        saveBtn.textContent = "Saving...";
+
+        try {
+          await api(`/api/keys/${key.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ name, role, prefixes }),
+          });
+          invalidateCache();
+          hideModal();
+          showToast("Key updated", "success");
+          loadKeys();
+        } catch (err) {
+          showToast(err.message, "error");
+          saveBtn.disabled = false;
+          saveBtn.textContent = "Save";
+        }
+      });
+    });
+  }
+
+  // Revoke Key modal
+  function openRevokeModal(key) {
+    showModal((content) => {
+      content.appendChild(h("div", { className: "modal-title" }, "Revoke Key"));
+
+      const warning = h("div", { style: { fontSize: "0.9rem", lineHeight: "1.6" } },
+        `Revoke key "${key.name || "Unnamed"}"? This cannot be undone.`
+      );
+      content.appendChild(warning);
+
+      const actions = h("div", { className: "modal-actions" });
+      const cancelBtn = h("button", { className: "btn", onClick: hideModal }, "Cancel");
+      const confirmBtn = h("button", { className: "btn btn-danger" }, "Revoke");
+
+      actions.appendChild(cancelBtn);
+      actions.appendChild(confirmBtn);
+      content.appendChild(actions);
+
+      confirmBtn.addEventListener("click", async () => {
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = "Revoking...";
+
+        try {
+          await api(`/api/keys/${key.id}`, { method: "DELETE" });
+          invalidateCache();
+          hideModal();
+          showToast("Key revoked", "success");
+          loadKeys();
+        } catch (err) {
+          showToast(err.message, "error");
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = "Revoke";
+        }
+      });
+    });
+  }
+
+  // Initial load
+  loadKeys();
 });
 
 // ==========================================================================
