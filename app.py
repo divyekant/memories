@@ -290,6 +290,41 @@ def _require_admin(auth: AuthContext) -> None:
         raise HTTPException(status_code=403, detail="Admin key required")
 
 
+def _count_accessible_memories(auth: AuthContext, source_prefix: Optional[str] = None) -> Optional[int]:
+    """Count memories visible to this auth context using in-memory metadata when available."""
+    if auth.prefixes is None:
+        return None
+    metadata = getattr(memory, "metadata", None)
+    if not isinstance(metadata, list):
+        return None
+
+    total = 0
+    for record in metadata:
+        if not isinstance(record, dict):
+            continue
+        source = str(record.get("source", ""))
+        if source_prefix and not source.startswith(source_prefix):
+            continue
+        if auth.can_read(source):
+            total += 1
+    return total
+
+
+def _can_access_extract_job(auth: AuthContext, job: Dict[str, Any]) -> bool:
+    """Authorize visibility of extraction jobs."""
+    if auth.can_manage_keys:
+        return True
+
+    source = str(job.get("source", ""))
+    if source and auth.can_read(source):
+        return True
+
+    if auth.key_id and job.get("auth_key_id") == auth.key_id:
+        return True
+
+    return False
+
+
 # -- App lifecycle ------------------------------------------------------------
 
 memory: MemoryEngine = None  # type: ignore
@@ -513,12 +548,44 @@ def _fallback_extract_facts(messages: str) -> List[str]:
     return candidates
 
 
-def _run_fallback_extraction(messages: str, source: str, context: str) -> Dict[str, Any]:
+def _run_fallback_extraction(
+    messages: str,
+    source: str,
+    context: str,
+    allowed_prefixes: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """Fallback add-only extraction path for disabled or runtime-failed providers."""
     facts = _fallback_extract_facts(messages)
     actions: List[Dict[str, Any]] = []
     stored_count = 0
+
+    # Scoped keys must provide an explicit source.
+    if allowed_prefixes is not None and not source:
+        return {
+            "actions": [],
+            "extracted_count": len(facts),
+            "stored_count": 0,
+            "updated_count": 0,
+            "deleted_count": 0,
+            "mode": "fallback_add",
+            "error": "source_required",
+        }
+
     source_value = source or "extract/fallback"
+    if allowed_prefixes is not None and not AuthContext(
+        role="read-write",
+        prefixes=allowed_prefixes,
+        key_type="managed",
+    ).can_write(source_value):
+        return {
+            "actions": [],
+            "extracted_count": len(facts),
+            "stored_count": 0,
+            "updated_count": 0,
+            "deleted_count": 0,
+            "mode": "fallback_add",
+            "error": "source_not_authorized",
+        }
 
     for fact in facts:
         is_new, similar = memory.is_novel(fact, threshold=EXTRACT_FALLBACK_NOVELTY_THRESHOLD)
@@ -621,6 +688,7 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data["messages"],
                 request_data["source"],
                 request_data["context"],
+                request_data.get("allowed_prefixes"),
             )
             if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result):
                 fallback_result = await run_in_threadpool(
@@ -628,6 +696,7 @@ async def _extract_worker(worker_id: int) -> None:
                     request_data["messages"],
                     request_data["source"],
                     request_data["context"],
+                    request_data.get("allowed_prefixes"),
                 )
                 result = _merge_runtime_fallback_result(result, fallback_result)
                 logger.info(
@@ -1174,8 +1243,13 @@ async def metrics(request: Request):
 
 
 @app.get("/usage")
-async def usage(period: str = Query("7d", regex="^(today|7d|30d|all)$")):
+async def usage(
+    request: Request,
+    period: str = Query("7d", pattern="^(today|7d|30d|all)$"),
+):
     """Persistent usage analytics (opt-in via USAGE_TRACKING=true)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     return usage_tracker.get_usage(period)
 
 
@@ -1455,8 +1529,34 @@ async def delete_by_source(request_body: DeleteBySourceRequest, request: Request
     _require_write(auth, request_body.source_pattern)
     logger.info("Delete by source: pattern=%s", request_body.source_pattern)
     try:
-        result = memory.delete_by_source(request_body.source_pattern)
-        return {"success": True, **result}
+        # Backward-compatible behavior for admin/unrestricted callers.
+        if auth.prefixes is None:
+            result = memory.delete_by_source(request_body.source_pattern)
+            return {"success": True, **result}
+
+        # Scoped keys: resolve matching IDs and enforce source-level checks before deletion.
+        matching_ids: List[int] = []
+        metadata = getattr(memory, "metadata", [])
+        if isinstance(metadata, list):
+            for record in metadata:
+                if not isinstance(record, dict):
+                    continue
+                source = str(record.get("source", ""))
+                if request_body.source_pattern in source and auth.can_write(source):
+                    rid = record.get("id")
+                    if isinstance(rid, int):
+                        matching_ids.append(rid)
+
+        if not matching_ids:
+            return {"success": True, "deleted_count": 0}
+
+        result = memory.delete_memories(matching_ids)
+        return {
+            "success": True,
+            "deleted_count": result.get("deleted_count", 0),
+            "deleted_ids": result.get("deleted_ids", []),
+            "missing_ids": result.get("missing_ids", []),
+        }
     except Exception as e:
         logger.exception("Delete by source failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -1604,10 +1704,19 @@ async def is_novel(request: IsNovelRequest):
 
 @app.get("/memories/count")
 async def count_memories(
+    request: Request,
     source: Optional[str] = Query(None, max_length=500),
 ):
     """Count memories, optionally filtered by source prefix."""
-    count = memory.count_memories(source_prefix=source)
+    auth = _get_auth(request)
+    if source and not auth.can_read(source):
+        raise HTTPException(status_code=403, detail=f"Key does not have read access to source: {source}")
+
+    if auth.prefixes is None:
+        count = memory.count_memories(source_prefix=source)
+    else:
+        scoped_count = _count_accessible_memories(auth, source_prefix=source)
+        count = scoped_count if scoped_count is not None else 0
     return {"count": count}
 
 
@@ -1620,8 +1729,15 @@ async def list_memories(
 ):
     """List memories with pagination and optional source filter"""
     auth = _get_auth(request)
+    if source and not auth.can_read(source):
+        raise HTTPException(status_code=403, detail=f"Key does not have read access to source: {source}")
+
     result = memory.list_memories(offset=offset, limit=limit, source_filter=source)
-    result["memories"] = auth.filter_results(result.get("memories", []))
+    filtered_memories = auth.filter_results(result.get("memories", []))
+    result["memories"] = filtered_memories
+    if auth.prefixes is not None:
+        scoped_total = _count_accessible_memories(auth, source_prefix=source)
+        result["total"] = scoped_total if scoped_total is not None else len(filtered_memories)
     return result
 
 
@@ -1728,8 +1844,10 @@ async def deduplicate(request_body: DeduplicateRequest, request: Request):
 # -- Backups ------------------------------------------------------------------
 
 @app.get("/backups")
-async def list_backups():
+async def list_backups(request: Request):
     """List available backups"""
+    auth = _get_auth(request)
+    _require_admin(auth)
     try:
         backups = sorted(
             memory.get_backup_dir().glob("*_*"), key=lambda p: p.name, reverse=True
@@ -2025,8 +2143,13 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
     auth = _get_auth(request)
     if request_body.source:
         _require_write(auth, request_body.source)
-    elif auth.role == "read-only":
-        raise HTTPException(status_code=403, detail="Read-only keys cannot trigger extraction")
+    else:
+        if auth.role == "read-only":
+            raise HTTPException(status_code=403, detail="Read-only keys cannot trigger extraction")
+        # Scoped non-admin keys must provide an explicit, writable source.
+        if auth.role != "admin" and auth.prefixes is not None:
+            raise HTTPException(status_code=400, detail="source is required for scoped keys")
+
     if extract_provider is None or run_extraction is None:
         if not EXTRACT_FALLBACK_ADD_ENABLED:
             raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
@@ -2041,6 +2164,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
             "created_at": _utc_now_iso(),
             "started_at": _utc_now_iso(),
             "mode": "fallback_add",
+            "auth_key_id": auth.key_id,
         }
         try:
             result = await run_in_threadpool(
@@ -2048,6 +2172,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
                 request_body.messages,
                 request_body.source,
                 request_body.context,
+                auth.prefixes,
             )
             extract_jobs[job_id]["status"] = "completed"
             extract_jobs[job_id]["completed_at"] = _utc_now_iso()
@@ -2085,6 +2210,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
         "context": request_body.context,
         "message_length": len(request_body.messages),
         "created_at": _utc_now_iso(),
+        "auth_key_id": auth.key_id,
     }
     try:
         extract_queue.put_nowait(
@@ -2094,6 +2220,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
                     "messages": request_body.messages,
                     "source": request_body.source,
                     "context": request_body.context,
+                    "allowed_prefixes": auth.prefixes,
                 },
             }
         )
@@ -2135,11 +2262,14 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
 
 
 @app.get("/memory/extract/{job_id}")
-async def memory_extract_job(job_id: str):
+async def memory_extract_job(job_id: str, request: Request):
     """Get queued extraction job status/result."""
+    auth = _get_auth(request)
     job = extract_jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Extraction job not found: {job_id}")
+    if not _can_access_extract_job(auth, job):
+        raise HTTPException(status_code=403, detail="Access denied to extraction job")
     return job
 
 

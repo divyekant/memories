@@ -341,6 +341,32 @@ class TestAUDNCycle:
         prompt = mock_provider.complete.call_args[0][1]
         assert '"category":"decision"' in prompt
 
+    def test_audn_filters_similar_memories_by_allowed_prefixes(self):
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {"action": "ADD", "fact_index": 0}
+        ]))
+
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {"id": 1, "text": "Allowed", "source": "claude-code/proj", "similarity": 0.9},
+            {"id": 2, "text": "Blocked", "source": "other/secret", "similarity": 0.95},
+        ]
+
+        run_audn(
+            mock_provider, mock_engine,
+            facts=[{"text": "Uses Drizzle ORM", "category": "decision"}],
+            source="claude-code/proj",
+            allowed_prefixes=["claude-code/*"],
+        )
+
+        prompt = mock_provider.complete.call_args[0][1]
+        assert "Allowed" in prompt
+        assert "Blocked" not in prompt
+
 
 class TestExecuteActions:
     """Test execute_actions() function."""
@@ -427,6 +453,45 @@ class TestExecuteActions:
         call_kwargs = mock_engine.add_memories.call_args
         # Out-of-bounds should use default empty text
         assert call_kwargs.kwargs.get("texts") == [""]
+
+    def test_execute_update_skips_disallowed_old_id(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.get_memory.return_value = {"id": 42, "source": "other/secret", "text": "old"}
+        actions = [{"action": "UPDATE", "fact_index": 0, "old_id": 42, "new_text": "updated text"}]
+        facts = [{"text": "original fact", "category": "decision"}]
+
+        result = execute_actions(
+            mock_engine,
+            actions,
+            facts,
+            source="claude-code/proj",
+            allowed_prefixes=["claude-code/*"],
+        )
+        assert result["updated_count"] == 0
+        mock_engine.delete_memory.assert_not_called()
+        mock_engine.add_memories.assert_not_called()
+        assert any(a.get("action") == "error" for a in result["actions"])
+
+    def test_execute_delete_skips_disallowed_old_id(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.get_memory.return_value = {"id": 55, "source": "other/secret", "text": "old"}
+        actions = [{"action": "DELETE", "fact_index": 0, "old_id": 55}]
+        facts = [{"text": "contradicted fact", "category": "detail"}]
+
+        result = execute_actions(
+            mock_engine,
+            actions,
+            facts,
+            source="claude-code/proj",
+            allowed_prefixes=["claude-code/*"],
+        )
+        assert result["deleted_count"] == 0
+        mock_engine.delete_memory.assert_not_called()
+        assert any(a.get("action") == "error" for a in result["actions"])
 
 
 class TestFullPipeline:

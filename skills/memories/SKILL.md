@@ -17,8 +17,8 @@ description: >-
 
 You have access to a persistent, semantically searchable memory system via Memories MCP.
 This skill teaches you *when* and *how* to use it effectively. It complements — but does
-not replace — CC's built-in auto-memory (which handles project conventions passively) and
-session hooks (which provide baseline context at startup).
+not replace — the assistant's built-in auto-memory (which handles project conventions
+passively) and lifecycle hooks (which provide baseline context at startup).
 
 Your job is the judgment layer: deciding what's worth storing, when to store it, when
 to actively search for context, and when to trigger lifecycle operations.
@@ -120,6 +120,7 @@ situations need direct action.
   then delete by ID with `memory_delete`
 - Project sunset or namespace cleanup → `memory_delete_by_source` with the project prefix
 - Bulk cleanup of stale wip/ items → `memory_delete_by_source` with `wip/{project}`
+- For scoped API keys, ensure any bulk delete source prefix is inside authorized prefixes
 
 **When AUDN handles it for you:**
 - Decision reversed → `memory_extract` with the new context. AUDN sees the old decision
@@ -140,12 +141,14 @@ Use consistent prefixes so memories can be found and cleaned up by scope:
 
 | Prefix | Use for |
 |--------|---------|
-| `claude-code/{project}` | Code decisions, architecture choices, project-specific context |
+| `claude-code/{project}` or `codex/{project}` | Code decisions, architecture choices, project-specific context (choose the client prefix you run under) |
 | `learning/{project}` | Discovered patterns, gotchas, fixes, non-obvious behaviors |
 | `wip/{project}` | Deferred work, open threads, "revisit later" items |
 
 Never invent ad-hoc prefixes like `myapp/decisions` or `myapp/deployment`. Stick to
 these three categories — they enable reliable search and cleanup by scope.
+If your key is prefix-scoped, `source` must be non-empty and inside those authorized
+prefixes.
 
 ### Format
 

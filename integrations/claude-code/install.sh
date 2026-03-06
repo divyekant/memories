@@ -505,16 +505,18 @@ developer_instructions = """
 Use the Memories MCP tools as your memory layer with three responsibilities:
 
 1. READ: Run memory_search before implementation-heavy responses or clarifying questions.
-2. WRITE: Use memory_add for single clear facts (check memory_is_novel first). Use memory_extract for rich conversations, decision changes, or deferred work updates — it handles Add/Update/Delete/Noop automatically via AUDN.
-3. MAINTAIN: Use memory_delete for explicit forget requests. memory_extract handles most lifecycle updates automatically.
+2. WRITE: Use memory_add for single clear facts (check memory_is_novel first). Use memory_extract for rich conversations, decision changes, or deferred work updates — it handles Add/Update/Delete/Noop automatically via AUDN. For scoped keys, always pass a non-empty source on memory_extract.
+3. MAINTAIN: Use memory_delete for explicit forget requests. memory_extract handles most lifecycle updates automatically. For bulk cleanup with scoped keys, prefer prefix-based deletion patterns that stay inside authorized sources.
 
-Source prefixes: codex/{project} for decisions, learning/{project} for fixes, wip/{project} for deferred work.
+Source prefixes: codex/{project} for decisions (or another authorized decision prefix when using scoped keys), learning/{project} for fixes, wip/{project} for deferred work.
 """
 EOF
 )
     append_marked_block "$codex_config" "$CODEX_DEV_INSTR_MARKER" "$dev_instructions_block"
     echo -e "  ${GREEN}[OK]${NC} Added Codex developer instructions in $codex_config"
   fi
+
+  echo -e "  ${YELLOW}[NOTE]${NC} Scoped-key tip: set MEMORIES_SOURCE_PREFIX (or MEMORIES_SOURCE) in ~/.config/memories/env if your key is restricted to non-codex prefixes."
 }
 
 if [ "$TARGET_CLAUDE" = true ]; then

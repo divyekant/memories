@@ -27,6 +27,9 @@ grep -E '^(MEMORIES_URL|MEMORIES_API_KEY)=' ~/.config/memories/env 2>/dev/null |
 
 # 3. jq is installed
 jq --version
+
+# 4. Node/npm available for MCP server
+node --version && npm --version
 ```
 
 If the service isn't running:
@@ -160,6 +163,7 @@ cd ~/projects/memories
 ```
 
 This copies hook scripts to `~/.claude/hooks/memory/` and merges hook config into `~/.claude/settings.json`.
+It also writes Cursor MCP config at `~/.cursor/mcp.json` so tool calls work alongside hooks.
 
 ### Step 2: Enable Third-party skills in Cursor
 
@@ -170,6 +174,23 @@ That's it — Cursor will automatically load and run the memory hooks from `~/.c
 ### Manual setup (optional)
 
 Follow the Claude Code manual setup steps above (copy hooks, add env vars, edit `~/.claude/settings.json`), then enable Third-party skills in Cursor Settings.
+
+If you prefer MCP-only manual config, add this to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "memories": {
+      "command": "node",
+      "args": ["/path/to/memories/mcp-server/index.js"],
+      "env": {
+        "MEMORIES_URL": "http://localhost:8900",
+        "MEMORIES_API_KEY": "your-api-key-here"
+      }
+    }
+  }
+}
+```
 
 ---
 
@@ -184,6 +205,7 @@ Codex does **not** use Claude's 5-hook `settings.json` format. Codex-native inte
 
 ```bash
 cd ~/projects/memories
+cd mcp-server && npm install && cd ..
 ./integrations/claude-code/install.sh --codex
 ```
 
@@ -192,6 +214,10 @@ The installer will:
 2. Add `notify = ["/Users/you/.codex/hooks/memory/memory-codex-notify.sh"]` to `~/.codex/config.toml` when `notify` is not already set
 3. Add MCP server config for `memories` to `~/.codex/config.toml` when missing
 4. Add default `developer_instructions` (if not already set) to bias `memory_search` usage
+
+If `~/.codex/config.toml` already has `notify = [...]`, merge the Memories hook path into that existing list manually.
+The notify script loads `MEMORIES_URL` / `MEMORIES_API_KEY` from `~/.config/memories/env` (or `MEMORIES_ENV_FILE` override).
+For scoped API keys, set `MEMORIES_SOURCE_PREFIX` (or `MEMORIES_SOURCE`) so notify writes stay inside authorized prefixes.
 
 ### Option B: Manual setup
 
@@ -217,43 +243,17 @@ MEMORIES_URL = "http://localhost:8900"
 MEMORIES_API_KEY = "your-api-key-here"
 ```
 
+If your API key is prefix-scoped and does not allow `codex/*`, set one of these in `~/.config/memories/env`:
+
+```bash
+MEMORIES_SOURCE_PREFIX="your-authorized-prefix"
+# or exact source:
+# MEMORIES_SOURCE="your-authorized-prefix/your-project"
+```
+
 **Step 3: Restart Codex**
 
 Codex will expose `memory_search`, `memory_add`, `memory_delete`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, and other tools via MCP.
-
----
-
-## Setup for Cursor
-
-Cursor is MCP-first today.
-
-1. Install MCP server deps:
-
-```bash
-cd ~/projects/memories/mcp-server
-npm install
-```
-
-2. Add config to one of:
-- Global: `~/.cursor/mcp.json`
-- Project: `.cursor/mcp.json`
-
-```json
-{
-  "mcpServers": {
-    "memories": {
-      "command": "node",
-      "args": ["/path/to/memories/mcp-server/index.js"],
-      "env": {
-        "MEMORIES_URL": "http://localhost:8900",
-        "MEMORIES_API_KEY": "your-api-key-here"
-      }
-    }
-  }
-}
-```
-
-3. Restart Cursor.
 
 ---
 
@@ -283,7 +283,7 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 
 | Mechanism | Event | What It Does |
 |-----------|-------|--------------|
-| `notify` + `memory-codex-notify.sh` | After each completed turn | Sends user+assistant exchange to `/memory/extract` (`context=after_agent`) |
+| `notify` + `memory-codex-notify.sh` | After each completed turn | Sends user+assistant exchange to `/memory/extract` (`context=after_agent`), handling snake/camel/kebab payloads and transcript fallback when available |
 | MCP tools + developer instructions | Each new user turn | Drives `memory_search` usage before implementation-heavy responses |
 
 Codex currently does not expose Claude-style SessionStart/UserPromptSubmit/PreCompact/SessionEnd hook callbacks in `config.toml`.
@@ -315,6 +315,9 @@ Codex currently does not expose Claude-style SessionStart/UserPromptSubmit/PreCo
 |----------|---------|-------------|
 | `MEMORIES_URL` | `http://localhost:8900` | Memories service URL |
 | `MEMORIES_API_KEY` | (empty) | API key for Memories service auth |
+| `MEMORIES_ENV_FILE` | `~/.config/memories/env` | Hook env file path for Claude/Codex notify scripts |
+| `MEMORIES_SOURCE_PREFIX` | `codex` (Codex notify) | Prefix used to build notify extraction source (`<prefix>/<project>`) |
+| `MEMORIES_SOURCE` | (empty) | Full source override for Codex notify extraction payloads |
 | `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `chatgpt-subscription`, `ollama`, or empty to disable |
 | `EXTRACT_MODEL` | (per provider) | Override model. Defaults: `claude-haiku-4-5-20251001`, `gpt-4.1-nano`, `gemma3:4b` |
 | `ANTHROPIC_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=anthropic` |
@@ -421,7 +424,7 @@ rm -rf ~/.codex/hooks/memory/
 # - [mcp_servers.memories.env] section
 
 # Remove env vars from hook/repo env files
-# Edit ~/.config/memories/env and remove MEMORIES_URL/MEMORIES_API_KEY
+# Edit ~/.config/memories/env and remove MEMORIES_URL/MEMORIES_API_KEY/MEMORIES_SOURCE_PREFIX/MEMORIES_SOURCE
 # Edit ~/projects/memories/.env and remove EXTRACT_PROVIDER/provider keys
 ```
 

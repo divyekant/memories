@@ -26,7 +26,8 @@ def client():
 def test_ui_page_is_served_without_api_key_header(client):
     response = client.get("/ui")
     assert response.status_code == 200
-    assert "Memory Observatory" in response.text
+    assert "<title>Memories</title>" in response.text
+    assert "Dashboard" in response.text
 
 
 def test_ui_static_assets_are_served(client):
@@ -34,9 +35,9 @@ def test_ui_static_assets_are_served(client):
     js_response = client.get("/ui/static/app.js")
 
     assert css_response.status_code == 200
-    assert "--accent" in css_response.text
+    assert "--color-primary" in css_response.text
 
     assert js_response.status_code == 200
     assert "loadMemories" in js_response.text
-    assert "syncApiKeyFromInput" in js_response.text
-    assert "addEventListener(\"input\"" in js_response.text
+    assert "syncKeyStatus" in js_response.text
+    assert "addEventListener(\"keydown\"" in js_response.text

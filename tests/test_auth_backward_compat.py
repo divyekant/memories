@@ -1,6 +1,7 @@
 """Backward compatibility -- existing single-key setups must work unchanged."""
 import importlib
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +23,7 @@ def single_key_client():
         mock_engine.is_ready.return_value = {"ready": True}
         mock_engine.count_memories.return_value = 5
         mock_engine.list_memories.return_value = {"memories": [], "total": 0}
+        mock_engine.get_backup_dir.return_value = Path("/tmp")
         app_module.memory = mock_engine
         yield TestClient(app_module.app), mock_engine
 
@@ -40,6 +42,7 @@ def no_auth_client():
         mock_engine.is_ready.return_value = {"ready": True}
         mock_engine.count_memories.return_value = 0
         mock_engine.list_memories.return_value = {"memories": [], "total": 0}
+        mock_engine.get_backup_dir.return_value = Path("/tmp")
         app_module.memory = mock_engine
         yield TestClient(app_module.app), mock_engine
 
@@ -100,6 +103,16 @@ class TestSingleKeyBackwardCompat:
         assert body["role"] == "admin"
         assert body["type"] == "env"
 
+    def test_existing_key_can_access_usage(self, single_key_client):
+        client, _ = single_key_client
+        resp = client.get("/usage", headers={"X-API-Key": "god-is-an-astronaut"})
+        assert resp.status_code == 200
+
+    def test_existing_key_can_access_backups(self, single_key_client):
+        client, _ = single_key_client
+        resp = client.get("/backups", headers={"X-API-Key": "god-is-an-astronaut"})
+        assert resp.status_code == 200
+
 
 class TestNoAuthBackwardCompat:
     def test_no_key_needed_for_search(self, no_auth_client):
@@ -123,4 +136,9 @@ class TestNoAuthBackwardCompat:
     def test_health_works(self, no_auth_client):
         client, _ = no_auth_client
         resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_no_key_needed_for_usage_local_mode(self, no_auth_client):
+        client, _ = no_auth_client
+        resp = client.get("/usage")
         assert resp.status_code == 200

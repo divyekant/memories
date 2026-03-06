@@ -45,11 +45,15 @@ class AuthContext:
     # -- permission checks ---------------------------------------------------
 
     def can_read(self, source: str) -> bool:
+        if self.role == "admin":
+            return True
         return self._matches_prefix(source)
 
     def can_write(self, source: str) -> bool:
         if self.role == "read-only":
             return False
+        if self.role == "admin":
+            return True
         return self._matches_prefix(source)
 
     @property

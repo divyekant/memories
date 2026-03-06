@@ -2,6 +2,7 @@
 import importlib
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,6 +24,19 @@ def app_with_keys():
             mock_engine.search.return_value = []
             mock_engine.hybrid_search.return_value = []
             mock_engine.is_ready.return_value = {"ready": True}
+            mock_engine.count_memories.return_value = 0
+            mock_engine.list_memories.return_value = {
+                "memories": [],
+                "total": 0,
+                "offset": 0,
+                "limit": 20,
+            }
+            mock_engine.delete_memories.return_value = {
+                "deleted_count": 0,
+                "deleted_ids": [],
+                "missing_ids": [],
+            }
+            mock_engine.metadata = []
             app_module.memory = mock_engine
 
             from key_store import KeyStore
@@ -275,3 +289,136 @@ class TestSupersedeAuthCheck:
             headers={"X-API-Key": created["key"]},
         )
         assert resp.status_code == 403
+
+
+class TestScopedSecurityHardening:
+    def test_extract_requires_source_for_scoped_key(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="writer", role="read-write", prefixes=["claude-code/*"])
+        resp = client.post(
+            "/memory/extract",
+            json={"messages": "User: decided to use postgres", "context": "stop"},
+            headers={"X-API-Key": created["key"]},
+        )
+        assert resp.status_code == 400
+        assert "source is required" in resp.json()["detail"]
+
+    def test_delete_by_source_scoped_key_only_deletes_authorized_sources(self, app_with_keys):
+        client, mock_engine, key_store = app_with_keys
+        mock_engine.metadata = [
+            {"id": 1, "source": "claude-code/app", "text": "allowed"},
+            {"id": 2, "source": "other/claude-code/secret", "text": "blocked"},
+        ]
+        mock_engine.delete_memories.return_value = {
+            "deleted_count": 1,
+            "deleted_ids": [1],
+            "missing_ids": [],
+        }
+        created = key_store.create_key(name="writer", role="read-write", prefixes=["claude-code/*"])
+
+        resp = client.post(
+            "/memory/delete-by-source",
+            json={"source_pattern": "claude-code"},
+            headers={"X-API-Key": created["key"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["deleted_count"] == 1
+        mock_engine.delete_memories.assert_called_once_with([1])
+        mock_engine.delete_by_source.assert_not_called()
+
+    def test_delete_by_source_admin_keeps_legacy_behavior(self, app_with_keys):
+        client, mock_engine, _ = app_with_keys
+        mock_engine.delete_by_source.return_value = {"deleted_count": 2}
+        resp = client.post(
+            "/memory/delete-by-source",
+            json={"source_pattern": "claude-code"},
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["deleted_count"] == 2
+        mock_engine.delete_by_source.assert_called_once_with("claude-code")
+        mock_engine.delete_memories.assert_not_called()
+
+    def test_memories_count_is_scoped(self, app_with_keys):
+        client, mock_engine, key_store = app_with_keys
+        mock_engine.metadata = [
+            {"id": 1, "source": "claude-code/a"},
+            {"id": 2, "source": "other/b"},
+            {"id": 3, "source": "claude-code/c"},
+        ]
+        created = key_store.create_key(name="reader", role="read-only", prefixes=["claude-code/*"])
+
+        resp = client.get("/memories/count", headers={"X-API-Key": created["key"]})
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 2
+        mock_engine.count_memories.assert_not_called()
+
+    def test_memories_count_rejects_disallowed_source_filter(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="reader", role="read-only", prefixes=["claude-code/*"])
+        resp = client.get("/memories/count?source=other/", headers={"X-API-Key": created["key"]})
+        assert resp.status_code == 403
+
+    def test_memories_list_total_is_scoped(self, app_with_keys):
+        client, mock_engine, key_store = app_with_keys
+        mock_engine.list_memories.return_value = {
+            "memories": [
+                {"id": 1, "source": "claude-code/a", "text": "a"},
+                {"id": 2, "source": "other/b", "text": "b"},
+            ],
+            "total": 2,
+            "offset": 0,
+            "limit": 20,
+        }
+        mock_engine.metadata = [
+            {"id": 1, "source": "claude-code/a"},
+            {"id": 2, "source": "other/b"},
+            {"id": 3, "source": "claude-code/c"},
+        ]
+        created = key_store.create_key(name="reader", role="read-only", prefixes=["claude-code/*"])
+        resp = client.get("/memories", headers={"X-API-Key": created["key"]})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 2
+        assert len(body["memories"]) == 1
+        assert body["memories"][0]["source"] == "claude-code/a"
+
+    def test_memories_list_rejects_disallowed_source_filter(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="reader", role="read-only", prefixes=["claude-code/*"])
+        resp = client.get("/memories?source=other/", headers={"X-API-Key": created["key"]})
+        assert resp.status_code == 403
+
+    def test_usage_requires_admin(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(name="reader", role="read-only", prefixes=["claude-code/*"])
+        resp = client.get("/usage", headers={"X-API-Key": created["key"]})
+        assert resp.status_code == 403
+
+    def test_backups_requires_admin(self, app_with_keys):
+        client, mock_engine, key_store = app_with_keys
+        mock_engine.get_backup_dir.return_value = Path("/tmp")
+        created = key_store.create_key(name="reader", role="read-only", prefixes=["claude-code/*"])
+        resp = client.get("/backups", headers={"X-API-Key": created["key"]})
+        assert resp.status_code == 403
+
+    def test_extract_job_visibility_is_source_scoped(self, app_with_keys):
+        client, mock_engine, key_store = app_with_keys
+        mock_engine.is_novel.return_value = (False, {"id": 1, "similarity": 0.99})
+        with patch("app.extract_provider", None), patch("app.run_extraction", None), patch("app.EXTRACT_FALLBACK_ADD_ENABLED", True):
+            creator = key_store.create_key(name="creator", role="read-write", prefixes=["claude-code/*"])
+            outsider = key_store.create_key(name="outsider", role="read-write", prefixes=["other/*"])
+
+            create_resp = client.post(
+                "/memory/extract",
+                json={"messages": "User: remember this decision", "source": "claude-code/proj", "context": "stop"},
+                headers={"X-API-Key": creator["key"]},
+            )
+            assert create_resp.status_code == 202
+            job_id = create_resp.json()["job_id"]
+
+            denied = client.get(f"/memory/extract/{job_id}", headers={"X-API-Key": outsider["key"]})
+            assert denied.status_code == 403
+
+            allowed = client.get(f"/memory/extract/{job_id}", headers={"X-API-Key": creator["key"]})
+            assert allowed.status_code == 200
