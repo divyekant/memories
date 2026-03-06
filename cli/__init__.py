@@ -36,3 +36,5 @@ def app(ctx, url, api_key, force_json, force_pretty):
 
 
 from cli.commands import core  # noqa: E402, F401
+from cli.commands import batch  # noqa: E402, F401
+from cli.commands import delete_by  # noqa: E402, F401
