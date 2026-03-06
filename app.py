@@ -291,7 +291,10 @@ def _require_admin(auth: AuthContext) -> None:
 
 
 def _count_accessible_memories(auth: AuthContext, source_prefix: Optional[str] = None) -> Optional[int]:
-    """Count memories visible to this auth context using in-memory metadata when available."""
+    """Count memories visible to this auth context using in-memory metadata when available.
+
+    TODO: O(n) scan — consider a prefix-indexed cache for large stores.
+    """
     if auth.prefixes is None:
         return None
     metadata = getattr(memory, "metadata", None)

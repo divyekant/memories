@@ -12,6 +12,8 @@ import logging
 import os
 from typing import Optional, List
 
+from auth_context import source_matches_prefixes
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,18 +42,6 @@ EXTRACT_MAX_FACT_CHARS = _env_int("EXTRACT_MAX_FACT_CHARS", 500, minimum=40)
 EXTRACT_SIMILAR_TEXT_CHARS = _env_int("EXTRACT_SIMILAR_TEXT_CHARS", 280, minimum=40)
 EXTRACT_SIMILAR_PER_FACT = _env_int("EXTRACT_SIMILAR_PER_FACT", 5)
 
-
-def _source_matches_prefixes(source: str, prefixes: Optional[List[str]]) -> bool:
-    """Return True when source is allowed by managed-key prefixes."""
-    if prefixes is None:
-        return True
-    if ".." in source.split("/"):
-        return False
-    for pfx in prefixes:
-        base = pfx.rstrip("/").removesuffix("/*").rstrip("/")
-        if source == base or source.startswith(base + "/"):
-            return True
-    return False
 
 # --- Prompts ---
 
@@ -263,7 +253,7 @@ def run_audn(
             if allowed_prefixes is not None:
                 results = [
                     r for r in results
-                    if _source_matches_prefixes(str(r.get("source", "")), allowed_prefixes)
+                    if source_matches_prefixes(str(r.get("source", "")), allowed_prefixes)
                 ]
             similar_per_fact[i] = results
         except Exception:
@@ -331,7 +321,7 @@ def execute_actions(
 
         try:
             if act == "ADD":
-                if not _source_matches_prefixes(source, allowed_prefixes):
+                if not source_matches_prefixes(source, allowed_prefixes):
                     raise PermissionError(f"source not authorized for add: {source}")
                 fact_meta = {"category": fact.get("category", "detail")} if isinstance(fact, dict) else {}
                 added_ids = engine.add_memories(
@@ -350,9 +340,9 @@ def execute_actions(
                 if old_id is not None and allowed_prefixes is not None:
                     existing = engine.get_memory(old_id)
                     existing_source = str(existing.get("source", ""))
-                    if not _source_matches_prefixes(existing_source, allowed_prefixes):
+                    if not source_matches_prefixes(existing_source, allowed_prefixes):
                         raise PermissionError(f"old_id not authorized for update: {old_id}")
-                if not _source_matches_prefixes(source, allowed_prefixes):
+                if not source_matches_prefixes(source, allowed_prefixes):
                     raise PermissionError(f"source not authorized for update: {source}")
                 if old_id is not None:
                     engine.delete_memory(old_id)
@@ -373,7 +363,7 @@ def execute_actions(
                     if allowed_prefixes is not None:
                         existing = engine.get_memory(old_id)
                         existing_source = str(existing.get("source", ""))
-                        if not _source_matches_prefixes(existing_source, allowed_prefixes):
+                        if not source_matches_prefixes(existing_source, allowed_prefixes):
                             raise PermissionError(f"old_id not authorized for delete: {old_id}")
                     engine.delete_memory(old_id)
                     result_actions.append({"action": "delete", "old_id": old_id})
