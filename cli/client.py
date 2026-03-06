@@ -255,3 +255,39 @@ class MemoriesClient:
                 return result
             time.sleep(interval)
         raise TimeoutError(f"Extract job {job_id} did not complete in {timeout}s")
+
+    # --- Export / Import ---
+
+    def export_stream(self, source: str | None = None,
+                      since: str | None = None, until: str | None = None):
+        """Stream export lines from the server."""
+        params = {}
+        if source:
+            params["source"] = source
+        if since:
+            params["since"] = since
+        if until:
+            params["until"] = until
+        with self._client.stream("GET", "/export", params=params) as resp:
+            if resp.status_code in (401, 403):
+                raise CliAuthError(f"Authentication failed: {resp.status_code}")
+            if resp.status_code >= 500:
+                raise CliServerError(f"Server error {resp.status_code}")
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if line.strip():
+                    yield line
+
+    def import_upload(self, lines: list[str], strategy: str = "add",
+                      source_remap: str | None = None,
+                      no_backup: bool = False):
+        """Upload NDJSON lines for import."""
+        params: dict = {"strategy": strategy}
+        if source_remap:
+            params["source_remap"] = source_remap
+        if no_backup:
+            params["no_backup"] = "true"
+        body = "\n".join(lines)
+        return self._request("POST", "/import", params=params,
+                             content=body,
+                             headers={"Content-Type": "application/x-ndjson"})
