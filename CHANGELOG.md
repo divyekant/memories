@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.0.0] - 2026-03-05
 
 ### Added
 - Full CLI with 30+ commands covering all API endpoints (`memories` command)

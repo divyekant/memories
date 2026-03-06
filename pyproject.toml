@@ -1,6 +1,6 @@
 [project]
 name = "memories"
-version = "1.4.0"
+version = "2.0.0"
 description = "Local-first memory layer for AI assistants"
 readme = "README.md"
 requires-python = ">=3.11"
