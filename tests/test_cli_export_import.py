@@ -96,3 +96,51 @@ class TestExportClient:
         assert captured["params"]["strategy"] == "smart"
         assert captured["params"]["source_remap"] == "old/=new/"
         assert captured["params"]["no_backup"] == "true"
+
+
+class TestExportCommand:
+    def test_export_to_stdout(self):
+        ndjson_lines = [
+            json.dumps({"_header": True, "count": 1, "version": "2.0.0",
+                         "exported_at": "2026-01-01T00:00:00Z",
+                         "source_filter": None, "since": None, "until": None}),
+            json.dumps({"text": "hello", "source": "s/",
+                         "created_at": "2026-01-01T00:00:00Z",
+                         "updated_at": "2026-01-01T00:00:00Z"}),
+        ]
+
+        def handler(request: httpx.Request):
+            return httpx.Response(
+                200,
+                text="\n".join(ndjson_lines),
+                headers={"content-type": "application/x-ndjson"},
+            )
+
+        result = _invoke(["export"], handler)
+        assert result.exit_code == 0
+        # JSON mode wraps in envelope
+        data = json.loads(result.output)
+        assert data["ok"] is True
+
+
+class TestImportCommand:
+    def test_import_from_stdin(self):
+        def handler(request: httpx.Request):
+            return httpx.Response(200, json={
+                "imported": 1, "skipped": 0, "updated": 0,
+                "errors": [], "backup": "pre-import_123",
+            })
+
+        ndjson_input = "\n".join([
+            json.dumps({"_header": True, "count": 1, "version": "2.0.0"}),
+            json.dumps({"text": "hi", "source": "s/"}),
+        ]) + "\n"
+
+        result = _invoke(
+            ["import", "-"],
+            handler,
+            input=ndjson_input,
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["data"]["imported"] == 1
