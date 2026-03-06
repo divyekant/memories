@@ -1090,6 +1090,92 @@ class MemoryEngine:
 
         return lines
 
+    def import_memories(
+        self,
+        lines: List[str],
+        strategy: str = "add",
+        source_remap: Optional[Tuple[str, str]] = None,
+        create_backup: bool = True,
+    ) -> Dict[str, Any]:
+        """Import memories from NDJSON lines produced by :meth:`export_memories`.
+
+        Parameters
+        ----------
+        lines:
+            NDJSON strings — first line must be a header with ``_header: true``.
+        strategy:
+            Import strategy. Currently only ``"add"`` is supported.
+        source_remap:
+            Optional ``(old_prefix, new_prefix)`` tuple.  If a record's
+            ``source`` starts with *old_prefix* it is replaced with
+            *new_prefix*.
+        create_backup:
+            When *True* and existing memories are present, create a
+            ``pre-import`` backup before mutating state.
+
+        Returns
+        -------
+        dict with keys ``imported``, ``skipped``, ``updated``, ``errors``,
+        ``backup``.
+        """
+        result: Dict[str, Any] = {
+            "imported": 0,
+            "skipped": 0,
+            "updated": 0,
+            "errors": [],
+            "backup": None,
+        }
+
+        if not lines:
+            result["errors"].append({"line": 1, "error": "Missing header: first line must contain _header: true"})
+            return result
+
+        # --- validate header ---
+        try:
+            header = json.loads(lines[0])
+        except (json.JSONDecodeError, TypeError):
+            result["errors"].append({"line": 1, "error": "Missing header: first line must contain _header: true"})
+            return result
+
+        if not header.get("_header"):
+            result["errors"].append({"line": 1, "error": "Missing header: first line must contain _header: true"})
+            return result
+
+        # --- backup ---
+        backup_name: Optional[str] = None
+        if create_backup and self.metadata:
+            backup_path = self._backup(prefix="pre-import")
+            backup_name = backup_path.name
+            result["backup"] = backup_name
+
+        # --- parse records ---
+        texts: List[str] = []
+        sources: List[str] = []
+        for idx, line in enumerate(lines[1:], start=2):
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                result["errors"].append({"line": idx, "error": "Invalid JSON"})
+                continue
+
+            if "text" not in record or "source" not in record:
+                result["errors"].append({"line": idx, "error": "Missing required field (text or source)"})
+                continue
+
+            source = record["source"]
+            if source_remap and source.startswith(source_remap[0]):
+                source = source_remap[1] + source[len(source_remap[0]):]
+
+            texts.append(record["text"])
+            sources.append(source)
+
+        # --- add strategy ---
+        if texts:
+            self.add_memories(texts=texts, sources=sources, deduplicate=False)
+            result["imported"] = len(texts)
+
+        return result
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------

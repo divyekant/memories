@@ -87,3 +87,84 @@ class TestExportMemories:
         header_past = json.loads(lines_past[0])
         assert header_past["count"] == 0
         assert len(lines_past) == 1  # header only
+
+
+class TestImportMemories:
+    def test_import_add_strategy(self, engine):
+        """Create valid NDJSON lines, import, verify count == 2."""
+        header = json.dumps({"_header": True, "count": 2, "version": "2.0.0"})
+        rec1 = json.dumps({"text": "fact one", "source": "test/a"})
+        rec2 = json.dumps({"text": "fact two", "source": "test/b"})
+        lines = [header, rec1, rec2]
+
+        result = engine.import_memories(lines, strategy="add")
+
+        assert result["imported"] == 2
+        assert result["skipped"] == 0
+        assert result["updated"] == 0
+        assert result["errors"] == []
+        assert result["backup"] is None  # no existing memories → no backup
+        assert len(engine.metadata) == 2
+
+    def test_import_validates_header(self, engine):
+        """First line has no _header field → errors, nothing imported."""
+        lines = [
+            json.dumps({"not_a_header": True}),
+            json.dumps({"text": "fact", "source": "src/a"}),
+        ]
+
+        result = engine.import_memories(lines, strategy="add")
+
+        assert result["imported"] == 0
+        assert len(result["errors"]) == 1
+        assert "header" in result["errors"][0]["error"].lower()
+
+    def test_import_skips_bad_lines(self, engine):
+        """Mix of valid JSON, invalid JSON, valid record → imports 1, errors 1."""
+        header = json.dumps({"_header": True, "count": 2, "version": "2.0.0"})
+        bad_line = "NOT VALID JSON {{{}"
+        good_rec = json.dumps({"text": "good fact", "source": "src/ok"})
+        lines = [header, bad_line, good_rec]
+
+        result = engine.import_memories(lines, strategy="add")
+
+        assert result["imported"] == 1
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["line"] == 2  # 1-indexed, line 2 is the bad one
+
+    def test_import_source_remap(self, engine):
+        """Import with source_remap=("old/", "new/") → source is remapped."""
+        header = json.dumps({"_header": True, "count": 1, "version": "2.0.0"})
+        rec = json.dumps({"text": "remapped fact", "source": "old/path"})
+        lines = [header, rec]
+
+        result = engine.import_memories(lines, strategy="add", source_remap=("old/", "new/"))
+
+        assert result["imported"] == 1
+        assert engine.metadata[0]["source"] == "new/path"
+
+    def test_import_creates_backup_when_existing(self, engine):
+        """When memories already exist and create_backup=True, backup is created."""
+        engine.add_memories(texts=["existing"], sources=["pre/exist"])
+
+        header = json.dumps({"_header": True, "count": 1, "version": "2.0.0"})
+        rec = json.dumps({"text": "new fact", "source": "imp/a"})
+        lines = [header, rec]
+
+        result = engine.import_memories(lines, strategy="add")
+
+        assert result["backup"] is not None
+        assert "pre-import" in result["backup"]
+        assert len(engine.metadata) == 2  # 1 existing + 1 imported
+
+    def test_import_skips_records_missing_fields(self, engine):
+        """Records missing text or source are skipped with errors."""
+        header = json.dumps({"_header": True, "count": 2, "version": "2.0.0"})
+        no_text = json.dumps({"source": "src/a"})
+        no_source = json.dumps({"text": "no source fact"})
+        lines = [header, no_text, no_source]
+
+        result = engine.import_memories(lines, strategy="add")
+
+        assert result["imported"] == 0
+        assert len(result["errors"]) == 2
