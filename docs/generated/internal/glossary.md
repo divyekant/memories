@@ -101,3 +101,32 @@ SQLite Write-Ahead Logging mode. Enabled on the `keys.db` database for non-block
 
 **X-API-Key**
 The HTTP header used to transmit the API key on every request. Case-sensitive. This is the only supported authentication header. Both the server middleware and the CLI's `MemoriesClient` use this header.
+
+### AUDN
+**Definition:** Add, Update, Delete, Noop -- the four possible classifications when the LLM evaluates a memory during `smart+extract` import or extraction lifecycle management.
+**Context:** Used in the `smart+extract` import strategy and the `memory_extract` pipeline.
+**Also known as:** AUDN cycle, AUDN classification
+**Not to be confused with:** The `add` import strategy (which is a simpler, non-LLM approach).
+
+### Export
+**Definition:** The process of writing memories from a Memories instance to a portable NDJSON file. Supports filtering by source prefix and date range.
+**Context:** `GET /export` API endpoint, `memories export` CLI command.
+**Also known as:** Data export, memory export
+**Not to be confused with:** Backup (which copies the full database, not selective records).
+
+### Import
+**Definition:** The process of reading memories from an NDJSON file and adding them to a Memories instance, with optional conflict resolution.
+**Context:** `POST /import` API endpoint, `memories import` CLI command.
+**Also known as:** Data import, memory import
+**Not to be confused with:** Restore (which replaces the entire database from a backup).
+
+### NDJSON
+**Definition:** Newline-Delimited JSON -- a format where each line is a complete JSON object. Used as the portable exchange format for export/import.
+**Context:** Export produces `.jsonl` files in NDJSON format. Import reads the same format.
+**Also known as:** JSONL, JSON Lines
+**Not to be confused with:** Regular JSON (which wraps everything in an array or object).
+
+### Source Remapping
+**Definition:** The ability to rewrite source prefixes during import, changing the namespace of imported memories.
+**Context:** `--source-remap "old/=new/"` parameter on the import CLI command and API endpoint.
+**Not to be confused with:** Folder renaming (which renames sources on existing memories in-place).

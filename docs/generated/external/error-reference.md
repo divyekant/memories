@@ -427,3 +427,31 @@ case $exit_code in
     ;;
 esac
 ```
+
+---
+
+## Export/Import Errors
+
+### INVALID_IMPORT_HEADER
+- **HTTP Status:** 400 (returned within import response errors array)
+- **Message:** "Invalid or missing header"
+- **Cause:** The first line of the import file doesn't contain `"_header": true`
+- **Resolution:** Ensure the file was created by `memories export`. The first line must be a JSON object with `_header`, `count`, and `version` fields.
+
+### INVALID_STRATEGY
+- **HTTP Status:** 400
+- **Message:** "Invalid strategy. Must be one of: {add, smart, smart+extract}"
+- **Cause:** The `strategy` query parameter has an unrecognized value
+- **Resolution:** Use one of: `add`, `smart`, or `smart+extract`
+
+### SOURCE_NOT_AUTHORIZED (Import)
+- **HTTP Status:** 200 (appears in response `errors` array, not as HTTP error)
+- **Message:** "source prefix not authorized"
+- **Cause:** A scoped API key attempted to import a memory whose source prefix falls outside its write scope
+- **Resolution:** Use an admin key for unrestricted import, or use `--source-remap` to map sources to an authorized prefix
+
+### MISSING_FIELDS (Import)
+- **HTTP Status:** 200 (appears in response `errors` array)
+- **Message:** "Missing required field: text" or "Missing required field: source"
+- **Cause:** A memory record in the import file is missing the `text` or `source` field
+- **Resolution:** Verify the NDJSON file format. Each memory line must have at minimum `text` and `source` fields.

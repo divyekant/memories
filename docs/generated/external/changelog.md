@@ -22,6 +22,10 @@ audience: external
 - Memory extraction from conversation transcripts via `extract submit`
 - Backup and sync management from the command line
 - Server administration commands: health checks, metrics, deduplication, and maintenance
+- Export memories to portable NDJSON files with optional source prefix and date range filters
+- Import memories from NDJSON files with three strategies: `add` (bulk insert), `smart` (dedup + timestamp resolution), `smart+extract` (LLM for borderline conflicts)
+- Automatic backup before import — restorable if anything goes wrong
+- Source prefix remapping during import (`--source-remap "old/=new/"`)
 
 ---
 

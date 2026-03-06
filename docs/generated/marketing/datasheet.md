@@ -45,6 +45,12 @@ Full terminal access to all 30+ API operations. Agent-first design with automati
 
 S3-compatible automatic backups. Google Drive off-site backup support. Local-first by default with optional cloud redundancy.
 
+### Data Portability
+- **Export to NDJSON**: Selective export with source prefix and date range filtering
+- **Multi-strategy import**: Bulk insert, smart deduplication, or AI-powered conflict resolution
+- **Automatic backup**: Safety net before every import operation
+- **Source remapping**: Reorganize namespace structure during import
+
 ## Integration Methods
 
 | Method | Clients | Setup |

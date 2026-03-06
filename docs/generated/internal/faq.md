@@ -177,3 +177,25 @@ Yes. The CLI sends the configured API key via the `X-API-Key` header, same as an
 ### Q: How does the CLI handle HTTP 422 validation errors?
 
 The `MemoriesClient` parses the `detail` field from the server's 422 response and raises a `ValueError`. This maps to exit code 1 and error code `GENERAL_ERROR`. The server's validation message (e.g., "field required", "value is not a valid integer") is passed through to the user. Run `memories <command> --help` to check required options and argument types.
+
+## Export/Import
+
+### Q: How is export/import different from backup/restore?
+**A:** Backup copies the entire database (metadata.json) and rebuilds all vectors on restore -- it's for disaster recovery. Export/import is selective: you filter by source prefix or date range, the output is portable NDJSON (no IDs or embeddings), and import supports conflict resolution strategies. Use backup for safety, export/import for migration and sharing.
+
+**Related:** [fh-003-export-import](feature-handoffs/fh-003-export-import.md)
+
+### Q: Which import strategy should I recommend?
+**A:** For clean migration to an empty instance: `add` (fastest, no checks). For merging with existing data: `smart` (skips duplicates, newer timestamp wins for conflicts). For active instances with potential contradictions: `smart+extract` (LLM resolves borderline cases, costs ~5-10% tokens on borderline memories).
+
+**Related:** [fh-003-export-import](feature-handoffs/fh-003-export-import.md)
+
+### Q: Will import overwrite existing memories?
+**A:** Never directly. With `add`, every record creates a new memory (may create duplicates). With `smart`, exact duplicates are skipped. Near-duplicates where the import is newer cause the old one to be deleted and the new one added -- effectively an update. Original IDs are never reused.
+
+**Related:** [uc-006-instance-migration](use-cases/uc-006-instance-migration.md)
+
+### Q: What if a customer's import fails partway through?
+**A:** Import creates an automatic backup before processing. Per-line errors don't abort the import -- partial results are returned with an error count. If the server crashes, restore via `memories backup restore pre-import_TIMESTAMP`.
+
+**Related:** [ts-003-export-import](troubleshooting/ts-003-export-import.md)

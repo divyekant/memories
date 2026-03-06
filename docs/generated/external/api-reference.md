@@ -301,3 +301,83 @@ This applies to both the env-based admin key and managed keys created via `POST 
 | `read-only` | Yes | No (403) | Search only |
 | `read-write` | Yes | No (403) | Search + Add + Delete |
 | `admin` | Yes | Yes | Full access, no prefix restrictions |
+
+---
+
+## Export/Import
+
+### GET /export
+
+Export memories as streaming NDJSON.
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| source | string | No | Filter by source prefix |
+| since | string | No | Only memories created after this ISO8601 datetime |
+| until | string | No | Only memories created before this ISO8601 datetime |
+
+**Response:** Streaming `application/x-ndjson`. First line is a header, remaining lines are memory records.
+
+**Example:**
+```bash
+curl -H "X-API-Key: YOUR_KEY" \
+  "http://localhost:8900/export?source=claude-code/&since=2026-01-01" \
+  -o export.jsonl
+```
+
+**Response format:**
+```jsonl
+{"_header": true, "count": 253, "version": "2.0.0", "exported_at": "2026-03-05T10:30:00Z", "source_filter": "claude-code/", "since": "2026-01-01", "until": null}
+{"text": "Always use strict mode", "source": "claude-code/myapp", "created_at": "2026-01-15T...", "updated_at": "2026-01-15T...", "custom_fields": {}}
+```
+
+**Status Codes:**
+| Code | Meaning |
+|------|---------|
+| 200 | Success — streaming NDJSON body |
+| 401 | Authentication required |
+
+---
+
+### POST /import
+
+Import memories from NDJSON body.
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| strategy | string | No | `add`, `smart`, or `smart+extract` (default: `add`) |
+| source_remap | string | No | Rewrite source prefixes (format: `old=new`) |
+| no_backup | boolean | No | Skip auto-backup (default: false) |
+
+**Request Body:** NDJSON (same format as export output). Content-Type: `application/x-ndjson`.
+
+**Response:**
+```json
+{
+  "imported": 840,
+  "skipped": 5,
+  "updated": 2,
+  "errors": [
+    {"line": 42, "error": "source prefix not authorized"}
+  ],
+  "backup": "pre-import_20260305_103000"
+}
+```
+
+**Status Codes:**
+| Code | Meaning |
+|------|---------|
+| 200 | Import completed (check errors array for per-line failures) |
+| 400 | Invalid strategy |
+| 401 | Authentication required |
+| 500 | Server error during import |
+
+**Example:**
+```bash
+curl -X POST -H "X-API-Key: YOUR_KEY" \
+  -H "Content-Type: application/x-ndjson" \
+  "http://localhost:8900/import?strategy=smart" \
+  --data-binary @export.jsonl
+```

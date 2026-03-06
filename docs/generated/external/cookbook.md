@@ -650,3 +650,84 @@ echo ""
 echo "=== Usage (7 days) ==="
 memories admin usage --period 7d
 ```
+
+---
+
+## Export/Import
+
+### Export All Memories to File
+
+**Goal:** Create a portable backup of all memories.
+
+```bash
+memories export -o all-memories.jsonl
+```
+
+**Notes:**
+- Output is NDJSON — one JSON object per line
+- First line is a header with metadata (count, version, timestamp)
+- [Feature doc: Export/Import](features/feat-003-export-import.md)
+
+### Export Filtered by Source
+
+**Goal:** Export only memories from a specific project.
+
+```bash
+memories export --source "claude-code/myapp" -o project.jsonl
+```
+
+**Notes:**
+- Source filter uses prefix matching
+- Combine with `--since` and `--until` for date range filtering
+
+### Import with Smart Dedup
+
+**Goal:** Import memories without creating duplicates.
+
+```bash
+memories import data.jsonl --strategy smart
+```
+
+**Notes:**
+- Skips exact duplicates (>=0.95 similarity)
+- For near-duplicates, keeps the newer version
+- Creates an automatic backup before importing
+
+### Import with Source Remapping
+
+**Goal:** Import memories and change their source namespace.
+
+```bash
+memories import data.jsonl --source-remap "old-project/=new-project/"
+```
+
+**Notes:**
+- Remapping applies to all records during import
+- Useful when consolidating multiple projects into one namespace
+
+### Export via API (curl)
+
+**Goal:** Export memories programmatically.
+
+```bash
+curl -H "X-API-Key: YOUR_KEY" "http://localhost:8900/export?source=claude-code/" -o export.jsonl
+```
+
+**Notes:**
+- Response is streaming NDJSON with `application/x-ndjson` content type
+- Add `since` and `until` query params for date filtering
+
+### Import via API (curl)
+
+**Goal:** Import memories programmatically.
+
+```bash
+curl -X POST -H "X-API-Key: YOUR_KEY" \
+  -H "Content-Type: application/x-ndjson" \
+  "http://localhost:8900/import?strategy=smart" \
+  --data-binary @export.jsonl
+```
+
+**Notes:**
+- Use `--data-binary` (not `-d`) to preserve newlines in NDJSON
+- Response includes imported/skipped/updated counts
