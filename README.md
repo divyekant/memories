@@ -1301,21 +1301,11 @@ When changing memory/index behavior: add or update tests, validate backup/restor
 
 ## Roadmap
 
-### v1.1 (Next)
-- [x] Web UI for browsing memories
-- [x] Memory deduplication tool (`/memory/deduplicate`)
-- [x] MCP server (`mcp-server/index.js`)
-- [x] OpenClaw integration (`integrations/openclaw-skill.md`)
 - [ ] Auto-rebuild on file changes (watch mode)
-- [ ] Export formats (JSON, Markdown, CSV)
-
-### v1.2 (Future)
-- [x] Hybrid search (semantic + keyword via BM25 + RRF)
 - [ ] Multi-index support (different projects)
 - [ ] Memory tagging system
 - [ ] Search filters by date/type (source filter exists)
 - [ ] Scheduled index rebuilds via cron
-- [ ] Memory analytics dashboard
 
 ---
 
