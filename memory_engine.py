@@ -1036,6 +1036,61 @@ class MemoryEngine:
         }
 
     # ------------------------------------------------------------------
+    # Export / Import
+    # ------------------------------------------------------------------
+
+    _EXPORT_STANDARD_FIELDS = {"id", "text", "source", "created_at", "updated_at", "timestamp"}
+
+    def export_memories(
+        self,
+        source_prefix: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+    ) -> List[str]:
+        """Export memories as a list of NDJSON strings.
+
+        First line is a header, remaining lines are memory records.
+        IDs, embeddings, and the backward-compat ``timestamp`` alias are
+        excluded so the output is portable across instances.
+        """
+        filtered = self.metadata
+
+        if source_prefix:
+            filtered = [m for m in filtered if m.get("source", "").startswith(source_prefix)]
+
+        if since:
+            filtered = [m for m in filtered if m.get("created_at", "") >= since]
+
+        if until:
+            filtered = [m for m in filtered if m.get("created_at", "") <= until]
+
+        header = {
+            "_header": True,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "source_filter": source_prefix,
+            "since": since,
+            "until": until,
+            "count": len(filtered),
+            "version": "2.0.0",
+        }
+        lines: List[str] = [json.dumps(header, separators=(",", ":"))]
+
+        for mem in filtered:
+            custom_fields = {
+                k: v for k, v in mem.items() if k not in self._EXPORT_STANDARD_FIELDS
+            }
+            record = {
+                "text": mem["text"],
+                "source": mem.get("source", ""),
+                "created_at": mem.get("created_at", ""),
+                "updated_at": mem.get("updated_at", ""),
+                "custom_fields": custom_fields,
+            }
+            lines.append(json.dumps(record, separators=(",", ":")))
+
+        return lines
+
+    # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
