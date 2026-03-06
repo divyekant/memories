@@ -143,3 +143,37 @@ No, both the API and the Web UI are available. The Web UI provides a visual inte
 ### Q: Does the Web UI work without auth?
 
 The Web UI shell and static files are served without authentication. However, API calls made by the UI (fetching memories, searching, managing keys) require authentication. The UI picks up the API key from its configuration or prompts the user.
+
+## CLI
+
+### Q: How does the CLI decide between JSON and human-readable output?
+
+The `OutputFormatter` checks three things in order: (1) if `--json` flag is set, output is JSON; (2) if `--pretty` flag is set, output is human-readable; (3) otherwise, it calls `sys.stdout.isatty()` -- TTY means human-readable, non-TTY (piped) means JSON. Agents should always use `--json` to guarantee JSON output regardless of environment.
+
+### Q: Where does the CLI store its configuration?
+
+In `~/.config/memories/config.json`. The file is created by `memories config set <key> <value>`. Valid keys are `url`, `api_key`, and `default_source`. The file is standard JSON. If the file does not exist or is malformed, the CLI falls through to environment variables (`MEMORIES_URL`, `MEMORIES_API_KEY`) and then to defaults (`http://localhost:8900`, no key).
+
+### Q: How do I see which config source is active for each setting?
+
+Run `memories config show`. Each value displays its source in parentheses: `(from flag)`, `(from file)`, `(from env)`, or `(from default)`. This is useful for debugging unexpected behavior caused by config layer conflicts.
+
+### Q: Can the CLI read from stdin?
+
+Yes. Commands that accept text (`add`, `upsert`, `is-novel`) accept `-` as the text argument or auto-detect piped stdin. Batch commands (`batch add`, `batch search`, `batch upsert`) and `extract submit` accept a file path or `-` for stdin. This enables piping: `echo "fact" | memories add -s source` or `cat data.jsonl | memories batch add -`.
+
+### Q: What exit codes does the CLI use?
+
+Five exit codes: 0 (success), 1 (general error -- validation, server error, unexpected), 2 (not found -- HTTP 404), 3 (connection error -- server unreachable or timeout), 4 (auth error -- HTTP 401 or 403). Agents can branch on exit code for coarse-grained error handling before parsing the JSON envelope.
+
+### Q: Do destructive commands require confirmation?
+
+Yes, in interactive (TTY) mode. `delete-by source`, `delete-by prefix`, and `backup restore` prompt for confirmation. The prompt defaults to No. Pass `--yes` or `-y` to skip the prompt. Agents running non-interactively should always pass `--yes`.
+
+### Q: Can I use the CLI with a managed (non-admin) key?
+
+Yes. The CLI sends the configured API key via the `X-API-Key` header, same as any other client. Commands that require admin access (e.g., `admin stats`, `admin deduplicate`, `backup create`) will return exit code 4 with an `AUTH_REQUIRED` error if the key lacks admin role. Read and write commands work within the key's prefix scope.
+
+### Q: How does the CLI handle HTTP 422 validation errors?
+
+The `MemoriesClient` parses the `detail` field from the server's 422 response and raises a `ValueError`. This maps to exit code 1 and error code `GENERAL_ERROR`. The server's validation message (e.g., "field required", "value is not a valid integer") is passed through to the user. Run `memories <command> --help` to check required options and argument types.

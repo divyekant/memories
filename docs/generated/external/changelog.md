@@ -10,11 +10,24 @@ status: released
 audience: external
 ---
 
-# Changelog: v1.5.0
+# Changelog
 
-**Release date:** March 5, 2026
+## [Unreleased]
 
-## Multi-Auth: Prefix-Scoped API Keys
+### Added
+- Full-coverage CLI with 30+ commands for managing memories from the terminal
+- Agent-first output: automatic JSON when piped, human-friendly in terminal
+- Layered configuration: CLI flags, config file, environment variables, with source attribution
+- Batch operations: add, get, delete, search, and upsert in bulk via JSON/JSONL files
+- Memory extraction from conversation transcripts via `extract submit`
+- Backup and sync management from the command line
+- Server administration commands: health checks, metrics, deduplication, and maintenance
+
+---
+
+## [1.5.0] - March 5, 2026
+
+### Multi-Auth: Prefix-Scoped API Keys
 
 You can now create multiple API keys with different access levels, each scoped to specific source prefixes. This lets you give each AI agent, tool, or team member exactly the access they need.
 

@@ -1,6 +1,6 @@
 ---
-title: "Cookbook: Multi-Auth Recipes"
-slug: cookbook-multi-auth
+title: "Cookbook: Recipes"
+slug: cookbook
 type: cookbook
 version: 1.5.0
 date: 2026-03-05
@@ -10,9 +10,15 @@ status: released
 audience: external
 ---
 
-# Cookbook: Multi-Auth Recipes
+# Cookbook
 
-Practical patterns for using prefix-scoped API keys in common scenarios. Each recipe is self-contained — pick the ones that match your setup.
+Practical patterns for common scenarios. Each recipe is self-contained — pick the ones that match your setup.
+
+---
+
+# Multi-Auth Recipes
+
+Patterns for using prefix-scoped API keys.
 
 ---
 
@@ -359,3 +365,288 @@ old-integration           read-write         0 never                  REVOKED
    - Click a key row to edit its name, role, or prefixes
    - Click **Revoke** to soft-delete a key (with confirmation dialog)
    - Revoked keys appear with a "Revoked" badge and strikethrough styling
+
+---
+
+# CLI Recipes
+
+Patterns for using the Memories CLI in scripts, agents, and day-to-day workflows.
+
+---
+
+## Recipe 11: Search and Format Results
+
+**Scenario:** You want to search for memories and display them in a custom format.
+
+```bash
+memories --json search "architecture decisions" -k 5 \
+  | jq -r '.data.results[] | "[\(.id)] (\(.similarity * 100 | floor)%) \(.source)\n  \(.text)\n"'
+```
+
+**Example output:**
+
+```
+[12] (92%) claude-code/myapp/decisions
+  Use repository pattern for data access layer
+
+[8] (87%) claude-code/myapp/architecture
+  PostgreSQL for primary datastore, Redis for caching
+```
+
+---
+
+## Recipe 12: Add a Memory From the Command Line
+
+**Scenario:** You quickly want to capture a fact without leaving the terminal.
+
+```bash
+memories add -s learning/python/ "asyncio.TaskGroup replaces gather() in Python 3.11+"
+```
+
+**Expected output:**
+
+```
+Added memory #51
+```
+
+If you want confirmation with the full JSON response:
+
+```bash
+memories --json add -s learning/python/ "asyncio.TaskGroup replaces gather() in Python 3.11+" | jq .
+```
+
+---
+
+## Recipe 13: Pipe Stdin to Add
+
+**Scenario:** You want to add text from another command's output or from a file.
+
+```bash
+# From a command
+git log --oneline -1 | memories add -s project/commits/ -
+
+# From a file
+cat meeting-notes.txt | memories add -s team/meetings/ -
+
+# From a heredoc
+memories add -s decisions/api/ - <<'EOF'
+We decided to use GraphQL for the public API because our clients
+need flexible queries and we want to avoid over-fetching.
+EOF
+```
+
+---
+
+## Recipe 14: Batch Add From JSONL
+
+**Scenario:** You have a batch of facts to load into Memories at once.
+
+Create a file called `facts.jsonl`:
+
+```json
+{"text": "Rate limit: 100 req/min per API key", "source": "infra/limits/"}
+{"text": "Deploy window: Tue-Thu 10am-4pm ET", "source": "process/deploy/"}
+{"text": "Staging resets nightly at 02:00 UTC", "source": "infra/staging/"}
+```
+
+```bash
+memories batch add facts.jsonl
+```
+
+**Expected output:**
+
+```
+Added 3 memories
+```
+
+You can also pipe JSONL from another process:
+
+```bash
+your-export-script --format jsonl | memories batch add -
+```
+
+---
+
+## Recipe 15: Check Novelty Before Adding
+
+**Scenario:** Your agent wants to avoid adding duplicate or near-duplicate information.
+
+```bash
+memories --json is-novel "Use repository pattern for data access" | jq '.data'
+```
+
+**If novel:**
+
+```json
+{
+  "is_novel": true
+}
+```
+
+**If not novel:**
+
+```json
+{
+  "is_novel": false,
+  "most_similar": {
+    "id": 12,
+    "text": "Use repository pattern for data access layer",
+    "similarity": 0.96
+  }
+}
+```
+
+**In a script:**
+
+```bash
+#!/bin/bash
+TEXT="Use repository pattern for data access"
+is_novel=$(memories --json is-novel "$TEXT" | jq -r '.data.is_novel')
+
+if [ "$is_novel" = "true" ]; then
+  memories add -s decisions/arch/ "$TEXT"
+  echo "Added."
+else
+  echo "Already known -- skipping."
+fi
+```
+
+---
+
+## Recipe 16: Export Memories to JSON
+
+**Scenario:** You want to export all memories (or a subset) for analysis, migration, or backup.
+
+```bash
+# Export all memories as JSON
+memories --json list --limit 1000 | jq '.data.memories' > export.json
+
+# Export only memories from a specific source
+memories --json list --source claude-code/ --limit 500 | jq '.data.memories' > claude-code-export.json
+
+# Export just the text (one per line)
+memories --json list --limit 1000 | jq -r '.data.memories[].text' > memories.txt
+```
+
+---
+
+## Recipe 17: Backup Before Maintenance
+
+**Scenario:** You are about to run deduplication or pruning and want a safety net.
+
+```bash
+# Create a backup
+memories backup create --prefix pre-dedup
+
+# Verify it exists
+memories backup list
+
+# Run deduplication (dry run first)
+memories admin deduplicate --threshold 0.90 --dry-run
+
+# If it looks right, execute
+memories admin deduplicate --threshold 0.90 --execute
+
+# If something went wrong, restore
+memories backup restore pre-dedup-2026-03-05T10-00-00 -y
+```
+
+---
+
+## Recipe 18: Extract Memories From a Transcript
+
+**Scenario:** You have a conversation transcript and want to automatically extract memorable facts.
+
+```bash
+# Submit the transcript for extraction
+cat session-log.txt | memories --json extract submit -s agent/session-123/ -
+
+# Note the job_id from the output, then poll until complete
+memories extract poll ext-abc123 --wait
+
+# Or check status manually
+memories extract status ext-abc123
+```
+
+**For a fully automated pipeline:**
+
+```bash
+#!/bin/bash
+# Submit and capture the job ID
+job_id=$(cat transcript.txt \
+  | memories --json extract submit -s agent/daily/ - \
+  | jq -r '.data.job_id')
+
+echo "Submitted extraction job: $job_id"
+
+# Wait for completion (up to 2 minutes)
+result=$(memories --json extract poll "$job_id" --wait --timeout 120)
+status=$(echo "$result" | jq -r '.data.status')
+
+if [ "$status" = "completed" ]; then
+  count=$(echo "$result" | jq '.data.memories | length')
+  echo "Extracted $count memories"
+else
+  echo "Extraction failed: $(echo "$result" | jq -r '.data.error')"
+fi
+```
+
+---
+
+## Recipe 19: Delete by Source Prefix
+
+**Scenario:** You want to clean up all memories from a retired project or test run.
+
+```bash
+# Preview what will be deleted (check count first)
+memories count --source old-project/
+
+# Delete all memories with that prefix
+memories delete-by prefix "old-project/" -y
+```
+
+**Expected output:**
+
+```
+Deleted 47 memories with prefix 'old-project/'
+```
+
+Without `-y`, the CLI prompts for confirmation:
+
+```
+Delete all memories matching source pattern 'old-project/'? [y/N]:
+```
+
+---
+
+## Recipe 20: Monitor Server Health
+
+**Scenario:** You want a quick health check in your monitoring script or cron job.
+
+```bash
+#!/bin/bash
+# Quick health check
+if memories --json admin health | jq -e '.data.status == "ok"' > /dev/null 2>&1; then
+  echo "Memories server: healthy"
+else
+  echo "Memories server: DOWN" >&2
+  exit 1
+fi
+```
+
+**Full monitoring script:**
+
+```bash
+#!/bin/bash
+echo "=== Memories Server Status ==="
+memories admin health
+echo ""
+echo "=== Memory Count ==="
+memories count
+echo ""
+echo "=== Folder Breakdown ==="
+memories folders
+echo ""
+echo "=== Usage (7 days) ==="
+memories admin usage --period 7d
+```

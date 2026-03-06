@@ -37,6 +37,10 @@ Prefix-scoped API keys with role-based access control. Three tiers — read-only
 
 Built-in interface at `/ui` with five pages: Dashboard, Memories, Extractions, API Keys, and Settings. Dark and light themes. No build step required.
 
+### Command-Line Interface
+
+Full terminal access to all 30+ API operations. Agent-first design with automatic output detection -- colored human-readable output in interactive terminals, structured JSON when piped. Layered configuration with source attribution (flags > config file > env vars > defaults). Batch operations via JSONL files and stdin support. Zero-config start with `pip install memories`.
+
 ### Cloud Sync
 
 S3-compatible automatic backups. Google Drive off-site backup support. Local-first by default with optional cloud redundancy.
@@ -45,6 +49,7 @@ S3-compatible automatic backups. Google Drive off-site backup support. Local-fir
 
 | Method | Clients | Setup |
 |--------|---------|-------|
+| CLI | Terminal, scripts, AI agents | pip install memories |
 | MCP Server | Claude Code, Claude Desktop, Codex, Cursor | npm install + settings.json |
 | REST API | Any HTTP client | Docker container |
 | Web UI | Browsers | Built-in at /ui |

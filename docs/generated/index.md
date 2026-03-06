@@ -2,38 +2,51 @@
 
 Generated: 2026-03-05 | Source: direct | Hermes v1.0.0
 
-## Internal (8 docs)
+## Internal (14 docs)
 | ID | Type | Topic | Generated |
 |----|------|-------|-----------|
 | fh-001 | Feature Handoff | Multi-Auth | 2026-03-05 |
+| fh-002 | Feature Handoff | CLI | 2026-03-05 |
 | rn-v1.5.0 | Release Notes | v1.5.0 | 2026-03-05 |
 | uc-001 | Use Case | Agent Isolation | 2026-03-05 |
 | uc-002 | Use Case | Team Access | 2026-03-05 |
 | uc-003 | Use Case | Key Lifecycle | 2026-03-05 |
+| uc-004 | Use Case | Agent CLI Integration | 2026-03-05 |
+| uc-005 | Use Case | Human Terminal Workflow | 2026-03-05 |
 | ts-001 | Troubleshooting | Auth Failures | 2026-03-05 |
-| faq | FAQ | Multi-Auth | 2026-03-05 |
+| ts-002 | Troubleshooting | CLI Connectivity & Errors | 2026-03-05 |
+| faq | FAQ | All | 2026-03-05 |
 | glossary | Glossary | All | 2026-03-05 |
 
-## External (8 docs)
+## External (14 docs)
 | ID | Type | Topic | Generated |
 |----|------|-------|-----------|
 | feat-001 | Feature Doc | Multi-Auth | 2026-03-05 |
+| feat-002 | Feature Doc | CLI | 2026-03-05 |
 | api-ref | API Reference | Key Management | 2026-03-05 |
 | tut-001 | Tutorial | Setting Up Multi-Auth | 2026-03-05 |
 | tut-002 | Tutorial | Scoped Keys for Agents | 2026-03-05 |
+| tut-003 | Tutorial | CLI Quick Start | 2026-03-05 |
+| tut-004 | Tutorial | Agent CLI Integration | 2026-03-05 |
 | migration | Migration Guide | v1.4 → v1.5 | 2026-03-05 |
-| error-ref | Error Reference | Auth Errors | 2026-03-05 |
-| changelog | Changelog | v1.5.0 | 2026-03-05 |
-| cookbook | Cookbook | Multi-Auth Recipes | 2026-03-05 |
+| error-ref | Error Reference | Auth & CLI Errors | 2026-03-05 |
+| changelog | Changelog | Unreleased + v1.5.0 | 2026-03-05 |
+| cookbook | Cookbook | All Recipes | 2026-03-05 |
 
-## Marketing (8 docs)
+## Marketing (15 docs)
 | ID | Type | Topic | Generated |
 |----|------|-------|-----------|
 | fb-001 | Feature Brief | Multi-Auth | 2026-03-05 |
+| fb-002 | Feature Brief | CLI | 2026-03-05 |
 | op-001 | One-Pager | Multi-Auth | 2026-03-05 |
+| op-002 | One-Pager | CLI | 2026-03-05 |
 | bp-001 | Blog Post | Multi-Auth | 2026-03-05 |
+| bp-002 | Blog Post | CLI | 2026-03-05 |
 | sp-001 | Social Posts | Multi-Auth | 2026-03-05 |
+| sp-002 | Social Posts | CLI | 2026-03-05 |
 | em-001 | Email Announcement | Multi-Auth | 2026-03-05 |
+| em-002 | Email Announcement | CLI | 2026-03-05 |
 | lp-001 | Landing Page | Multi-Auth | 2026-03-05 |
+| lp-002 | Landing Page | CLI | 2026-03-05 |
 | ra-v1.5.0 | Release Announcement | v1.5.0 | 2026-03-05 |
 | ds-001 | Datasheet | Full Product | 2026-03-05 |
