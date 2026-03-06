@@ -6,6 +6,7 @@ CRUD operations, and structured logging.
 
 import asyncio
 import hmac
+import json
 import math
 import os
 import re
@@ -1931,6 +1932,89 @@ async def sync_restore(backup_name: str, request: Request, confirm: bool = False
     except Exception as e:
         logger.exception("Cloud restore failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# -- Export / Import ----------------------------------------------------------
+
+@app.get("/export")
+async def export_memories_endpoint(
+    request: Request,
+    source: Optional[str] = Query(None, max_length=500),
+    since: Optional[str] = Query(None),
+    until: Optional[str] = Query(None),
+):
+    """Export memories as streaming NDJSON."""
+    auth = _get_auth(request)
+
+    def generate():
+        lines = memory.export_memories(
+            source_prefix=source, since=since, until=until,
+        )
+        for i, line in enumerate(lines):
+            if i == 0:
+                yield line + "\n"
+                continue
+            record = json.loads(line)
+            if auth.can_read(record.get("source", "")):
+                yield line + "\n"
+
+    from starlette.responses import StreamingResponse
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
+@app.post("/import")
+async def import_memories_endpoint(
+    request: Request,
+    strategy: str = Query("add"),
+    source_remap: Optional[str] = Query(None, max_length=200),
+    no_backup: bool = Query(False),
+):
+    """Import memories from NDJSON body."""
+    auth = _get_auth(request)
+
+    # Validate strategy
+    valid_strategies = {"add", "smart", "smart+extract"}
+    if strategy not in valid_strategies:
+        raise HTTPException(status_code=400, detail=f"Invalid strategy. Must be one of: {valid_strategies}")
+
+    body = await request.body()
+    raw_lines = body.decode("utf-8").strip().split("\n")
+
+    # Parse source_remap "old=new" format
+    remap_tuple = None
+    if source_remap and "=" in source_remap:
+        parts = source_remap.split("=", 1)
+        remap_tuple = (parts[0], parts[1])
+
+    # Auth check: filter lines to only writable sources
+    filtered_lines = [raw_lines[0]]  # keep header
+    auth_errors = []
+    for i, line in enumerate(raw_lines[1:], start=2):
+        try:
+            record = json.loads(line)
+            source = record.get("source", "")
+            if remap_tuple and source.startswith(remap_tuple[0]):
+                source = remap_tuple[1] + source[len(remap_tuple[0]):]
+            if not auth.can_write(source):
+                auth_errors.append({"line": i, "error": "source prefix not authorized"})
+                continue
+            filtered_lines.append(line)
+        except json.JSONDecodeError:
+            filtered_lines.append(line)  # let engine handle bad JSON
+
+    try:
+        result = await run_in_threadpool(
+            memory.import_memories,
+            filtered_lines,
+            strategy=strategy,
+            source_remap=remap_tuple,
+            create_backup=not no_backup,
+        )
+        result["errors"].extend(auth_errors)
+        return result
+    except Exception as exc:
+        logger.error("Import failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # -- Extraction endpoints -----------------------------------------------------
