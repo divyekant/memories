@@ -9,6 +9,10 @@
 - Layered configuration: CLI flags > config file > env vars > defaults
 - Stdin support for piped input on add, upsert, batch, and extract commands
 - Shell completion support via Click
+- Streaming NDJSON export with source prefix, date range filters
+- Multi-strategy import: `add` (raw), `smart` (novelty + timestamp), `smart+extract` (LLM for borderline)
+- Auto-backup before import with `--no-backup` override
+- Source prefix remapping during import
 
 ## [1.5.0] - 2026-03-05
 

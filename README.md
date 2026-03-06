@@ -88,6 +88,28 @@ memories backup list
 memories --help
 ```
 
+### Export & Import
+
+```bash
+# Export all memories
+memories export -o backup.jsonl
+
+# Export filtered by source
+memories export --source "claude-code/" -o project.jsonl
+
+# Export with date range
+memories export --source "proj/" --since 2026-01-01 -o recent.jsonl
+
+# Import (clean migration)
+memories import backup.jsonl
+
+# Import with smart dedup
+memories import backup.jsonl --strategy smart
+
+# Import with source remapping
+memories import backup.jsonl --source-remap "old/=new/"
+```
+
 ### Agent Integration
 
 The CLI auto-detects when piped and outputs JSON:
