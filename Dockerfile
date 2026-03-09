@@ -68,6 +68,7 @@ COPY usage_tracker.py .
 COPY consolidator.py .
 COPY key_store.py .
 COPY auth_context.py .
+COPY config_override.py .
 COPY app.py .
 COPY cli/ cli/
 COPY webui ./webui
