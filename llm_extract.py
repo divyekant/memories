@@ -337,6 +337,11 @@ def execute_actions(
     deleted_count = 0
     result_actions = []
 
+    def _result_category(fact: dict | str) -> str:
+        if not isinstance(fact, dict):
+            return "DETAIL"
+        return str(fact.get("category", "detail")).upper()
+
     for action in actions:
         act = action.get("action", "").upper()
         fi = action.get("fact_index", -1)
@@ -355,7 +360,14 @@ def execute_actions(
                     deduplicate=True,
                 )
                 new_id = added_ids[0] if added_ids else None
-                result_actions.append({"action": "add", "text": fact_text, "id": new_id})
+                result_actions.append(
+                    {
+                        "action": "add",
+                        "text": fact_text,
+                        "id": new_id,
+                        "category": _result_category(fact),
+                    }
+                )
                 stored_count += 1
 
             elif act == "UPDATE":
@@ -378,7 +390,15 @@ def execute_actions(
                     deduplicate=False,
                 )
                 new_id = added_ids[0] if added_ids else None
-                result_actions.append({"action": "update", "old_id": old_id, "text": new_text, "new_id": new_id})
+                result_actions.append(
+                    {
+                        "action": "update",
+                        "old_id": old_id,
+                        "text": new_text,
+                        "new_id": new_id,
+                        "category": _result_category(fact),
+                    }
+                )
                 updated_count += 1
 
             elif act == "DELETE":
@@ -390,12 +410,25 @@ def execute_actions(
                         if not source_matches_prefixes(existing_source, allowed_prefixes):
                             raise PermissionError(f"old_id not authorized for delete: {old_id}")
                     engine.delete_memory(old_id)
-                    result_actions.append({"action": "delete", "old_id": old_id})
+                    result_actions.append(
+                        {
+                            "action": "delete",
+                            "old_id": old_id,
+                            "category": _result_category(fact),
+                        }
+                    )
                     deleted_count += 1
 
             elif act == "NOOP":
                 existing_id = action.get("existing_id")
-                result_actions.append({"action": "noop", "text": fact_text, "existing_id": existing_id})
+                result_actions.append(
+                    {
+                        "action": "noop",
+                        "text": fact_text,
+                        "existing_id": existing_id,
+                        "category": _result_category(fact),
+                    }
+                )
 
         except Exception as e:
             logger.error("Failed to execute %s for fact '%s': %s", act, fact_text[:50], e)

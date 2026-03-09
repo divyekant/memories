@@ -382,6 +382,14 @@ class TestExecuteActions:
 
         result = execute_actions(mock_engine, actions, facts, source="test/proj")
         assert result["stored_count"] == 1
+        assert result["actions"] == [
+            {
+                "action": "add",
+                "text": "New fact to store",
+                "id": 100,
+                "category": "DECISION",
+            }
+        ]
         mock_engine.add_memories.assert_called_once()
         # Verify API contract: sources must be a list, metadata includes category
         call_kwargs = mock_engine.add_memories.call_args
@@ -411,6 +419,15 @@ class TestExecuteActions:
 
         result = execute_actions(mock_engine, actions, facts, source="test/proj")
         assert result["updated_count"] == 1
+        assert result["actions"] == [
+            {
+                "action": "update",
+                "old_id": 42,
+                "text": "updated text",
+                "new_id": 101,
+                "category": "DECISION",
+            }
+        ]
         mock_engine.delete_memory.assert_called_once_with(42)
         # Verify metadata includes both category and supersedes
         call_kwargs = mock_engine.add_memories.call_args
@@ -426,6 +443,14 @@ class TestExecuteActions:
         result = execute_actions(mock_engine, actions, facts, source="test/proj")
         assert result["stored_count"] == 0
         assert result["updated_count"] == 0
+        assert result["actions"] == [
+            {
+                "action": "noop",
+                "text": "existing fact",
+                "existing_id": 30,
+                "category": "DETAIL",
+            }
+        ]
         mock_engine.add_memories.assert_not_called()
 
     def test_execute_delete(self):
@@ -437,6 +462,13 @@ class TestExecuteActions:
 
         result = execute_actions(mock_engine, actions, facts, source="test/proj")
         assert result["deleted_count"] == 1
+        assert result["actions"] == [
+            {
+                "action": "delete",
+                "old_id": 55,
+                "category": "DETAIL",
+            }
+        ]
         mock_engine.delete_memory.assert_called_once_with(55)
 
     def test_execute_with_out_of_bounds_fact_index(self):
