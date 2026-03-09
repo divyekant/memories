@@ -20,8 +20,12 @@ from entity_locks import EntityLockManager
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
+from config_override import load_search_config
 
 logger = logging.getLogger("memories")
+
+# Load optional search config overrides
+_search_cfg = load_search_config()
 
 # Cloud sync (optional dependency)
 try:
@@ -857,15 +861,19 @@ class MemoryEngine:
         query: str,
         k: int = 5,
         threshold: Optional[float] = None,
-        vector_weight: float = 0.7,
+        vector_weight: Optional[float] = None,
         source_prefix: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion."""
+        if vector_weight is None:
+            vector_weight = (_search_cfg.get("vector_weight", 0.7) if _search_cfg else 0.7)
+
         if not self.metadata:
             return []
 
+        _oversample_mult = (_search_cfg.get("oversample_multiplier", 3) if _search_cfg else 3)
         k = min(k, len(self.metadata), 100)
-        oversample = min(k * 3, len(self.metadata))
+        oversample = min(k * _oversample_mult, len(self.metadata))
 
         vector_results = self.search(
             query=query,
@@ -889,7 +897,7 @@ class MemoryEngine:
             else:
                 bm25_ranked = sorted(enumerate(bm25_scores), key=lambda x: x[1], reverse=True)[:oversample]
 
-        rrf_k = 60
+        rrf_k = (_search_cfg.get("rrf_k", 60) if _search_cfg else 60)
         rrf_scores: Dict[int, float] = {}
 
         for rank, result in enumerate(vector_results):
@@ -917,8 +925,10 @@ class MemoryEngine:
 
         return results
 
-    def is_novel(self, text: str, threshold: float = 0.88) -> Tuple[bool, Optional[Dict]]:
+    def is_novel(self, text: str, threshold: Optional[float] = None) -> Tuple[bool, Optional[Dict]]:
         """Check if text is novel (not too similar to existing memories)."""
+        if threshold is None:
+            threshold = (_search_cfg.get("novelty_threshold", 0.88) if _search_cfg else 0.88)
         results = self.search(text, k=1)
         if not results:
             return True, None

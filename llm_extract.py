@@ -13,8 +13,13 @@ import os
 from typing import Optional, List
 
 from auth_context import source_matches_prefixes
+from config_override import load_extraction_config, load_audn_config
 
 logger = logging.getLogger(__name__)
+
+# Load optional config overrides (None when CONFIG_DIR not set or files missing)
+_extraction_cfg = load_extraction_config()
+_audn_cfg = load_audn_config()
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -40,12 +45,15 @@ def _clip_text(text: str, max_chars: int) -> str:
 EXTRACT_MAX_FACTS = _env_int("EXTRACT_MAX_FACTS", 30)
 EXTRACT_MAX_FACT_CHARS = _env_int("EXTRACT_MAX_FACT_CHARS", 500, minimum=40)
 EXTRACT_SIMILAR_TEXT_CHARS = _env_int("EXTRACT_SIMILAR_TEXT_CHARS", 280, minimum=40)
-EXTRACT_SIMILAR_PER_FACT = _env_int("EXTRACT_SIMILAR_PER_FACT", 5)
+EXTRACT_SIMILAR_PER_FACT = (
+    _audn_cfg.get("similar_per_fact", 5) if _audn_cfg else
+    _env_int("EXTRACT_SIMILAR_PER_FACT", 5)
+)
 
 
-# --- Prompts ---
+# --- Prompts (overridable via CONFIG_DIR/extraction.yaml, audn.yaml) ---
 
-FACT_EXTRACTION_PROMPT = """Extract durable facts worth remembering from this conversation about the {project} project.
+_DEFAULT_FACT_EXTRACTION_PROMPT = """Extract durable facts worth remembering from this conversation about the {project} project.
 
 Categorize each fact:
 - DECISION: Architectural choices, library selections, design patterns, preferences. WHY something was chosen matters more than WHAT.
@@ -65,7 +73,7 @@ Output a JSON array of objects: [{{"category": "DECISION"|"LEARNING"|"DETAIL", "
 Each fact must be self-contained and understandable without the conversation.
 If nothing worth storing, output []."""
 
-FACT_EXTRACTION_PROMPT_AGGRESSIVE = """Extract durable facts worth remembering from this conversation about the {project} project.
+_DEFAULT_FACT_EXTRACTION_PROMPT_AGGRESSIVE = """Extract durable facts worth remembering from this conversation about the {project} project.
 This context is about to be lost permanently. Be thorough but still apply the 30-day test.
 
 Categorize each fact:
@@ -86,7 +94,7 @@ Output a JSON array of objects: [{{"category": "DECISION"|"LEARNING"|"DETAIL", "
 Each fact must be self-contained and understandable without the conversation.
 If nothing worth storing, output []."""
 
-AUDN_PROMPT = """You are a memory manager. For each new fact, decide what to do given
+_DEFAULT_AUDN_PROMPT = """You are a memory manager. For each new fact, decide what to do given
 the existing similar memories.
 
 Actions:
@@ -108,6 +116,22 @@ Output a JSON array of decisions. Each decision must have:
 - For UPDATE: "old_id" (int) and "new_text" (string)
 - For DELETE: "old_id" (int)
 - For NOOP: "existing_id" (int)"""
+
+FACT_EXTRACTION_PROMPT = (
+    _extraction_cfg["fact_extraction_prompt"]
+    if _extraction_cfg and "fact_extraction_prompt" in _extraction_cfg
+    else _DEFAULT_FACT_EXTRACTION_PROMPT
+)
+FACT_EXTRACTION_PROMPT_AGGRESSIVE = (
+    _extraction_cfg["fact_extraction_prompt_aggressive"]
+    if _extraction_cfg and "fact_extraction_prompt_aggressive" in _extraction_cfg
+    else _DEFAULT_FACT_EXTRACTION_PROMPT_AGGRESSIVE
+)
+AUDN_PROMPT = (
+    _audn_cfg["audn_prompt"]
+    if _audn_cfg and "audn_prompt" in _audn_cfg
+    else _DEFAULT_AUDN_PROMPT
+)
 
 
 def _parse_json_array(text: str) -> list:
