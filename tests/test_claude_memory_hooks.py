@@ -182,6 +182,9 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "Notification design is deferred until rate limiting is settled." in ctx
     assert "Unrelated global memory" not in ctx
+    assert "## Retrieved Memories" in ctx
+    assert "## Follow-up Response Hint" in ctx
+    assert "say that explicitly in sentence one" in ctx
     assert all(call["body"].get("source_prefix", "") != "" for call in calls)
     assert any("notifications" in call["body"]["query"] for call in calls)
 
@@ -218,6 +221,78 @@ def test_memory_query_falls_back_to_global_search_when_scoped_is_empty(tmp_path:
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "Redis connection issues were fixed by setting REDIS_URL explicitly." in ctx
     assert any(call["body"].get("source_prefix", "") == "" for call in calls)
+
+
+def test_memory_query_adds_confirmation_hint_for_confirmation_followups(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "query_contains": "does that still apply?",
+            "response": {
+                "results": [
+                    {
+                        "id": 31,
+                        "source": "claude-code/memories",
+                        "text": "SQLite is preferred over Redis for the local cache in single-node deployments.",
+                        "similarity": 0.88,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "does that still apply?",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "## Follow-up Response Hint" in ctx
+    assert "short confirmation follow-up" in ctx
+    assert "Answer directly in the first sentence" in ctx
+    assert "boundary condition" in ctx
+    assert "use this answer shape: Yes — SQLite is preferred over Redis for the local cache in single-node deployments." in ctx
+
+
+def test_memory_query_adds_continuation_hint_for_resume_prompts(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "query_contains": "We're still on the local cache setup.",
+            "response": {
+                "results": [
+                    {
+                        "id": 41,
+                        "source": "claude-code/memories",
+                        "text": "memories decision: SQLite is preferred over Redis for the local cache in single-node deployments.",
+                        "similarity": 0.9,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "We're still on the local cache setup.",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "## Context Continuation Hint" in ctx
+    assert "restating the remembered choice" in ctx
+    assert "Suggested first sentence: SQLite is preferred over Redis for the local cache in single-node deployments." in ctx
 
 
 def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> None:
@@ -278,6 +353,8 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "## Relevant Memories" in ctx
     assert "## Memory Playbook" in ctx
+    assert "answer that directly with words like" in ctx
+    assert "carry that clause forward in the answer" in ctx
     assert "claude-code/memories" in ctx
     assert "learning/memories" in ctx
     assert "wip/memories" in ctx
@@ -291,3 +368,37 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
 
     prefixes = [call["body"].get("source_prefix", "") for call in calls]
     assert prefixes == ["claude-code/memories", "learning/memories", "wip/memories"]
+
+
+def test_memory_recall_replaces_existing_synced_block_without_duplication(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 1,
+                        "source": "claude-code/memories",
+                        "text": "SQLite stays preferred for the local cache.",
+                        "similarity": 0.92,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+
+    payload = {"cwd": "/Users/example/memories"}
+    _, _, home_dir = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses)
+
+    memory_file = home_dir / ".claude" / "projects" / "-Users-example-memories" / "memory" / "MEMORY.md"
+    original = memory_file.read_text()
+    assert original.count("<!-- SYNCED-FROM-MEMORIES-MCP -->") == 1
+
+    result, _, _ = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    updated = memory_file.read_text()
+    assert updated.count("<!-- SYNCED-FROM-MEMORIES-MCP -->") == 1
+    assert updated.count("## Synced from Memories") == 1

@@ -31,6 +31,49 @@ fi
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // .transcriptPath // empty')
 TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
 
+build_response_hint() {
+  local prompt_lower="$1"
+  local primary_memory="$2"
+  local primary_example="$3"
+
+  case "$prompt_lower" in
+    *"we're still on "*|*"we are still on "*|*"i don't want "*|*"i do not want "*)
+      cat <<EOF
+## Context Continuation Hint
+
+- The user is resuming an existing decision or constraint.
+- Start by restating the remembered choice or boundary in concrete terms before asking what to do next.
+- Keep the concrete implementation choice and the boundary condition together in the same sentence.
+$(if [ -n "$primary_example" ]; then printf -- "- Suggested first sentence: %s\n" "$primary_example"; elif [ -n "$primary_memory" ]; then printf -- "- Most relevant context to restate: %s\n" "$primary_memory"; fi)
+EOF
+      ;;
+    *"does that still apply"*|*"should we keep it"*|*"can we keep it simple"*)
+      cat <<EOF
+## Follow-up Response Hint
+
+- This is a short confirmation follow-up.
+- Answer directly in the first sentence instead of asking the user to reconfirm the decision.
+- Reuse the remembered decision and its boundary condition in the reply.
+- Keep qualifiers like `until`, `unless`, `because`, or `blocked on` if they appear in the retrieved memory.
+- Restate the concrete choice and the exact condition together, not separately.
+$(if [ -n "$primary_example" ]; then printf -- "- If the memory already answers the question, use this answer shape: Yes — %s\n" "$primary_example"; elif [ -n "$primary_memory" ]; then printf -- "- Most relevant decision to preserve: %s\n" "$primary_memory"; fi)
+EOF
+      ;;
+    *"what about"*|*"what about retries"*|*"and retries"*|*"retry"*|*"retries"*)
+      cat <<EOF
+## Follow-up Response Hint
+
+- This follow-up is asking for the missing piece of the earlier topic.
+- If the retrieved memory says the work is deferred or blocked, say that explicitly in sentence one.
+- Keep the blocker or dependency in the answer instead of widening into unrelated design details.
+$(if [ -n "$primary_example" ]; then printf -- "- If the memory already answers the question, use this answer shape: Not yet — %s\n" "$primary_example"; elif [ -n "$primary_memory" ]; then printf -- "- Most relevant blocker to preserve: %s\n" "$primary_memory"; fi)
+EOF
+      ;;
+    *)
+      ;;
+  esac
+}
+
 extract_recent_context() {
   local transcript_path="$1"
   if [ -z "$transcript_path" ] || [ ! -f "$transcript_path" ]; then
@@ -111,6 +154,7 @@ search_memories() {
 
 CONTEXT=$(extract_recent_context "$TRANSCRIPT_PATH")
 QUERY_TEXT="$PROMPT"
+PROMPT_LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
 if [ -n "$CONTEXT" ]; then
   if [ -n "$PROMPT" ]; then
     QUERY_TEXT=$(printf 'Project: %s\nRecent conversation:\n%s\nCurrent prompt: %s' "${PROJECT:-unknown}" "$CONTEXT" "$PROMPT")
@@ -164,9 +208,16 @@ if [ -z "$RESULTS" ] || [ "$RESULTS" = "null" ]; then
   exit 0
 fi
 
-jq -n --arg memories "$RESULTS" '{
+PRIMARY_MEMORY=$(printf '%s' "$RESULTS_JSON" | jq -r '.[0].text // empty' 2>/dev/null) || PRIMARY_MEMORY=""
+PRIMARY_MEMORY_EXAMPLE=$(printf '%s' "$PRIMARY_MEMORY" | sed -E 's/^[^:]+ decision:[[:space:]]*//; s/^[^:]+:[[:space:]]*//')
+RESPONSE_HINT=$(build_response_hint "$PROMPT_LOWER" "$PRIMARY_MEMORY" "$PRIMARY_MEMORY_EXAMPLE")
+
+jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
   hookSpecificOutput: {
     hookEventName: "UserPromptSubmit",
-    additionalContext: ("## Retrieved Memories\n" + $memories)
+    additionalContext: (
+      "## Retrieved Memories\n" + $memories +
+      (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
+    )
   }
 }'
