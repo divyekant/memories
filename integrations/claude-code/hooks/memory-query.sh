@@ -44,7 +44,32 @@ build_response_hint() {
 - The user is resuming an existing decision or constraint.
 - Start by restating the remembered choice or boundary in concrete terms before asking what to do next.
 - Keep the concrete implementation choice and the boundary condition together in the same sentence.
+- Do not answer with meta phrases like `stored decision` or `memory confirms`.
 $(if [ -n "$primary_example" ]; then printf -- "- Suggested first sentence: %s\n" "$primary_example"; elif [ -n "$primary_memory" ]; then printf -- "- Most relevant context to restate: %s\n" "$primary_memory"; fi)
+EOF
+      ;;
+    *"should we switch to "*|*"should i switch to "*)
+      cat <<EOF
+## Follow-up Response Hint
+
+- This is a switch-now follow-up.
+- Answer yes or no in the first sentence instead of asking the user to reconfirm the need.
+- If the remembered decision keeps the current implementation until a condition changes, say `not yet` and restate both the current choice and the trigger.
+- Do not answer with meta phrases like `the stored decision was`.
+- Keep qualifiers like `until`, `unless`, `because`, or `blocked on` if they appear in the retrieved memory.
+$(if [ -n "$primary_example" ]; then printf -- "- If the memory already answers the question, use this answer shape: Not yet — %s\n" "$primary_example"; elif [ -n "$primary_memory" ]; then printf -- "- Most relevant decision to preserve: %s\n" "$primary_memory"; fi)
+EOF
+      ;;
+    *"okay for now"*)
+      cat <<EOF
+## Follow-up Response Hint
+
+- This is a simple-for-now follow-up.
+- Answer directly in the first sentence instead of asking the user to reconfirm the decision.
+- Reuse the current choice together with the condition that would force a more complex design later.
+- Do not answer with meta phrases like `the stored decision is` or `memory confirms`.
+- Keep qualifiers like `until`, `unless`, `because`, or `blocked on` if they appear in the retrieved memory.
+$(if [ -n "$primary_example" ]; then printf -- "- If the memory already answers the question, use this answer shape: Yes — %s\n" "$primary_example"; elif [ -n "$primary_memory" ]; then printf -- "- Most relevant decision to preserve: %s\n" "$primary_memory"; fi)
 EOF
       ;;
     *"does that still apply"*|*"should we keep it"*|*"can we keep it simple"*)
