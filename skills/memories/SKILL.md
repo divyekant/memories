@@ -36,6 +36,9 @@ don't come with that cue.
   they don't reference a past session. "Add webhook support to the notifications service"
   should trigger a search for any stored context about notifications, webhooks, or
   related deferred work.
+- When the user's message is a short follow-up that depends on recent context ("what
+  about retries?", "does that still apply?", "should we keep it?"). Passive hook recall
+  is often too generic here — run an explicit search using the recent conversation topic.
 - Before asking a clarifying question about project architecture or preferences
 - When picking up work in a domain where deferred tasks might exist
 - Before attempting something that feels like it might have failed before
@@ -44,11 +47,16 @@ don't come with that cue.
 
 **How to search:**
 - Use `memory_search` with natural language queries
+- Search project-scoped prefixes first when you know the project. Prefer
+  `claude-code/{project}`, `learning/{project}`, and `wip/{project}` before broad global
+  searches so unrelated projects do not drown out local signal.
 - Try 2-3 query angles if the first search doesn't find what you need
 - Search for deferred work: `"deferred TODO revisit later wip {project}"`
 - Search for past failures: `"failure fix gotcha {technology}"`
 - Search for decisions: `"decision chose selected approach {topic}"`
 - Search by domain: `"{project} {feature-area} architecture design"`
+- For short follow-ups, include recent conversation context in the query instead of
+  searching with only the latest user message.
 
 **What to do with results:**
 - Surface relevant findings to the user before proposing solutions. If you find that
@@ -209,6 +217,9 @@ For simple cases (2 clear, novel facts), individual `memory_add` calls are fine.
 
 - **Auto-memory** handles project conventions and patterns in local files — let it do its job
 - **Session hooks** provide baseline context at startup — don't duplicate that work
+- **Hook-injected recall is a starting point, not a substitute for active recall.** If the
+  retrieved memories look noisy, low-confidence, or obviously cross-project, run explicit
+  `memory_search` calls yourself before answering.
 - **Extraction hooks** (Stop, PreCompact, SessionEnd) already trigger `memory_extract`
   via HTTP at lifecycle boundaries. The skill triggers extraction *within* a session at
   natural breakpoints that hooks miss — like mid-conversation decision changes or

@@ -286,8 +286,8 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 
 | Hook | Event | Sync? | What It Does |
 |------|-------|-------|-------------|
-| `memory-recall.sh` | SessionStart | Sync | Searches Memories for project-specific memories, injects top 8 as context |
-| `memory-query.sh` | UserPromptSubmit | Sync | Searches Memories for memories relevant to the current prompt (skips short prompts) |
+| `memory-recall.sh` | SessionStart | Sync | Searches project-scoped memories, injects top results, and adds a short recall playbook for the session |
+| `memory-query.sh` | UserPromptSubmit | Sync | Searches project-scoped memories first and uses recent transcript context so short follow-up prompts still retrieve useful memories |
 | `memory-extract.sh` | Stop | Async | POSTs the last exchange to `/memory/extract` for fact extraction |
 | `memory-flush.sh` | PreCompact | Async | Same as extract but with `context=pre_compact` (more aggressive before context loss) |
 | `memory-commit.sh` | SessionEnd | Async | Final extraction pass when session ends |
