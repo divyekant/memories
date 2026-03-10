@@ -857,8 +857,8 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 
 | Event | Hook | What happens |
 |-------|------|-------------|
-| Session start | `memory-recall.sh` | Loads project-specific memories into context |
-| Every prompt | `memory-query.sh` | Retrieves memories relevant to the question |
+| Session start | `memory-recall.sh` | Loads project-scoped memories into context and injects a short recall playbook for the session |
+| Every prompt | `memory-query.sh` | Retrieves memories relevant to the question using project-scoped search first, then falls back to broader search only if needed |
 | After response | `memory-extract.sh` | Extracts facts and stores via AUDN pipeline |
 | Before compaction | `memory-flush.sh` | Aggressive extraction before context loss |
 | Session end | `memory-commit.sh` | Final extraction pass |
@@ -901,6 +901,10 @@ Cursor is supported via manual MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.
 The installer writes runtime config to:
 - `~/.config/memories/env` for hook vars (`MEMORIES_URL`, optional `MEMORIES_API_KEY`, optional `MEMORIES_SOURCE_PREFIX` / `MEMORIES_SOURCE` for Codex notify source control)
 - repo `.env` for extraction vars (`EXTRACT_PROVIDER`, provider keys/URL)
+
+Claude/Cursor read hooks also support an optional `MEMORIES_SOURCE_PREFIXES` env var in
+`~/.config/memories/env`. It is a comma-separated list of source prefix templates and
+defaults to `claude-code/{project},learning/{project},wip/{project}`.
 
 **Target only Claude, Cursor, or Codex:**
 ```bash
