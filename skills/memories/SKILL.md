@@ -23,6 +23,20 @@ passively) and lifecycle hooks (which provide baseline context at startup).
 Your job is the judgment layer: deciding what's worth storing, when to store it, when
 to actively search for context, and when to trigger lifecycle operations.
 
+## Quick Operating Rules
+
+- Search before asking architecture, resumption, or preference questions.
+- If recalled context already answers the question, answer in sentence one.
+- Do not narrate the memory process. Avoid phrases like `stored decision`, `memory confirms`, or `I found`.
+- For short follow-ups, restate the current choice and the trigger together.
+- If work is deferred or blocked, say `not yet`, `deferred`, or `blocked on` directly.
+- Preserve boundary words like `until`, `unless`, and `because`.
+
+Examples:
+- `Does that still apply?` -> `Yes — SQLite is still the local cache until shared invalidation is required.`
+- `Should we switch now?` -> `Not yet — stay on the current approach until the trigger changes.`
+- `Is file-based storage okay for now?` -> `Yes — keep the simple local format until cross-device sync is required.`
+
 ## Three Responsibilities
 
 ### 1. Read — Proactive Recall
