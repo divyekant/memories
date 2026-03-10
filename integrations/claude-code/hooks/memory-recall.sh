@@ -142,6 +142,9 @@ PLAYBOOK=$(cat <<EOF
 - Before answering questions about prior decisions, deferred work, architecture, or conventions, run project-scoped \`memory_search\` first.
 - Prefer these scoped prefixes before broader searches: $SCOPED_PREFIX_LIST.
 - For short follow-up prompts, include recent conversation context in the query instead of searching with the raw prompt alone.
+- If the retrieved memories show deferred or blocked work, answer that directly with words like \`not yet\`, \`deferred\`, or \`blocked on\` before expanding.
+- When a memory includes a boundary condition such as \`until\`, \`unless\`, or \`because\`, carry that clause forward in the answer instead of compressing it away.
+- Do not ask the user to reconfirm a remembered decision before you answer whether it still applies.
 EOF
 )
 
@@ -170,8 +173,12 @@ if [ -n "$MEMORY_RESULTS" ] && [ "$MEMORY_RESULTS" != "null" ]; then
   if [ -f "$MEMORY_FILE" ]; then
     # Preserve everything above the sync marker (manual/pinned content)
     MARKER_LINE=$(grep -Fn "$SYNC_MARKER" "$MEMORY_FILE" 2>/dev/null | head -1 | cut -d: -f1) || true
-    if [ -n "$MARKER_LINE" ] && [ "$MARKER_LINE" -gt 1 ]; then
-      MANUAL_SECTION=$(head -n $((MARKER_LINE - 1)) "$MEMORY_FILE")
+    if [ -n "$MARKER_LINE" ]; then
+      if [ "$MARKER_LINE" -gt 1 ]; then
+        MANUAL_SECTION=$(head -n $((MARKER_LINE - 1)) "$MEMORY_FILE")
+      else
+        MANUAL_SECTION=""
+      fi
     else
       MANUAL_SECTION=$(cat "$MEMORY_FILE")
     fi
