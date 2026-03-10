@@ -292,7 +292,82 @@ def test_memory_query_adds_continuation_hint_for_resume_prompts(tmp_path: Path) 
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "## Context Continuation Hint" in ctx
     assert "restating the remembered choice" in ctx
+    assert "Do not answer with meta phrases" in ctx
     assert "Suggested first sentence: SQLite is preferred over Redis for the local cache in single-node deployments." in ctx
+
+
+def test_memory_query_adds_switch_now_hint_for_change_prompts(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "query_contains": "should we switch to Redis now?",
+            "response": {
+                "results": [
+                    {
+                        "id": 51,
+                        "source": "claude-code/memories",
+                        "text": "memories decision: keep the build cache manifest in SQLite until multiple workers need shared invalidation.",
+                        "similarity": 0.91,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "should we switch to Redis now?",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "## Follow-up Response Hint" in ctx
+    assert "switch-now follow-up" in ctx
+    assert "Answer yes or no in the first sentence" in ctx
+    assert "Do not answer with meta phrases" in ctx
+    assert "use this answer shape: Not yet — keep the build cache manifest in SQLite until multiple workers need shared invalidation." in ctx
+
+
+def test_memory_query_adds_for_now_hint_for_simple_followups(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "query_contains": "is file-based storage okay for now?",
+            "response": {
+                "results": [
+                    {
+                        "id": 61,
+                        "source": "claude-code/memories",
+                        "text": "memories decision: keep field-note drafts in local Markdown files until cross-device sync is required.",
+                        "similarity": 0.9,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "is file-based storage okay for now?",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "## Follow-up Response Hint" in ctx
+    assert "simple-for-now follow-up" in ctx
+    assert "Answer directly in the first sentence" in ctx
+    assert "Do not answer with meta phrases" in ctx
+    assert "use this answer shape: Yes — keep field-note drafts in local Markdown files until cross-device sync is required." in ctx
 
 
 def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> None:
