@@ -262,6 +262,26 @@ server.tool(
 );
 
 server.tool(
+  "memory_is_useful",
+  "Submit relevance feedback for a memory retrieved via search. Call after using a memory to signal whether it was helpful. Helps improve future search quality.",
+  {
+    memory_id: z.number().int().describe("ID of the memory to rate"),
+    query: z.string().optional().describe("The search query that surfaced this memory"),
+    signal: z.enum(["useful", "not_useful"]).describe("Whether the memory was helpful"),
+  },
+  async ({ memory_id, query = "", signal }) => {
+    await memoriesRequest("/search/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memory_id, query, signal }),
+    });
+    return {
+      content: [{ type: "text", text: `Feedback recorded: memory ${memory_id} marked as ${signal}` }],
+    };
+  }
+);
+
+server.tool(
   "memory_conflicts",
   "List memories that conflict with each other. Conflicts are flagged during extraction when contradictory facts are detected. Use to review and resolve contradictions.",
   {},
