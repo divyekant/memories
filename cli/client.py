@@ -93,6 +93,40 @@ class MemoriesClient:
     def conflicts(self):
         return self._request("GET", "/memory/conflicts")
 
+    # --- Links ---
+
+    def add_link(self, from_id: int, to_id: int, link_type: str = "related_to"):
+        return self._request("POST", f"/memory/{from_id}/link",
+                             json={"to_id": to_id, "type": link_type})
+
+    def get_links(self, memory_id: int, link_type: str | None = None,
+                  include_incoming: bool = False):
+        params: dict = {"include_incoming": include_incoming}
+        if link_type:
+            params["type"] = link_type
+        return self._request("GET", f"/memory/{memory_id}/links", params=params)
+
+    def remove_link(self, from_id: int, to_id: int, link_type: str = "related_to"):
+        return self._request("DELETE", f"/memory/{from_id}/link/{to_id}",
+                             params={"type": link_type})
+
+    # --- Events ---
+
+    def recent_events(self, limit: int = 50):
+        return self._request("GET", "/events/recent", params={"limit": limit})
+
+    def register_webhook(self, url: str, events: list[str] | None = None):
+        body: dict = {"url": url}
+        if events:
+            body["events"] = events
+        return self._request("POST", "/webhooks", json=body)
+
+    def list_webhooks(self):
+        return self._request("GET", "/webhooks")
+
+    def delete_webhook(self, webhook_id: str):
+        return self._request("DELETE", f"/webhooks/{webhook_id}")
+
     # --- Memory CRUD ---
 
     def add(self, text: str, source: str = "cli",
@@ -201,6 +235,12 @@ class MemoriesClient:
 
     def reload_embedder(self):
         return self._request("POST", "/maintenance/embedder/reload")
+
+    def reembed(self, model: str | None = None):
+        body: dict = {}
+        if model:
+            body["model"] = model
+        return self._request("POST", "/maintenance/reembed", json=body)
 
     # --- Backup ---
 
