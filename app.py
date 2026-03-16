@@ -636,12 +636,14 @@ def _run_fallback_extraction(
                 }
             )
 
+    noop_count = sum(1 for a in actions if a.get("action") == "noop")
     return {
         "actions": actions,
         "extracted_count": len(facts),
         "stored_count": stored_count,
         "updated_count": 0,
         "deleted_count": 0,
+        "noop_count": noop_count,
         "mode": "fallback_add",
     }
 
@@ -737,7 +739,19 @@ async def _extract_worker(worker_id: int) -> None:
                     "updated_count": result.get("updated_count", 0),
                     "conflict_count": result.get("conflict_count", 0),
                 })
-            # Log extraction token usage
+            # Log extraction outcome and token usage
+            noop_count = result.get("noop_count")
+            if noop_count is None:
+                noop_count = sum(1 for a in result.get("actions", []) if a.get("action") == "noop")
+            usage_tracker.log_extraction_outcome(
+                source=request_data.get("source", ""),
+                extracted=result.get("extracted_count", 0),
+                stored=result.get("stored_count", 0),
+                updated=result.get("updated_count", 0),
+                deleted=result.get("deleted_count", 0),
+                noop=noop_count,
+                conflict=result.get("conflict_count", 0),
+            )
             tokens = result.get("tokens", {})
             for stage_name in ("extract", "audn"):
                 stage_tokens = tokens.get(stage_name, {})
@@ -1399,6 +1413,17 @@ async def search_quality_metrics(
     """Aggregated search quality metrics — rank distribution, feedback ratios, volume."""
     _get_auth(request)
     return usage_tracker.get_search_quality(period)
+
+
+@app.get("/metrics/extraction-quality")
+async def extraction_quality_metrics(
+    request: Request,
+    period: str = Query("7d", pattern="^(today|7d|30d|all)$"),
+):
+    """Extraction outcome metrics — ADD/UPDATE/DELETE/NOOP ratios, per-source breakdown."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    return usage_tracker.get_extraction_quality(period)
 
 
 @app.post("/maintenance/embedder/reload")
@@ -2432,6 +2457,16 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
                 "updated_count": result.get("updated_count", 0),
                 "conflict_count": result.get("conflict_count", 0),
             })
+            effective_source = request_body.source or "extract/fallback"
+            usage_tracker.log_extraction_outcome(
+                source=effective_source,
+                extracted=result.get("extracted_count", 0),
+                stored=result.get("stored_count", 0),
+                updated=result.get("updated_count", 0),
+                deleted=result.get("deleted_count", 0),
+                noop=result.get("noop_count", 0),
+                conflict=result.get("conflict_count", 0),
+            )
             logger.info(
                 "Extract fallback completed: job_id=%s source=%s context=%s extracted=%d stored=%d",
                 job_id,
