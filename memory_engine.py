@@ -1039,8 +1039,9 @@ class MemoryEngine:
             if threshold is not None and similarity < threshold:
                 continue
 
-            result = {**meta, "similarity": round(similarity, 6)}
+            result = self._enrich_with_confidence({**meta, "similarity": round(similarity, 6)})
             results.append(result)
+            self.reinforce(mem_id)
 
         return results
 
@@ -1155,12 +1156,13 @@ class MemoryEngine:
         for doc_id, rrf_score in sorted_ids:
             if self._id_exists(doc_id):
                 meta = self._get_meta_by_id(doc_id)
-                result = {**meta, "rrf_score": round(rrf_score, 6)}
+                result = self._enrich_with_confidence({**meta, "rrf_score": round(rrf_score, 6)})
                 if threshold is not None:
                     vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
                     if vec_match and vec_match["similarity"] < threshold:
                         continue
                 results.append(result)
+                self.reinforce(doc_id)
 
         return results
 
