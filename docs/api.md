@@ -56,6 +56,8 @@ Semantic or hybrid search over memories.
 | `hybrid` | bool | true | Use hybrid BM25+vector search (recommended) |
 | `vector_weight` | float | 0.7 | Weight for vector vs BM25 in hybrid mode |
 | `source_prefix` | string | null | Filter results to memories whose source starts with this prefix |
+| `recency_weight` | float | 0.0 | Recency boost weight (0.0=off, 1.0=heavily favor recent). Hybrid mode only |
+| `recency_half_life_days` | float | 30.0 | Half-life in days for recency decay |
 
 **Response:**
 ```json
@@ -246,6 +248,30 @@ Batch upsert.
 ### POST /memory/supersede
 
 Replace one memory with another (atomic delete + add).
+
+### GET /memory/conflicts
+
+List memories flagged as conflicting with existing memories. Conflicts are detected during extraction when the AUDN pipeline identifies contradictory facts that may both be valid.
+
+**Response:**
+```json
+{
+  "conflicts": [
+    {
+      "id": 42,
+      "text": "We chose SQLite for caching",
+      "source": "claude-code/myapp",
+      "conflicts_with": 10,
+      "conflicting_memory": {
+        "id": 10,
+        "text": "We chose Redis for caching",
+        "source": "claude-code/myapp"
+      }
+    }
+  ],
+  "count": 1
+}
+```
 
 ---
 

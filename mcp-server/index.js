@@ -262,8 +262,34 @@ server.tool(
 );
 
 server.tool(
+  "memory_conflicts",
+  "List memories that conflict with each other. Conflicts are flagged during extraction when contradictory facts are detected. Use to review and resolve contradictions.",
+  {},
+  async () => {
+    const data = await memoriesRequest("/memory/conflicts");
+
+    if (!data.conflicts || data.conflicts.length === 0) {
+      return { content: [{ type: "text", text: "No conflicts found." }] };
+    }
+
+    const lines = data.conflicts.map((c) => {
+      const other = c.conflicting_memory;
+      const otherText = other ? `${other.text.substring(0, 150)}` : "(deleted)";
+      return `[${c.id}] "${c.text.substring(0, 150)}" CONFLICTS WITH [${c.conflicts_with}] "${otherText}"`;
+    });
+
+    return {
+      content: [{
+        type: "text",
+        text: `${data.count} conflict(s) found:\n\n${lines.join("\n\n")}`,
+      }],
+    };
+  }
+);
+
+server.tool(
   "memory_extract",
-  "Extract and store memories from conversation text using LLM-based AUDN (Add/Update/Delete/Noop). Costs ~$0.001 per call. Use when decisions change, deferred work completes, or rich conversation contains multiple facts worth remembering. Returns what was added, updated, deleted, or skipped.",
+  "Extract and store memories from conversation text using LLM-based AUDN (Add/Update/Delete/Noop/Conflict). Costs ~$0.001 per call. Use when decisions change, deferred work completes, or rich conversation contains multiple facts worth remembering. Returns what was added, updated, deleted, conflicted, or skipped.",
   {
     messages: z.string().min(1).describe("Conversation text to extract memories from"),
     source: z.string().min(1).describe("Source identifier (e.g. 'claude-code/myapp')"),

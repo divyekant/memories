@@ -1,4 +1,4 @@
-"""Admin CLI commands -- stats, health, metrics, usage, deduplicate, consolidate, prune, reload-embedder."""
+"""Admin CLI commands -- stats, health, metrics, usage, deduplicate, consolidate, prune, reload-embedder, conflicts."""
 
 import click
 
@@ -119,6 +119,29 @@ def admin_prune(ctx):
     def human(d):
         pruned = d.get("pruned", d.get("count", 0))
         click.secho(f"Pruned {pruned} entries", fg="yellow")
+
+    ctx.fmt.echo(data, human)
+
+
+@admin.command("conflicts")
+@pass_ctx
+@handle_errors
+def admin_conflicts(ctx):
+    """List memories that conflict with each other."""
+    data = ctx.client.conflicts()
+
+    def human(d):
+        conflicts = d.get("conflicts", [])
+        if not conflicts:
+            click.echo("No conflicts found.")
+            return
+        click.secho(f"{len(conflicts)} conflict(s):\n", fg="yellow")
+        for c in conflicts:
+            other = c.get("conflicting_memory")
+            other_text = other["text"][:100] if other else "(deleted)"
+            click.echo(f"  [{c['id']}] {c['text'][:100]}")
+            click.secho(f"    conflicts with [{c['conflicts_with']}] {other_text}", fg="red")
+            click.echo()
 
     ctx.fmt.echo(data, human)
 

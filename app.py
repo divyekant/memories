@@ -1505,6 +1505,31 @@ async def add_batch(request_body: AddBatchRequest, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get("/memory/conflicts")
+async def list_conflicts(request: Request):
+    """List memories flagged as conflicting with existing memories."""
+    auth = _get_auth(request)
+    metadata = getattr(memory, "metadata", [])
+    conflicts = []
+    for m in metadata:
+        cw = m.get("conflicts_with")
+        if cw is None:
+            continue
+        if auth.prefixes is not None and not auth.can_read(m.get("source", "")):
+            continue
+        entry = {**m}
+        try:
+            conflicting = memory.get_memory(cw)
+            if auth.can_read(conflicting.get("source", "")):
+                entry["conflicting_memory"] = conflicting
+            else:
+                entry["conflicting_memory"] = {"id": cw, "redacted": True}
+        except Exception:
+            entry["conflicting_memory"] = None
+        conflicts.append(entry)
+    return {"conflicts": conflicts, "count": len(conflicts)}
+
+
 @app.delete("/memory/{memory_id}")
 async def delete_memory(memory_id: int, request: Request):
     """Delete a single memory by ID"""

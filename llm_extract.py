@@ -95,6 +95,10 @@ Actions:
   has changed. Provide old_id and new_text that replaces it.
 - DELETE: An existing memory is now contradicted or obsolete. Provide old_id.
 - NOOP: The fact is already captured by an existing memory. Provide existing_id.
+- CONFLICT: The new fact directly contradicts an existing memory, but BOTH
+  may be valid (e.g. different contexts, evolving decisions, unresolved
+  disagreement). Use this instead of UPDATE when you aren't sure which
+  version is correct. Provide old_id of the contradicted memory.
 
 New facts:
 {facts_json}
@@ -103,11 +107,12 @@ Existing similar memories (per fact):
 {similar_json}
 
 Output a JSON array of decisions. Each decision must have:
-- "action": "ADD" | "UPDATE" | "DELETE" | "NOOP"
+- "action": "ADD" | "UPDATE" | "DELETE" | "NOOP" | "CONFLICT"
 - "fact_index": index of the fact in the input array
 - For UPDATE: "old_id" (int) and "new_text" (string)
 - For DELETE: "old_id" (int)
-- For NOOP: "existing_id" (int)"""
+- For NOOP: "existing_id" (int)
+- For CONFLICT: "old_id" (int) of the contradicted memory"""
 
 
 def _parse_json_array(text: str) -> list:
@@ -311,6 +316,7 @@ def execute_actions(
     stored_count = 0
     updated_count = 0
     deleted_count = 0
+    conflict_count = 0
     result_actions = []
 
     for action in actions:
@@ -369,6 +375,29 @@ def execute_actions(
                     result_actions.append({"action": "delete", "old_id": old_id})
                     deleted_count += 1
 
+            elif act == "CONFLICT":
+                old_id = action.get("old_id")
+                if not source_matches_prefixes(source, allowed_prefixes):
+                    raise PermissionError(f"source not authorized for add: {source}")
+                fact_meta = {"category": fact.get("category", "detail")} if isinstance(fact, dict) else {}
+                if old_id is not None:
+                    fact_meta["conflicts_with"] = old_id
+                added_ids = engine.add_memories(
+                    texts=[fact_text],
+                    sources=[source],
+                    metadata_list=[fact_meta],
+                    deduplicate=False,
+                )
+                new_id = added_ids[0] if added_ids else None
+                result_actions.append({
+                    "action": "conflict",
+                    "text": fact_text,
+                    "id": new_id,
+                    "conflicts_with": old_id,
+                })
+                stored_count += 1
+                conflict_count += 1
+
             elif act == "NOOP":
                 existing_id = action.get("existing_id")
                 result_actions.append({"action": "noop", "text": fact_text, "existing_id": existing_id})
@@ -382,6 +411,7 @@ def execute_actions(
         "stored_count": stored_count,
         "updated_count": updated_count,
         "deleted_count": deleted_count,
+        "conflict_count": conflict_count,
     }
 
 
