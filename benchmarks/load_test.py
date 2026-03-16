@@ -168,15 +168,20 @@ class LoadRunner:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+        self._client = httpx.Client(timeout=30.0)
+        self._benchmark_ids: list = []  # track IDs we created
+        self._ids_lock = threading.Lock()
+
+    def close(self):
+        self._client.close()
 
     def _request(self, method: str, path: str, json_body: Any = None) -> RequestResult:
         url = f"{self.base_url}{path}"
         start = time.perf_counter()
         try:
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.request(method, url, json=json_body, headers=self.headers)
-                latency = (time.perf_counter() - start) * 1000
-                return RequestResult(status=resp.status_code, latency_ms=latency, operation=f"{method} {path}")
+            resp = self._client.request(method, url, json=json_body, headers=self.headers)
+            latency = (time.perf_counter() - start) * 1000
+            return RequestResult(status=resp.status_code, latency_ms=latency, operation=f"{method} {path}")
         except Exception as e:
             latency = (time.perf_counter() - start) * 1000
             return RequestResult(status=0, latency_ms=latency, operation=f"{method} {path}", error=str(e))
@@ -188,11 +193,29 @@ class LoadRunner:
     def add(self) -> RequestResult:
         text = random.choice(SAMPLE_TEXTS)
         source = f"benchmark/load-test-{random.randint(1, 100)}"
-        return self._request("POST", "/memory/add", {"text": text, "source": source})
+        url = f"{self.base_url}/memory/add"
+        start = time.perf_counter()
+        try:
+            resp = self._client.post(url, json={"text": text, "source": source}, headers=self.headers)
+            latency = (time.perf_counter() - start) * 1000
+            if resp.status_code == 200:
+                mem_id = resp.json().get("id")
+                if mem_id is not None:
+                    with self._ids_lock:
+                        self._benchmark_ids.append(mem_id)
+            return RequestResult(status=resp.status_code, latency_ms=latency, operation="POST /memory/add")
+        except Exception as e:
+            latency = (time.perf_counter() - start) * 1000
+            return RequestResult(status=0, latency_ms=latency, operation="POST /memory/add", error=str(e))
 
     def delete_random(self) -> RequestResult:
-        # Try to delete a benchmark memory (may 404, that's fine for load testing)
-        return self._request("DELETE", f"/memory/{random.randint(1, 10000)}")
+        # Only delete memories we created during this benchmark run
+        with self._ids_lock:
+            if not self._benchmark_ids:
+                # Nothing to delete — search for benchmark memories instead
+                return self._request("POST", "/search", {"query": "benchmark load test", "k": 1, "hybrid": True})
+            target_id = random.choice(self._benchmark_ids)
+        return self._request("DELETE", f"/memory/{target_id}")
 
     def extract(self) -> RequestResult:
         text = " ".join(random.sample(SAMPLE_TEXTS, min(3, len(SAMPLE_TEXTS))))
@@ -277,6 +300,7 @@ def main():
 
     print(f"Running {args.scenario} scenario: {args.concurrency} workers for {args.duration}s against {args.url}")
     report = runner.run_scenario(args.scenario, args.concurrency, args.duration)
+    runner.close()
 
     if args.json:
         print(json.dumps(report.summary(), indent=2))
