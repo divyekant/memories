@@ -126,12 +126,38 @@ class QdrantStore:
             ordering=self.settings.write_ordering,
         )
 
+    def ensure_payload_indexes(self) -> None:
+        """Create payload indexes for efficient filtering (idempotent)."""
+        try:
+            self.client.create_payload_index(
+                collection_name=self.collection,
+                field_name="source",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+                wait=True,
+            )
+        except Exception:
+            pass  # Already exists or collection missing — safe to ignore
+
+    def count_filtered(
+        self,
+        count_filter: Optional[models.Filter] = None,
+        exact: bool = True,
+    ) -> int:
+        """Count points with optional Qdrant-level filtering."""
+        result = self.client.count(
+            collection_name=self.collection,
+            count_filter=count_filter,
+            exact=exact,
+        )
+        return int(getattr(result, "count", 0))
+
     def search(
         self,
         query_vector: List[float],
         limit: int,
         score_threshold: Optional[float] = None,
         consistency: Optional[str] = None,
+        query_filter: Optional[models.Filter] = None,
     ) -> List[Dict[str, Any]]:
         response = self.client.query_points(
             collection_name=self.collection,
@@ -141,6 +167,7 @@ class QdrantStore:
             with_payload=True,
             with_vectors=False,
             consistency=consistency or self.settings.read_consistency,
+            query_filter=query_filter,
         )
         points = getattr(response, "points", response)
 

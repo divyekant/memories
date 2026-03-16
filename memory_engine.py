@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from entity_locks import EntityLockManager
+from qdrant_client import models as qdrant_models
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
@@ -129,6 +130,7 @@ class MemoryEngine:
             local_path=str(self._qdrant_local_path),
         )
         self.qdrant_store.ensure_collection(self.dim)
+        self.qdrant_store.ensure_payload_indexes()
 
         self.cloud_sync: Optional[CloudSync] = None
         if CLOUD_SYNC_AVAILABLE:
@@ -806,6 +808,51 @@ class MemoryEngine:
     # Search
     # ------------------------------------------------------------------
 
+    def distinct_sources(self) -> List[str]:
+        """Return sorted list of unique source values across all memories."""
+        return sorted({str(m.get("source", "")) for m in self.metadata})
+
+    def _build_source_filter(
+        self,
+        source_prefix: Optional[str] = None,
+        allowed_prefixes: Optional[List[str]] = None,
+    ) -> Optional[qdrant_models.Filter]:
+        """Build a Qdrant filter from source prefix and/or auth prefixes.
+
+        Returns None when no filtering is needed (admin / no prefix), letting
+        the existing call path behave exactly as before.
+        """
+        if source_prefix is None and allowed_prefixes is None:
+            return None
+
+        all_sources = self.distinct_sources()
+
+        # Narrow by source_prefix first
+        if source_prefix:
+            candidates = [s for s in all_sources if s.startswith(source_prefix)]
+        else:
+            candidates = all_sources
+
+        # Further narrow by auth allowed_prefixes
+        if allowed_prefixes is not None:
+            from auth_context import source_matches_prefixes
+            candidates = [s for s in candidates if source_matches_prefixes(s, allowed_prefixes)]
+
+        if not candidates:
+            return qdrant_models.Filter(
+                must=[qdrant_models.FieldCondition(
+                    key="source",
+                    match=qdrant_models.MatchValue(value="__no_match__"),
+                )]
+            )
+
+        return qdrant_models.Filter(
+            must=[qdrant_models.FieldCondition(
+                key="source",
+                match=qdrant_models.MatchAny(any=candidates),
+            )]
+        )
+
     def search(
         self,
         query: str,
@@ -825,11 +872,15 @@ class MemoryEngine:
             show_progress_bar=False,
         )[0].astype("float32").tolist()
 
+        # Pre-filter at Qdrant level when source_prefix is specified
+        query_filter = self._build_source_filter(source_prefix=source_prefix)
+
         hits = self.qdrant_store.search(
             query_vector=query_vec,
             limit=k,
             score_threshold=threshold,
             consistency=self.qdrant_settings.read_consistency,
+            query_filter=query_filter,
         )
 
         results: List[Dict[str, Any]] = []
@@ -840,6 +891,7 @@ class MemoryEngine:
 
             meta = self._get_meta_by_id(mem_id)
             source = str(meta.get("source", ""))
+            # Defense-in-depth: still verify source prefix in Python
             if source_prefix and not source.startswith(source_prefix):
                 continue
 
@@ -1013,6 +1065,23 @@ class MemoryEngine:
         if not source_prefix:
             return len(self.metadata)
         return sum(1 for m in self.metadata if m.get("source", "").startswith(source_prefix))
+
+    def count_by_filter(
+        self,
+        source_prefix: Optional[str] = None,
+        allowed_prefixes: Optional[List[str]] = None,
+    ) -> int:
+        """Count memories using Qdrant-level filtering (O(1) vs O(n) scan).
+
+        Falls back to in-memory count if no filter is needed.
+        """
+        query_filter = self._build_source_filter(
+            source_prefix=source_prefix,
+            allowed_prefixes=allowed_prefixes,
+        )
+        if query_filter is None:
+            return len(self.metadata)
+        return self.qdrant_store.count_filtered(count_filter=query_filter)
 
     def list_memories(
         self,

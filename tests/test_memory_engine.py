@@ -304,6 +304,9 @@ class TestPersistence:
             def ensure_collection(self, dim):
                 return None
 
+            def ensure_payload_indexes(self):
+                return None
+
             def count(self, exact=True):
                 return 1
 

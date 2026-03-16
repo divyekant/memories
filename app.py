@@ -291,12 +291,28 @@ def _require_admin(auth: AuthContext) -> None:
 
 
 def _count_accessible_memories(auth: AuthContext, source_prefix: Optional[str] = None) -> Optional[int]:
-    """Count memories visible to this auth context using in-memory metadata when available.
+    """Count memories visible to this auth context.
 
-    TODO: O(n) scan — consider a prefix-indexed cache for large stores.
+    Uses Qdrant-level filtered count when available (O(1) via payload index),
+    falling back to in-memory metadata scan for backward compatibility.
     """
     if auth.prefixes is None:
         return None
+
+    # Fast path: Qdrant filtered count via payload index
+    count_by_filter = getattr(memory, "count_by_filter", None)
+    if count_by_filter is not None and hasattr(memory, "distinct_sources"):
+        try:
+            result = count_by_filter(
+                source_prefix=source_prefix,
+                allowed_prefixes=auth.prefixes,
+            )
+            if isinstance(result, int):
+                return result
+        except Exception:
+            pass  # Fall through to O(n) scan
+
+    # Fallback: O(n) in-memory scan (backward compat)
     metadata = getattr(memory, "metadata", None)
     if not isinstance(metadata, list):
         return None
