@@ -133,11 +133,11 @@ Add multiple memories at once. Batches are processed in internal chunks of 100 t
 
 ### GET /memory/{id}
 
-Fetch a single memory by ID.
+Fetch a single memory by ID. Includes computed `confidence` score (0.0-1.0) based on exponential decay from last reinforcement timestamp (90-day half-life). Memories are reinforced when accessed in search results.
 
 **Response:**
 ```json
-{"id": 42, "text": "...", "source": "...", "created_at": "...", "updated_at": "..."}
+{"id": 42, "text": "...", "source": "...", "created_at": "...", "updated_at": "...", "confidence": 0.87}
 ```
 
 ### POST /memory/get-batch
