@@ -2339,8 +2339,12 @@ class AddLinkRequest(BaseModel):
 @app.post("/memory/{memory_id}/link")
 async def add_memory_link(memory_id: int, request_body: AddLinkRequest, request: Request):
     """Add a typed link from one memory to another."""
-    _get_auth(request)
+    auth = _get_auth(request)
     try:
+        from_mem = memory.get_memory(memory_id)
+        _require_write(auth, from_mem.get("source", ""))
+        to_mem = memory.get_memory(request_body.to_id)
+        _require_write(auth, to_mem.get("source", ""))
         result = memory.add_link(
             from_id=memory_id,
             to_id=request_body.to_id,
@@ -2362,14 +2366,29 @@ async def get_memory_links(
     include_incoming: bool = False,
 ):
     """Get links for a memory (outgoing by default)."""
-    _get_auth(request)
+    auth = _get_auth(request)
     try:
+        mem = memory.get_memory(memory_id)
+        if not auth.can_read(mem.get("source", "")):
+            raise HTTPException(status_code=403, detail="Not authorized to read this memory")
         links = memory.get_links(
             memory_id=memory_id,
             link_type=type,
             include_incoming=include_incoming,
         )
-        return {"memory_id": memory_id, "links": links}
+        # Filter links to only include memories the caller can read
+        filtered = []
+        for link in links:
+            linked_id = link.get("to_id") if link["direction"] == "outgoing" else link["from_id"]
+            try:
+                linked_mem = memory.get_memory(linked_id)
+                if auth.can_read(linked_mem.get("source", "")):
+                    filtered.append(link)
+            except Exception:
+                pass
+        return {"memory_id": memory_id, "links": filtered}
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -2382,7 +2401,9 @@ async def remove_memory_link(
     type: str = "related_to",
 ):
     """Remove a specific link between two memories."""
-    _get_auth(request)
+    auth = _get_auth(request)
+    from_mem = memory.get_memory(memory_id)
+    _require_write(auth, from_mem.get("source", ""))
     result = memory.remove_link(from_id=memory_id, to_id=target_id, link_type=type)
     return result
 

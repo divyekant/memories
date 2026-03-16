@@ -541,6 +541,9 @@ class MemoryEngine:
 
                 self._backup(prefix="pre_delete")
 
+                # Scrub incoming links referencing this memory
+                self._scrub_links_to(memory_id)
+
                 deleted = dict(self._get_meta_by_id(memory_id))
                 self._delete_ids_targeted({memory_id})
 
@@ -658,6 +661,19 @@ class MemoryEngine:
 
         return {"removed": removed}
 
+    def _scrub_links_to(self, target_id: int) -> None:
+        """Remove all incoming links pointing to target_id from other memories."""
+        for m in self.metadata:
+            links = m.get("links")
+            if not links:
+                continue
+            filtered = [l for l in links if l.get("to_id") != target_id]
+            if len(filtered) < len(links):
+                if filtered:
+                    m["links"] = filtered
+                else:
+                    del m["links"]
+
     def get_links(
         self,
         memory_id: int,
@@ -667,12 +683,14 @@ class MemoryEngine:
         """Get links for a memory. Outgoing by default; optionally include incoming."""
         results = []
 
-        # Outgoing links (stored on this memory)
+        # Outgoing links (stored on this memory, skip dangling targets)
         if self._id_exists(memory_id):
             meta = self._get_meta_by_id(memory_id)
             for link in meta.get("links", []):
                 if link_type and link["type"] != link_type:
                     continue
+                if not self._id_exists(link["to_id"]):
+                    continue  # Target was deleted
                 results.append({**link, "from_id": memory_id, "direction": "outgoing"})
 
         # Incoming links (scan other memories)
