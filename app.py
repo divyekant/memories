@@ -22,7 +22,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -730,6 +730,13 @@ async def _extract_worker(worker_id: int) -> None:
                 job_state["status"] = "completed"
                 job_state["completed_at"] = _utc_now_iso()
                 job_state["result"] = result
+                event_bus.emit("extraction.completed", {
+                    "job_id": job_state.get("job_id", ""),
+                    "source": job_state.get("source", ""),
+                    "stored_count": result.get("stored_count", 0),
+                    "updated_count": result.get("updated_count", 0),
+                    "conflict_count": result.get("conflict_count", 0),
+                })
             # Log extraction token usage
             tokens = result.get("tokens", {})
             for stage_name in ("extract", "audn"):
@@ -1008,6 +1015,86 @@ async def metrics_middleware(request: Request, call_next):
             active_http_requests = max(0, active_http_requests - 1)
         latency_ms = (time.perf_counter() - start) * 1000.0
         _record_request_metric(route_key, latency_ms, status_code)
+
+
+# -- Event system -------------------------------------------------------------
+
+from event_bus import event_bus, EVENT_TYPES
+
+
+class WebhookRequest(BaseModel):
+    url: str = Field(..., description="Callback URL")
+    events: Optional[List[str]] = Field(None, description="Event types to subscribe to (default: all)")
+
+
+def _event_visible_to(auth: AuthContext, event_data: dict) -> bool:
+    """Check if an event's source is readable by the caller."""
+    if auth.prefixes is None:
+        return True  # Admin sees all
+    source = event_data.get("source", "")
+    return auth.can_read(source) if source else True
+
+
+@app.get("/events/stream")
+async def events_stream(request: Request, event_type: Optional[str] = None):
+    """Server-Sent Events stream for real-time memory lifecycle events."""
+    auth = _get_auth(request)
+    q = event_bus.subscribe()
+
+    async def generate():
+        try:
+            yield "retry: 5000\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                    if event_type and event.type != event_type:
+                        continue
+                    if not _event_visible_to(auth, event.data):
+                        continue
+                    yield event.to_sse()
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            event_bus.unsubscribe(q)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/events/recent")
+async def events_recent(request: Request, limit: int = 50):
+    """Return recent event history."""
+    auth = _get_auth(request)
+    events = event_bus.recent_events(limit=limit)
+    filtered = [e for e in events if _event_visible_to(auth, e.get("data", {}))]
+    return {"events": filtered, "count": len(filtered)}
+
+
+@app.post("/webhooks")
+async def create_webhook(request_body: WebhookRequest, request: Request):
+    """Register a webhook callback URL for memory events."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    wh = event_bus.register_webhook(url=request_body.url, events=request_body.events)
+    return wh
+
+
+@app.get("/webhooks")
+async def list_webhooks(request: Request):
+    """List registered webhooks."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    return {"webhooks": event_bus.list_webhooks()}
+
+
+@app.delete("/webhooks/{webhook_id}")
+async def delete_webhook(webhook_id: str, request: Request):
+    """Delete a registered webhook."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    deleted = event_bus.delete_webhook(webhook_id)
+    return {"deleted": deleted}
 
 
 # -- Request / Response models ------------------------------------------------
@@ -2237,6 +2324,13 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
             extract_jobs[job_id]["status"] = "completed"
             extract_jobs[job_id]["completed_at"] = _utc_now_iso()
             extract_jobs[job_id]["result"] = result
+            event_bus.emit("extraction.completed", {
+                "job_id": job_id,
+                "source": request_body.source,
+                "stored_count": result.get("stored_count", 0),
+                "updated_count": result.get("updated_count", 0),
+                "conflict_count": result.get("conflict_count", 0),
+            })
             logger.info(
                 "Extract fallback completed: job_id=%s source=%s context=%s extracted=%d stored=%d",
                 job_id,

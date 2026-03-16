@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from entity_locks import EntityLockManager
 from qdrant_client import models as qdrant_models
+from event_bus import event_bus
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
@@ -527,6 +528,11 @@ class MemoryEngine:
                 self._rebuild_bm25()
                 self._rebuild_id_map()
 
+        for mid in added_ids:
+            if self._id_exists(mid):
+                meta = self._get_meta_by_id(mid)
+                event_bus.emit("memory.added", {"id": mid, "source": meta.get("source", ""), "text": meta.get("text", "")[:200]})
+
         return added_ids
 
     def delete_memory(self, memory_id: int) -> Dict[str, Any]:
@@ -551,6 +557,7 @@ class MemoryEngine:
                 self.save()
                 self._rebuild_bm25()
 
+        event_bus.emit("memory.deleted", {"id": memory_id, "source": deleted.get("source", "")})
         return {"deleted_id": memory_id, "deleted_text": deleted["text"][:100]}
 
     def delete_memories(self, memory_ids: List[int]) -> Dict[str, Any]:
@@ -640,6 +647,7 @@ class MemoryEngine:
         self.save()
 
         logger.info("Link added: %d --%s--> %d", from_id, link_type, to_id)
+        event_bus.emit("memory.linked", {"from_id": from_id, "to_id": to_id, "type": link_type})
         return {"from_id": from_id, "to_id": to_id, "type": link_type, "created_at": created_at}
 
     def remove_link(self, from_id: int, to_id: int, link_type: str) -> Dict[str, Any]:
@@ -878,6 +886,7 @@ class MemoryEngine:
                 if "text" in updated_fields:
                     self._rebuild_bm25()
 
+        event_bus.emit("memory.updated", {"id": memory_id, "updated_fields": updated_fields})
         return {"id": memory_id, "updated_fields": updated_fields}
 
     def upsert_memory(

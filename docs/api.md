@@ -41,6 +41,49 @@ Usage analytics over a time period.
 
 ---
 
+## Events
+
+### GET /events/stream
+
+Server-Sent Events stream for real-time memory lifecycle events. Emits events for `memory.added`, `memory.updated`, `memory.deleted`, `memory.linked`, and `extraction.completed`.
+
+**Query params:**
+- `event_type` (string, optional): Filter to a single event type
+
+**Response:** SSE stream with `id`, `event`, and `data` fields.
+
+### GET /events/recent
+
+Return recent event history (last 100 events).
+
+**Query params:**
+- `limit` (int, default 50): Max events to return
+
+**Response:**
+```json
+{"events": [{"type": "memory.added", "data": {"id": 42}, "timestamp": "..."}], "count": 1}
+```
+
+### POST /webhooks
+
+Register a webhook callback URL for memory events (admin only).
+
+**Request body:**
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `url` | string | *required* | Callback URL |
+| `events` | string[] | all types | Event types to subscribe to |
+
+### GET /webhooks
+
+List registered webhooks (admin only).
+
+### DELETE /webhooks/{id}
+
+Delete a registered webhook (admin only).
+
+---
+
 ## Search
 
 ### POST /search

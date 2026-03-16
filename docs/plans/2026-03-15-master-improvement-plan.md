@@ -1,14 +1,15 @@
 # Memories: Master Improvement Plan
 
 > Created: 2026-03-15
-> Status: Active — iterate through items sequentially
+> Last updated: 2026-03-15
+> Status: Active — 10 of 16 items delivered, 4 PRs pending merge
 
 ---
 
 ## Tier 1: High Impact, Ship Soon
 
 ### 1. Release v2.1.0 — Security Hardening
-- **Status**: IN PROGRESS
+- **Status**: SHIPPED (tagged, pushed 2026-03-15)
 - **Effort**: Small (work is done, needs release cut)
 - **What**: Ship the unreleased scoped-auth fixes sitting in main
   - Extraction AUDN scoping to allowed prefixes
@@ -22,7 +23,7 @@
 ---
 
 ### 2. Qdrant Payload Filtering Before Vector Search
-- **Status**: NOT STARTED
+- **Status**: MERGED (PR #22)
 - **Effort**: Medium (2-3 sessions)
 - **What**: Push source/timestamp/folder filtering into Qdrant query filters instead of post-filtering in Python
   - Use Qdrant `models.Filter` with `FieldCondition` on `source`, `created_at`, `folder`
@@ -35,7 +36,7 @@
 ---
 
 ### 3. Temporal Search Weighting (Recency Boost)
-- **Status**: NOT STARTED
+- **Status**: MERGED (PR #22)
 - **Effort**: Medium (1-2 sessions)
 - **What**: Add configurable recency decay to RRF fusion scoring
   - New parameter: `recency_weight` (0.0 = no boost, 1.0 = heavily favor recent)
@@ -48,7 +49,7 @@
 ---
 
 ### 4. Memory Relationships (Lightweight Graph)
-- **Status**: NOT STARTED
+- **Status**: MERGED (PR #23)
 - **Effort**: Large (3-4 sessions)
 - **What**: Add typed edges between memories stored as Qdrant payload metadata
   - Edge types: `supersedes`, `related_to`, `blocked_by`, `caused_by`, `reinforces`
@@ -63,7 +64,7 @@
 ## Tier 2: High Impact, Larger Scope
 
 ### 5. Conflict Detection in Extraction
-- **Status**: NOT STARTED
+- **Status**: MERGED (PR #24)
 - **Effort**: Medium (2 sessions)
 - **What**: Add contradiction-aware step in AUDN extraction pipeline
   - After similarity search, check if top matches assert incompatible facts
@@ -75,7 +76,7 @@
 ---
 
 ### 6. Memory Lifecycle / Confidence Decay
-- **Status**: NOT STARTED
+- **Status**: MERGED (PR #25)
 - **Effort**: Medium (2 sessions)
 - **What**: Add confidence score that decays over time and reinforces on access
   - New field: `confidence` (0.0-1.0), initialized at 1.0
@@ -88,7 +89,7 @@
 ---
 
 ### 7. Event-Driven Architecture (Webhooks/SSE)
-- **Status**: NOT STARTED
+- **Status**: PR #26 (review fixes pushed, ready to merge)
 - **Effort**: Large (3-4 sessions)
 - **What**: Replace 5-minute polling with event system
   - Internal event bus: `memory.added`, `memory.updated`, `memory.deleted`, `extraction.completed`
@@ -101,7 +102,7 @@
 ---
 
 ### 8. Embedding Model Migration Path
-- **Status**: NOT STARTED
+- **Status**: PR #27 (pending review)
 - **Effort**: Medium (2 sessions)
 - **What**: Tooling to upgrade embedding models without downtime
   - `POST /maintenance/reembed` — batch re-embed all memories with new model
@@ -114,7 +115,7 @@
 ---
 
 ### 9. Python Client SDK
-- **Status**: NOT STARTED
+- **Status**: PR #28 (pending review)
 - **Effort**: Medium (2-3 sessions)
 - **What**: `memories-client` package wrapping the HTTP API
   - Type-safe methods for all endpoints
@@ -129,7 +130,7 @@
 ## Tier 3: Polish & Scale
 
 ### 10. Memory Compaction / Summarization
-- **Status**: NOT STARTED
+- **Status**: PR #29 (pending review)
 - **Effort**: Medium (2 sessions)
 - **What**: Maintenance operation that consolidates related memories
   - `POST /maintenance/compact` — find clusters of similar memories, LLM-summarize into one
