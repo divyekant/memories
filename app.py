@@ -31,6 +31,7 @@ from embedder_reloader import EmbedderAutoReloadController
 from key_store import KeyStore
 from memory_engine import MemoryEngine
 from runtime_memory import MemoryTrimmer
+from audit_log import AuditLog, NullAuditLog
 from usage_tracker import UsageTracker, NullTracker
 
 # -- Logging ------------------------------------------------------------------
@@ -165,6 +166,7 @@ embedder_auto_reloader = EmbedderAutoReloadController(
     max_queue_depth=EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH,
 )
 usage_tracker: UsageTracker | NullTracker = NullTracker()  # replaced in lifespan if enabled
+audit_log: AuditLog | NullAuditLog = NullAuditLog()  # replaced in lifespan if enabled
 metrics_started_at = time.time()
 metrics_lock = threading.Lock()
 request_metrics: Dict[str, Dict[str, Any]] = {}
@@ -278,6 +280,20 @@ async def verify_api_key(request: Request):
 
 def _get_auth(request: Request) -> AuthContext:
     return getattr(request.state, "auth", AuthContext.unrestricted())
+
+
+def _audit(request: Request, action: str, resource_id: str = "", source: str = "") -> None:
+    """Log an audit entry from the current request context."""
+    auth = _get_auth(request)
+    ip = request.client.host if request.client else ""
+    audit_log.log(
+        action=action,
+        key_id=auth.key_id or "env",
+        key_name=auth.key_name or "",
+        resource_id=resource_id,
+        source_prefix=source,
+        ip=ip,
+    )
 
 
 def _require_write(auth: AuthContext, source: str) -> None:
@@ -955,6 +971,10 @@ async def lifespan(app: FastAPI):
     if _env_bool("USAGE_TRACKING", False):
         usage_tracker = UsageTracker(os.path.join(DATA_DIR, "usage.db"))
         logger.info("Usage tracking enabled")
+    global audit_log
+    if _env_bool("AUDIT_LOG", False):
+        audit_log = AuditLog(os.path.join(DATA_DIR, "audit.db"))
+        logger.info("Audit logging enabled")
     global key_store
     key_store = KeyStore(os.path.join(DATA_DIR, "keys.db"))
     logger.info("Key store initialized")
@@ -1426,6 +1446,33 @@ async def extraction_quality_metrics(
     return usage_tracker.get_extraction_quality(period)
 
 
+@app.get("/audit")
+async def get_audit_log(
+    request: Request,
+    action: Optional[str] = None,
+    key_id: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Query the audit trail. Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    entries = audit_log.query(action=action, key_id=key_id, limit=limit, offset=offset)
+    return {"entries": entries, "count": len(entries), "total": audit_log.count(action=action, key_id=key_id)}
+
+
+@app.post("/audit/purge")
+async def purge_audit_log(
+    request: Request,
+    retention_days: int = Query(90, ge=1, le=365),
+):
+    """Purge audit entries older than retention period. Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    purged = audit_log.purge(retention_days=retention_days)
+    return {"purged": purged, "retention_days": retention_days}
+
+
 @app.post("/maintenance/embedder/reload")
 async def reload_embedder(request: Request):
     """Reload in-process embedder runtime and release old inference objects."""
@@ -1675,9 +1722,11 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
             deduplicate=request_body.deduplicate,
         )
         usage_tracker.log_api_event("add", request_body.source)
+        result_id = ids[0] if ids else None
+        _audit(request, "add", resource_id=str(result_id or ""), source=request_body.source)
         return {
             "success": True,
-            "id": ids[0] if ids else None,
+            "id": result_id,
             "message": "Memory added successfully" if ids else "Duplicate skipped",
         }
     except Exception as e:
@@ -1752,8 +1801,10 @@ async def delete_memory(memory_id: int, request: Request):
         if auth.prefixes is not None:
             existing = memory.get_memory(memory_id)
             _require_write(auth, existing.get("source", ""))
+        delete_source = existing.get("source", "") if auth.prefixes is not None else ""
         result = memory.delete_memory(memory_id)
         usage_tracker.log_api_event("delete")
+        _audit(request, "delete", resource_id=str(memory_id), source=delete_source)
         return {"success": True, **result}
     except HTTPException:
         raise
@@ -2483,6 +2534,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
         finally:
             _trim_finished_extract_jobs()
 
+        _audit(request, "extract", source=request_body.source or "extract/fallback")
         return {
             "job_id": job_id,
             "status": extract_jobs[job_id]["status"],
@@ -2492,6 +2544,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
 
     _ensure_extract_workers_started()
     usage_tracker.log_api_event("extract", request_body.source)
+    _audit(request, "extract", source=request_body.source)
     job_id = uuid4().hex
     extract_jobs[job_id] = {
         "job_id": job_id,
