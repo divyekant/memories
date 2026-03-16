@@ -148,3 +148,101 @@ class TestSSEEndpoint:
         resp = tc.delete(f"/webhooks/{wh_id}")
         assert resp.status_code == 200
         assert resp.json()["deleted"] is True
+
+
+class TestEventAuthFiltering:
+    """Tests that scoped keys only see events for sources they can read."""
+
+    @pytest.fixture
+    def app_with_keys(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "keys.db")
+            env = {"API_KEY": "admin-key", "EXTRACT_PROVIDER": "", "DATA_DIR": tmpdir}
+            with patch.dict(os.environ, env):
+                import app as app_module
+                importlib.reload(app_module)
+
+                mock_engine = MagicMock()
+                mock_engine.metadata = []
+                app_module.memory = mock_engine
+
+                from key_store import KeyStore
+                ks = KeyStore(db_path)
+                app_module.key_store = ks
+
+                from fastapi.testclient import TestClient
+                yield TestClient(app_module.app), app_module, ks
+
+    def test_scoped_key_only_sees_own_events(self, app_with_keys):
+        """Scoped reader should not see events for other sources."""
+        tc, mod, ks = app_with_keys
+        scoped = ks.create_key(name="scoped", role="read-only", prefixes=["claude-code/*"])
+
+        # Emit events for different sources via the singleton
+        from event_bus import event_bus
+        event_bus.emit("memory.added", {"id": "1", "source": "claude-code/foo", "text": "visible"})
+        event_bus.emit("memory.added", {"id": "2", "source": "kai/secret", "text": "hidden"})
+        event_bus.emit("memory.deleted", {"id": "3", "source": "other/bar"})
+
+        resp = tc.get("/events/recent", headers={"X-API-Key": scoped["key"]})
+        assert resp.status_code == 200
+        events = resp.json()["events"]
+        sources = [e["data"].get("source") for e in events]
+        assert "claude-code/foo" in sources
+        assert "kai/secret" not in sources
+        assert "other/bar" not in sources
+
+    def test_admin_sees_all_events(self, app_with_keys):
+        """Admin key should see events from all sources."""
+        tc, mod, _ = app_with_keys
+
+        from event_bus import event_bus
+        event_bus.emit("memory.added", {"id": "10", "source": "claude-code/a", "text": "a"})
+        event_bus.emit("memory.added", {"id": "11", "source": "kai/b", "text": "b"})
+
+        resp = tc.get("/events/recent", headers={"X-API-Key": "admin-key"})
+        assert resp.status_code == 200
+        events = resp.json()["events"]
+        sources = [e["data"].get("source") for e in events]
+        assert "claude-code/a" in sources
+        assert "kai/b" in sources
+
+    def test_extraction_completed_event_emitted(self):
+        """Fallback extraction should emit extraction.completed when the job finishes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "keys.db")
+            env = {
+                "API_KEY": "admin-key",
+                "EXTRACT_PROVIDER": "",
+                "EXTRACT_FALLBACK_ADD": "true",
+                "DATA_DIR": tmpdir,
+            }
+            with patch.dict(os.environ, env):
+                import app as app_module
+                importlib.reload(app_module)
+
+                mock_engine = MagicMock()
+                mock_engine.metadata = []
+                mock_engine.add.return_value = "mem-1"
+                mock_engine.is_novel.return_value = True
+                mock_engine.hybrid_search.return_value = []
+                app_module.memory = mock_engine
+
+                from key_store import KeyStore
+                app_module.key_store = KeyStore(db_path)
+
+                from fastapi.testclient import TestClient
+                tc = TestClient(app_module.app)
+
+                resp = tc.post(
+                    "/memory/extract",
+                    json={"messages": "The sky is blue.", "source": "test/extract"},
+                    headers={"X-API-Key": "admin-key"},
+                )
+                assert resp.status_code == 202
+
+                from event_bus import event_bus
+                history = event_bus.recent_events(limit=100)
+                completed = [e for e in history if e["type"] == "extraction.completed"]
+                assert len(completed) >= 1
+                assert completed[-1]["data"]["source"] == "test/extract"

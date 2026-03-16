@@ -2324,6 +2324,13 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
             extract_jobs[job_id]["status"] = "completed"
             extract_jobs[job_id]["completed_at"] = _utc_now_iso()
             extract_jobs[job_id]["result"] = result
+            event_bus.emit("extraction.completed", {
+                "job_id": job_id,
+                "source": request_body.source,
+                "stored_count": result.get("stored_count", 0),
+                "updated_count": result.get("updated_count", 0),
+                "conflict_count": result.get("conflict_count", 0),
+            })
             logger.info(
                 "Extract fallback completed: job_id=%s source=%s context=%s extracted=%d stored=%d",
                 job_id,
