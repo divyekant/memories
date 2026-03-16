@@ -1023,6 +1023,18 @@ class SearchRequest(BaseModel):
         max_length=500,
         description="Optional source path prefix filter",
     )
+    recency_weight: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description="Recency boost weight (0.0=off, 1.0=heavily favor recent). Only applies to hybrid search.",
+    )
+    recency_half_life_days: float = Field(
+        30.0,
+        gt=0.0,
+        le=365.0,
+        description="Half-life in days for recency decay (default 30).",
+    )
     source: str = Field("", max_length=500, description="Caller source for usage tracking")
 
 
@@ -1369,6 +1381,8 @@ async def search(request_body: SearchRequest, request: Request):
                 threshold=request_body.threshold,
                 vector_weight=request_body.vector_weight,
                 source_prefix=request_body.source_prefix,
+                recency_weight=request_body.recency_weight,
+                recency_half_life_days=request_body.recency_half_life_days,
             )
         else:
             results = memory.search(
@@ -1406,6 +1420,8 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     threshold=item.threshold,
                     vector_weight=item.vector_weight,
                     source_prefix=item.source_prefix,
+                    recency_weight=item.recency_weight,
+                    recency_half_life_days=item.recency_half_life_days,
                 )
             else:
                 results = memory.search(
