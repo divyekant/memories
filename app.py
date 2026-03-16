@@ -291,12 +291,28 @@ def _require_admin(auth: AuthContext) -> None:
 
 
 def _count_accessible_memories(auth: AuthContext, source_prefix: Optional[str] = None) -> Optional[int]:
-    """Count memories visible to this auth context using in-memory metadata when available.
+    """Count memories visible to this auth context.
 
-    TODO: O(n) scan — consider a prefix-indexed cache for large stores.
+    Uses Qdrant-level filtered count when available (O(1) via payload index),
+    falling back to in-memory metadata scan for backward compatibility.
     """
     if auth.prefixes is None:
         return None
+
+    # Fast path: Qdrant filtered count via payload index
+    count_by_filter = getattr(memory, "count_by_filter", None)
+    if count_by_filter is not None and hasattr(memory, "distinct_sources"):
+        try:
+            result = count_by_filter(
+                source_prefix=source_prefix,
+                allowed_prefixes=auth.prefixes,
+            )
+            if isinstance(result, int):
+                return result
+        except Exception:
+            pass  # Fall through to O(n) scan
+
+    # Fallback: O(n) in-memory scan (backward compat)
     metadata = getattr(memory, "metadata", None)
     if not isinstance(metadata, list):
         return None
@@ -1007,6 +1023,18 @@ class SearchRequest(BaseModel):
         max_length=500,
         description="Optional source path prefix filter",
     )
+    recency_weight: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description="Recency boost weight (0.0=off, 1.0=heavily favor recent). Only applies to hybrid search.",
+    )
+    recency_half_life_days: float = Field(
+        30.0,
+        gt=0.0,
+        le=365.0,
+        description="Half-life in days for recency decay (default 30).",
+    )
     source: str = Field("", max_length=500, description="Caller source for usage tracking")
 
 
@@ -1353,6 +1381,8 @@ async def search(request_body: SearchRequest, request: Request):
                 threshold=request_body.threshold,
                 vector_weight=request_body.vector_weight,
                 source_prefix=request_body.source_prefix,
+                recency_weight=request_body.recency_weight,
+                recency_half_life_days=request_body.recency_half_life_days,
             )
         else:
             results = memory.search(
@@ -1390,6 +1420,8 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     threshold=item.threshold,
                     vector_weight=item.vector_weight,
                     source_prefix=item.source_prefix,
+                    recency_weight=item.recency_weight,
+                    recency_half_life_days=item.recency_half_life_days,
                 )
             else:
                 results = memory.search(

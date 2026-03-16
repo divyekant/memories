@@ -6,6 +6,7 @@ chunking, automatic backups, and concurrency safety.
 
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -17,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from entity_locks import EntityLockManager
+from qdrant_client import models as qdrant_models
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
@@ -129,6 +131,7 @@ class MemoryEngine:
             local_path=str(self._qdrant_local_path),
         )
         self.qdrant_store.ensure_collection(self.dim)
+        self.qdrant_store.ensure_payload_indexes()
 
         self.cloud_sync: Optional[CloudSync] = None
         if CLOUD_SYNC_AVAILABLE:
@@ -806,6 +809,51 @@ class MemoryEngine:
     # Search
     # ------------------------------------------------------------------
 
+    def distinct_sources(self) -> List[str]:
+        """Return sorted list of unique source values across all memories."""
+        return sorted({str(m.get("source", "")) for m in self.metadata})
+
+    def _build_source_filter(
+        self,
+        source_prefix: Optional[str] = None,
+        allowed_prefixes: Optional[List[str]] = None,
+    ) -> Optional[qdrant_models.Filter]:
+        """Build a Qdrant filter from source prefix and/or auth prefixes.
+
+        Returns None when no filtering is needed (admin / no prefix), letting
+        the existing call path behave exactly as before.
+        """
+        if source_prefix is None and allowed_prefixes is None:
+            return None
+
+        all_sources = self.distinct_sources()
+
+        # Narrow by source_prefix first
+        if source_prefix:
+            candidates = [s for s in all_sources if s.startswith(source_prefix)]
+        else:
+            candidates = all_sources
+
+        # Further narrow by auth allowed_prefixes
+        if allowed_prefixes is not None:
+            from auth_context import source_matches_prefixes
+            candidates = [s for s in candidates if source_matches_prefixes(s, allowed_prefixes)]
+
+        if not candidates:
+            return qdrant_models.Filter(
+                must=[qdrant_models.FieldCondition(
+                    key="source",
+                    match=qdrant_models.MatchValue(value="__no_match__"),
+                )]
+            )
+
+        return qdrant_models.Filter(
+            must=[qdrant_models.FieldCondition(
+                key="source",
+                match=qdrant_models.MatchAny(any=candidates),
+            )]
+        )
+
     def search(
         self,
         query: str,
@@ -825,11 +873,15 @@ class MemoryEngine:
             show_progress_bar=False,
         )[0].astype("float32").tolist()
 
+        # Pre-filter at Qdrant level when source_prefix is specified
+        query_filter = self._build_source_filter(source_prefix=source_prefix)
+
         hits = self.qdrant_store.search(
             query_vector=query_vec,
             limit=k,
             score_threshold=threshold,
             consistency=self.qdrant_settings.read_consistency,
+            query_filter=query_filter,
         )
 
         results: List[Dict[str, Any]] = []
@@ -840,6 +892,7 @@ class MemoryEngine:
 
             meta = self._get_meta_by_id(mem_id)
             source = str(meta.get("source", ""))
+            # Defense-in-depth: still verify source prefix in Python
             if source_prefix and not source.startswith(source_prefix):
                 continue
 
@@ -852,6 +905,31 @@ class MemoryEngine:
 
         return results
 
+    @staticmethod
+    def _recency_score(
+        created_at: Optional[str],
+        half_life_days: float = 30.0,
+    ) -> float:
+        """Exponential decay score based on memory age.
+
+        Returns 1.0 for now, 0.5 after one half-life, 0.25 after two, etc.
+        Returns 0.0 for missing or unparseable timestamps.
+        """
+        if not created_at:
+            return 0.0
+        try:
+            ts = datetime.fromisoformat(created_at)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
+            if age_days < 0:
+                return 1.0  # Future timestamps clamped
+            if half_life_days <= 0:
+                half_life_days = 30.0  # Defensive clamp
+            return math.pow(0.5, age_days / half_life_days)
+        except (ValueError, TypeError, ZeroDivisionError):
+            return 0.0
+
     def hybrid_search(
         self,
         query: str,
@@ -859,8 +937,16 @@ class MemoryEngine:
         threshold: Optional[float] = None,
         vector_weight: float = 0.7,
         source_prefix: Optional[str] = None,
+        recency_weight: float = 0.0,
+        recency_half_life_days: float = 30.0,
     ) -> List[Dict[str, Any]]:
-        """Hybrid BM25 + vector search with Reciprocal Rank Fusion."""
+        """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
+
+        When recency_weight > 0, a third recency signal is blended into RRF
+        scoring. The vector_weight and bm25_weight are scaled down proportionally
+        so that all weights sum to 1.0. With recency_weight=0.0 (default),
+        behavior is identical to before.
+        """
         if not self.metadata:
             return []
 
@@ -892,15 +978,37 @@ class MemoryEngine:
         rrf_k = 60
         rrf_scores: Dict[int, float] = {}
 
+        # Validate recency params at engine level (defense-in-depth)
+        recency_weight = max(0.0, min(1.0, recency_weight))
+        if recency_half_life_days <= 0:
+            recency_half_life_days = 30.0
+
+        # Scale vector/bm25 weights to leave room for recency when active
+        effective_vector_weight = vector_weight * (1.0 - recency_weight)
+        effective_bm25_weight = (1.0 - vector_weight) * (1.0 - recency_weight)
+
         for rank, result in enumerate(vector_results):
             doc_id = result["id"]
-            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + vector_weight * (1.0 / (rank + rrf_k))
+            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + effective_vector_weight * (1.0 / (rank + rrf_k))
 
-        bm25_weight = 1.0 - vector_weight
         for rank, (pos, score) in enumerate(bm25_ranked):
             if score > 0 and pos < len(self._bm25_pos_to_id):
                 doc_id = self._bm25_pos_to_id[pos]
-                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + bm25_weight * (1.0 / (rank + rrf_k))
+                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + effective_bm25_weight * (1.0 / (rank + rrf_k))
+
+        # Blend recency as a rank-based RRF signal (same scale as vector/bm25)
+        if recency_weight > 0:
+            recency_scored = []
+            for doc_id in rrf_scores:
+                if self._id_exists(doc_id):
+                    meta = self._get_meta_by_id(doc_id)
+                    created_at = meta.get("created_at") or meta.get("timestamp")
+                    rs = self._recency_score(created_at, half_life_days=recency_half_life_days)
+                    recency_scored.append((doc_id, rs))
+            # Sort by recency score descending to assign ranks
+            recency_scored.sort(key=lambda x: x[1], reverse=True)
+            for rank, (doc_id, _) in enumerate(recency_scored):
+                rrf_scores[doc_id] += recency_weight * (1.0 / (rank + rrf_k))
 
         sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
@@ -1013,6 +1121,23 @@ class MemoryEngine:
         if not source_prefix:
             return len(self.metadata)
         return sum(1 for m in self.metadata if m.get("source", "").startswith(source_prefix))
+
+    def count_by_filter(
+        self,
+        source_prefix: Optional[str] = None,
+        allowed_prefixes: Optional[List[str]] = None,
+    ) -> int:
+        """Count memories using Qdrant-level filtering (O(1) vs O(n) scan).
+
+        Falls back to in-memory count if no filter is needed.
+        """
+        query_filter = self._build_source_filter(
+            source_prefix=source_prefix,
+            allowed_prefixes=allowed_prefixes,
+        )
+        if query_filter is None:
+            return len(self.metadata)
+        return self.qdrant_store.count_filtered(count_filter=query_filter)
 
     def list_memories(
         self,

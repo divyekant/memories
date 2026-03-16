@@ -32,7 +32,7 @@ class FakeQdrantClient:
             self._points[int(p.id)] = p
         return {"status": "ok"}
 
-    def query_points(self, collection_name, query, limit, score_threshold, with_payload, with_vectors, consistency):
+    def query_points(self, collection_name, query, limit, score_threshold, with_payload, with_vectors, consistency, query_filter=None):
         points = [
             SimpleNamespace(id=pid, payload=pt.payload, score=0.95)
             for pid, pt in sorted(self._points.items())
