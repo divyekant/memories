@@ -1262,6 +1262,49 @@ class MemoryEngine:
             "dry_run": False,
         }
 
+    def find_similar_clusters(
+        self,
+        threshold: float = 0.85,
+        min_cluster_size: int = 2,
+    ) -> List[List[int]]:
+        """Find clusters of similar memories above the threshold.
+
+        Returns a list of clusters, where each cluster is a list of memory IDs
+        that are mutually similar. Uses union-find on the pairwise similarity matrix.
+        """
+        if len(self.metadata) < min_cluster_size:
+            return []
+
+        pairs = self.find_duplicates(threshold)
+        if not pairs:
+            return []
+
+        # Union-find to group connected pairs into clusters
+        parent: Dict[int, int] = {}
+
+        def find(x: int) -> int:
+            while parent.get(x, x) != x:
+                parent[x] = parent.get(parent[x], parent[x])
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        for pair in pairs:
+            union(pair["id_a"], pair["id_b"])
+
+        # Group by root
+        groups: Dict[int, List[int]] = {}
+        all_ids = {p["id_a"] for p in pairs} | {p["id_b"] for p in pairs}
+        for mid in all_ids:
+            root = find(mid)
+            groups.setdefault(root, []).append(mid)
+
+        return [sorted(ids) for ids in groups.values() if len(ids) >= min_cluster_size]
+
     # ------------------------------------------------------------------
     # Browse / List
     # ------------------------------------------------------------------

@@ -1434,6 +1434,46 @@ async def reembed(request_body: ReembedRequest, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+class CompactRequest(BaseModel):
+    threshold: float = Field(0.85, ge=0.5, le=1.0, description="Similarity threshold for clustering")
+
+
+@app.post("/maintenance/compact")
+async def compact_memories(request_body: CompactRequest, request: Request):
+    """Find clusters of similar memories that could be consolidated.
+
+    Returns clusters in dry-run mode only (merge is not yet implemented).
+    Admin only.
+    """
+    auth = _get_auth(request)
+    _require_admin(auth)
+    try:
+        clusters = await run_in_threadpool(
+            memory.find_similar_clusters,
+            threshold=request_body.threshold,
+        )
+        cluster_details = []
+        for cluster_ids in clusters:
+            mems = []
+            for mid in cluster_ids:
+                try:
+                    m = memory.get_memory(mid)
+                    mems.append({"id": mid, "text": m.get("text", "")[:200], "source": m.get("source", "")})
+                except Exception:
+                    pass
+            if mems:
+                cluster_details.append({"ids": cluster_ids, "size": len(cluster_ids), "memories": mems})
+
+        return {
+            "clusters": cluster_details,
+            "cluster_count": len(cluster_details),
+            "total_memories_in_clusters": sum(c["size"] for c in cluster_details),
+        }
+    except Exception as e:
+        logger.exception("Compact failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.post("/maintenance/consolidate")
 async def consolidate(
     request: Request,
