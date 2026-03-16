@@ -62,6 +62,13 @@ class NullTracker:
     def get_search_quality(self, period: str = "7d") -> Dict[str, Any]:
         return {"enabled": False}
 
+    def log_extraction_outcome(self, source: str = "", extracted: int = 0, stored: int = 0,
+                               updated: int = 0, deleted: int = 0, noop: int = 0, conflict: int = 0) -> None:
+        pass
+
+    def get_extraction_quality(self, period: str = "7d") -> Dict[str, Any]:
+        return {"enabled": False}
+
     def get_usage(self, period: str = "7d") -> Dict[str, Any]:
         return {"enabled": False}
 
@@ -115,6 +122,18 @@ class UsageTracker:
                 search_id TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_feedback_ts ON search_feedback(ts);
+            CREATE TABLE IF NOT EXISTS extraction_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                source TEXT DEFAULT '',
+                extracted INTEGER DEFAULT 0,
+                stored INTEGER DEFAULT 0,
+                updated INTEGER DEFAULT 0,
+                deleted INTEGER DEFAULT 0,
+                noop INTEGER DEFAULT 0,
+                conflict INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_extraction_outcomes_ts ON extraction_outcomes(ts);
         """)
         # Migrate existing DBs: add rank/result_count columns if missing
         try:
@@ -278,6 +297,78 @@ class UsageTracker:
                     "useful_ratio": useful_ratio,
                 },
                 "unique_memories_retrieved": retrieved_unique,
+            }
+        finally:
+            conn.close()
+
+    def log_extraction_outcome(self, source: str = "", extracted: int = 0, stored: int = 0,
+                               updated: int = 0, deleted: int = 0, noop: int = 0, conflict: int = 0) -> None:
+        try:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO extraction_outcomes (source, extracted, stored, updated, deleted, noop, conflict) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (source, extracted, stored, updated, deleted, noop, conflict),
+            )
+            conn.commit()
+        except Exception:
+            logger.debug("Failed to log extraction outcome", exc_info=True)
+
+    def get_extraction_quality(self, period: str = "7d") -> Dict[str, Any]:
+        period_filter = PERIOD_SQL.get(period, PERIOD_SQL["7d"])
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            # Aggregated totals
+            row = conn.execute(
+                f"SELECT COUNT(*) as cnt, "
+                f"COALESCE(SUM(extracted), 0) as extracted, "
+                f"COALESCE(SUM(stored), 0) as stored, "
+                f"COALESCE(SUM(updated), 0) as updated, "
+                f"COALESCE(SUM(deleted), 0) as deleted, "
+                f"COALESCE(SUM(noop), 0) as noop, "
+                f"COALESCE(SUM(conflict), 0) as conflict "
+                f"FROM extraction_outcomes WHERE 1=1 {period_filter}"
+            ).fetchone()
+            extraction_count = row["cnt"]
+            total_extracted = row["extracted"]
+            noop_ratio = round(row["noop"] / total_extracted, 4) if total_extracted > 0 else 0.0
+
+            # Per-source breakdown
+            source_rows = conn.execute(
+                f"SELECT source, "
+                f"SUM(extracted) as extracted, SUM(stored) as stored, "
+                f"SUM(updated) as updated, SUM(deleted) as deleted, "
+                f"SUM(noop) as noop, SUM(conflict) as conflict, "
+                f"COUNT(*) as cnt "
+                f"FROM extraction_outcomes WHERE 1=1 {period_filter} GROUP BY source"
+            ).fetchall()
+            by_source = {}
+            for sr in source_rows:
+                src = sr["source"] or "(unknown)"
+                by_source[src] = {
+                    "extraction_count": sr["cnt"],
+                    "extracted": sr["extracted"],
+                    "stored": sr["stored"],
+                    "updated": sr["updated"],
+                    "deleted": sr["deleted"],
+                    "noop": sr["noop"],
+                    "conflict": sr["conflict"],
+                }
+
+            return {
+                "period": period,
+                "extraction_count": extraction_count,
+                "totals": {
+                    "extracted": row["extracted"],
+                    "stored": row["stored"],
+                    "updated": row["updated"],
+                    "deleted": row["deleted"],
+                    "noop": row["noop"],
+                    "conflict": row["conflict"],
+                    "noop_ratio": noop_ratio,
+                },
+                "by_source": by_source,
             }
         finally:
             conn.close()
