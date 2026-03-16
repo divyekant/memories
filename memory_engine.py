@@ -924,8 +924,10 @@ class MemoryEngine:
             age_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
             if age_days < 0:
                 return 1.0  # Future timestamps clamped
+            if half_life_days <= 0:
+                half_life_days = 30.0  # Defensive clamp
             return math.pow(0.5, age_days / half_life_days)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, ZeroDivisionError):
             return 0.0
 
     def hybrid_search(
@@ -976,8 +978,12 @@ class MemoryEngine:
         rrf_k = 60
         rrf_scores: Dict[int, float] = {}
 
-        # Scale vector/bm25 weights to leave room for recency when active
+        # Validate recency params at engine level (defense-in-depth)
         recency_weight = max(0.0, min(1.0, recency_weight))
+        if recency_half_life_days <= 0:
+            recency_half_life_days = 30.0
+
+        # Scale vector/bm25 weights to leave room for recency when active
         effective_vector_weight = vector_weight * (1.0 - recency_weight)
         effective_bm25_weight = (1.0 - vector_weight) * (1.0 - recency_weight)
 
@@ -990,15 +996,19 @@ class MemoryEngine:
                 doc_id = self._bm25_pos_to_id[pos]
                 rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + effective_bm25_weight * (1.0 / (rank + rrf_k))
 
-        # Blend recency signal when weight > 0
+        # Blend recency as a rank-based RRF signal (same scale as vector/bm25)
         if recency_weight > 0:
-            all_doc_ids = set(rrf_scores.keys())
-            for doc_id in all_doc_ids:
+            recency_scored = []
+            for doc_id in rrf_scores:
                 if self._id_exists(doc_id):
                     meta = self._get_meta_by_id(doc_id)
                     created_at = meta.get("created_at") or meta.get("timestamp")
-                    score = self._recency_score(created_at, half_life_days=recency_half_life_days)
-                    rrf_scores[doc_id] += recency_weight * score
+                    rs = self._recency_score(created_at, half_life_days=recency_half_life_days)
+                    recency_scored.append((doc_id, rs))
+            # Sort by recency score descending to assign ranks
+            recency_scored.sort(key=lambda x: x[1], reverse=True)
+            for rank, (doc_id, _) in enumerate(recency_scored):
+                rrf_scores[doc_id] += recency_weight * (1.0 / (rank + rrf_k))
 
         sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 

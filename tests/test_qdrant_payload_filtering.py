@@ -27,6 +27,10 @@ class FakeQdrantClient:
             config=SimpleNamespace(params=SimpleNamespace(vectors=vectors_config)),
         )
 
+    def delete_collection(self, collection_name):
+        self.created = None
+        self._points.clear()
+
     def create_payload_index(self, collection_name, field_name, field_schema, wait=True):
         self._indexes[field_name] = field_schema
         return SimpleNamespace(status="ok")
@@ -207,6 +211,20 @@ def test_ensure_payload_indexes_creates_source_index():
     store.ensure_collection(dim=4)
 
     store.ensure_payload_indexes()
+    assert "source" in fake._indexes
+
+
+def test_recreate_collection_reapplies_payload_indexes():
+    """recreate_collection re-creates payload indexes after rebuild."""
+    fake = FakeQdrantClient()
+    store = QdrantStore(settings=_settings(), client=fake)
+    store.ensure_collection(dim=4)
+    store.ensure_payload_indexes()
+    assert "source" in fake._indexes
+
+    # Clear indexes to simulate collection drop
+    fake._indexes.clear()
+    store.recreate_collection(dim=4)
     assert "source" in fake._indexes
 
 

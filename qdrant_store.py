@@ -95,6 +95,7 @@ class QdrantStore:
         except Exception:
             pass
         self._create_collection(dim=dim)
+        self.ensure_payload_indexes()
 
     def count(self, exact: bool = True) -> int:
         result = self.client.count(collection_name=self.collection, exact=exact)

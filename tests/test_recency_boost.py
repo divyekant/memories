@@ -40,6 +40,17 @@ class TestRecencyScore:
         score = MemoryEngine._recency_score(future, half_life_days=30)
         assert score == 1.0
 
+    def test_zero_half_life_does_not_crash(self):
+        now = datetime.now(timezone.utc).isoformat()
+        score = MemoryEngine._recency_score(now, half_life_days=0)
+        assert score == pytest.approx(1.0, abs=0.01)
+
+    def test_negative_half_life_clamps_to_default(self):
+        past = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        score = MemoryEngine._recency_score(past, half_life_days=-5)
+        # Should use 30-day default, so ~0.5
+        assert score == pytest.approx(0.5, abs=0.05)
+
 
 class TestHybridSearchRecencyParam:
     """Test that recency_weight parameter is accepted and respected."""
