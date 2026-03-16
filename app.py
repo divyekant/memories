@@ -22,7 +22,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -1008,6 +1008,75 @@ async def metrics_middleware(request: Request, call_next):
             active_http_requests = max(0, active_http_requests - 1)
         latency_ms = (time.perf_counter() - start) * 1000.0
         _record_request_metric(route_key, latency_ms, status_code)
+
+
+# -- Event system -------------------------------------------------------------
+
+from event_bus import event_bus, EVENT_TYPES
+
+
+class WebhookRequest(BaseModel):
+    url: str = Field(..., description="Callback URL")
+    events: Optional[List[str]] = Field(None, description="Event types to subscribe to (default: all)")
+
+
+@app.get("/events/stream")
+async def events_stream(request: Request, event_type: Optional[str] = None):
+    """Server-Sent Events stream for real-time memory lifecycle events."""
+    _get_auth(request)
+    q = event_bus.subscribe()
+
+    async def generate():
+        try:
+            yield "retry: 5000\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                    if event_type and event.type != event_type:
+                        continue
+                    yield event.to_sse()
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            event_bus.unsubscribe(q)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/events/recent")
+async def events_recent(request: Request, limit: int = 50):
+    """Return recent event history."""
+    _get_auth(request)
+    events = event_bus.recent_events(limit=limit)
+    return {"events": events, "count": len(events)}
+
+
+@app.post("/webhooks")
+async def create_webhook(request_body: WebhookRequest, request: Request):
+    """Register a webhook callback URL for memory events."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    wh = event_bus.register_webhook(url=request_body.url, events=request_body.events)
+    return wh
+
+
+@app.get("/webhooks")
+async def list_webhooks(request: Request):
+    """List registered webhooks."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    return {"webhooks": event_bus.list_webhooks()}
+
+
+@app.delete("/webhooks/{webhook_id}")
+async def delete_webhook(webhook_id: str, request: Request):
+    """Delete a registered webhook."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    deleted = event_bus.delete_webhook(webhook_id)
+    return {"deleted": deleted}
 
 
 # -- Request / Response models ------------------------------------------------
