@@ -47,7 +47,7 @@ class NullTracker:
     ) -> None:
         pass
 
-    def log_retrieval(self, memory_id: int, query: str = "", source: str = "") -> None:
+    def log_retrieval(self, memory_id: int, query: str = "", source: str = "", rank: int = 0, result_count: int = 0) -> None:
         pass
 
     def get_retrieval_stats(self, memory_ids: list[int]) -> dict:
@@ -55,6 +55,12 @@ class NullTracker:
 
     def get_unretrieved_memory_ids(self, all_memory_ids: list[int]) -> list[int]:
         return []
+
+    def log_search_feedback(self, memory_id: int, query: str = "", signal: str = "", search_id: str = "") -> None:
+        pass
+
+    def get_search_quality(self, period: str = "7d") -> Dict[str, Any]:
+        return {"enabled": False}
 
     def get_usage(self, period: str = "7d") -> Dict[str, Any]:
         return {"enabled": False}
@@ -94,11 +100,31 @@ class UsageTracker:
                 ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
                 memory_id INTEGER NOT NULL,
                 query TEXT DEFAULT '',
-                source TEXT DEFAULT ''
+                source TEXT DEFAULT '',
+                rank INTEGER DEFAULT 0,
+                result_count INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_retrieval_memory ON retrieval_log(memory_id);
             CREATE INDEX IF NOT EXISTS idx_retrieval_ts ON retrieval_log(ts);
+            CREATE TABLE IF NOT EXISTS search_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                memory_id INTEGER NOT NULL,
+                query TEXT DEFAULT '',
+                signal TEXT NOT NULL,
+                search_id TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_feedback_ts ON search_feedback(ts);
         """)
+        # Migrate existing DBs: add rank/result_count columns if missing
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(retrieval_log)").fetchall()}
+            if "rank" not in cols:
+                conn.execute("ALTER TABLE retrieval_log ADD COLUMN rank INTEGER DEFAULT 0")
+            if "result_count" not in cols:
+                conn.execute("ALTER TABLE retrieval_log ADD COLUMN result_count INTEGER DEFAULT 0")
+        except Exception:
+            pass
         conn.close()
         logger.info("Usage tracker initialized: %s", db_path)
 
@@ -145,12 +171,12 @@ class UsageTracker:
         except Exception:
             logger.debug("Failed to log extraction tokens", exc_info=True)
 
-    def log_retrieval(self, memory_id: int, query: str = "", source: str = "") -> None:
+    def log_retrieval(self, memory_id: int, query: str = "", source: str = "", rank: int = 0, result_count: int = 0) -> None:
         try:
             conn = self._get_conn()
             conn.execute(
-                "INSERT INTO retrieval_log (memory_id, query, source) VALUES (?, ?, ?)",
-                (memory_id, query[:500], source),
+                "INSERT INTO retrieval_log (memory_id, query, source, rank, result_count) VALUES (?, ?, ?, ?, ?)",
+                (memory_id, query[:500], source, rank, result_count),
             )
             conn.commit()
         except Exception:
@@ -183,6 +209,76 @@ class UsageTracker:
                 conn.execute("SELECT DISTINCT memory_id FROM retrieval_log").fetchall()
             )
             return [mid for mid in all_memory_ids if mid not in retrieved]
+        finally:
+            conn.close()
+
+    VALID_SIGNALS = {"useful", "not_useful"}
+
+    def log_search_feedback(self, memory_id: int, query: str = "", signal: str = "", search_id: str = "") -> None:
+        if signal not in self.VALID_SIGNALS:
+            return
+        try:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO search_feedback (memory_id, query, signal, search_id) VALUES (?, ?, ?, ?)",
+                (memory_id, query[:500], signal, search_id),
+            )
+            conn.commit()
+        except Exception:
+            logger.debug("Failed to log search feedback", exc_info=True)
+
+    def get_search_quality(self, period: str = "7d") -> Dict[str, Any]:
+        period_filter = PERIOD_SQL.get(period, PERIOD_SQL["7d"])
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            # Total searches
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(count), 0) as total FROM api_events WHERE operation = 'search' {period_filter}"
+            ).fetchone()
+            total_searches = row["total"]
+
+            # Rank distribution (only where rank > 0, i.e. tracked)
+            rows = conn.execute(
+                f"SELECT rank, COUNT(*) as cnt FROM retrieval_log WHERE rank > 0 {period_filter} GROUP BY rank"
+            ).fetchall()
+            top_3 = sum(r["cnt"] for r in rows if r["rank"] <= 3)
+            rank_4_plus = sum(r["cnt"] for r in rows if r["rank"] > 3)
+
+            # Feedback counts
+            fb_rows = conn.execute(
+                f"SELECT signal, COUNT(*) as cnt FROM search_feedback WHERE 1=1 {period_filter} GROUP BY signal"
+            ).fetchall()
+            useful = 0
+            not_useful = 0
+            for r in fb_rows:
+                if r["signal"] == "useful":
+                    useful = r["cnt"]
+                elif r["signal"] == "not_useful":
+                    not_useful = r["cnt"]
+            total_fb = useful + not_useful
+            useful_ratio = round(useful / total_fb, 4) if total_fb > 0 else 0.0
+
+            # Unique memories ever retrieved
+            unretrieved_row = conn.execute(
+                "SELECT COUNT(DISTINCT memory_id) as cnt FROM retrieval_log"
+            ).fetchone()
+            retrieved_unique = unretrieved_row["cnt"]
+
+            return {
+                "period": period,
+                "total_searches": total_searches,
+                "rank_distribution": {
+                    "top_3": top_3,
+                    "rank_4_plus": rank_4_plus,
+                },
+                "feedback": {
+                    "useful": useful,
+                    "not_useful": not_useful,
+                    "useful_ratio": useful_ratio,
+                },
+                "unique_memories_retrieved": retrieved_unique,
+            }
         finally:
             conn.close()
 

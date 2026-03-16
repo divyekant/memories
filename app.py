@@ -1371,6 +1371,36 @@ async def usage(
     return usage_tracker.get_usage(period)
 
 
+class SearchFeedbackRequest(BaseModel):
+    memory_id: int = Field(..., description="Memory ID the feedback applies to")
+    query: str = Field("", description="The search query that produced this result")
+    signal: str = Field(..., pattern="^(useful|not_useful)$", description="Relevance signal")
+    search_id: str = Field("", description="Optional ID grouping results from the same search")
+
+
+@app.post("/search/feedback")
+async def search_feedback(request_body: SearchFeedbackRequest, request: Request):
+    """Record explicit relevance feedback for a search result."""
+    _get_auth(request)
+    usage_tracker.log_search_feedback(
+        memory_id=request_body.memory_id,
+        query=request_body.query,
+        signal=request_body.signal,
+        search_id=request_body.search_id,
+    )
+    return {"status": "recorded"}
+
+
+@app.get("/metrics/search-quality")
+async def search_quality_metrics(
+    request: Request,
+    period: str = Query("7d", pattern="^(today|7d|30d|all)$"),
+):
+    """Aggregated search quality metrics — rank distribution, feedback ratios, volume."""
+    _get_auth(request)
+    return usage_tracker.get_search_quality(period)
+
+
 @app.post("/maintenance/embedder/reload")
 async def reload_embedder(request: Request):
     """Reload in-process embedder runtime and release old inference objects."""
@@ -1544,15 +1574,18 @@ async def search(request_body: SearchRequest, request: Request):
                 source_prefix=request_body.source_prefix,
             )
         results = auth.filter_results(results)
+        result_count = len(results)
         usage_tracker.log_api_event("search", request_body.source)
-        for r in results:
+        for rank, r in enumerate(results, 1):
             if "id" in r:
                 usage_tracker.log_retrieval(
                     memory_id=r["id"],
                     query=request_body.query[:200],
                     source=request_body.source,
+                    rank=rank,
+                    result_count=result_count,
                 )
-        return {"query": request_body.query, "results": results, "count": len(results)}
+        return {"query": request_body.query, "results": results, "count": result_count}
     except Exception as e:
         logger.exception("Search failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -1583,14 +1616,17 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     source_prefix=item.source_prefix,
                 )
             results = auth.filter_results(results)
-            for r in results:
+            batch_result_count = len(results)
+            for rank, r in enumerate(results, 1):
                 if "id" in r:
                     usage_tracker.log_retrieval(
                         memory_id=r["id"],
                         query=item.query[:200],
                         source=item.source,
+                        rank=rank,
+                        result_count=batch_result_count,
                     )
-            outputs.append({"query": item.query, "results": results, "count": len(results)})
+            outputs.append({"query": item.query, "results": results, "count": batch_result_count})
         usage_tracker.log_api_event("search_batch", count=len(request_body.queries))
         return {"results": outputs, "count": len(outputs)}
     except Exception as e:
