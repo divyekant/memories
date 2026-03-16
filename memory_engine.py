@@ -541,6 +541,9 @@ class MemoryEngine:
 
                 self._backup(prefix="pre_delete")
 
+                # Scrub incoming links referencing this memory
+                self._scrub_links_to(memory_id)
+
                 deleted = dict(self._get_meta_by_id(memory_id))
                 self._delete_ids_targeted({memory_id})
 
@@ -606,6 +609,103 @@ class MemoryEngine:
 
         logger.info("Superseded memory %d → %d", old_id, new_id)
         return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text}
+
+    # ------------------------------------------------------------------
+    # Memory Links (lightweight graph edges)
+    # ------------------------------------------------------------------
+
+    VALID_LINK_TYPES = {"supersedes", "related_to", "blocked_by", "caused_by", "reinforces"}
+
+    def add_link(self, from_id: int, to_id: int, link_type: str) -> Dict[str, Any]:
+        """Add a typed directional link between two memories."""
+        if link_type not in self.VALID_LINK_TYPES:
+            raise ValueError(f"Invalid link type: {link_type}. Valid types: {sorted(self.VALID_LINK_TYPES)}")
+        if from_id == to_id:
+            raise ValueError("A memory cannot link to itself")
+        if not self._id_exists(from_id):
+            raise ValueError(f"Source memory {from_id} not found")
+        if not self._id_exists(to_id):
+            raise ValueError(f"Target memory {to_id} not found")
+
+        meta = self._get_meta_by_id(from_id)
+        links = meta.setdefault("links", [])
+
+        # Check for duplicate
+        if any(l["to_id"] == to_id and l["type"] == link_type for l in links):
+            raise ValueError(f"Link {from_id} --{link_type}--> {to_id} already exists")
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        link = {"to_id": to_id, "type": link_type, "created_at": created_at}
+        links.append(link)
+        self.save()
+
+        logger.info("Link added: %d --%s--> %d", from_id, link_type, to_id)
+        return {"from_id": from_id, "to_id": to_id, "type": link_type, "created_at": created_at}
+
+    def remove_link(self, from_id: int, to_id: int, link_type: str) -> Dict[str, Any]:
+        """Remove a specific link between two memories."""
+        if not self._id_exists(from_id):
+            return {"removed": False}
+
+        meta = self._get_meta_by_id(from_id)
+        links = meta.get("links", [])
+        original_len = len(links)
+        meta["links"] = [l for l in links if not (l["to_id"] == to_id and l["type"] == link_type)]
+
+        removed = len(meta["links"]) < original_len
+        if removed:
+            if not meta["links"]:
+                del meta["links"]
+            self.save()
+            logger.info("Link removed: %d --%s--> %d", from_id, link_type, to_id)
+
+        return {"removed": removed}
+
+    def _scrub_links_to(self, target_id: int) -> None:
+        """Remove all incoming links pointing to target_id from other memories."""
+        for m in self.metadata:
+            links = m.get("links")
+            if not links:
+                continue
+            filtered = [l for l in links if l.get("to_id") != target_id]
+            if len(filtered) < len(links):
+                if filtered:
+                    m["links"] = filtered
+                else:
+                    del m["links"]
+
+    def get_links(
+        self,
+        memory_id: int,
+        link_type: Optional[str] = None,
+        include_incoming: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Get links for a memory. Outgoing by default; optionally include incoming."""
+        results = []
+
+        # Outgoing links (stored on this memory, skip dangling targets)
+        if self._id_exists(memory_id):
+            meta = self._get_meta_by_id(memory_id)
+            for link in meta.get("links", []):
+                if link_type and link["type"] != link_type:
+                    continue
+                if not self._id_exists(link["to_id"]):
+                    continue  # Target was deleted
+                results.append({**link, "from_id": memory_id, "direction": "outgoing"})
+
+        # Incoming links (scan other memories)
+        if include_incoming:
+            for m in self.metadata:
+                if m["id"] == memory_id:
+                    continue
+                for link in m.get("links", []):
+                    if link["to_id"] != memory_id:
+                        continue
+                    if link_type and link["type"] != link_type:
+                        continue
+                    results.append({**link, "from_id": m["id"], "direction": "incoming"})
+
+        return results
 
     def delete_by_source(self, source_pattern: str) -> Dict[str, Any]:
         """Delete all memories matching a source pattern."""

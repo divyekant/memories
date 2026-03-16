@@ -2331,6 +2331,83 @@ async def memory_supersede(request_body: SupersedeRequest, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+class AddLinkRequest(BaseModel):
+    to_id: int = Field(..., description="Target memory ID")
+    type: str = Field(..., description="Link type: supersedes, related_to, blocked_by, caused_by, reinforces")
+
+
+@app.post("/memory/{memory_id}/link")
+async def add_memory_link(memory_id: int, request_body: AddLinkRequest, request: Request):
+    """Add a typed link from one memory to another."""
+    auth = _get_auth(request)
+    try:
+        from_mem = memory.get_memory(memory_id)
+        _require_write(auth, from_mem.get("source", ""))
+        to_mem = memory.get_memory(request_body.to_id)
+        _require_write(auth, to_mem.get("source", ""))
+        result = memory.add_link(
+            from_id=memory_id,
+            to_id=request_body.to_id,
+            link_type=request_body.type,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Add link failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/memory/{memory_id}/links")
+async def get_memory_links(
+    memory_id: int,
+    request: Request,
+    type: Optional[str] = None,
+    include_incoming: bool = False,
+):
+    """Get links for a memory (outgoing by default)."""
+    auth = _get_auth(request)
+    try:
+        mem = memory.get_memory(memory_id)
+        if not auth.can_read(mem.get("source", "")):
+            raise HTTPException(status_code=403, detail="Not authorized to read this memory")
+        links = memory.get_links(
+            memory_id=memory_id,
+            link_type=type,
+            include_incoming=include_incoming,
+        )
+        # Filter links to only include memories the caller can read
+        filtered = []
+        for link in links:
+            linked_id = link.get("to_id") if link["direction"] == "outgoing" else link["from_id"]
+            try:
+                linked_mem = memory.get_memory(linked_id)
+                if auth.can_read(linked_mem.get("source", "")):
+                    filtered.append(link)
+            except Exception:
+                pass
+        return {"memory_id": memory_id, "links": filtered}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/memory/{memory_id}/link/{target_id}")
+async def remove_memory_link(
+    memory_id: int,
+    target_id: int,
+    request: Request,
+    type: str = "related_to",
+):
+    """Remove a specific link between two memories."""
+    auth = _get_auth(request)
+    from_mem = memory.get_memory(memory_id)
+    _require_write(auth, from_mem.get("source", ""))
+    result = memory.remove_link(from_id=memory_id, to_id=target_id, link_type=type)
+    return result
+
+
 @app.get("/extract/status")
 async def extract_status():
     """Check extraction provider health and configuration."""
