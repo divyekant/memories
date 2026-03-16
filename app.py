@@ -1520,7 +1520,10 @@ async def list_conflicts(request: Request):
         entry = {**m}
         try:
             conflicting = memory.get_memory(cw)
-            entry["conflicting_memory"] = conflicting
+            if auth.can_read(conflicting.get("source", "")):
+                entry["conflicting_memory"] = conflicting
+            else:
+                entry["conflicting_memory"] = {"id": cw, "redacted": True}
         except Exception:
             entry["conflicting_memory"] = None
         conflicts.append(entry)
