@@ -2331,6 +2331,62 @@ async def memory_supersede(request_body: SupersedeRequest, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+class AddLinkRequest(BaseModel):
+    to_id: int = Field(..., description="Target memory ID")
+    type: str = Field(..., description="Link type: supersedes, related_to, blocked_by, caused_by, reinforces")
+
+
+@app.post("/memory/{memory_id}/link")
+async def add_memory_link(memory_id: int, request_body: AddLinkRequest, request: Request):
+    """Add a typed link from one memory to another."""
+    _get_auth(request)
+    try:
+        result = memory.add_link(
+            from_id=memory_id,
+            to_id=request_body.to_id,
+            link_type=request_body.type,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Add link failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/memory/{memory_id}/links")
+async def get_memory_links(
+    memory_id: int,
+    request: Request,
+    type: Optional[str] = None,
+    include_incoming: bool = False,
+):
+    """Get links for a memory (outgoing by default)."""
+    _get_auth(request)
+    try:
+        links = memory.get_links(
+            memory_id=memory_id,
+            link_type=type,
+            include_incoming=include_incoming,
+        )
+        return {"memory_id": memory_id, "links": links}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/memory/{memory_id}/link/{target_id}")
+async def remove_memory_link(
+    memory_id: int,
+    target_id: int,
+    request: Request,
+    type: str = "related_to",
+):
+    """Remove a specific link between two memories."""
+    _get_auth(request)
+    result = memory.remove_link(from_id=memory_id, to_id=target_id, link_type=type)
+    return result
+
+
 @app.get("/extract/status")
 async def extract_status():
     """Check extraction provider health and configuration."""
