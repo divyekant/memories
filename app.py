@@ -730,6 +730,13 @@ async def _extract_worker(worker_id: int) -> None:
                 job_state["status"] = "completed"
                 job_state["completed_at"] = _utc_now_iso()
                 job_state["result"] = result
+                event_bus.emit("extraction.completed", {
+                    "job_id": job_state.get("job_id", ""),
+                    "source": job_state.get("source", ""),
+                    "stored_count": result.get("stored_count", 0),
+                    "updated_count": result.get("updated_count", 0),
+                    "conflict_count": result.get("conflict_count", 0),
+                })
             # Log extraction token usage
             tokens = result.get("tokens", {})
             for stage_name in ("extract", "audn"):
@@ -1020,10 +1027,18 @@ class WebhookRequest(BaseModel):
     events: Optional[List[str]] = Field(None, description="Event types to subscribe to (default: all)")
 
 
+def _event_visible_to(auth: AuthContext, event_data: dict) -> bool:
+    """Check if an event's source is readable by the caller."""
+    if auth.prefixes is None:
+        return True  # Admin sees all
+    source = event_data.get("source", "")
+    return auth.can_read(source) if source else True
+
+
 @app.get("/events/stream")
 async def events_stream(request: Request, event_type: Optional[str] = None):
     """Server-Sent Events stream for real-time memory lifecycle events."""
-    _get_auth(request)
+    auth = _get_auth(request)
     q = event_bus.subscribe()
 
     async def generate():
@@ -1033,6 +1048,8 @@ async def events_stream(request: Request, event_type: Optional[str] = None):
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30.0)
                     if event_type and event.type != event_type:
+                        continue
+                    if not _event_visible_to(auth, event.data):
                         continue
                     yield event.to_sse()
                 except asyncio.TimeoutError:
@@ -1048,9 +1065,10 @@ async def events_stream(request: Request, event_type: Optional[str] = None):
 @app.get("/events/recent")
 async def events_recent(request: Request, limit: int = 50):
     """Return recent event history."""
-    _get_auth(request)
+    auth = _get_auth(request)
     events = event_bus.recent_events(limit=limit)
-    return {"events": events, "count": len(events)}
+    filtered = [e for e in events if _event_visible_to(auth, e.get("data", {}))]
+    return {"events": filtered, "count": len(filtered)}
 
 
 @app.post("/webhooks")
