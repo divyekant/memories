@@ -430,6 +430,20 @@ Rebuild the index from source files.
 
 Manually reload the embedder runtime (reclaims memory).
 
+### POST /maintenance/reembed
+
+Re-embed all memories with the current or a new embedding model. Creates a backup before re-embedding. Admin only.
+
+**Request body:**
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model` | string | null | New model name (omit to re-embed with current model) |
+
+**Response:**
+```json
+{"status": "completed", "old_model": "all-MiniLM-L6-v2", "new_model": "all-MiniLM-L12-v2", "memories_processed": 150, "dimension": 384}
+```
+
 ### POST /maintenance/consolidate
 
 Consolidate memory index (compact IDs, rebuild vectors).

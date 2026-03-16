@@ -1409,6 +1409,31 @@ async def reload_embedder(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+class ReembedRequest(BaseModel):
+    model: Optional[str] = Field(None, description="New embedding model name (omit to re-embed with current model)")
+
+
+@app.post("/maintenance/reembed")
+async def reembed(request_body: ReembedRequest, request: Request):
+    """Re-embed all memories, optionally with a different embedding model.
+
+    Creates a backup before re-embedding. Admin only.
+    """
+    auth = _get_auth(request)
+    _require_admin(auth)
+    try:
+        result = await run_in_threadpool(
+            memory.reembed,
+            model_name=request_body.model,
+        )
+        return result
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Re-embed failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.post("/maintenance/consolidate")
 async def consolidate(
     request: Request,
