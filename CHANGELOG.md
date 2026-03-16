@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-03-15
+
 ### Fixed
 - Scoped extraction hardening:
   - `/memory/extract` now requires explicit `source` for scoped non-admin keys
@@ -17,7 +19,14 @@
 - Codex notify parity hardening:
   - `memory-codex-notify.sh` now supports transcript fallback, broader payload variants, and scoped-source overrides via `MEMORIES_SOURCE_PREFIX` / `MEMORIES_SOURCE`
 
+### Changed
+- Improved Claude memory follow-up responses to avoid meta-phrasing and sound more natural
+- Deduplicated prefix matching and jq textify logic in hook scripts
+
 ### Docs
+- Added quick operating rules to memories skill for faster agent onboarding
+- Added memory routing directive to integration setup guides
+- Cleaned up roadmap, removed completed items
 - Clarified Codex setup prerequisites (`npm install` in `mcp-server`, `jq`/`curl`, running service)
 - Added explicit guidance for merging Codex `notify` config when an existing `notify` entry is already present
 - Added scoped-key guidance for Codex notify source overrides and client-aware source-prefix conventions in skill/setup docs
