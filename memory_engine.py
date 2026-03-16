@@ -743,9 +743,48 @@ class MemoryEngine:
 
         return {"deleted_count": len(matching)}
 
+    @staticmethod
+    def compute_confidence(
+        anchor_timestamp: Optional[str],
+        half_life_days: float = 90.0,
+    ) -> float:
+        """Compute confidence score based on time since last reinforcement.
+
+        Uses exponential decay from the anchor timestamp (typically updated_at
+        or created_at). Returns 1.0 for fresh memories, 0.5 after one half-life.
+        """
+        if not anchor_timestamp:
+            return 0.0
+        try:
+            ts = datetime.fromisoformat(anchor_timestamp)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
+            if age_days < 0:
+                return 1.0
+            if half_life_days <= 0:
+                half_life_days = 90.0
+            return math.pow(0.5, age_days / half_life_days)
+        except (ValueError, TypeError, ZeroDivisionError):
+            return 0.0
+
+    def reinforce(self, memory_id: int) -> None:
+        """Reinforce a memory by updating its timestamp, resetting decay clock."""
+        if not self._id_exists(memory_id):
+            return
+        meta = self._get_meta_by_id(memory_id)
+        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    def _enrich_with_confidence(self, mem: Dict[str, Any]) -> Dict[str, Any]:
+        """Add computed confidence to a memory dict."""
+        anchor = mem.get("updated_at") or mem.get("created_at") or mem.get("timestamp")
+        mem["confidence"] = round(self.compute_confidence(anchor), 4)
+        return mem
+
     def get_memory(self, memory_id: int) -> Dict[str, Any]:
-        """Fetch a single memory by ID."""
-        return dict(self._get_meta_by_id(memory_id))
+        """Fetch a single memory by ID, with computed confidence."""
+        mem = dict(self._get_meta_by_id(memory_id))
+        return self._enrich_with_confidence(mem)
 
     def get_memories(self, memory_ids: List[int]) -> Dict[str, Any]:
         """Fetch multiple memories by ID."""
@@ -753,7 +792,7 @@ class MemoryEngine:
         missing_ids: List[int] = []
         for memory_id in memory_ids:
             if self._id_exists(memory_id):
-                memories.append(dict(self._get_meta_by_id(memory_id)))
+                memories.append(self._enrich_with_confidence(dict(self._get_meta_by_id(memory_id))))
             else:
                 missing_ids.append(memory_id)
         return {"memories": memories, "missing_ids": missing_ids}
@@ -1251,7 +1290,7 @@ class MemoryEngine:
             filtered = [m for m in filtered if m.get("source", "").startswith(source_filter)]
 
         total = len(filtered)
-        page = filtered[offset : offset + limit]
+        page = [self._enrich_with_confidence(dict(m)) for m in filtered[offset : offset + limit]]
 
         return {
             "memories": page,
