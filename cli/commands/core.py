@@ -51,12 +51,15 @@ def _read_text_or_stdin(text: str) -> str:
 @click.option("--hybrid/--no-hybrid", default=True, help="Hybrid search")
 @click.option("--threshold", default=None, type=float, help="Similarity threshold")
 @click.option("--source", default=None, help="Source prefix filter")
+@click.option("--recency", default=0.0, type=float, help="Recency boost weight (0.0-1.0)")
+@click.option("--half-life", default=30.0, type=float, help="Recency half-life in days")
 @pass_ctx
 @handle_errors
-def search(ctx, query, limit, hybrid, threshold, source):
+def search(ctx, query, limit, hybrid, threshold, source, recency, half_life):
     """Search memories by semantic similarity."""
     data = ctx.client.search(
         query, k=limit, hybrid=hybrid, threshold=threshold, source_prefix=source,
+        recency_weight=recency, recency_half_life_days=half_life,
     )
 
     def human(d):

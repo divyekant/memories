@@ -75,16 +75,23 @@ class MemoriesClient:
     # --- Search ---
 
     def search(self, query: str, k: int = 5, hybrid: bool = True,
-               threshold: float | None = None, source_prefix: str | None = None):
+               threshold: float | None = None, source_prefix: str | None = None,
+               recency_weight: float = 0.0, recency_half_life_days: float = 30.0):
         body: dict = {"query": query, "k": k, "hybrid": hybrid}
         if threshold is not None:
             body["threshold"] = threshold
         if source_prefix is not None:
             body["source_prefix"] = source_prefix
+        if recency_weight > 0:
+            body["recency_weight"] = recency_weight
+            body["recency_half_life_days"] = recency_half_life_days
         return self._request("POST", "/search", json=body)
 
     def search_batch(self, queries: list[dict]):
         return self._request("POST", "/search/batch", json={"queries": queries})
+
+    def conflicts(self):
+        return self._request("GET", "/memory/conflicts")
 
     # --- Memory CRUD ---
 
