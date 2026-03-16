@@ -1780,6 +1780,66 @@ class MemoryEngine:
             "gc_collected": gc_collected,
         }
 
+    def reembed(self, model_name: Optional[str] = None) -> Dict[str, Any]:
+        """Re-embed all memories, optionally with a different model.
+
+        Creates a backup before re-embedding. If model_name is provided and
+        differs from the current model, swaps the embedder first. If the new
+        model has a different dimension, the collection is recreated.
+        """
+        old_model_name = self._active_embed_model()
+        total = len(self.metadata)
+
+        with self._entity_locks.acquire_many(["__all__"]):
+            with self._write_lock:
+                self._backup(prefix="pre_reembed")
+
+                if model_name and model_name != old_model_name:
+                    # Swap embedder to new model
+                    old_embed_model = self._embed_model
+                    old_model_name_val = self._model_name
+                    try:
+                        self._embed_model = model_name
+                        self._model_name = model_name
+                        with self._embedder_lock:
+                            old_embedder = self.model
+                            self.model = self._make_embedder()
+                            new_dim = self.model.get_sentence_embedding_dimension()
+                            if new_dim != self.dim:
+                                self.dim = new_dim
+                            close_fn = getattr(old_embedder, "close", None)
+                            if callable(close_fn):
+                                try:
+                                    close_fn()
+                                except Exception:
+                                    pass
+                    except Exception as e:
+                        # Rollback on failure
+                        self._embed_model = old_embed_model
+                        self._model_name = old_model_name_val
+                        raise RuntimeError(f"Failed to load model {model_name}: {e}")
+
+                # Re-embed all memories
+                self._reindex_store_from_metadata()
+
+                self.config["model"] = self._active_embed_model()
+                self.config["dimension"] = self.dim
+                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self.save()
+                self._rebuild_bm25()
+
+        new_model_name = self._active_embed_model()
+        logger.info("Re-embed complete: %s -> %s (%d memories)", old_model_name, new_model_name, total)
+        gc.collect()
+
+        return {
+            "status": "completed",
+            "old_model": old_model_name,
+            "new_model": new_model_name,
+            "memories_processed": total,
+            "dimension": self.dim,
+        }
+
     def get_cloud_sync(self) -> Optional["CloudSync"]:
         """Get cloud sync client (None if not available/enabled)."""
         return self.cloud_sync
