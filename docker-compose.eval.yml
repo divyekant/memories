@@ -1,0 +1,55 @@
+version: '3.8'
+
+# Isolated eval instance — runs on different ports with a data copy.
+# Production instance on 8900/6333 is untouched.
+
+services:
+  qdrant-eval:
+    image: qdrant/qdrant:v1.15.4
+    container_name: qdrant-eval
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6335:6333"
+      - "127.0.0.1:6336:6334"
+    volumes:
+      - qdrant-storage-eval:/qdrant/storage
+
+  memories-eval:
+    build:
+      context: .
+      target: ${MEMORIES_IMAGE_TARGET:-extract}
+      args:
+        ENABLE_CLOUD_SYNC: "false"
+        PRELOAD_MODEL: "false"
+    image: memories:eval
+    container_name: memories-eval
+    restart: unless-stopped
+    depends_on:
+      - qdrant-eval
+    ports:
+      - "8901:8000"
+    volumes:
+      - ./data-eval:/data
+    environment:
+      - DATA_DIR=/data
+      - API_KEY=${API_KEY:-god-is-an-astronaut}
+      - QDRANT_URL=http://qdrant-eval:6333
+      - QDRANT_COLLECTION=memories
+      - QDRANT_WRITE_ORDERING=strong
+      - QDRANT_READ_CONSISTENCY=majority
+      - EMBED_PROVIDER=${EMBED_PROVIDER:-onnx}
+      - EXTRACT_PROVIDER=${EXTRACT_PROVIDER:-}
+      - EXTRACT_FALLBACK_ADD=true
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - EMBEDDER_AUTO_RELOAD_ENABLED=false
+      - USAGE_TRACKING=true
+      - AUDIT_LOG=true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if 200 <= urllib.request.urlopen('http://localhost:8000/health', timeout=3).getcode() < 400 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  qdrant-storage-eval:

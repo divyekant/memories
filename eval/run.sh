@@ -26,8 +26,9 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 # Check Memories service
-if ! curl -sf http://localhost:8900/health > /dev/null 2>&1; then
-  echo "Error: Memories service not reachable at http://localhost:8900" >&2
+EVAL_PORT="${MEMORIES_PORT:-8901}"
+if ! curl -sf "http://localhost:${EVAL_PORT}/health" > /dev/null 2>&1; then
+  echo "Error: Memories service not reachable at http://localhost:${EVAL_PORT}" >&2
   exit 1
 fi
 
@@ -38,7 +39,7 @@ if ! command -v claude > /dev/null 2>&1; then
 fi
 
 echo "=== Memories Efficacy Eval ==="
-echo "Memories: http://localhost:8900 (healthy)"
+echo "Memories: http://localhost:${EVAL_PORT} (healthy)"
 if [[ -n "${MEMORIES_API_KEY:-}" ]]; then echo "API Key:  [set]"; else echo "API Key:  NOT SET"; fi
 echo "MCP Path: ${EVAL_MCP_SERVER_PATH:-not set}"
 echo "Args:     $*"
