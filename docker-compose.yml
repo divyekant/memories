@@ -57,6 +57,8 @@ services:
       - EXTRACT_FALLBACK_ADD=${EXTRACT_FALLBACK_ADD:-false}
       # Usage analytics (opt-in)
       - USAGE_TRACKING=${USAGE_TRACKING:-}
+      # Audit log (opt-in)
+      - AUDIT_LOG=${AUDIT_LOG:-false}
       # Scheduled maintenance (consolidation + pruning)
       - MAINTENANCE_ENABLED=${MAINTENANCE_ENABLED:-false}
       - EXTRACT_FALLBACK_MAX_FACTS=${EXTRACT_FALLBACK_MAX_FACTS:-1}
