@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [3.0.0] - 2026-03-18
 
 ### Added
 - Qdrant payload filtering with source prefix and metadata filters (#22)
