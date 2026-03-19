@@ -732,22 +732,144 @@ registerPage("memories", async (container) => {
       const item = document.createElement("div");
       item.className = `memory-item${isActive ? " active" : ""}`;
       item.dataset.memId = mem.id;
+
+      // Color-coded left border for search results
+      if (mem.similarity != null) {
+        const borderColor = confidenceColor(mem.similarity);
+        item.classList.add(`border-left-${borderColor}`);
+      }
+
       const truncText = (mem.text || "").length > 120
         ? escHtml((mem.text || "").slice(0, 120)) + "..."
         : escHtml(mem.text || "");
 
-      let scoreHtml = "";
+      // Header with source, score badge, confidence mini-bar
+      const headerEl = h("div", { className: "memory-item-header" },
+        h("span", { className: "memory-item-source" }, mem.source || "")
+      );
+
+      const rightSide = h("span", { className: "memory-item-id" }, `#${mem.id}`);
+
       if (mem.similarity != null) {
-        scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.similarity * 100).toFixed(1)))}%</span>`;
+        const pct = (mem.similarity * 100).toFixed(1);
+        const color = confidenceColor(mem.similarity);
+        const scoreBadge = h("span", {
+          className: `search-result-score`,
+          style: { position: "relative", cursor: "help" },
+        }, `${pct}%`);
+
+        // Score tooltip on hover (lazy-load explain data)
+        let explainLoaded = false;
+        scoreBadge.addEventListener("mouseenter", async () => {
+          if (explainLoaded) return;
+          const existing = scoreBadge.querySelector(".score-tooltip");
+          if (existing) return;
+          try {
+            const explainData = await api("/search/explain", {
+              method: "POST",
+              body: JSON.stringify({ query: memState.searchQuery, k: 20, hybrid: true }),
+            });
+            explainLoaded = true;
+            const vectorCandidates = explainData.explain?.vector_candidates || [];
+            const bm25Candidates = explainData.explain?.bm25_candidates || [];
+            const vectorMatch = vectorCandidates.find((c) => c.id === mem.id);
+            const bm25Match = bm25Candidates.find((c) => c.id === mem.id);
+            const tooltip = h("div", { className: "score-tooltip" },
+              h("div", { className: "score-tooltip-label" }, "Score Breakdown"),
+              h("div", { className: "score-tooltip-grid" },
+                h("div", { className: "score-tooltip-item" },
+                  h("div", { className: "score-tooltip-item-label" }, "Vector"),
+                  h("div", { className: "score-tooltip-item-value" }, vectorMatch ? vectorMatch.score.toFixed(2) : "N/A")
+                ),
+                h("div", { className: "score-tooltip-item" },
+                  h("div", { className: "score-tooltip-item-label" }, "BM25"),
+                  h("div", { className: "score-tooltip-item-value" }, bm25Match ? bm25Match.score.toFixed(2) : "N/A")
+                ),
+                h("div", { className: "score-tooltip-item" },
+                  h("div", { className: "score-tooltip-item-label" }, "Confidence"),
+                  h("div", { className: "score-tooltip-item-value" }, mem.confidence != null ? mem.confidence.toFixed(2) : "N/A")
+                ),
+                h("div", { className: "score-tooltip-item" },
+                  h("div", { className: "score-tooltip-item-label" }, "Final"),
+                  h("div", { className: `score-tooltip-item-value ${mem.similarity > 0.7 ? "color-success" : ""}` },
+                    mem.similarity.toFixed(2))
+                ),
+              )
+            );
+            scoreBadge.appendChild(tooltip);
+          } catch {
+            const tooltip = h("div", { className: "score-tooltip" },
+              h("div", { className: "score-tooltip-label" }, "Score details require admin access")
+            );
+            scoreBadge.appendChild(tooltip);
+            explainLoaded = true;
+          }
+        });
+        scoreBadge.addEventListener("mouseleave", () => {
+          const tooltip = scoreBadge.querySelector(".score-tooltip");
+          if (tooltip) tooltip.remove();
+          explainLoaded = false;
+        });
+
+        rightSide.appendChild(document.createTextNode(" "));
+        rightSide.appendChild(scoreBadge);
+
+        // Confidence mini-bar
+        if (mem.confidence != null) {
+          rightSide.appendChild(document.createTextNode(" "));
+          rightSide.appendChild(confidenceBar(mem.confidence, "sm"));
+        }
       }
 
-      item.innerHTML = `
-        <div class="memory-item-header">
-          <span class="memory-item-source">${escHtml(mem.source || "")}</span>
-          <span class="memory-item-id">#${escHtml(String(mem.id))}${scoreHtml}</span>
-        </div>
-        <div class="memory-item-text">${truncText}</div>
-      `;
+      headerEl.appendChild(rightSide);
+
+      // Text row with optional feedback buttons
+      const textRow = h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } },
+        h("div", { className: "memory-item-text", style: { flex: "1" } })
+      );
+      textRow.firstChild.innerHTML = truncText;
+
+      // Feedback buttons (only for search results)
+      if (mem.similarity != null) {
+        const feedbackDiv = h("div", { style: { display: "flex", gap: "4px", marginLeft: "8px", flexShrink: "0" } });
+
+        const upBtn = h("button", { className: "feedback-btn", title: "Relevant" }, "\u25B2");
+        const downBtn = h("button", { className: "feedback-btn", title: "Not relevant" }, "\u25BC");
+
+        upBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          try {
+            await api("/search/feedback", {
+              method: "POST",
+              body: JSON.stringify({ memory_id: mem.id, query: memState.searchQuery, signal: "useful" }),
+            });
+            upBtn.classList.add("active-useful");
+            downBtn.classList.remove("active-not-useful");
+            showToast("Feedback recorded", "success");
+          } catch (err) { showToast(err.message, "error"); }
+        });
+
+        downBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          try {
+            await api("/search/feedback", {
+              method: "POST",
+              body: JSON.stringify({ memory_id: mem.id, query: memState.searchQuery, signal: "not_useful" }),
+            });
+            downBtn.classList.add("active-not-useful");
+            upBtn.classList.remove("active-useful");
+            showToast("Feedback recorded", "success");
+          } catch (err) { showToast(err.message, "error"); }
+        });
+
+        feedbackDiv.appendChild(upBtn);
+        feedbackDiv.appendChild(downBtn);
+        textRow.appendChild(feedbackDiv);
+      }
+
+      item.appendChild(headerEl);
+      item.appendChild(textRow);
+
       item.addEventListener("click", () => {
         memState.selected = mem;
         listPanel.querySelectorAll(".memory-item").forEach((el) => {

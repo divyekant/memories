@@ -81,3 +81,12 @@ def test_app_js_has_detail_panel_enhancements(client):
     assert "loadLinks" in text
     assert "conflict-badge" in text
     assert "/links" in text
+
+
+def test_app_js_has_search_feedback_and_explain(client):
+    js_response = client.get("/ui/static/app.js")
+    text = js_response.text
+    assert "feedback-btn" in text
+    assert "/search/feedback" in text
+    assert "/search/explain" in text
+    assert "score-tooltip" in text
