@@ -575,13 +575,9 @@ registerPage("dashboard", async (container) => {
         if (ext && ext.total_calls > 0) {
           const extTitle = h("div", { className: "text-muted mb-8", style: { fontSize: "0.84rem", fontWeight: "600" } }, "Extraction Tokens");
           const extTableWrap = h("div", { className: "table-wrap" });
-          let extHtml = `<table class="data-table"><thead><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Est. Cost</th></tr></thead><tbody>`;
+          let extHtml = `<table class="data-table"><thead><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th></tr></thead><tbody>`;
           for (const [model, data] of Object.entries(ext.by_model || {})) {
-            const modelCost = ((data.input_tokens || 0) * 0.001 + (data.output_tokens || 0) * 0.005) / 1000;
-            extHtml += `<tr><td class="font-mono">${escHtml(model)}</td><td>${escHtml(formatNumber(data.calls || 0))}</td><td>${escHtml(formatNumber(data.input_tokens || 0))}</td><td>${escHtml(formatNumber(data.output_tokens || 0))}</td><td>${escHtml("$" + modelCost.toFixed(2))}</td></tr>`;
-          }
-          if (ext.estimated_cost_usd != null) {
-            extHtml += `<tr style="font-weight:600;"><td>Total</td><td>${escHtml(formatNumber(ext.total_calls))}</td><td>${escHtml(formatNumber(ext.total_input_tokens || 0))}</td><td>${escHtml(formatNumber(ext.total_output_tokens || 0))}</td><td>${escHtml("$" + ext.estimated_cost_usd.toFixed(2))}</td></tr>`;
+            extHtml += `<tr><td class="font-mono">${escHtml(model)}</td><td>${escHtml(formatNumber(data.calls || 0))}</td><td>${escHtml(formatNumber(data.input_tokens || 0))}</td><td>${escHtml(formatNumber(data.output_tokens || 0))}</td></tr>`;
           }
           extHtml += `</tbody></table>`;
           extTableWrap.innerHTML = extHtml;
