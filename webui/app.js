@@ -1449,6 +1449,23 @@ registerPage("extractions", async (container) => {
     container.appendChild(statSection);
     container.appendChild(statGrid);
 
+    // Quality badge linking to Health page
+    try {
+      const eq = await api(`/metrics/extraction-quality?period=7d`);
+      if (eq && eq.totals && eq.totals.extracted > 0) {
+        const rate = Math.round(((eq.totals.stored + eq.totals.updated) / eq.totals.extracted) * 100);
+        const color = confidenceColor(rate / 100);
+        const badge = h("a", {
+          href: "#/health",
+          style: { display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "0.75rem", color: `var(--color-${color})`, textDecoration: "none", marginTop: "8px" },
+        },
+          `Quality: ${rate}%`,
+          h("span", { style: { fontSize: "0.625rem", color: "var(--color-text-faint)" } }, " \u2192 Health")
+        );
+        container.appendChild(badge);
+      }
+    } catch { /* admin-only, skip silently */ }
+
     // Section: Configuration
     const configSection = h("div", { className: "section-title mt-24" }, "Configuration");
     const configGrid = h("div", { className: "info-grid" });

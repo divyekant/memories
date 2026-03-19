@@ -100,3 +100,10 @@ def test_app_js_has_health_page_renderer(client):
     assert "/metrics/extraction-quality" in text or "extraction-quality" in text
     assert "/metrics/search-quality" in text or "search-quality" in text
     assert "/metrics/failures" in text
+
+
+def test_app_js_extractions_page_has_quality_badge(client):
+    js_response = client.get("/ui/static/app.js")
+    text = js_response.text
+    assert "/metrics/extraction-quality" in text
+    assert "Quality:" in text
