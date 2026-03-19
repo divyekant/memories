@@ -727,6 +727,11 @@ registerPage("memories", async (container) => {
 
     // Left: list panel
     const listPanel = h("div", { className: "memories-list-panel" });
+    // Global tooltip ref — only one tooltip visible at a time
+    let globalTooltip = null;
+    function clearGlobalTooltip() {
+      if (globalTooltip) { globalTooltip.remove(); globalTooltip = null; }
+    }
     memories.forEach((mem) => {
       const isActive = memState.selected && memState.selected.id === mem.id;
       const item = document.createElement("div");
@@ -760,7 +765,6 @@ registerPage("memories", async (container) => {
 
         // Score tooltip on hover (lazy-load explain data, fixed-position to body)
         let explainLoaded = false;
-        let activeTooltip = null;
 
         function positionTooltip(tooltip) {
           const rect = scoreBadge.getBoundingClientRect();
@@ -770,7 +774,7 @@ registerPage("memories", async (container) => {
         }
 
         scoreBadge.addEventListener("mouseenter", async () => {
-          if (activeTooltip) return;
+          clearGlobalTooltip();
           if (explainLoaded) return;
           try {
             const explainData = await api("/search/explain", {
@@ -782,7 +786,7 @@ registerPage("memories", async (container) => {
             const bm25Candidates = explainData.explain?.bm25_candidates || [];
             const vectorMatch = vectorCandidates.find((c) => c.id === mem.id);
             const bm25Match = bm25Candidates.find((c) => c.id === mem.id);
-            activeTooltip = h("div", { className: "score-tooltip" },
+            globalTooltip = h("div", { className: "score-tooltip" },
               h("div", { className: "score-tooltip-label" }, "Score Breakdown"),
               h("div", { className: "score-tooltip-grid" },
                 h("div", { className: "score-tooltip-item" },
@@ -803,19 +807,19 @@ registerPage("memories", async (container) => {
                 ),
               )
             );
-            document.body.appendChild(activeTooltip);
-            positionTooltip(activeTooltip);
+            document.body.appendChild(globalTooltip);
+            positionTooltip(globalTooltip);
           } catch {
-            activeTooltip = h("div", { className: "score-tooltip" },
+            globalTooltip = h("div", { className: "score-tooltip" },
               h("div", { className: "score-tooltip-label" }, "Score details require admin access")
             );
-            document.body.appendChild(activeTooltip);
-            positionTooltip(activeTooltip);
+            document.body.appendChild(globalTooltip);
+            positionTooltip(globalTooltip);
             explainLoaded = true;
           }
         });
         scoreBadge.addEventListener("mouseleave", () => {
-          if (activeTooltip) { activeTooltip.remove(); activeTooltip = null; }
+          clearGlobalTooltip();
           explainLoaded = false;
         });
 
