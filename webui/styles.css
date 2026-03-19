@@ -1170,18 +1170,15 @@ body {
 /* -- Score Tooltip --------------------------------------------------------- */
 
 .score-tooltip {
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  margin-top: 4px;
+  position: fixed;
+  z-index: 1000;
   background: var(--color-bg-elevated);
   border: 1px solid rgba(212, 175, 55, 0.25);
   border-radius: var(--radius-md);
   padding: 12px 16px;
-  z-index: 100;
   white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
 }
 
 .score-tooltip-label {

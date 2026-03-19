@@ -755,15 +755,23 @@ registerPage("memories", async (container) => {
         const color = confidenceColor(mem.rrf_score);
         const scoreBadge = h("span", {
           className: `search-result-score`,
-          style: { position: "relative", cursor: "help" },
+          style: { cursor: "help" },
         }, `${pct}%`);
 
-        // Score tooltip on hover (lazy-load explain data)
+        // Score tooltip on hover (lazy-load explain data, fixed-position to body)
         let explainLoaded = false;
+        let activeTooltip = null;
+
+        function positionTooltip(tooltip) {
+          const rect = scoreBadge.getBoundingClientRect();
+          tooltip.style.top = `${rect.bottom + 6}px`;
+          tooltip.style.left = `${rect.left + rect.width / 2}px`;
+          tooltip.style.transform = "translateX(-50%)";
+        }
+
         scoreBadge.addEventListener("mouseenter", async () => {
+          if (activeTooltip) return;
           if (explainLoaded) return;
-          const existing = scoreBadge.querySelector(".score-tooltip");
-          if (existing) return;
           try {
             const explainData = await api("/search/explain", {
               method: "POST",
@@ -774,7 +782,7 @@ registerPage("memories", async (container) => {
             const bm25Candidates = explainData.explain?.bm25_candidates || [];
             const vectorMatch = vectorCandidates.find((c) => c.id === mem.id);
             const bm25Match = bm25Candidates.find((c) => c.id === mem.id);
-            const tooltip = h("div", { className: "score-tooltip" },
+            activeTooltip = h("div", { className: "score-tooltip" },
               h("div", { className: "score-tooltip-label" }, "Score Breakdown"),
               h("div", { className: "score-tooltip-grid" },
                 h("div", { className: "score-tooltip-item" },
@@ -791,23 +799,23 @@ registerPage("memories", async (container) => {
                 ),
                 h("div", { className: "score-tooltip-item" },
                   h("div", { className: "score-tooltip-item-label" }, "Final"),
-                  h("div", { className: `score-tooltip-item-value ${mem.rrf_score > 0.7 ? "color-success" : ""}` },
-                    mem.rrf_score.toFixed(2))
+                  h("div", { className: "score-tooltip-item-value" }, mem.rrf_score.toFixed(4))
                 ),
               )
             );
-            scoreBadge.appendChild(tooltip);
+            document.body.appendChild(activeTooltip);
+            positionTooltip(activeTooltip);
           } catch {
-            const tooltip = h("div", { className: "score-tooltip" },
+            activeTooltip = h("div", { className: "score-tooltip" },
               h("div", { className: "score-tooltip-label" }, "Score details require admin access")
             );
-            scoreBadge.appendChild(tooltip);
+            document.body.appendChild(activeTooltip);
+            positionTooltip(activeTooltip);
             explainLoaded = true;
           }
         });
         scoreBadge.addEventListener("mouseleave", () => {
-          const tooltip = scoreBadge.querySelector(".score-tooltip");
-          if (tooltip) tooltip.remove();
+          if (activeTooltip) { activeTooltip.remove(); activeTooltip = null; }
           explainLoaded = false;
         });
 
