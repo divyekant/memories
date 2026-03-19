@@ -738,10 +738,9 @@ registerPage("memories", async (container) => {
       item.className = `memory-item${isActive ? " active" : ""}`;
       item.dataset.memId = mem.id;
 
-      // Color-coded left border for search results
+      // Left border accent for search results (gold for all — RRF scores are relative rankings)
       if (mem.rrf_score != null) {
-        const borderColor = confidenceColor(mem.rrf_score);
-        item.classList.add(`border-left-${borderColor}`);
+        item.style.borderLeft = "3px solid var(--color-primary)";
       }
 
       const truncText = (mem.text || "").length > 120
@@ -990,30 +989,55 @@ registerPage("memories", async (container) => {
     detailPanel.appendChild(actions);
   }
 
-  // -- Load linked memories for detail panel --
+  // -- Load linked memories for detail panel (collapsible, fetches target text) --
   async function loadLinks(memoryId, container) {
     container.innerHTML = "";
+    let collapsed = false;
+    const linksList = h("div");
+
+    const toggleLabel = h("span", { className: "linked-memories-title", style: { cursor: "pointer" } }, "\u25BE Linked Memories");
+    toggleLabel.addEventListener("click", () => {
+      collapsed = !collapsed;
+      linksList.style.display = collapsed ? "none" : "block";
+      toggleLabel.textContent = `${collapsed ? "\u25B8" : "\u25BE"} Linked Memories`;
+    });
+
     const header = h("div", { className: "linked-memories-header" },
-      h("span", { className: "linked-memories-title" }, "Linked Memories"),
+      toggleLabel,
       h("button", { className: "linked-memory-add", onClick: () => showAddLinkModal(memoryId) }, "+ Add")
     );
     container.appendChild(header);
+    container.appendChild(linksList);
 
     try {
       const data = await api(`/memory/${memoryId}/links`);
       const links = data.links || [];
       if (links.length === 0) {
-        container.appendChild(
+        linksList.appendChild(
           h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "No linked memories")
         );
         return;
       }
+
+      // Fetch target memory text for each link
+      const targetIds = links.map((link) => link.direction === "outgoing" ? link.to_id : link.from_id);
+      const targetTexts = {};
+      await Promise.allSettled(
+        targetIds.map(async (tid) => {
+          try {
+            const mem = await api(`/memory/${tid}`);
+            targetTexts[tid] = (mem.text || "").slice(0, 80);
+          } catch { targetTexts[tid] = null; }
+        })
+      );
+
       links.forEach((link) => {
         const targetId = link.direction === "outgoing" ? link.to_id : link.from_id;
+        const displayText = targetTexts[targetId] || `Memory #${targetId}`;
         const item = h("div", { className: "linked-memory-item" },
           h("div", null,
             h("span", { className: "linked-memory-type", style: { color: linkTypeColor(link.link_type) } }, link.link_type),
-            h("div", { className: "linked-memory-text" }, `Memory #${targetId}`)
+            h("div", { className: "linked-memory-text" }, displayText)
           ),
           h("button", {
             className: "linked-memory-remove",
@@ -1027,10 +1051,10 @@ registerPage("memories", async (container) => {
             },
           }, "\u00D7")
         );
-        container.appendChild(item);
+        linksList.appendChild(item);
       });
     } catch (err) {
-      container.appendChild(
+      linksList.appendChild(
         h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "Failed to load links")
       );
     }
