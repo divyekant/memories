@@ -250,6 +250,49 @@ export function escHtml(str) {
   return d.innerHTML;
 }
 
+// -- Confidence & Link Helpers ---------------------------------------------
+
+/**
+ * Return the semantic color class suffix for a confidence/similarity value (0-1).
+ * >0.7 = success (green), 0.4-0.7 = warning (yellow), <0.4 = error (red)
+ */
+export function confidenceColor(value) {
+  if (value > 0.7) return "success";
+  if (value >= 0.4) return "warning";
+  return "error";
+}
+
+/**
+ * Build a confidence bar DOM element.
+ * @param {number} value - Confidence value 0-1
+ * @param {"sm"|"md"} size - Bar size
+ * @returns {HTMLElement}
+ */
+export function confidenceBar(value, size = "sm") {
+  const color = confidenceColor(value);
+  const pct = Math.round(value * 100);
+  return h("span", { className: "confidence-bar" },
+    h("span", { className: `confidence-bar-track confidence-bar-track--${size}` },
+      h("span", { className: `confidence-bar-fill bg-${color}`, style: { width: `${pct}%` } })
+    ),
+    h("span", { className: `confidence-bar-label color-${color}` }, size === "sm" ? String(pct) : `${pct}%`)
+  );
+}
+
+/**
+ * Return the CSS color variable for a link type.
+ */
+export function linkTypeColor(type) {
+  const map = {
+    reinforces: "var(--color-primary)",
+    related_to: "var(--color-info)",
+    supersedes: "var(--color-warning)",
+    blocked_by: "var(--color-error)",
+    caused_by: "var(--color-text-muted)",
+  };
+  return map[type] || "var(--color-text-faint)";
+}
+
 // -- Router ----------------------------------------------------------------
 
 const pages = {};
@@ -277,6 +320,7 @@ function navigate(page) {
     memories: "Memories",
     extractions: "Extractions",
     keys: "API Keys",
+    health: "Health",
     settings: "Settings",
   };
   if (titleEl) {
@@ -531,13 +575,9 @@ registerPage("dashboard", async (container) => {
         if (ext && ext.total_calls > 0) {
           const extTitle = h("div", { className: "text-muted mb-8", style: { fontSize: "0.84rem", fontWeight: "600" } }, "Extraction Tokens");
           const extTableWrap = h("div", { className: "table-wrap" });
-          let extHtml = `<table class="data-table"><thead><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Est. Cost</th></tr></thead><tbody>`;
+          let extHtml = `<table class="data-table"><thead><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th></tr></thead><tbody>`;
           for (const [model, data] of Object.entries(ext.by_model || {})) {
-            const modelCost = ((data.input_tokens || 0) * 0.001 + (data.output_tokens || 0) * 0.005) / 1000;
-            extHtml += `<tr><td class="font-mono">${escHtml(model)}</td><td>${escHtml(formatNumber(data.calls || 0))}</td><td>${escHtml(formatNumber(data.input_tokens || 0))}</td><td>${escHtml(formatNumber(data.output_tokens || 0))}</td><td>${escHtml("$" + modelCost.toFixed(2))}</td></tr>`;
-          }
-          if (ext.estimated_cost_usd != null) {
-            extHtml += `<tr style="font-weight:600;"><td>Total</td><td>${escHtml(formatNumber(ext.total_calls))}</td><td>${escHtml(formatNumber(ext.total_input_tokens || 0))}</td><td>${escHtml(formatNumber(ext.total_output_tokens || 0))}</td><td>${escHtml("$" + ext.estimated_cost_usd.toFixed(2))}</td></tr>`;
+            extHtml += `<tr><td class="font-mono">${escHtml(model)}</td><td>${escHtml(formatNumber(data.calls || 0))}</td><td>${escHtml(formatNumber(data.input_tokens || 0))}</td><td>${escHtml(formatNumber(data.output_tokens || 0))}</td></tr>`;
           }
           extHtml += `</tbody></table>`;
           extTableWrap.innerHTML = extHtml;
@@ -683,27 +723,160 @@ registerPage("memories", async (container) => {
 
     // Left: list panel
     const listPanel = h("div", { className: "memories-list-panel" });
+    // Global tooltip ref — only one tooltip visible at a time
+    let globalTooltip = null;
+    function clearGlobalTooltip() {
+      if (globalTooltip) { globalTooltip.remove(); globalTooltip = null; }
+    }
     memories.forEach((mem) => {
       const isActive = memState.selected && memState.selected.id === mem.id;
       const item = document.createElement("div");
       item.className = `memory-item${isActive ? " active" : ""}`;
       item.dataset.memId = mem.id;
+
+      // No extra border styling for search results — keep cards visually consistent
+
       const truncText = (mem.text || "").length > 120
         ? escHtml((mem.text || "").slice(0, 120)) + "..."
         : escHtml(mem.text || "");
 
-      let scoreHtml = "";
-      if (mem.similarity != null) {
-        scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.similarity * 100).toFixed(1)))}%</span>`;
+      // Header with source, score badge, confidence mini-bar
+      const headerEl = h("div", { className: "memory-item-header" },
+        h("span", { className: "memory-item-source" }, mem.source || "")
+      );
+
+      const rightSide = h("span", { className: "memory-item-id" }, `#${mem.id}`);
+
+      if (mem.rrf_score != null) {
+        const pct = (mem.rrf_score * 100).toFixed(1);
+        const color = confidenceColor(mem.rrf_score);
+        const scoreBadge = h("span", {
+          className: `search-result-score`,
+          style: { cursor: "help" },
+        }, `${pct}%`);
+
+        // Score tooltip on hover (lazy-load explain data, fixed-position to body)
+        let explainLoaded = false;
+
+        function positionTooltip(tooltip) {
+          const rect = scoreBadge.getBoundingClientRect();
+          tooltip.style.top = `${rect.bottom + 6}px`;
+          tooltip.style.left = `${rect.left + rect.width / 2}px`;
+          tooltip.style.transform = "translateX(-50%)";
+        }
+
+        scoreBadge.addEventListener("mouseenter", async () => {
+          clearGlobalTooltip();
+          if (explainLoaded) return;
+          try {
+            const explainData = await api("/search/explain", {
+              method: "POST",
+              body: JSON.stringify({ query: memState.searchQuery, k: 20, hybrid: true }),
+            });
+            explainLoaded = true;
+            const vectorCandidates = explainData.explain?.vector_candidates || [];
+            const bm25Candidates = explainData.explain?.bm25_candidates || [];
+            const vectorMatch = vectorCandidates.find((c) => c.id === mem.id);
+            const bm25Match = bm25Candidates.find((c) => c.id === mem.id);
+            globalTooltip = h("div", { className: "score-tooltip" },
+              h("div", { className: "score-tooltip-label" }, "Score Breakdown"),
+              h("div", { className: "score-tooltip-grid" },
+                h("div", { className: "score-tooltip-item" },
+                  h("div", { className: "score-tooltip-item-label" }, "Vector"),
+                  h("div", { className: "score-tooltip-item-value" }, vectorMatch ? vectorMatch.score.toFixed(2) : "N/A")
+                ),
+                h("div", { className: "score-tooltip-item" },
+                  h("div", { className: "score-tooltip-item-label" }, "BM25"),
+                  h("div", { className: "score-tooltip-item-value" }, bm25Match ? bm25Match.score.toFixed(2) : "N/A")
+                ),
+                h("div", { className: "score-tooltip-item" },
+                  h("div", { className: "score-tooltip-item-label" }, "Confidence"),
+                  h("div", { className: "score-tooltip-item-value" }, mem.confidence != null ? mem.confidence.toFixed(2) : "N/A")
+                ),
+                h("div", { className: "score-tooltip-item" },
+                  h("div", { className: "score-tooltip-item-label" }, "Final"),
+                  h("div", { className: "score-tooltip-item-value" }, mem.rrf_score.toFixed(4))
+                ),
+              )
+            );
+            document.body.appendChild(globalTooltip);
+            positionTooltip(globalTooltip);
+          } catch {
+            globalTooltip = h("div", { className: "score-tooltip" },
+              h("div", { className: "score-tooltip-label" }, "Score details require admin access")
+            );
+            document.body.appendChild(globalTooltip);
+            positionTooltip(globalTooltip);
+            explainLoaded = true;
+          }
+        });
+        scoreBadge.addEventListener("mouseleave", () => {
+          clearGlobalTooltip();
+          explainLoaded = false;
+        });
+
+        rightSide.appendChild(document.createTextNode(" "));
+        rightSide.appendChild(scoreBadge);
+
+        // Confidence mini-bar
+        if (mem.confidence != null) {
+          rightSide.appendChild(document.createTextNode(" "));
+          rightSide.appendChild(confidenceBar(mem.confidence, "sm"));
+        }
       }
 
-      item.innerHTML = `
-        <div class="memory-item-header">
-          <span class="memory-item-source">${escHtml(mem.source || "")}</span>
-          <span class="memory-item-id">#${escHtml(String(mem.id))}${scoreHtml}</span>
-        </div>
-        <div class="memory-item-text">${truncText}</div>
-      `;
+      headerEl.appendChild(rightSide);
+      item.appendChild(headerEl);
+
+      if (mem.rrf_score != null) {
+        // Search result: text + feedback buttons in a flex row
+        const textRow = h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } },
+          h("div", { className: "memory-item-text", style: { flex: "1" } })
+        );
+        textRow.firstChild.innerHTML = truncText;
+
+        const feedbackDiv = h("div", { style: { display: "flex", gap: "4px", marginLeft: "8px", flexShrink: "0" } });
+
+        const upBtn = h("button", { className: "feedback-btn", title: "Relevant" }, "\u25B2");
+        const downBtn = h("button", { className: "feedback-btn", title: "Not relevant" }, "\u25BC");
+
+        upBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          try {
+            await api("/search/feedback", {
+              method: "POST",
+              body: JSON.stringify({ memory_id: mem.id, query: memState.searchQuery, signal: "useful" }),
+            });
+            upBtn.classList.add("active-useful");
+            downBtn.classList.remove("active-not-useful");
+            showToast("Feedback recorded", "success");
+          } catch (err) { showToast(err.message, "error"); }
+        });
+
+        downBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          try {
+            await api("/search/feedback", {
+              method: "POST",
+              body: JSON.stringify({ memory_id: mem.id, query: memState.searchQuery, signal: "not_useful" }),
+            });
+            downBtn.classList.add("active-not-useful");
+            upBtn.classList.remove("active-useful");
+            showToast("Feedback recorded", "success");
+          } catch (err) { showToast(err.message, "error"); }
+        });
+
+        feedbackDiv.appendChild(upBtn);
+        feedbackDiv.appendChild(downBtn);
+        textRow.appendChild(feedbackDiv);
+        item.appendChild(textRow);
+      } else {
+        // Browse mode: preserve original card structure
+        const textDiv = h("div", { className: "memory-item-text" });
+        textDiv.innerHTML = truncText;
+        item.appendChild(textDiv);
+      }
+
       item.addEventListener("click", () => {
         memState.selected = mem;
         listPanel.querySelectorAll(".memory-item").forEach((el) => {
@@ -724,49 +897,249 @@ registerPage("memories", async (container) => {
     updateDetailPanel();
   }
 
-  // -- Update detail panel only (no list re-render) --
-  function updateDetailPanel() {
+  // -- Update detail panel with v3 enhancements --
+  async function updateDetailPanel() {
     const detailPanel = document.getElementById("memoryDetailPanel");
     if (!detailPanel) return;
 
-    if (memState.selected) {
-      const mem = memState.selected;
-      detailPanel.innerHTML = `
-        <div class="detail-header">
-          <div>
-            <span class="memory-item-source" style="font-size:0.85rem;">${escHtml(mem.source || "")}</span>
-          </div>
-          <span class="memory-item-id" style="font-size:0.78rem;">#${escHtml(String(mem.id))}</span>
-        </div>
-        <div class="detail-text">${escHtml(mem.text || "")}</div>
-        <div class="detail-meta">
-          <div class="meta-item">
-            <div class="meta-label">ID</div>
-            <div class="meta-value font-mono">${escHtml(String(mem.id))}</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-label">Source</div>
-            <div class="meta-value">${escHtml(mem.source || "N/A")}</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-label">Created</div>
-            <div class="meta-value">${mem.created_at ? timeAgo(mem.created_at) : "N/A"}</div>
-          </div>
-        </div>
-        <div class="detail-actions"></div>
-      `;
-      // Bind delete button via addEventListener (not inline onclick)
-      const deleteBtn = h("button", { className: "btn btn-danger btn-sm" }, "Delete");
-      deleteBtn.addEventListener("click", () => deleteMemory(mem.id));
-      detailPanel.querySelector(".detail-actions").appendChild(deleteBtn);
-    } else {
-      detailPanel.innerHTML = `
-        <div class="empty-state" style="border:none;padding:60px 20px;">
-          <div class="empty-state-icon">\u25C6</div>
-          <div class="empty-state-text">Select a memory to view details</div>
-        </div>
-      `;
+    if (!memState.selected) {
+      detailPanel.innerHTML = "";
+      detailPanel.appendChild(
+        h("div", { className: "empty-state", style: { border: "none", padding: "60px 20px" } },
+          h("div", { className: "empty-state-icon" }, "\u25C6"),
+          h("div", { className: "empty-state-text" }, "Select a memory to view details")
+        )
+      );
+      return;
     }
+
+    const mem = memState.selected;
+    detailPanel.innerHTML = "";
+
+    // Header: source + confidence bar
+    const header = h("div", { className: "detail-header" });
+    const headerLeft = h("div", null,
+      h("span", { className: "memory-item-source", style: { fontSize: "0.85rem" } }, mem.source || "")
+    );
+    const headerRight = h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+      h("span", { className: "memory-item-id", style: { fontSize: "0.78rem" } }, `#${mem.id}`)
+    );
+    // Add confidence bar if available
+    if (mem.confidence != null) {
+      headerRight.appendChild(confidenceBar(mem.confidence, "md"));
+    }
+    header.appendChild(headerLeft);
+    header.appendChild(headerRight);
+    detailPanel.appendChild(header);
+
+    // Text
+    detailPanel.appendChild(h("div", { className: "detail-text" }, mem.text || ""));
+
+    // Meta row
+    const meta = h("div", { className: "detail-meta" });
+    meta.appendChild(
+      h("div", { className: "meta-item" },
+        h("div", { className: "meta-label" }, "ID"),
+        h("div", { className: "meta-value font-mono" }, String(mem.id))
+      )
+    );
+    meta.appendChild(
+      h("div", { className: "meta-item" },
+        h("div", { className: "meta-label" }, "Source"),
+        h("div", { className: "meta-value" }, mem.source || "N/A")
+      )
+    );
+    meta.appendChild(
+      h("div", { className: "meta-item" },
+        h("div", { className: "meta-label" }, "Created"),
+        h("div", { className: "meta-value" }, mem.created_at ? timeAgo(mem.created_at) : "N/A")
+      )
+    );
+    detailPanel.appendChild(meta);
+
+    // Decay status
+    if (mem.confidence != null && mem.confidence < 1.0) {
+      detailPanel.appendChild(
+        h("div", { className: "decay-status" }, `Decaying \u00B7 confidence ${Math.round(mem.confidence * 100)}%`)
+      );
+    }
+
+    // Conflict badge (check asynchronously)
+    const conflictArea = h("div");
+    detailPanel.appendChild(conflictArea);
+    loadConflictBadge(mem.id, conflictArea);
+
+    // Linked memories section
+    const linksSection = h("div", { className: "linked-memories-section" });
+    detailPanel.appendChild(linksSection);
+    loadLinks(mem.id, linksSection);
+
+    // Action buttons
+    const actions = h("div", { className: "detail-actions", style: { marginTop: "12px" } });
+    const deleteBtn = h("button", { className: "btn btn-danger btn-sm" }, "Delete");
+    deleteBtn.addEventListener("click", () => deleteMemory(mem.id));
+    actions.appendChild(deleteBtn);
+    detailPanel.appendChild(actions);
+  }
+
+  // -- Load linked memories for detail panel (collapsible, fetches target text) --
+  async function loadLinks(memoryId, container) {
+    container.innerHTML = "";
+    let collapsed = false;
+    const linksList = h("div");
+
+    const toggleLabel = h("span", { className: "linked-memories-title", style: { cursor: "pointer" } }, "\u25BE Linked Memories");
+    toggleLabel.addEventListener("click", () => {
+      collapsed = !collapsed;
+      linksList.style.display = collapsed ? "none" : "block";
+      toggleLabel.textContent = `${collapsed ? "\u25B8" : "\u25BE"} Linked Memories`;
+    });
+
+    const header = h("div", { className: "linked-memories-header" },
+      toggleLabel,
+      h("button", { className: "linked-memory-add", onClick: () => showAddLinkModal(memoryId) }, "+ Add")
+    );
+    container.appendChild(header);
+    container.appendChild(linksList);
+
+    try {
+      const data = await api(`/memory/${memoryId}/links?include_incoming=true`);
+      const links = data.links || [];
+      if (links.length === 0) {
+        linksList.appendChild(
+          h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "No linked memories")
+        );
+        return;
+      }
+
+      // Fetch target memory text for each link
+      const targetIds = links.map((link) => link.direction === "outgoing" ? link.to_id : link.from_id);
+      const targetTexts = {};
+      await Promise.allSettled(
+        targetIds.map(async (tid) => {
+          try {
+            const mem = await api(`/memory/${tid}`);
+            targetTexts[tid] = (mem.text || "").slice(0, 80);
+          } catch { targetTexts[tid] = null; }
+        })
+      );
+
+      links.forEach((link) => {
+        const targetId = link.direction === "outgoing" ? link.to_id : link.from_id;
+        const ltype = link.link_type || link.type || "related_to";
+        const displayText = targetTexts[targetId] || `Memory #${targetId}`;
+        const item = h("div", { className: "linked-memory-item" },
+          h("div", null,
+            h("span", { className: "linked-memory-type", style: { color: linkTypeColor(ltype) } }, ltype),
+            h("div", { className: "linked-memory-text" }, displayText)
+          ),
+          h("button", {
+            className: "linked-memory-remove",
+            onClick: async () => {
+              try {
+                await api(`/memory/${memoryId}/link/${targetId}?type=${encodeURIComponent(ltype)}`, { method: "DELETE" });
+                invalidateCache(`/memory/${memoryId}/links`);
+                showToast("Link removed", "success");
+                loadLinks(memoryId, container);
+              } catch (err) { showToast(err.message, "error"); }
+            },
+          }, "\u00D7")
+        );
+        linksList.appendChild(item);
+      });
+    } catch (err) {
+      linksList.appendChild(
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "Failed to load links")
+      );
+    }
+  }
+
+  // -- Show add-link modal --
+  function showAddLinkModal(memoryId) {
+    showModal((content) => {
+      content.appendChild(h("h3", { style: { marginBottom: "16px" } }, "Link Memory"));
+
+      const searchInput = h("input", {
+        type: "text",
+        className: "topbar-search",
+        placeholder: "Search for a memory...",
+        style: { width: "100%", marginBottom: "12px" },
+      });
+      content.appendChild(searchInput);
+
+      const typeSelect = h("select", { className: "source-select", style: { marginBottom: "12px", width: "100%" } });
+      ["related_to", "reinforces", "supersedes", "blocked_by", "caused_by"].forEach((t) => {
+        typeSelect.appendChild(h("option", { value: t }, t));
+      });
+      content.appendChild(typeSelect);
+
+      const resultsDiv = h("div", { style: { maxHeight: "200px", overflowY: "auto", marginBottom: "12px" } });
+      content.appendChild(resultsDiv);
+
+      let selectedTargetId = null;
+
+      searchInput.addEventListener("keydown", async (e) => {
+        if (e.key !== "Enter") return;
+        const query = searchInput.value.trim();
+        if (!query) return;
+        try {
+          const data = await api("/search", { method: "POST", body: JSON.stringify({ query, k: 10, hybrid: true }) });
+          resultsDiv.innerHTML = "";
+          (data.results || []).forEach((r) => {
+            const row = h("div", {
+              style: { padding: "8px", cursor: "pointer", borderRadius: "4px", marginBottom: "4px", background: "var(--color-bg-surface)", fontSize: "0.75rem" },
+              onClick: () => {
+                selectedTargetId = r.id;
+                resultsDiv.querySelectorAll("div").forEach((d) => d.style.outline = "none");
+                row.style.outline = "1px solid var(--color-primary)";
+              },
+            },
+              h("span", { style: { color: "var(--color-primary)" } }, r.source || ""),
+              " ",
+              (r.text || "").slice(0, 80)
+            );
+            resultsDiv.appendChild(row);
+          });
+        } catch (err) { showToast(err.message, "error"); }
+      });
+
+      const confirmBtn = h("button", {
+        className: "btn btn-primary",
+        onClick: async () => {
+          if (!selectedTargetId) { showToast("Select a memory first", "warning"); return; }
+          try {
+            await api(`/memory/${memoryId}/link`, {
+              method: "POST",
+              body: JSON.stringify({ to_id: selectedTargetId, type: typeSelect.value }),
+            });
+            invalidateCache(`/memory/${memoryId}/links`);
+            showToast("Link added", "success");
+            hideModal();
+            updateDetailPanel();
+          } catch (err) { showToast(err.message, "error"); }
+        },
+      }, "Add Link");
+      content.appendChild(confirmBtn);
+    });
+  }
+
+  // -- Check if memory has conflicts --
+  async function loadConflictBadge(memoryId, container) {
+    try {
+      const data = await api("/memory/conflicts");
+      const conflicts = data.conflicts || data || [];
+      const hasConflict = Array.isArray(conflicts) && conflicts.some(
+        (c) => c.id === memoryId || c.conflicts_with === memoryId
+          || c.conflicting_memory?.id === memoryId
+      );
+      if (hasConflict) {
+        container.appendChild(
+          h("a", { className: "conflict-badge", href: "#/health", style: { marginTop: "8px", display: "inline-flex" } },
+            "\u26A0", " Conflict"
+          )
+        );
+      }
+    } catch { /* non-critical */ }
   }
 
   // -- Grid view --
@@ -778,8 +1151,8 @@ registerPage("memories", async (container) => {
         : escHtml(mem.text || "");
 
       let scoreHtml = "";
-      if (mem.similarity != null) {
-        scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.similarity * 100).toFixed(1)))}%</span>`;
+      if (mem.rrf_score != null) {
+        scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.rrf_score * 100).toFixed(1)))}%</span>`;
       }
 
       const card = document.createElement("div");
@@ -1108,6 +1481,23 @@ registerPage("extractions", async (container) => {
 
     container.appendChild(statSection);
     container.appendChild(statGrid);
+
+    // Quality badge linking to Health page
+    try {
+      const eq = await api(`/metrics/extraction-quality?period=7d`);
+      if (eq && eq.totals && eq.totals.extracted > 0) {
+        const rate = Math.round(((eq.totals.stored + eq.totals.updated) / eq.totals.extracted) * 100);
+        const color = confidenceColor(rate / 100);
+        const badge = h("a", {
+          href: "#/health",
+          style: { display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "0.75rem", color: `var(--color-${color})`, textDecoration: "none", marginTop: "8px" },
+        },
+          `Quality: ${rate}%`,
+          h("span", { style: { fontSize: "0.625rem", color: "var(--color-text-faint)" } }, " \u2192 Health")
+        );
+        container.appendChild(badge);
+      }
+    } catch { /* admin-only, skip silently */ }
 
     // Section: Configuration
     const configSection = h("div", { className: "section-title mt-24" }, "Configuration");
@@ -1841,6 +2231,304 @@ registerPage("settings", async (container) => {
     );
     showToast(err.message, "error");
   }
+});
+
+// ==========================================================================
+//  Health Page
+// ==========================================================================
+
+registerPage("health", async (container) => {
+  container.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+
+  // Period state
+  let period = "7d";
+
+  async function loadHealthPage() {
+    container.innerHTML = "";
+
+    // Header
+    const header = h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" } },
+      h("div", null,
+        h("div", { className: "section-title", style: { marginBottom: "2px" } }, "Health"),
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "System quality and conflict monitoring")
+      ),
+      h("div", null, (() => {
+        const sel = h("select", { className: "period-select" });
+        ["today", "7d", "30d", "all"].forEach((p) => {
+          const opt = h("option", { value: p }, p === "today" ? "Today" : p === "all" ? "All Time" : `Last ${p}`);
+          if (p === period) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        sel.addEventListener("change", (e) => { period = e.target.value; loadHealthPage(); });
+        return sel;
+      })())
+    );
+    container.appendChild(header);
+
+    // Load data in parallel — handle admin-only gracefully
+    let conflicts = [];
+    let extractionQuality = null;
+    let searchQuality = null;
+    let failures = null; // null = not loaded (auth failed), [] = loaded empty
+
+    const results = await Promise.allSettled([
+      api("/memory/conflicts"),
+      api(`/metrics/extraction-quality?period=${period}`),
+      api(`/metrics/search-quality?period=${period}`),
+      api("/metrics/failures?type=extraction&limit=100"),
+    ]);
+
+    if (results[0].status === "fulfilled") {
+      const d = results[0].value;
+      conflicts = d.conflicts || d || [];
+    }
+    if (results[1].status === "fulfilled") extractionQuality = results[1].value;
+    if (results[2].status === "fulfilled") searchQuality = results[2].value;
+    if (results[3].status === "fulfilled") {
+      const d = results[3].value;
+      failures = d.failures || [];
+    }
+
+    // Stat cards
+    const statGrid = h("div", { className: "health-stat-grid" });
+
+    // Conflicts count
+    const conflictCount = Array.isArray(conflicts) ? conflicts.length : 0;
+    statGrid.appendChild(h("div", { className: "health-stat-card" },
+      h("div", { className: "health-stat-label" }, "Conflicts"),
+      h("div", { className: "health-stat-value color-error" }, String(conflictCount)),
+      h("div", { className: "health-stat-sub" }, "unresolved")
+    ));
+
+    // Extract quality
+    if (extractionQuality && extractionQuality.totals) {
+      const t = extractionQuality.totals;
+      const rate = t.extracted > 0 ? Math.round(((t.stored + t.updated) / t.extracted) * 100) : 0;
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Extract Quality"),
+        h("div", { className: "health-stat-value color-success" }, `${rate}%`),
+        h("div", { className: "health-stat-sub" }, "success rate")
+      ));
+    } else {
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Extract Quality"),
+        h("div", { className: "health-stat-value", style: { fontSize: "0.875rem", color: "var(--color-text-faint)" } }, "Admin only"),
+        h("div", { className: "health-stat-sub" }, "requires admin key")
+      ));
+    }
+
+    // Search quality
+    if (searchQuality && searchQuality.feedback) {
+      const ratio = searchQuality.feedback.useful_ratio ?? 0;
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Search Quality"),
+        h("div", { className: "health-stat-value", style: { color: "var(--color-primary)" } }, ratio.toFixed(2)),
+        h("div", { className: "health-stat-sub" }, "useful ratio")
+      ));
+    } else {
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Search Quality"),
+        h("div", { className: "health-stat-value", style: { color: "var(--color-primary)" } }, "\u2014"),
+        h("div", { className: "health-stat-sub" }, "no feedback data")
+      ));
+    }
+
+    // Failures count
+    if (failures != null) {
+      const failCount = failures.length;
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Failures"),
+        h("div", { className: `health-stat-value ${failCount === 0 ? "color-success" : "color-warning"}` }, String(failCount)),
+        h("div", { className: "health-stat-sub" }, "recent")
+      ));
+    } else {
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Failures"),
+        h("div", { className: "health-stat-value", style: { fontSize: "0.875rem", color: "var(--color-text-faint)" } }, "Admin only"),
+        h("div", { className: "health-stat-sub" }, "requires admin key")
+      ));
+    }
+
+    container.appendChild(statGrid);
+
+    // Conflicts section
+    const conflictsTitle = h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", marginTop: "4px" } },
+      h("div", { className: "section-title" }, "Conflicts")
+    );
+    container.appendChild(conflictsTitle);
+
+    if (conflictCount === 0) {
+      container.appendChild(
+        h("div", { className: "empty-state", style: { padding: "40px 20px" } },
+          h("div", { className: "empty-state-icon color-success" }, "\u2713"),
+          h("div", { className: "empty-state-title" }, "No conflicts detected"),
+          h("div", { className: "empty-state-text" }, "All memories are consistent.")
+        )
+      );
+    } else {
+      const displayConflicts = conflicts.slice(0, 3);
+      displayConflicts.forEach((conflict) => {
+        const card = h("div", { className: "conflict-card" });
+
+        const badgeRow = h("div", { style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" } },
+          h("span", { className: "conflict-type-badge" }, "CONTRADICTS"),
+          h("span", { style: { fontSize: "0.6875rem", color: "var(--color-text-faint)" } }, conflict.source || "")
+        );
+        card.appendChild(badgeRow);
+
+        const memBText = conflict.conflicting_memory?.text
+          ? escHtml(conflict.conflicting_memory.text.slice(0, 120))
+          : `Memory #${conflict.conflicts_with || "?"} (not accessible)`;
+        const pair = h("div", { className: "conflict-pair" },
+          h("div", { className: "conflict-side conflict-side--a" },
+            h("div", { className: "conflict-side-label" }, "Memory A"),
+            h("div", { style: { color: "var(--color-text)" } }, escHtml((conflict.text || "").slice(0, 120)))
+          ),
+          h("div", { className: "conflict-side conflict-side--b" },
+            h("div", { className: "conflict-side-label" }, "Memory B"),
+            h("div", { style: { color: conflict.conflicting_memory?.text ? "var(--color-text)" : "var(--color-text-faint)" } }, memBText)
+          )
+        );
+        card.appendChild(pair);
+
+        const actions = h("div", { className: "conflict-actions" });
+
+        const keepABtn = h("button", { className: "conflict-action-btn" }, "Keep A");
+        keepABtn.addEventListener("click", async () => {
+          if (!confirm("Delete Memory B and keep Memory A?")) return;
+          try {
+            const deleteId = conflict.conflicting_memory?.id || conflict.conflicts_with;
+            if (deleteId) {
+              await api(`/memory/${deleteId}`, { method: "DELETE" });
+              // Clear surviving memory's conflicts_with metadata
+              await api(`/memory/${conflict.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({ metadata_patch: { conflicts_with: null } }),
+              });
+              invalidateCache();
+              showToast("Conflict resolved — kept Memory A", "success");
+              loadHealthPage();
+            }
+          } catch (err) { showToast(err.message, "error"); }
+        });
+
+        const keepBBtn = h("button", { className: "conflict-action-btn" }, "Keep B");
+        keepBBtn.addEventListener("click", async () => {
+          if (!confirm("Delete Memory A and keep Memory B?")) return;
+          try {
+            const deleteId = conflict.id;
+            const survivorId = conflict.conflicting_memory?.id || conflict.conflicts_with;
+            if (deleteId) {
+              await api(`/memory/${deleteId}`, { method: "DELETE" });
+              // Clear surviving memory's conflicts_with metadata if it exists
+              if (survivorId) {
+                try {
+                  await api(`/memory/${survivorId}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({ metadata_patch: { conflicts_with: null } }),
+                  });
+                } catch { /* survivor may not have conflicts_with set */ }
+              }
+              invalidateCache();
+              showToast("Conflict resolved — kept Memory B", "success");
+              loadHealthPage();
+            }
+          } catch (err) { showToast(err.message, "error"); }
+        });
+
+        const dismissBtn = h("button", { className: "conflict-dismiss-btn" }, "Dismiss");
+        dismissBtn.addEventListener("click", async () => {
+          try {
+            const memId = conflict.memory_id || conflict.id;
+            if (memId) {
+              await api(`/memory/${memId}`, {
+                method: "PATCH",
+                body: JSON.stringify({ metadata_patch: { conflicts_with: null } }),
+              });
+              invalidateCache();
+              showToast("Conflict dismissed", "success");
+              loadHealthPage();
+            }
+          } catch (err) { showToast(err.message, "error"); }
+        });
+
+        actions.appendChild(keepABtn);
+        actions.appendChild(keepBBtn);
+        actions.appendChild(dismissBtn);
+        card.appendChild(actions);
+        container.appendChild(card);
+      });
+
+      if (conflicts.length > 3) {
+        container.appendChild(
+          h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)", marginTop: "8px" } },
+            `Showing 3 of ${conflicts.length} conflicts`)
+        );
+      }
+    }
+
+    // Quality metrics grid
+    const qualityTitle = h("div", { className: "section-title mt-24" }, "Quality Metrics");
+    container.appendChild(qualityTitle);
+
+    const qualityGrid = h("div", { className: "quality-grid" });
+
+    // Left: Extraction Quality per-source
+    const extractPanel = h("div", { className: "quality-panel" },
+      h("div", { className: "quality-panel-title" }, "Extraction Quality")
+    );
+    if (extractionQuality && extractionQuality.by_source) {
+      for (const [source, data] of Object.entries(extractionQuality.by_source)) {
+        const rate = data.extracted > 0 ? Math.round(((data.stored + data.updated) / data.extracted) * 100) : 0;
+        const color = confidenceColor(rate / 100);
+        extractPanel.appendChild(
+          h("div", { className: "quality-row" },
+            h("span", null, source),
+            h("span", { className: `color-${color}` }, `${rate}%`)
+          )
+        );
+      }
+    } else {
+      extractPanel.appendChild(
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "Admin access required")
+      );
+    }
+    qualityGrid.appendChild(extractPanel);
+
+    // Right: Search Feedback
+    const searchPanel = h("div", { className: "quality-panel" },
+      h("div", { className: "quality-panel-title" }, "Search Feedback")
+    );
+    if (searchQuality && searchQuality.feedback) {
+      const fb = searchQuality.feedback;
+      searchPanel.appendChild(h("div", { className: "quality-row" },
+        h("span", null, "Useful signals"),
+        h("span", { className: "color-success" }, String(fb.useful || 0))
+      ));
+      searchPanel.appendChild(h("div", { className: "quality-row" },
+        h("span", null, "Not useful signals"),
+        h("span", { className: "color-error" }, String(fb.not_useful || 0))
+      ));
+      if (searchQuality.rank_distribution) {
+        const rd = searchQuality.rank_distribution;
+        const total = (rd.top_3 || 0) + (rd.rank_4_plus || 0);
+        const pct = total > 0 ? Math.round((rd.top_3 / total) * 100) : 0;
+        searchPanel.appendChild(h("div", { className: "quality-row" },
+          h("span", null, "Top-3 hit rate"),
+          h("span", { style: { color: "var(--color-primary)" } }, `${pct}%`)
+        ));
+      }
+    } else {
+      searchPanel.appendChild(
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "No feedback data yet")
+      );
+    }
+    qualityGrid.appendChild(searchPanel);
+
+    container.appendChild(qualityGrid);
+  }
+
+  await loadHealthPage();
 });
 
 // -- Mobile Sidebar --------------------------------------------------------
