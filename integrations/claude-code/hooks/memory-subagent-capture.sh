@@ -21,7 +21,8 @@ INPUT=$(cat)
 # Extract subagent details
 AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
-TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // .transcriptPath // empty')
+# Prefer agent-specific transcript; fall back to main session transcript
+TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.agent_transcript_path // .transcript_path // .transcriptPath // empty')
 TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
 
 # Only capture from Plan and Explore agents

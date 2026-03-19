@@ -531,8 +531,8 @@ def run_extraction(
                     entry["new_id"] = ra.get("new_id")
                 elif act == "delete" and d.get("old_id") == ra.get("old_id"):
                     entry["old_id"] = ra.get("old_id")
-                elif act == "noop":
-                    entry["existing_id"] = d.get("existing_id")
+                elif act == "noop" and ra.get("text") == (facts[fi]["text"] if 0 <= fi < len(facts) else ""):
+                    entry["existing_id"] = ra.get("existing_id")
                 elif act == "conflict" and ra.get("text") == (facts[fi]["text"] if 0 <= fi < len(facts) else ""):
                     entry["new_id"] = ra.get("id")
                     entry["conflicts_with"] = ra.get("conflicts_with")

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # memory-rehydrate.sh — PostCompact hook
 # Fires after context compaction. Uses compact_summary as a targeted
-# search query to re-inject relevant memories into the new context.
-# Sync hook: blocks until done, injects additionalContext.
+# search query to refresh the MEMORY.md sync section with the most
+# relevant memories for the post-compaction context.
+#
+# PostCompact does not support additionalContext injection, so this hook
+# updates the synced MEMORY.md section instead (same mechanism as
+# memory-recall.sh SessionStart hydration).
 
 set -euo pipefail
 
@@ -27,6 +31,7 @@ SUMMARY=$(echo "$INPUT" | jq -r '.compact_summary // empty')
 # Extract CWD and project for scoped search
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 PROJECT=$(basename "${CWD:-unknown}")
+[ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ] || [ -z "$PROJECT" ] && exit 0
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
@@ -56,17 +61,29 @@ for tpl in $(echo "$PREFIXES" | tr ',' ' '); do
   fi
 done
 
-# Format output
+# Hydrate MEMORY.md with post-compaction results (same sync-marker approach as recall)
 if [ -n "$RESULTS" ] && [ "$RESULTS" != "[]" ] && [ "$RESULTS" != "null" ]; then
   FORMATTED=$(echo "$RESULTS" | jq -r '.[] | "- [\(.source // "unknown")] \(.text)"' 2>/dev/null)
   if [ -n "$FORMATTED" ]; then
-    _log_info "Rehydrated $(echo "$RESULTS" | jq 'length') memories after compaction"
-    jq -n --arg ctx "## Re-Hydrated Memories (Post-Compaction)
+    SYNC_MARKER="<!-- SYNCED-FROM-MEMORIES-MCP -->"
+    ENCODED_CWD=$(echo "$CWD" | sed 's|/|-|g; s|^-||')
+    MEMORY_DIR="$HOME/.claude/projects/${ENCODED_CWD}/memory"
+    MEMORY_FILE="$MEMORY_DIR/MEMORY.md"
 
-$FORMATTED" '{"additionalContext": $ctx}'
-    exit 0
+    if [ -d "$MEMORY_DIR" ] && [ -f "$MEMORY_FILE" ]; then
+      # Preserve manual content above sync marker, replace synced section
+      MANUAL_SECTION=$(sed "/$SYNC_MARKER/,\$d" "$MEMORY_FILE" 2>/dev/null || true)
+      {
+        [ -n "$MANUAL_SECTION" ] && printf '%s\n' "$MANUAL_SECTION"
+        echo "$SYNC_MARKER"
+        echo "## Synced from Memories (post-compaction)"
+        echo "$FORMATTED"
+      } > "$MEMORY_FILE"
+      _log_info "Rehydrated MEMORY.md with $(echo "$RESULTS" | jq 'length') memories after compaction"
+    else
+      _log_warn "MEMORY.md directory not found at $MEMORY_DIR"
+    fi
   fi
 fi
 
-_log_info "No memories matched compact summary"
 exit 0

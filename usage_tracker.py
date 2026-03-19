@@ -274,10 +274,17 @@ class UsageTracker:
                 mem_filter = f" AND memory_id IN ({placeholders})"
                 mem_params = list(memory_ids)
 
-            # Total searches
-            row = conn.execute(
-                f"SELECT COALESCE(SUM(count), 0) as total FROM api_events WHERE operation IN ('search', 'search_batch') {period_filter}"
-            ).fetchone()
+            # Total searches — scope-aware
+            if memory_ids is not None:
+                # For scoped callers, count searches that touched their memories
+                row = conn.execute(
+                    f"SELECT COUNT(DISTINCT query) as total FROM retrieval_log WHERE memory_id IN ({placeholders}) {period_filter}",
+                    mem_params,
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    f"SELECT COALESCE(SUM(count), 0) as total FROM api_events WHERE operation IN ('search', 'search_batch') {period_filter}"
+                ).fetchone()
             total_searches = row["total"]
 
             # Rank distribution (only where rank > 0, i.e. tracked)
