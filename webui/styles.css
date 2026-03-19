@@ -124,7 +124,6 @@ body {
   font-size: 0.875rem;
   font-weight: 500;
   transition: color var(--transition-fast), background var(--transition-fast);
-  border-left: 3px solid transparent;
   cursor: pointer;
 }
 
@@ -136,7 +135,6 @@ body {
 .nav-item.active {
   color: var(--color-primary);
   background: var(--color-primary-dim);
-  border-left-color: var(--color-primary);
 }
 
 .nav-icon {
