@@ -90,3 +90,13 @@ def test_app_js_has_search_feedback_and_explain(client):
     assert "/search/feedback" in text
     assert "/search/explain" in text
     assert "score-tooltip" in text
+
+
+def test_app_js_has_health_page_renderer(client):
+    js_response = client.get("/ui/static/app.js")
+    text = js_response.text
+    assert 'registerPage("health"' in text
+    assert "/memory/conflicts" in text
+    assert "/metrics/extraction-quality" in text or "extraction-quality" in text
+    assert "/metrics/search-quality" in text or "search-quality" in text
+    assert "/metrics/failures" in text

@@ -2183,6 +2183,275 @@ registerPage("settings", async (container) => {
   }
 });
 
+// ==========================================================================
+//  Health Page
+// ==========================================================================
+
+registerPage("health", async (container) => {
+  container.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+
+  // Period state
+  let period = "7d";
+
+  async function loadHealthPage() {
+    container.innerHTML = "";
+
+    // Header
+    const header = h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" } },
+      h("div", null,
+        h("div", { className: "section-title", style: { marginBottom: "2px" } }, "Health"),
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "System quality and conflict monitoring")
+      ),
+      h("div", null, (() => {
+        const sel = h("select", { className: "period-select" });
+        ["today", "7d", "30d", "all"].forEach((p) => {
+          const opt = h("option", { value: p }, p === "today" ? "Today" : p === "all" ? "All Time" : `Last ${p}`);
+          if (p === period) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        sel.addEventListener("change", (e) => { period = e.target.value; loadHealthPage(); });
+        return sel;
+      })())
+    );
+    container.appendChild(header);
+
+    // Load data in parallel — handle admin-only gracefully
+    let conflicts = [];
+    let extractionQuality = null;
+    let searchQuality = null;
+    let failures = [];
+
+    const results = await Promise.allSettled([
+      api("/memory/conflicts"),
+      api(`/metrics/extraction-quality?period=${period}`),
+      api(`/metrics/search-quality?period=${period}`),
+      api("/metrics/failures?type=extraction&limit=100"),
+    ]);
+
+    if (results[0].status === "fulfilled") {
+      const d = results[0].value;
+      conflicts = d.conflicts || d || [];
+    }
+    if (results[1].status === "fulfilled") extractionQuality = results[1].value;
+    if (results[2].status === "fulfilled") searchQuality = results[2].value;
+    if (results[3].status === "fulfilled") {
+      const d = results[3].value;
+      failures = d.failures || [];
+    }
+
+    // Stat cards
+    const statGrid = h("div", { className: "health-stat-grid" });
+
+    // Conflicts count
+    const conflictCount = Array.isArray(conflicts) ? conflicts.length : 0;
+    statGrid.appendChild(h("div", { className: "health-stat-card" },
+      h("div", { className: "health-stat-label" }, "Conflicts"),
+      h("div", { className: "health-stat-value color-error" }, String(conflictCount)),
+      h("div", { className: "health-stat-sub" }, "unresolved")
+    ));
+
+    // Extract quality
+    if (extractionQuality && extractionQuality.totals) {
+      const t = extractionQuality.totals;
+      const rate = t.extracted > 0 ? Math.round(((t.stored + t.updated) / t.extracted) * 100) : 0;
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Extract Quality"),
+        h("div", { className: "health-stat-value color-success" }, `${rate}%`),
+        h("div", { className: "health-stat-sub" }, "success rate")
+      ));
+    } else {
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Extract Quality"),
+        h("div", { className: "health-stat-value", style: { fontSize: "0.875rem", color: "var(--color-text-faint)" } }, "Admin only"),
+        h("div", { className: "health-stat-sub" }, "requires admin key")
+      ));
+    }
+
+    // Search quality
+    if (searchQuality && searchQuality.feedback) {
+      const ratio = searchQuality.feedback.useful_ratio ?? 0;
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Search Quality"),
+        h("div", { className: "health-stat-value", style: { color: "var(--color-primary)" } }, ratio.toFixed(2)),
+        h("div", { className: "health-stat-sub" }, "useful ratio")
+      ));
+    } else {
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Search Quality"),
+        h("div", { className: "health-stat-value", style: { color: "var(--color-primary)" } }, "\u2014"),
+        h("div", { className: "health-stat-sub" }, "no feedback data")
+      ));
+    }
+
+    // Failures count
+    const failCount = failures.length;
+    statGrid.appendChild(h("div", { className: "health-stat-card" },
+      h("div", { className: "health-stat-label" }, "Failures"),
+      h("div", { className: `health-stat-value ${failCount === 0 ? "color-success" : "color-warning"}` }, String(failCount)),
+      h("div", { className: "health-stat-sub" }, "recent")
+    ));
+
+    container.appendChild(statGrid);
+
+    // Conflicts section
+    const conflictsTitle = h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", marginTop: "4px" } },
+      h("div", { className: "section-title" }, "Conflicts")
+    );
+    container.appendChild(conflictsTitle);
+
+    if (conflictCount === 0) {
+      container.appendChild(
+        h("div", { className: "empty-state", style: { padding: "40px 20px" } },
+          h("div", { className: "empty-state-icon color-success" }, "\u2713"),
+          h("div", { className: "empty-state-title" }, "No conflicts detected"),
+          h("div", { className: "empty-state-text" }, "All memories are consistent.")
+        )
+      );
+    } else {
+      const displayConflicts = conflicts.slice(0, 3);
+      displayConflicts.forEach((conflict) => {
+        const card = h("div", { className: "conflict-card" });
+
+        const badgeRow = h("div", { style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" } },
+          h("span", { className: "conflict-type-badge" }, "CONTRADICTS"),
+          h("span", { style: { fontSize: "0.6875rem", color: "var(--color-text-faint)" } }, conflict.source || "")
+        );
+        card.appendChild(badgeRow);
+
+        const pair = h("div", { className: "conflict-pair" },
+          h("div", { className: "conflict-side conflict-side--a" },
+            h("div", { className: "conflict-side-label" }, "Memory A"),
+            h("div", { style: { color: "var(--color-text)" } }, escHtml((conflict.text || "").slice(0, 120)))
+          ),
+          h("div", { className: "conflict-side conflict-side--b" },
+            h("div", { className: "conflict-side-label" }, "Memory B"),
+            h("div", { style: { color: "var(--color-text)" } }, escHtml((conflict.conflicting_memory?.text || "").slice(0, 120)))
+          )
+        );
+        card.appendChild(pair);
+
+        const actions = h("div", { className: "conflict-actions" });
+
+        const keepABtn = h("button", { className: "conflict-action-btn" }, "Keep A");
+        keepABtn.addEventListener("click", async () => {
+          if (!confirm("Delete Memory B and keep Memory A?")) return;
+          try {
+            const deleteId = conflict.conflicting_memory?.id || conflict.conflicts_with;
+            if (deleteId) {
+              await api(`/memory/${deleteId}`, { method: "DELETE" });
+              invalidateCache();
+              showToast("Conflict resolved — kept Memory A", "success");
+              loadHealthPage();
+            }
+          } catch (err) { showToast(err.message, "error"); }
+        });
+
+        const keepBBtn = h("button", { className: "conflict-action-btn" }, "Keep B");
+        keepBBtn.addEventListener("click", async () => {
+          if (!confirm("Delete Memory A and keep Memory B?")) return;
+          try {
+            const deleteId = conflict.id;
+            if (deleteId) {
+              await api(`/memory/${deleteId}`, { method: "DELETE" });
+              invalidateCache();
+              showToast("Conflict resolved — kept Memory B", "success");
+              loadHealthPage();
+            }
+          } catch (err) { showToast(err.message, "error"); }
+        });
+
+        const dismissBtn = h("button", { className: "conflict-dismiss-btn" }, "Dismiss");
+        dismissBtn.addEventListener("click", async () => {
+          try {
+            const memId = conflict.memory_id || conflict.id;
+            if (memId) {
+              await api(`/memory/${memId}`, {
+                method: "PATCH",
+                body: JSON.stringify({ metadata_patch: { conflicts_with: null } }),
+              });
+              invalidateCache();
+              showToast("Conflict dismissed", "success");
+              loadHealthPage();
+            }
+          } catch (err) { showToast(err.message, "error"); }
+        });
+
+        actions.appendChild(keepABtn);
+        actions.appendChild(keepBBtn);
+        actions.appendChild(dismissBtn);
+        card.appendChild(actions);
+        container.appendChild(card);
+      });
+
+      if (conflicts.length > 3) {
+        container.appendChild(
+          h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)", marginTop: "8px" } },
+            `Showing 3 of ${conflicts.length} conflicts`)
+        );
+      }
+    }
+
+    // Quality metrics grid
+    const qualityTitle = h("div", { className: "section-title mt-24" }, "Quality Metrics");
+    container.appendChild(qualityTitle);
+
+    const qualityGrid = h("div", { className: "quality-grid" });
+
+    // Left: Extraction Quality per-source
+    const extractPanel = h("div", { className: "quality-panel" },
+      h("div", { className: "quality-panel-title" }, "Extraction Quality")
+    );
+    if (extractionQuality && extractionQuality.by_source) {
+      for (const [source, data] of Object.entries(extractionQuality.by_source)) {
+        const rate = data.extracted > 0 ? Math.round(((data.stored + data.updated) / data.extracted) * 100) : 0;
+        const color = confidenceColor(rate / 100);
+        extractPanel.appendChild(
+          h("div", { className: "quality-row" },
+            h("span", null, source),
+            h("span", { className: `color-${color}` }, `${rate}%`)
+          )
+        );
+      }
+    } else {
+      extractPanel.appendChild(
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "Admin access required")
+      );
+    }
+    qualityGrid.appendChild(extractPanel);
+
+    // Right: Search Feedback
+    const searchPanel = h("div", { className: "quality-panel" },
+      h("div", { className: "quality-panel-title" }, "Search Feedback")
+    );
+    if (searchQuality && searchQuality.feedback) {
+      const fb = searchQuality.feedback;
+      searchPanel.appendChild(h("div", { className: "quality-row" },
+        h("span", null, "Useful signals"),
+        h("span", { className: "color-success" }, String(fb.useful || 0))
+      ));
+      searchPanel.appendChild(h("div", { className: "quality-row" },
+        h("span", null, "Not useful signals"),
+        h("span", { className: "color-error" }, String(fb.not_useful || 0))
+      ));
+      if (searchQuality.rank_distribution) {
+        searchPanel.appendChild(h("div", { className: "quality-row" },
+          h("span", null, "Top-3 rank ratio"),
+          h("span", { style: { color: "var(--color-primary)" } }, String(searchQuality.rank_distribution.top_3 ?? "N/A"))
+        ));
+      }
+    } else {
+      searchPanel.appendChild(
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "No feedback data yet")
+      );
+    }
+    qualityGrid.appendChild(searchPanel);
+
+    container.appendChild(qualityGrid);
+  }
+
+  await loadHealthPage();
+});
+
 // -- Mobile Sidebar --------------------------------------------------------
 
 function initMobileSidebar() {
