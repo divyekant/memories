@@ -2380,6 +2380,9 @@ registerPage("health", async (container) => {
         );
         card.appendChild(badgeRow);
 
+        const memBText = conflict.conflicting_memory?.text
+          ? escHtml(conflict.conflicting_memory.text.slice(0, 120))
+          : `Memory #${conflict.conflicts_with || "?"} (not accessible)`;
         const pair = h("div", { className: "conflict-pair" },
           h("div", { className: "conflict-side conflict-side--a" },
             h("div", { className: "conflict-side-label" }, "Memory A"),
@@ -2387,7 +2390,7 @@ registerPage("health", async (container) => {
           ),
           h("div", { className: "conflict-side conflict-side--b" },
             h("div", { className: "conflict-side-label" }, "Memory B"),
-            h("div", { style: { color: "var(--color-text)" } }, escHtml((conflict.conflicting_memory?.text || "").slice(0, 120)))
+            h("div", { style: { color: conflict.conflicting_memory?.text ? "var(--color-text)" : "var(--color-text-faint)" } }, memBText)
           )
         );
         card.appendChild(pair);
@@ -2511,9 +2514,12 @@ registerPage("health", async (container) => {
         h("span", { className: "color-error" }, String(fb.not_useful || 0))
       ));
       if (searchQuality.rank_distribution) {
+        const rd = searchQuality.rank_distribution;
+        const total = (rd.top_3 || 0) + (rd.rank_4_plus || 0);
+        const pct = total > 0 ? Math.round((rd.top_3 / total) * 100) : 0;
         searchPanel.appendChild(h("div", { className: "quality-row" },
-          h("span", null, "Top-3 rank ratio"),
-          h("span", { style: { color: "var(--color-primary)" } }, String(searchQuality.rank_distribution.top_3 ?? "N/A"))
+          h("span", null, "Top-3 hit rate"),
+          h("span", { style: { color: "var(--color-primary)" } }, `${pct}%`)
         ));
       }
     } else {
