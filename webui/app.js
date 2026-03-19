@@ -1033,17 +1033,18 @@ registerPage("memories", async (container) => {
 
       links.forEach((link) => {
         const targetId = link.direction === "outgoing" ? link.to_id : link.from_id;
+        const ltype = link.link_type || link.type || "related_to";
         const displayText = targetTexts[targetId] || `Memory #${targetId}`;
         const item = h("div", { className: "linked-memory-item" },
           h("div", null,
-            h("span", { className: "linked-memory-type", style: { color: linkTypeColor(link.link_type) } }, link.link_type),
+            h("span", { className: "linked-memory-type", style: { color: linkTypeColor(ltype) } }, ltype),
             h("div", { className: "linked-memory-text" }, displayText)
           ),
           h("button", {
             className: "linked-memory-remove",
             onClick: async () => {
               try {
-                await api(`/memory/${memoryId}/link/${targetId}?type=${encodeURIComponent(link.link_type)}`, { method: "DELETE" });
+                await api(`/memory/${memoryId}/link/${targetId}?type=${encodeURIComponent(ltype)}`, { method: "DELETE" });
                 invalidateCache(`/memory/${memoryId}/links`);
                 showToast("Link removed", "success");
                 loadLinks(memoryId, container);
