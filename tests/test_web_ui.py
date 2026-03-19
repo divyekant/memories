@@ -107,3 +107,27 @@ def test_app_js_extractions_page_has_quality_badge(client):
     text = js_response.text
     assert "/metrics/extraction-quality" in text
     assert "Quality:" in text
+
+
+# -- Behavioral coverage for v3 features ------------------------------------
+
+
+def test_conflict_resolution_clears_metadata(client):
+    """Keep A/B must PATCH surviving memory to clear conflicts_with after delete."""
+    js = client.get("/ui/static/app.js").text
+    # Both Keep A and Keep B paths should patch metadata_patch with conflicts_with: null
+    assert js.count("metadata_patch") >= 3  # Keep A, Keep B, and Dismiss all clear it
+
+
+def test_failures_card_shows_admin_fallback(client):
+    """Failures stat card should show 'Admin only' when request is rejected, not '0'."""
+    js = client.get("/ui/static/app.js").text
+    # failures starts as null (not []), and null triggers the admin-only fallback
+    assert "let failures = null" in js
+    assert 'failures != null' in js  # conditional check before rendering count
+
+
+def test_links_include_incoming(client):
+    """Linked memories should request include_incoming=true."""
+    js = client.get("/ui/static/app.js").text
+    assert "include_incoming=true" in js

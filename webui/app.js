@@ -1007,7 +1007,7 @@ registerPage("memories", async (container) => {
     container.appendChild(linksList);
 
     try {
-      const data = await api(`/memory/${memoryId}/links`);
+      const data = await api(`/memory/${memoryId}/links?include_incoming=true`);
       const links = data.links || [];
       if (links.length === 0) {
         linksList.appendChild(
@@ -2273,7 +2273,7 @@ registerPage("health", async (container) => {
     let conflicts = [];
     let extractionQuality = null;
     let searchQuality = null;
-    let failures = [];
+    let failures = null; // null = not loaded (auth failed), [] = loaded empty
 
     const results = await Promise.allSettled([
       api("/memory/conflicts"),
@@ -2338,12 +2338,20 @@ registerPage("health", async (container) => {
     }
 
     // Failures count
-    const failCount = failures.length;
-    statGrid.appendChild(h("div", { className: "health-stat-card" },
-      h("div", { className: "health-stat-label" }, "Failures"),
-      h("div", { className: `health-stat-value ${failCount === 0 ? "color-success" : "color-warning"}` }, String(failCount)),
-      h("div", { className: "health-stat-sub" }, "recent")
-    ));
+    if (failures != null) {
+      const failCount = failures.length;
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Failures"),
+        h("div", { className: `health-stat-value ${failCount === 0 ? "color-success" : "color-warning"}` }, String(failCount)),
+        h("div", { className: "health-stat-sub" }, "recent")
+      ));
+    } else {
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Failures"),
+        h("div", { className: "health-stat-value", style: { fontSize: "0.875rem", color: "var(--color-text-faint)" } }, "Admin only"),
+        h("div", { className: "health-stat-sub" }, "requires admin key")
+      ));
+    }
 
     container.appendChild(statGrid);
 
@@ -2393,6 +2401,11 @@ registerPage("health", async (container) => {
             const deleteId = conflict.conflicting_memory?.id || conflict.conflicts_with;
             if (deleteId) {
               await api(`/memory/${deleteId}`, { method: "DELETE" });
+              // Clear surviving memory's conflicts_with metadata
+              await api(`/memory/${conflict.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({ metadata_patch: { conflicts_with: null } }),
+              });
               invalidateCache();
               showToast("Conflict resolved — kept Memory A", "success");
               loadHealthPage();
@@ -2405,8 +2418,18 @@ registerPage("health", async (container) => {
           if (!confirm("Delete Memory A and keep Memory B?")) return;
           try {
             const deleteId = conflict.id;
+            const survivorId = conflict.conflicting_memory?.id || conflict.conflicts_with;
             if (deleteId) {
               await api(`/memory/${deleteId}`, { method: "DELETE" });
+              // Clear surviving memory's conflicts_with metadata if it exists
+              if (survivorId) {
+                try {
+                  await api(`/memory/${survivorId}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({ metadata_patch: { conflicts_with: null } }),
+                  });
+                } catch { /* survivor may not have conflicts_with set */ }
+              }
               invalidateCache();
               showToast("Conflict resolved — kept Memory B", "success");
               loadHealthPage();
