@@ -72,3 +72,12 @@ def test_app_js_has_confidence_and_link_helpers(client):
     assert "confidenceColor" in text
     assert "confidenceBar" in text
     assert "linkTypeColor" in text
+
+
+def test_app_js_has_detail_panel_enhancements(client):
+    js_response = client.get("/ui/static/app.js")
+    text = js_response.text
+    assert "confidenceBar" in text
+    assert "loadLinks" in text
+    assert "conflict-badge" in text
+    assert "/links" in text

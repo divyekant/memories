@@ -768,49 +768,223 @@ registerPage("memories", async (container) => {
     updateDetailPanel();
   }
 
-  // -- Update detail panel only (no list re-render) --
-  function updateDetailPanel() {
+  // -- Update detail panel with v3 enhancements --
+  async function updateDetailPanel() {
     const detailPanel = document.getElementById("memoryDetailPanel");
     if (!detailPanel) return;
 
-    if (memState.selected) {
-      const mem = memState.selected;
-      detailPanel.innerHTML = `
-        <div class="detail-header">
-          <div>
-            <span class="memory-item-source" style="font-size:0.85rem;">${escHtml(mem.source || "")}</span>
-          </div>
-          <span class="memory-item-id" style="font-size:0.78rem;">#${escHtml(String(mem.id))}</span>
-        </div>
-        <div class="detail-text">${escHtml(mem.text || "")}</div>
-        <div class="detail-meta">
-          <div class="meta-item">
-            <div class="meta-label">ID</div>
-            <div class="meta-value font-mono">${escHtml(String(mem.id))}</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-label">Source</div>
-            <div class="meta-value">${escHtml(mem.source || "N/A")}</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-label">Created</div>
-            <div class="meta-value">${mem.created_at ? timeAgo(mem.created_at) : "N/A"}</div>
-          </div>
-        </div>
-        <div class="detail-actions"></div>
-      `;
-      // Bind delete button via addEventListener (not inline onclick)
-      const deleteBtn = h("button", { className: "btn btn-danger btn-sm" }, "Delete");
-      deleteBtn.addEventListener("click", () => deleteMemory(mem.id));
-      detailPanel.querySelector(".detail-actions").appendChild(deleteBtn);
-    } else {
-      detailPanel.innerHTML = `
-        <div class="empty-state" style="border:none;padding:60px 20px;">
-          <div class="empty-state-icon">\u25C6</div>
-          <div class="empty-state-text">Select a memory to view details</div>
-        </div>
-      `;
+    if (!memState.selected) {
+      detailPanel.innerHTML = "";
+      detailPanel.appendChild(
+        h("div", { className: "empty-state", style: { border: "none", padding: "60px 20px" } },
+          h("div", { className: "empty-state-icon" }, "\u25C6"),
+          h("div", { className: "empty-state-text" }, "Select a memory to view details")
+        )
+      );
+      return;
     }
+
+    const mem = memState.selected;
+    detailPanel.innerHTML = "";
+
+    // Header: source + confidence bar
+    const header = h("div", { className: "detail-header" });
+    const headerLeft = h("div", null,
+      h("span", { className: "memory-item-source", style: { fontSize: "0.85rem" } }, mem.source || "")
+    );
+    const headerRight = h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+      h("span", { className: "memory-item-id", style: { fontSize: "0.78rem" } }, `#${mem.id}`)
+    );
+    // Add confidence bar if available
+    if (mem.confidence != null) {
+      headerRight.appendChild(confidenceBar(mem.confidence, "md"));
+    }
+    header.appendChild(headerLeft);
+    header.appendChild(headerRight);
+    detailPanel.appendChild(header);
+
+    // Text
+    detailPanel.appendChild(h("div", { className: "detail-text" }, mem.text || ""));
+
+    // Meta row
+    const meta = h("div", { className: "detail-meta" });
+    meta.appendChild(
+      h("div", { className: "meta-item" },
+        h("div", { className: "meta-label" }, "ID"),
+        h("div", { className: "meta-value font-mono" }, String(mem.id))
+      )
+    );
+    meta.appendChild(
+      h("div", { className: "meta-item" },
+        h("div", { className: "meta-label" }, "Source"),
+        h("div", { className: "meta-value" }, mem.source || "N/A")
+      )
+    );
+    meta.appendChild(
+      h("div", { className: "meta-item" },
+        h("div", { className: "meta-label" }, "Created"),
+        h("div", { className: "meta-value" }, mem.created_at ? timeAgo(mem.created_at) : "N/A")
+      )
+    );
+    detailPanel.appendChild(meta);
+
+    // Decay status
+    if (mem.confidence != null && mem.confidence < 1.0) {
+      detailPanel.appendChild(
+        h("div", { className: "decay-status" }, `Decaying \u00B7 confidence ${Math.round(mem.confidence * 100)}%`)
+      );
+    }
+
+    // Conflict badge (check asynchronously)
+    const conflictArea = h("div");
+    detailPanel.appendChild(conflictArea);
+    loadConflictBadge(mem.id, conflictArea);
+
+    // Linked memories section
+    const linksSection = h("div", { className: "linked-memories-section" });
+    detailPanel.appendChild(linksSection);
+    loadLinks(mem.id, linksSection);
+
+    // Action buttons
+    const actions = h("div", { className: "detail-actions", style: { marginTop: "12px" } });
+    const deleteBtn = h("button", { className: "btn btn-danger btn-sm" }, "Delete");
+    deleteBtn.addEventListener("click", () => deleteMemory(mem.id));
+    actions.appendChild(deleteBtn);
+    detailPanel.appendChild(actions);
+  }
+
+  // -- Load linked memories for detail panel --
+  async function loadLinks(memoryId, container) {
+    container.innerHTML = "";
+    const header = h("div", { className: "linked-memories-header" },
+      h("span", { className: "linked-memories-title" }, "Linked Memories"),
+      h("button", { className: "linked-memory-add", onClick: () => showAddLinkModal(memoryId) }, "+ Add")
+    );
+    container.appendChild(header);
+
+    try {
+      const data = await api(`/memory/${memoryId}/links`);
+      const links = data.links || [];
+      if (links.length === 0) {
+        container.appendChild(
+          h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "No linked memories")
+        );
+        return;
+      }
+      links.forEach((link) => {
+        const targetId = link.direction === "outgoing" ? link.to_id : link.from_id;
+        const item = h("div", { className: "linked-memory-item" },
+          h("div", null,
+            h("span", { className: "linked-memory-type", style: { color: linkTypeColor(link.link_type) } }, link.link_type),
+            h("div", { className: "linked-memory-text" }, `Memory #${targetId}`)
+          ),
+          h("button", {
+            className: "linked-memory-remove",
+            onClick: async () => {
+              try {
+                await api(`/memory/${memoryId}/link/${targetId}?type=${encodeURIComponent(link.link_type)}`, { method: "DELETE" });
+                invalidateCache(`/memory/${memoryId}/links`);
+                showToast("Link removed", "success");
+                loadLinks(memoryId, container);
+              } catch (err) { showToast(err.message, "error"); }
+            },
+          }, "\u00D7")
+        );
+        container.appendChild(item);
+      });
+    } catch (err) {
+      container.appendChild(
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "Failed to load links")
+      );
+    }
+  }
+
+  // -- Show add-link modal --
+  function showAddLinkModal(memoryId) {
+    showModal((content) => {
+      content.appendChild(h("h3", { style: { marginBottom: "16px" } }, "Link Memory"));
+
+      const searchInput = h("input", {
+        type: "text",
+        className: "topbar-search",
+        placeholder: "Search for a memory...",
+        style: { width: "100%", marginBottom: "12px" },
+      });
+      content.appendChild(searchInput);
+
+      const typeSelect = h("select", { className: "source-select", style: { marginBottom: "12px", width: "100%" } });
+      ["related_to", "reinforces", "supersedes", "blocked_by", "caused_by"].forEach((t) => {
+        typeSelect.appendChild(h("option", { value: t }, t));
+      });
+      content.appendChild(typeSelect);
+
+      const resultsDiv = h("div", { style: { maxHeight: "200px", overflowY: "auto", marginBottom: "12px" } });
+      content.appendChild(resultsDiv);
+
+      let selectedTargetId = null;
+
+      searchInput.addEventListener("keydown", async (e) => {
+        if (e.key !== "Enter") return;
+        const query = searchInput.value.trim();
+        if (!query) return;
+        try {
+          const data = await api("/search", { method: "POST", body: JSON.stringify({ query, k: 10, hybrid: true }) });
+          resultsDiv.innerHTML = "";
+          (data.results || []).forEach((r) => {
+            const row = h("div", {
+              style: { padding: "8px", cursor: "pointer", borderRadius: "4px", marginBottom: "4px", background: "var(--color-bg-surface)", fontSize: "0.75rem" },
+              onClick: () => {
+                selectedTargetId = r.id;
+                resultsDiv.querySelectorAll("div").forEach((d) => d.style.outline = "none");
+                row.style.outline = "1px solid var(--color-primary)";
+              },
+            },
+              h("span", { style: { color: "var(--color-primary)" } }, r.source || ""),
+              " ",
+              (r.text || "").slice(0, 80)
+            );
+            resultsDiv.appendChild(row);
+          });
+        } catch (err) { showToast(err.message, "error"); }
+      });
+
+      const confirmBtn = h("button", {
+        className: "btn btn-primary",
+        onClick: async () => {
+          if (!selectedTargetId) { showToast("Select a memory first", "warning"); return; }
+          try {
+            await api(`/memory/${memoryId}/link`, {
+              method: "POST",
+              body: JSON.stringify({ to_id: selectedTargetId, type: typeSelect.value }),
+            });
+            invalidateCache(`/memory/${memoryId}/links`);
+            showToast("Link added", "success");
+            hideModal();
+            updateDetailPanel();
+          } catch (err) { showToast(err.message, "error"); }
+        },
+      }, "Add Link");
+      content.appendChild(confirmBtn);
+    });
+  }
+
+  // -- Check if memory has conflicts --
+  async function loadConflictBadge(memoryId, container) {
+    try {
+      const data = await api("/memory/conflicts");
+      const conflicts = data.conflicts || data || [];
+      const hasConflict = Array.isArray(conflicts) && conflicts.some(
+        (c) => c.id === memoryId || c.conflicts_with === memoryId
+          || c.conflicting_memory?.id === memoryId
+      );
+      if (hasConflict) {
+        container.appendChild(
+          h("a", { className: "conflict-badge", href: "#/health", style: { marginTop: "8px", display: "inline-flex" } },
+            "\u26A0", " Conflict"
+          )
+        );
+      }
+    } catch { /* non-critical */ }
   }
 
   // -- Grid view --
