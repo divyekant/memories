@@ -2,6 +2,61 @@
 
 ## [Unreleased]
 
+### Added
+- Qdrant payload filtering with source prefix and metadata filters (#22)
+- Recency-weighted search with configurable half-life decay (#22)
+- Memory relationships — lightweight graph edges between memories (#23)
+  - `POST /memory/{id}/link`, `GET /memory/{id}/links`, `DELETE /memory/{id}/link/{link_id}`
+- Conflict detection in AUDN extraction pipeline (#24)
+  - New CONFLICT action when memories directly contradict
+  - `GET /memory/conflicts` endpoint and `memory_conflicts` MCP tool
+- Confidence decay and reinforcement for memories (#25)
+  - Automatic exponential decay with configurable half-life
+  - Reinforcement on access (search hits boost confidence)
+- Event-driven architecture with SSE and webhooks (#26)
+  - `GET /events/stream` for real-time memory events
+  - Webhook registration and delivery with retry
+- Embedding model migration via `POST /maintenance/reembed` (#27)
+  - Staged rollback — embeds before destroying collection
+- Extended Python client SDK with links, events, and reembed (#28)
+- Memory compaction — find and merge similar memory clusters (#29)
+  - `POST /maintenance/compact` (dry-run discovery)
+  - `POST /maintenance/consolidate` (LLM-powered merge)
+- Search quality feedback loop (#30)
+  - `POST /search/feedback` for explicit relevance signals
+  - `GET /metrics/search-quality` for rank and feedback metrics
+- Extraction quality dashboard (#31)
+  - Per-source extraction metrics and outcome tracking
+- Audit log for multi-user operations (#32)
+  - Append-only trail with query and retention
+  - `GET /audit/log` endpoint
+- Load testing harness with benchmarks (#33)
+- Search explainability — `POST /search/explain` with full scoring breakdown (#41)
+- Extraction debug trace via `debug=true` on extract requests (#41)
+- Quality efficacy endpoints — `GET /metrics/quality-summary`, `GET /metrics/failures` (#41)
+- 6 benchmark scenarios for agentic memory evaluation (#41)
+- 5 new Claude Code hooks: PostCompact rehydration, PostToolUse observability, PreToolUse MEMORY.md guard, SubagentStop capture, ConfigChange watchdog (#41)
+- Shared hook library `_lib.sh` with logging, health check, log rotation (#41)
+- Permission auto-approve for read-only memory MCP tools (#41)
+- Configurable hook thresholds via 10 new env vars (#41)
+- `MEMORIES_EXTRACT_SOURCE` override for scoped API keys (#41)
+- Response hints refactored from case/esac to JSON lookup table (#41)
+- Deployment guide (`docs/deployment.md`) (#41)
+- API coverage matrix (`docs/api-coverage.md`) (#41)
+
+### Fixed
+- Include source on update/link events for scoped filtering (#34)
+- Lock down search-quality feedback/metrics endpoints to caller scope (#35)
+- Add real rollback to reembed after destructive migration starts (#36)
+- Preserve webhook delivery for events emitted from worker threads (#37)
+- Clarify compaction cluster semantics with clear docstrings (#38)
+- Record real source when admin/env deletes are audited (#39)
+- Fix search-quality metrics to count batch searches and honor period (#40)
+
+### Changed
+- SKILL.md updated with hook lifecycle, auto-memory hydration, and manual vs automatic extraction documentation
+- Hook scripts use guarded `_lib.sh` sourcing with no-op fallbacks for backward compatibility
+
 ## [2.1.0] - 2026-03-15
 
 ### Fixed

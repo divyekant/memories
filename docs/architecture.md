@@ -13,9 +13,18 @@ Memories is a local-first semantic memory service for AI assistants. It exposes:
 
 Core storage and retrieval are handled by `MemoryEngine` (`memory_engine.py`) using:
 
-- vector similarity search (Memories `IndexFlatIP`)
+- vector similarity search via Qdrant (`qdrant_store.py`)
 - lexical ranking (BM25)
 - reciprocal-rank fusion (RRF) for hybrid search
+- recency-weighted scoring with configurable half-life decay
+- confidence weighting with decay and access-based reinforcement
+- payload filtering for source prefix and metadata
+
+Supporting subsystems:
+
+- **Event bus** (`event_bus.py`) — in-process pub/sub with SSE streaming and webhook dispatch
+- **Audit log** (`audit_log.py`) — append-only SQLite trail for multi-user operation tracking
+- **Usage tracker** (`usage_tracker.py`) — search quality metrics, extraction outcome tracking, and efficacy measurement
 
 ### High-level request path
 
@@ -23,8 +32,11 @@ Core storage and retrieval are handled by `MemoryEngine` (`memory_engine.py`) us
 Client (HTTP or MCP)
   -> FastAPI API (app.py)
   -> MemoryEngine (memory_engine.py)
-  -> ONNX Embedder (onnx_embedder.py) + Memories + BM25
-  -> Persistent files (/data/vector_index.bin, /data/metadata.json, /data/backups)
+  -> ONNX Embedder (onnx_embedder.py) + QdrantStore (qdrant_store.py) + BM25
+  -> Qdrant vector DB + /data/metadata.json + /data/backups
+  -> EventBus (event_bus.py) — SSE subscribers + webhook dispatch
+  -> AuditLog (audit_log.py) — SQLite append-only trail
+  -> UsageTracker (usage_tracker.py) — SQLite analytics
 ```
 
 ---
@@ -35,14 +47,52 @@ Client (HTTP or MCP)
 
 - Auth, request validation, routing, and lifecycle
 - Minimal orchestration around `MemoryEngine`
-- Optional extraction endpoints (`/memory/extract`, `/extract/status`)
+- Extraction endpoints (`/memory/extract`, `/extract/status`) with debug trace mode
+- Event streaming (`/events/stream`) and webhook management
+- Audit log endpoint (`/audit/log`) with query and retention
+- Search explainability (`/search/explain`) and quality feedback (`/search/feedback`)
+- Quality efficacy endpoints (`/metrics/quality-summary`, `/metrics/failures`, `/metrics/search-quality`)
+- Maintenance endpoints (`/maintenance/reembed`, `/maintenance/compact`, `/maintenance/consolidate`)
 
 ### `memory_engine.py` (stateful core)
 
-- In-memory Memories index and metadata lifecycle
-- CRUD operations and index rebuilds
-- Hybrid search (vector + BM25)
+- Qdrant-backed vector index and metadata lifecycle
+- CRUD operations with memory relationships (graph edges via metadata)
+- Hybrid search (vector + BM25 + RRF) with recency boosting and confidence weighting
+- Confidence system: exponential decay over time, reinforcement on search access
+- Memory linking: `add_link`, `get_links`, `delete_link` for lightweight graph edges
 - Backup/restore and optional cloud sync hooks
+
+### `qdrant_store.py` (vector storage)
+
+- Qdrant API adapter isolating vector backend specifics
+- Collection management with configurable consistency levels
+- Payload filtering for source prefix and metadata-based queries
+- Supports both remote Qdrant server and local embedded mode
+
+### `event_bus.py` (event system)
+
+- Thread-safe in-process event bus for memory lifecycle events
+- Event types: `memory.added`, `memory.updated`, `memory.deleted`, `memory.linked`, `extraction.completed`
+- SSE subscriber management with async queue-based delivery
+- Webhook registration with retry logic via `httpx`
+- Event history ring buffer for late-joining subscribers
+
+### `audit_log.py` (audit trail)
+
+- SQLite-backed append-only audit log (enabled via `AUDIT_LOG=true`)
+- Records action, key identity, resource ID, source prefix, and IP
+- Query with time-range, action, and key filters
+- Configurable retention with `purge()` for age-based cleanup
+- `NullAuditLog` no-op when disabled
+
+### `usage_tracker.py` (analytics)
+
+- SQLite-backed usage tracking (enabled via `USAGE_TRACKING=true`)
+- API event logging, extraction token costs with per-model pricing
+- Retrieval stats and search feedback (relevance signals)
+- Search quality metrics: rank distribution, feedback aggregation
+- `NullTracker` no-op when disabled
 
 ### `onnx_embedder.py` (embedding runtime)
 
@@ -50,10 +100,13 @@ Client (HTTP or MCP)
 - Model/tokenizer loading from Hugging Face cache
 - Drop-in SentenceTransformer-compatible API
 
-### `llm_extract.py` + `llm_provider.py` (optional learning layer)
+### `llm_extract.py` + `llm_provider.py` (extraction layer)
 
 - LLM-assisted fact extraction from conversation transcripts
-- AUDN decisioning (Add/Update/Delete/Noop)
+- AUDN decisioning with 5 actions: Add, Update, Delete, Noop, Conflict
+- Conflict detection flags direct contradictions between new and existing memories
+- Debug trace mode (`debug=true`) for extraction pipeline introspection
+- Source-scoped auth: extraction scoped to caller's allowed prefixes
 - Provider abstraction for Anthropic/OpenAI/ChatGPT Subscription/Ollama
 
 ---
@@ -62,11 +115,21 @@ Client (HTTP or MCP)
 
 ### Primary state
 
-- `vector_index.bin`: dense vectors for semantic retrieval
-- `metadata.json`: memory text, source, timestamp, and optional metadata
+- **Qdrant collection**: dense vectors for semantic retrieval, with payload filtering
+- `metadata.json`: memory text, source, timestamp, confidence, links, and optional metadata
 - `config.json`: model + index metadata
+- `audit.db`: append-only audit trail (when `AUDIT_LOG=true`)
+- `usage.db`: usage analytics and search quality metrics (when `USAGE_TRACKING=true`)
 
 IDs are positional and compact (0..N-1). Deletes trigger rebuild/reindex for consistency.
+
+### Memory relationships
+
+Lightweight graph edges stored as metadata on source and target memories. Each link has a type (e.g., `related`, `supersedes`, `contradicts`) and is bidirectional in queries. Managed via `POST /memory/{id}/link`, `GET /memory/{id}/links`, `DELETE /memory/{id}/link/{link_id}`.
+
+### Confidence system
+
+Each memory carries a confidence score that decays exponentially over time (configurable half-life). Accessing a memory via search triggers reinforcement, boosting its confidence. Confidence is factored into search ranking.
 
 ### Durability strategy
 
@@ -83,9 +146,21 @@ This prioritizes recoverability and correctness over maximal write throughput.
 ### Search (`POST /search`)
 
 1. Embed query via ONNX model
-2. Vector search over Memories index
-3. Optional BM25 rank over tokenized corpus
-4. Fuse with RRF and return top-k results
+2. Vector search over Qdrant with optional payload filtering (source prefix, metadata)
+3. BM25 rank over tokenized corpus (source-prefix aware)
+4. Reciprocal Rank Fusion (RRF) combining vector and BM25 scores
+5. Optional recency boosting (exponential decay with configurable half-life, blended as third RRF signal)
+6. Confidence weighting via `_enrich_with_confidence`
+7. Reinforce accessed memories (boost confidence on retrieval)
+8. Return top-k results
+
+### Search explain (`POST /search/explain`)
+
+Returns full scoring breakdown for a query: per-result vector score, BM25 score, recency score, confidence, and final RRF score with weight contributions.
+
+### Search feedback (`POST /search/feedback`)
+
+Accepts explicit relevance signals (relevant/irrelevant) tied to a query and memory. Feeds into `/metrics/search-quality` for rank distribution and feedback aggregation.
 
 ### Add/update/delete
 
@@ -100,10 +175,16 @@ This lock-based model keeps index/metadata integrity simple and predictable.
 ### Extraction (`POST /memory/extract`)
 
 1. Validate and bound transcript size
-2. Run extraction pipeline (provider call + AUDN + storage actions)
-3. Apply post-extract memory reclamation (`gc.collect`, `malloc_trim` where available)
+2. Run extraction pipeline (provider call + AUDN decisioning)
+3. Execute AUDN actions: ADD, UPDATE, DELETE, NOOP, or CONFLICT
+4. CONFLICT action flags contradictions and stores both versions for resolution via `GET /memory/conflicts`
+5. Emit `extraction.completed` event to event bus
+6. Record audit trail entry (when enabled)
+7. Apply post-extract memory reclamation (`gc.collect`, `malloc_trim` where available)
 
-Extraction is optional and isolated from core CRUD/search behavior.
+When `debug=true` is passed, extraction returns a debug trace with LLM prompt, raw response, parsed actions, and execution results.
+
+Extraction is source-scoped: scoped API keys can only extract to their allowed prefixes.
 
 ---
 
@@ -147,7 +228,10 @@ This keeps steady-state usage near baseline while allowing occasional burst capa
 
 ### Authentication
 
-- API key auth is optional (`API_KEY` env var); omitting it disables auth entirely (suitable for local-only)
+- Multi-auth with prefix-scoped API keys and three role tiers: `read-only`, `read-write`, `admin`
+- Legacy `API_KEY` env var continues to work as implicit admin (backward compatible)
+- SQLite-backed key store (`key_store.py`) with SHA-256 hashing
+- Request-scoped auth context (`auth_context.py`) for role and prefix enforcement
 - Constant-time comparison (`hmac.compare_digest`) prevents timing-based key extraction
 - Per-IP rate limiting on failed auth attempts (10 failures per minute per IP before 429)
 
@@ -244,7 +328,61 @@ This design principle ensures zero-delta scenarios are true negatives — if Cla
 
 ---
 
-## 9) Non-Goals (Current Scope)
+## 9) Event System
+
+### Event bus (`event_bus.py`)
+
+The event bus provides real-time observability into memory lifecycle operations:
+
+- **SSE streaming** — `GET /events/stream` delivers events to long-lived HTTP clients
+- **Webhook dispatch** — registered URLs receive POST callbacks with retry logic
+- **Event types**: `memory.added`, `memory.updated`, `memory.deleted`, `memory.linked`, `extraction.completed`
+- Events include source metadata for scoped filtering
+
+Events are emitted non-blocking from the calling thread. The bus maintains a bounded history ring buffer for late-joining SSE subscribers.
+
+---
+
+## 10) Hook System
+
+Ten shell hooks across eight Claude Code lifecycle events provide automatic memory capture and recall:
+
+| Event | Hook | Purpose |
+|---|---|---|
+| `SessionStart` | `memory-recall.sh` | Hydrate MEMORY.md from stored memories |
+| `UserPromptSubmit` | `memory-query.sh` | Inject relevant memories into prompt context |
+| `Stop` | `memory-extract.sh` | Extract and store learnings from conversation |
+| `PreCompact` | `memory-flush.sh` | Flush pending memories before compaction |
+| `PostCompact` | `memory-rehydrate.sh` | Rehydrate MEMORY.md after compaction |
+| `PostToolUse` | `memory-observe.sh` | Observability for memory MCP tool calls |
+| `PreToolUse` | `memory-guard.sh` | Guard MEMORY.md from direct Write/Edit |
+| `SubagentStop` | `memory-subagent-capture.sh` | Capture learnings from Plan/Explore subagents |
+| `ConfigChange` | `memory-config-guard.sh` | Watchdog for user settings changes |
+| `SessionEnd` | `memory-commit.sh` | Final extraction and cleanup |
+
+Hooks share a common library (`_lib.sh`) with logging, health checks, and log rotation. All hooks use guarded `_lib.sh` sourcing with no-op fallbacks for backward compatibility. Response hints use a JSON lookup table (`response-hints.json`) rather than shell case/esac. Hook behavior is configurable via 10 environment variables.
+
+---
+
+## 11) Explainability
+
+### Search explain (`POST /search/explain`)
+
+Returns a full scoring breakdown for each search result: vector similarity score, BM25 score, recency score, confidence value, RRF contribution per signal, and final fused score. Useful for debugging search quality and tuning weights.
+
+### Extraction debug trace
+
+When `debug=true` is passed to `/memory/extract`, the response includes: the LLM prompt sent, the raw provider response, parsed AUDN actions, and per-action execution results. Enables inspection of why specific extraction decisions were made.
+
+### Quality metrics
+
+- `GET /metrics/quality-summary` — aggregated search and extraction quality overview
+- `GET /metrics/failures` — recent extraction failures with error details
+- `GET /metrics/search-quality` — rank distribution and feedback signal aggregation
+
+---
+
+## 12) Non-Goals (Current Scope)
 
 - Distributed multi-writer consistency across replicas
 - Tenant isolation inside one process

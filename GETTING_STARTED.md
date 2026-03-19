@@ -85,7 +85,53 @@ The installer writes:
 For guided LLM setup, use:
 - [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md)
 
-## 5) Verify extraction status (if enabled)
+## 5) Explore the hook system
+
+The installer configures 10 hooks for Claude Code:
+
+| Hook | Event | Purpose |
+|------|-------|---------|
+| `memory-recall.sh` | Session start | Load project memories + health check |
+| `memory-query.sh` | Each prompt | Search memories with transcript context |
+| `memory-extract.sh` | After response | Extract facts (AUDN pipeline) |
+| `memory-flush.sh` | Before compaction | Aggressive extraction before context loss |
+| `memory-rehydrate.sh` | After compaction | Re-inject memories using compact summary |
+| `memory-subagent-capture.sh` | Subagent stop | Capture Plan/Explore agent decisions |
+| `memory-observe.sh` | Tool use | Log MCP tool invocations |
+| `memory-guard.sh` | File write | Block direct MEMORY.md writes |
+| `memory-config-guard.sh` | Config change | Warn if hooks removed |
+| `memory-commit.sh` | Session end | Final extraction pass |
+
+All hooks are configurable via env vars in `~/.config/memories/env`. See `docs/deployment.md` for details.
+
+## 6) New MCP tools
+
+In addition to the core tools, these are now available:
+
+| Tool | Description |
+|------|-------------|
+| `memory_is_useful` | Submit search feedback (positive/negative) |
+| `memory_conflicts` | List memories with unresolved conflicts |
+
+## 7) Monitor quality
+
+Check hook logs:
+```bash
+cat ~/.config/memories/hook.log | tail -20
+```
+
+Check tool usage:
+```bash
+cat ~/.config/memories/tool-usage.log | tail -20
+```
+
+Quality metrics (admin):
+```bash
+curl -s http://localhost:8900/metrics/quality-summary \
+  -H "X-API-Key: $API_KEY" | jq .
+```
+
+## 8) Verify extraction status (if enabled)
 
 ```bash
 curl -s http://localhost:8900/extract/status | jq .
@@ -106,7 +152,7 @@ Expected (when enabled in compose env):
 - policy values under `policy`
 - runtime counters under `auto` and `manual`
 
-## 6) First memory smoke test
+## 9) First memory smoke test
 
 ```bash
 curl -X POST http://localhost:8900/memory/add \
@@ -118,7 +164,7 @@ curl -X POST http://localhost:8900/search \
   -d '{"query":"TypeScript preferences","k":3,"hybrid":true}'
 ```
 
-## 7) Install the Memories skill (Claude Code, optional)
+## 10) Install the Memories skill (Claude Code, optional)
 
 The Memories skill teaches Claude *when* to capture context and *when* to proactively search — the judgment layer that makes memory usage disciplined rather than ad-hoc.
 
@@ -134,7 +180,7 @@ ln -s /path/to/memories/skills/memories ~/.claude/skills/memories
 
 The skill does NOT replace hooks (passive baseline) or CC's built-in auto-memory. It complements them with active judgment about what's worth remembering and when to update or remove stale memories.
 
-## 8) Route memory away from MEMORY.md (Claude Code, recommended)
+## 11) Route memory away from MEMORY.md (Claude Code, recommended)
 
 Claude Code has a built-in auto-memory that writes to `MEMORY.md` files. With Memories MCP running, this creates duplicate stores and bloated files. Add this to your **global** `~/.claude/CLAUDE.md` to redirect:
 
@@ -149,7 +195,7 @@ via Memories MCP tools (memory_add, memory_extract) — NOT in MEMORY.md.
 
 This tells Claude Code to prefer Memories MCP for durable facts and keep `MEMORY.md` minimal.
 
-## 9) Where to go next
+## 12) Where to go next
 
 - Full architecture: [`docs/architecture.md`](docs/architecture.md)
 - Decisions/tradeoffs: [`docs/decisions.md`](docs/decisions.md)
