@@ -734,8 +734,8 @@ registerPage("memories", async (container) => {
       item.dataset.memId = mem.id;
 
       // Color-coded left border for search results
-      if (mem.similarity != null) {
-        const borderColor = confidenceColor(mem.similarity);
+      if (mem.rrf_score != null) {
+        const borderColor = confidenceColor(mem.rrf_score);
         item.classList.add(`border-left-${borderColor}`);
       }
 
@@ -750,9 +750,9 @@ registerPage("memories", async (container) => {
 
       const rightSide = h("span", { className: "memory-item-id" }, `#${mem.id}`);
 
-      if (mem.similarity != null) {
-        const pct = (mem.similarity * 100).toFixed(1);
-        const color = confidenceColor(mem.similarity);
+      if (mem.rrf_score != null) {
+        const pct = (mem.rrf_score * 100).toFixed(1);
+        const color = confidenceColor(mem.rrf_score);
         const scoreBadge = h("span", {
           className: `search-result-score`,
           style: { position: "relative", cursor: "help" },
@@ -791,8 +791,8 @@ registerPage("memories", async (container) => {
                 ),
                 h("div", { className: "score-tooltip-item" },
                   h("div", { className: "score-tooltip-item-label" }, "Final"),
-                  h("div", { className: `score-tooltip-item-value ${mem.similarity > 0.7 ? "color-success" : ""}` },
-                    mem.similarity.toFixed(2))
+                  h("div", { className: `score-tooltip-item-value ${mem.rrf_score > 0.7 ? "color-success" : ""}` },
+                    mem.rrf_score.toFixed(2))
                 ),
               )
             );
@@ -830,7 +830,7 @@ registerPage("memories", async (container) => {
       textRow.firstChild.innerHTML = truncText;
 
       // Feedback buttons (only for search results)
-      if (mem.similarity != null) {
+      if (mem.rrf_score != null) {
         const feedbackDiv = h("div", { style: { display: "flex", gap: "4px", marginLeft: "8px", flexShrink: "0" } });
 
         const upBtn = h("button", { className: "feedback-btn", title: "Relevant" }, "\u25B2");
@@ -1118,8 +1118,8 @@ registerPage("memories", async (container) => {
         : escHtml(mem.text || "");
 
       let scoreHtml = "";
-      if (mem.similarity != null) {
-        scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.similarity * 100).toFixed(1)))}%</span>`;
+      if (mem.rrf_score != null) {
+        scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.rrf_score * 100).toFixed(1)))}%</span>`;
       }
 
       const card = document.createElement("div");
