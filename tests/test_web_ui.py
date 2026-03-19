@@ -64,3 +64,11 @@ def test_app_js_has_health_page_title(client):
     js_response = client.get("/ui/static/app.js")
     assert js_response.status_code == 200
     assert "health:" in js_response.text
+
+
+def test_app_js_has_confidence_and_link_helpers(client):
+    js_response = client.get("/ui/static/app.js")
+    text = js_response.text
+    assert "confidenceColor" in text
+    assert "confidenceBar" in text
+    assert "linkTypeColor" in text

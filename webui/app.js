@@ -250,6 +250,49 @@ export function escHtml(str) {
   return d.innerHTML;
 }
 
+// -- Confidence & Link Helpers ---------------------------------------------
+
+/**
+ * Return the semantic color class suffix for a confidence/similarity value (0-1).
+ * >0.7 = success (green), 0.4-0.7 = warning (yellow), <0.4 = error (red)
+ */
+export function confidenceColor(value) {
+  if (value > 0.7) return "success";
+  if (value >= 0.4) return "warning";
+  return "error";
+}
+
+/**
+ * Build a confidence bar DOM element.
+ * @param {number} value - Confidence value 0-1
+ * @param {"sm"|"md"} size - Bar size
+ * @returns {HTMLElement}
+ */
+export function confidenceBar(value, size = "sm") {
+  const color = confidenceColor(value);
+  const pct = Math.round(value * 100);
+  return h("span", { className: "confidence-bar" },
+    h("span", { className: `confidence-bar-track confidence-bar-track--${size}` },
+      h("span", { className: `confidence-bar-fill bg-${color}`, style: { width: `${pct}%` } })
+    ),
+    h("span", { className: `confidence-bar-label color-${color}` }, size === "sm" ? String(pct) : `${pct}%`)
+  );
+}
+
+/**
+ * Return the CSS color variable for a link type.
+ */
+export function linkTypeColor(type) {
+  const map = {
+    reinforces: "var(--color-primary)",
+    related_to: "var(--color-info)",
+    supersedes: "var(--color-warning)",
+    blocked_by: "var(--color-error)",
+    caused_by: "var(--color-text-muted)",
+  };
+  return map[type] || "var(--color-text-faint)";
+}
+
 // -- Router ----------------------------------------------------------------
 
 const pages = {};
