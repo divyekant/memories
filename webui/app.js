@@ -738,10 +738,7 @@ registerPage("memories", async (container) => {
       item.className = `memory-item${isActive ? " active" : ""}`;
       item.dataset.memId = mem.id;
 
-      // Left border accent for search results (gold for all — RRF scores are relative rankings)
-      if (mem.rrf_score != null) {
-        item.style.borderLeft = "3px solid var(--color-primary)";
-      }
+      // No extra border styling for search results — keep cards visually consistent
 
       const truncText = (mem.text || "").length > 120
         ? escHtml((mem.text || "").slice(0, 120)) + "..."

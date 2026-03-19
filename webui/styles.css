@@ -879,6 +879,7 @@ body {
   border-radius: var(--radius-md);
   cursor: pointer;
   border-left: 3px solid transparent;
+  overflow: hidden;
   transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-normal);
 }
 
@@ -914,6 +915,8 @@ body {
   font-size: 0.82rem;
   color: var(--color-text-muted);
   line-height: 1.4;
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .detail-header {
