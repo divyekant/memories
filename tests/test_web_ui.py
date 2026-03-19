@@ -41,3 +41,13 @@ def test_ui_static_assets_are_served(client):
     assert "loadMemories" in js_response.text
     assert "syncKeyStatus" in js_response.text
     assert "addEventListener(\"keydown\"" in js_response.text
+
+
+def test_styles_contain_confidence_and_health_classes(client):
+    css_response = client.get("/ui/static/styles.css")
+    assert css_response.status_code == 200
+    assert ".confidence-bar" in css_response.text
+    assert ".feedback-btn" in css_response.text
+    assert ".score-tooltip" in css_response.text
+    assert ".conflict-card" in css_response.text
+    assert ".health-stat-grid" in css_response.text
