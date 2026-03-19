@@ -1418,14 +1418,13 @@ class SearchFeedbackRequest(BaseModel):
 async def search_feedback(request_body: SearchFeedbackRequest, request: Request):
     """Record explicit relevance feedback for a search result."""
     auth = _get_auth(request)
-    # Verify scoped key can read the memory's source
-    if auth.prefixes is not None:
-        try:
-            mem = memory.get_memory(request_body.memory_id)
-            if not auth.can_read(mem.get("source", "")):
-                raise HTTPException(status_code=403, detail="Memory is outside your allowed source scope")
-        except ValueError:
-            raise HTTPException(status_code=404, detail=f"Memory {request_body.memory_id} not found")
+    # Verify memory exists (all callers) and scoped key can read its source
+    try:
+        mem = memory.get_memory(request_body.memory_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Memory {request_body.memory_id} not found")
+    if auth.prefixes is not None and not auth.can_read(mem.get("source", "")):
+        raise HTTPException(status_code=403, detail="Memory is outside your allowed source scope")
     usage_tracker.log_search_feedback(
         memory_id=request_body.memory_id,
         query=request_body.query,

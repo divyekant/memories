@@ -1196,6 +1196,39 @@ class MemoryEngine:
 
         return results
 
+    def _search_no_reinforce(
+        self,
+        query: str,
+        k: int = 5,
+        threshold: Optional[float] = None,
+        source_prefix: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Vector search without reinforcement side effects (for explain/debug)."""
+        if not self.metadata:
+            return []
+        k = min(k, len(self.metadata), 100)
+        query_vec = self._encode([query], normalize_embeddings=True, show_progress_bar=False)[0].astype("float32").tolist()
+        query_filter = self._build_source_filter(source_prefix=source_prefix)
+        hits = self.qdrant_store.search(
+            query_vector=query_vec, limit=k, score_threshold=threshold,
+            consistency=self.qdrant_settings.read_consistency, query_filter=query_filter,
+        )
+        results: List[Dict[str, Any]] = []
+        for hit in hits:
+            mem_id = hit.get("id")
+            if not isinstance(mem_id, int) or not self._id_exists(mem_id):
+                continue
+            meta = self._get_meta_by_id(mem_id)
+            source = str(meta.get("source", ""))
+            if source_prefix and not source.startswith(source_prefix):
+                continue
+            similarity = float(hit.get("score", 0.0))
+            if threshold is not None and similarity < threshold:
+                continue
+            result = self._enrich_with_confidence({**meta, "similarity": round(similarity, 6)})
+            results.append(result)
+        return results
+
     def hybrid_search_explain(
         self,
         query: str,
@@ -1232,8 +1265,8 @@ class MemoryEngine:
         k = min(k, len(self.metadata), 100)
         oversample = min(k * 3, len(self.metadata))
 
-        # --- Vector retrieval ---
-        vector_results = self.search(
+        # --- Vector retrieval (no reinforcement — explain is read-only) ---
+        vector_results = self._search_no_reinforce(
             query=query,
             k=oversample,
             threshold=threshold,
@@ -1342,7 +1375,6 @@ class MemoryEngine:
                     if vec_match and vec_match["similarity"] < threshold:
                         continue
                 results.append(result)
-                self.reinforce(doc_id)
 
         return {
             "results": results,

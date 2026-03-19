@@ -276,9 +276,10 @@ class UsageTracker:
 
             # Total searches — scope-aware
             if memory_ids is not None:
-                # For scoped callers, count searches that touched their memories
+                # For scoped callers, count retrievals that touched their memories
+                # (no per-search request ID in retrieval_log, so count rows as proxy)
                 row = conn.execute(
-                    f"SELECT COUNT(DISTINCT query) as total FROM retrieval_log WHERE memory_id IN ({placeholders}) {period_filter}",
+                    f"SELECT COUNT(*) as total FROM retrieval_log WHERE memory_id IN ({placeholders}) {period_filter}",
                     mem_params,
                 ).fetchone()
             else:
