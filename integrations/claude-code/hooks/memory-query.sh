@@ -5,10 +5,19 @@
 # so short follow-up prompts still retrieve the right memories.
 # Sync hook: blocks until done, injects additionalContext.
 
+MEMORIES_HOOK_NAME="memory-query"
+
 set -euo pipefail
 
 # Load from dedicated env file — avoids requiring shell profile changes
 [ -f "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}" ] && . "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
+_LIB="$(dirname "$0")/_lib.sh"
+if [ -f "$_LIB" ]; then
+  source "$_LIB"
+else
+  _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
+  _rotate_log() { :; }; _health_check() { return 0; }
+fi
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
@@ -33,70 +42,20 @@ TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
 
 build_response_hint() {
   local prompt_lower="$1"
-  local primary_memory="$2"
-  local primary_example="$3"
+  local hints_file="$(dirname "$0")/response-hints.json"
 
-  case "$prompt_lower" in
-    *"we're still on "*|*"we are still on "*|*"i don't want "*|*"i do not want "*)
-      cat <<EOF
-## Context Continuation Hint
+  [ -f "$hints_file" ] || return
 
-- The user is resuming an existing decision or constraint.
-- Start by restating the remembered choice or boundary in concrete terms before asking what to do next.
-- Keep the concrete implementation choice and the boundary condition together in the same sentence.
-- Do not answer with meta phrases like `stored decision` or `memory confirms`.
-$(if [ -n "$primary_example" ]; then printf -- "- Suggested first sentence: %s\n" "$primary_example"; elif [ -n "$primary_memory" ]; then printf -- "- Most relevant context to restate: %s\n" "$primary_memory"; fi)
-EOF
-      ;;
-    *"should we switch to "*|*"should i switch to "*)
-      cat <<EOF
-## Follow-up Response Hint
-
-- This is a switch-now follow-up.
-- Answer yes or no in the first sentence instead of asking the user to reconfirm the need.
-- If the remembered decision keeps the current implementation until a condition changes, say `not yet` and restate both the current choice and the trigger.
-- Do not answer with meta phrases like `the stored decision was`.
-- Keep qualifiers like `until`, `unless`, `because`, or `blocked on` if they appear in the retrieved memory.
-$(if [ -n "$primary_example" ]; then printf -- "- If the memory already answers the question, use this answer shape: Not yet — %s\n" "$primary_example"; elif [ -n "$primary_memory" ]; then printf -- "- Most relevant decision to preserve: %s\n" "$primary_memory"; fi)
-EOF
-      ;;
-    *"okay for now"*)
-      cat <<EOF
-## Follow-up Response Hint
-
-- This is a simple-for-now follow-up.
-- Answer directly in the first sentence instead of asking the user to reconfirm the decision.
-- Reuse the current choice together with the condition that would force a more complex design later.
-- Do not answer with meta phrases like `the stored decision is` or `memory confirms`.
-- Keep qualifiers like `until`, `unless`, `because`, or `blocked on` if they appear in the retrieved memory.
-$(if [ -n "$primary_example" ]; then printf -- "- If the memory already answers the question, use this answer shape: Yes — %s\n" "$primary_example"; elif [ -n "$primary_memory" ]; then printf -- "- Most relevant decision to preserve: %s\n" "$primary_memory"; fi)
-EOF
-      ;;
-    *"does that still apply"*|*"should we keep it"*|*"can we keep it simple"*)
-      cat <<EOF
-## Follow-up Response Hint
-
-- This is a short confirmation follow-up.
-- Answer directly in the first sentence instead of asking the user to reconfirm the decision.
-- Reuse the remembered decision and its boundary condition in the reply.
-- Keep qualifiers like `until`, `unless`, `because`, or `blocked on` if they appear in the retrieved memory.
-- Restate the concrete choice and the exact condition together, not separately.
-$(if [ -n "$primary_example" ]; then printf -- "- If the memory already answers the question, use this answer shape: Yes — %s\n" "$primary_example"; elif [ -n "$primary_memory" ]; then printf -- "- Most relevant decision to preserve: %s\n" "$primary_memory"; fi)
-EOF
-      ;;
-    *"what about"*|*"what about retries"*|*"and retries"*|*"retry"*|*"retries"*)
-      cat <<EOF
-## Follow-up Response Hint
-
-- This follow-up is asking for the missing piece of the earlier topic.
-- If the retrieved memory says the work is deferred or blocked, say that explicitly in sentence one.
-- Keep the blocker or dependency in the answer instead of widening into unrelated design details.
-$(if [ -n "$primary_example" ]; then printf -- "- If the memory already answers the question, use this answer shape: Not yet — %s\n" "$primary_example"; elif [ -n "$primary_memory" ]; then printf -- "- Most relevant blocker to preserve: %s\n" "$primary_memory"; fi)
-EOF
-      ;;
-    *)
-      ;;
-  esac
+  # Check each pattern
+  local match template
+  while IFS= read -r line; do
+    match=$(echo "$line" | jq -r '.match')
+    template=$(echo "$line" | jq -r '.template')
+    if echo "$prompt_lower" | grep -qiE "$match"; then
+      echo "$template"
+      return
+    fi
+  done < <(jq -c '.patterns[]' "$hints_file")
 }
 
 extract_recent_context() {
@@ -134,7 +93,7 @@ extract_recent_context() {
         )
       )
     | join("\n")
-  ' 2>/dev/null || true
+  ' 2>/dev/null || { _log_warn "Transcript context extraction failed"; true; }
 }
 
 search_memories() {
@@ -174,7 +133,7 @@ search_memories() {
     -H "Content-Type: application/json" \
     -H "X-API-Key: $MEMORIES_API_KEY" \
     -d "$body" \
-    2>/dev/null || true
+    2>/dev/null || { _log_error "Query search failed for prefix=${prefix:-<none>}"; true; }
 }
 
 CONTEXT=$(extract_recent_context "$TRANSCRIPT_PATH")
@@ -233,9 +192,9 @@ if [ -z "$RESULTS" ] || [ "$RESULTS" = "null" ]; then
   exit 0
 fi
 
-PRIMARY_MEMORY=$(printf '%s' "$RESULTS_JSON" | jq -r '.[0].text // empty' 2>/dev/null) || PRIMARY_MEMORY=""
-PRIMARY_MEMORY_EXAMPLE=$(printf '%s' "$PRIMARY_MEMORY" | sed -E 's/^[^:]+ decision:[[:space:]]*//; s/^[^:]+:[[:space:]]*//')
-RESPONSE_HINT=$(build_response_hint "$PROMPT_LOWER" "$PRIMARY_MEMORY" "$PRIMARY_MEMORY_EXAMPLE")
+_log_info "Query returned $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0) results for prompt (${#PROMPT} chars)"
+
+RESPONSE_HINT=$(build_response_hint "$PROMPT_LOWER")
 
 jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
   hookSpecificOutput: {

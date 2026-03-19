@@ -157,10 +157,14 @@ Memories Service (Docker :8900)
     |-- FastAPI REST API
     |-- Hybrid Search (Memories vector + BM25 keyword, RRF fusion)
     |-- Markdown-aware chunking
+    |-- Event Bus (SSE stream + webhook delivery)
+    |-- Audit Log (append-only trail)
+    |-- Memory Relationships (graph edges between memories)
+    |-- Confidence Decay (time-based relevance attenuation)
     |-- Auto-backups
     v
 Persistent Storage (data/)
-    |-- vector_index.bin (Memories vector index snapshot)
+    |-- Qdrant vector store (embeddings + metadata)
     |-- metadata.json (memory text + metadata)
     |-- backups/ (auto, keeps last 10)
 ```
@@ -176,7 +180,7 @@ Detailed docs:
 
 ### Claude Code (CLI)
 
-The MCP server gives Claude Code native `memory_search`, `memory_add`, `memory_extract`, `memory_delete`, `memory_delete_batch`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, and `memory_is_novel` tools.
+The MCP server gives Claude Code native `memory_search`, `memory_add`, `memory_extract`, `memory_delete`, `memory_delete_batch`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, `memory_is_useful`, and `memory_conflicts` tools.
 
 **Setup:**
 
@@ -664,7 +668,9 @@ All endpoints accept/return JSON. Auth via `X-API-Key` header.
 
 ```
 POST /search
-{"query": "...", "k": 5, "hybrid": true, "threshold": 0.3, "vector_weight": 0.7, "source_prefix": "team/project/"}
+{"query": "...", "k": 5, "hybrid": true, "threshold": 0.3,
+ "vector_weight": 0.7, "recency_weight": 0.1, "recency_half_life_days": 30,
+ "source_prefix": "team/project/"}
 
 POST /search/batch
 {"queries": [{"query": "...", "k": 5}, {"query": "...", "hybrid": true}]}
@@ -757,9 +763,61 @@ POST /restore          {"backup_name": "manual_20260213_120000"}
 ### Extraction
 
 ```
-POST /memory/extract    {"messages": "...", "source": "proj", "context": "stop"}  # 202 queued
+POST /memory/extract    {"messages": "...", "source": "proj", "context": "stop", "debug": true}  # 202 queued
 GET  /memory/extract/{job_id}
 GET  /extract/status
+```
+
+### Memory Relationships
+
+```
+POST   /memory/{id}/link          {"target_id": N, "type": "related"}
+GET    /memory/{id}/links
+DELETE /memory/{id}/link/{link_id}
+```
+
+### Conflict Detection
+
+```
+GET /memory/conflicts?limit=10
+```
+
+### Events (SSE + Webhooks)
+
+```
+GET    /events/stream              # SSE stream (auth-filtered)
+POST   /webhooks                   # Register webhook
+GET    /webhooks
+DELETE /webhooks/{id}
+```
+
+### Search Explainability
+
+```
+POST /search/explain               # Admin-only scoring breakdown
+```
+
+### Quality & Metrics
+
+```
+GET  /metrics/search-quality?period=7d
+POST /search/feedback              # Submit relevance feedback
+GET  /metrics/quality-summary?period=7d
+GET  /metrics/failures?type=retrieval&limit=10
+```
+
+### Maintenance
+
+```
+POST /maintenance/reembed          # Migrate embedding model
+POST /maintenance/compact          # Find similar clusters (dry-run)
+POST /maintenance/consolidate      # LLM-powered merge
+```
+
+### Audit
+
+```
+GET /audit/log?limit=50&source=prefix
 ```
 
 Full OpenAPI schema at http://localhost:8900/docs.
@@ -783,7 +841,7 @@ When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools
 |------|-------------|
 | `memory_search` | Hybrid search (BM25 + vector). Default mode. |
 | `memory_add` | Store a memory with auto-dedup. |
-| `memory_extract` | LLM-based extraction with AUDN (Add/Update/Delete/Noop) from conversation text. |
+| `memory_extract` | LLM-based extraction with AUDN (Add/Update/Delete/Noop/Conflict) from conversation text. |
 | `memory_delete` | Delete by ID. |
 | `memory_delete_batch` | Delete multiple IDs in one operation. |
 | `memory_delete_by_source` | Bulk delete all memories matching a source prefix. |
@@ -791,6 +849,8 @@ When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools
 | `memory_list` | Browse with pagination and source prefix filter. |
 | `memory_stats` | Index stats (count, model, last updated). |
 | `memory_is_novel` | Check if text is already known. |
+| `memory_is_useful` | Submit search feedback (positive/negative). |
+| `memory_conflicts` | List memories with unresolved conflicts. |
 
 ---
 
@@ -825,6 +885,8 @@ When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools
 | `EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH` | `0` | Skip reload when extract queue depth exceeds this |
 | `METRICS_LATENCY_SAMPLES` | `200` | Per-route latency sample window for `/metrics` percentiles |
 | `METRICS_TREND_SAMPLES` | `120` | Memory trend sample window exposed by `/metrics` |
+| `AUDIT_LOG` | (none) | Path to audit log file |
+| `CONFIDENCE_DECAY_HALF_LIFE_DAYS` | `90` | Half-life for confidence decay |
 | `PORT` | `8000` | Internal service port |
 
 ### Docker Compose guardrails
@@ -848,8 +910,8 @@ Default compose files now include:
 ## Automatic Memory Layer
 
 Memories supports automatic retrieval/extraction, with client-specific behavior:
-- Claude Code: full 5-hook lifecycle (session start, each prompt, stop, pre-compact, session end)
-- Cursor: same 5-hook lifecycle via Third-party skills (loads from `~/.claude/settings.json`)
+- Claude Code: full 10-hook lifecycle (session start, each prompt, after response, pre-compact, post-compact, subagent stop, tool use, file write guard, config change, session end)
+- Cursor: same 10-hook lifecycle via Third-party skills (loads from `~/.claude/settings.json`)
 - Codex: native `notify` hook after each completed turn + MCP/developer instructions for retrieval
 - OpenClaw: skill-driven retrieval/extraction flow
 
@@ -857,10 +919,15 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 
 | Event | Hook | What happens |
 |-------|------|-------------|
-| Session start | `memory-recall.sh` | Loads project-scoped memories into context and injects a short recall playbook for the session |
-| Every prompt | `memory-query.sh` | Retrieves memories relevant to the question using project-scoped search first, then falls back to broader search only if needed |
-| After response | `memory-extract.sh` | Extracts facts and stores via AUDN pipeline |
+| Session start | `memory-recall.sh` | Loads project-scoped memories, hydrates MEMORY.md, checks service health |
+| Every prompt | `memory-query.sh` | Retrieves relevant memories with transcript context |
+| After response | `memory-extract.sh` | Extracts facts via AUDN |
 | Before compaction | `memory-flush.sh` | Aggressive extraction before context loss |
+| After compaction | `memory-rehydrate.sh` | Re-injects memories using compact summary |
+| Subagent stop | `memory-subagent-capture.sh` | Captures decisions from Plan/Explore agents |
+| Tool use observed | `memory-observe.sh` | Logs MCP tool invocations (observability) |
+| File write attempt | `memory-guard.sh` | Blocks direct MEMORY.md writes |
+| Config changed | `memory-config-guard.sh` | Warns if hooks removed from settings |
 | Session end | `memory-commit.sh` | Final extraction pass |
 
 **Cursor compatibility note:** Cursor sends `workspace_roots[]` (not `cwd`) and `transcript_path` (not inline `messages`) in hook payloads. The hook scripts handle both formats automatically — no separate configuration needed.
@@ -924,7 +991,7 @@ defaults to `claude-code/{project},learning/{project},wip/{project}`.
 
 | Provider | Cost | AUDN | Speed |
 |----------|------|------|-------|
-| Anthropic (recommended) | ~$0.001/turn | Full (Add/Update/Delete/Noop) | ~1-2s |
+| Anthropic (recommended) | ~$0.001/turn | Full (Add/Update/Delete/Noop/Conflict) | ~1-2s |
 | OpenAI | ~$0.001/turn | Full | ~1-2s |
 | ChatGPT Subscription | Free (uses your subscription) | Full | ~1-2s |
 | Ollama | Free | Full | ~5s |
@@ -945,6 +1012,7 @@ AUDN is the memory decision loop:
 - `UPDATE`: refine an existing memory that is close but outdated/incomplete
 - `DELETE`: remove a stale/conflicting memory
 - `NOOP`: ignore non-useful or duplicate facts
+- `CONFLICT`: flag when two memories directly contradict each other
 
 Why it matters:
 - cleaner memory store over time (less duplicate/stale data)
@@ -1174,6 +1242,10 @@ memories/
   llm_extract.py          # Extraction pipeline with AUDN
   chatgpt_oauth.py        # ChatGPT OAuth2+PKCE token exchange helpers
   key_store.py            # SQLite-backed API key store (SHA-256 hashing)
+  event_bus.py            # Event-driven architecture (SSE, webhooks)
+  audit_log.py            # Append-only audit trail
+  qdrant_store.py         # Qdrant vector store adapter
+  usage_tracker.py        # Search quality and extraction metrics
   auth_context.py         # Request-scoped role and prefix enforcement
   memories_auth.py        # CLI auth tool (python -m memories auth chatgpt/status)
   __main__.py             # Entry point for python -m memories
@@ -1185,6 +1257,8 @@ memories/
     api.md                # Complete REST API reference
     architecture.md       # System architecture and runtime flows
     decisions.md          # Key design decisions and tradeoffs
+    deployment.md         # Self-hosted deployment guide
+    api-coverage.md       # API/MCP/CLI coverage matrix
     benchmarks/           # Reproducible benchmark notes
   mcp-server/
     index.js              # MCP server (wraps REST API as tools)
@@ -1200,7 +1274,14 @@ memories/
   integrations/
     claude-code/
       install.sh          # Auto-detect installer (Claude/Codex/Cursor/OpenClaw)
-      hooks/              # Claude Code 5-hook scripts + hooks.json
+      hooks/              # Claude Code 10-hook scripts + hooks.json
+        _lib.sh               # Shared hook utilities (logging, health check)
+        memory-rehydrate.sh   # PostCompact rehydration hook
+        memory-observe.sh     # PostToolUse observability hook
+        memory-guard.sh       # PreToolUse MEMORY.md write guard
+        memory-subagent-capture.sh  # SubagentStop extraction hook
+        memory-config-guard.sh      # ConfigChange settings watchdog
+        response-hints.json   # Response hint patterns
     codex/
       memory-codex-notify.sh # Codex notify hook script (after-turn extraction)
     claude-code.md        # Claude Code guide
@@ -1218,6 +1299,8 @@ memories/
     memories/
       SKILL.md            # Claude Code skill for memory discipline
   eval/
+    benchmarks.py         # Benchmark suite runner
+    scenarios/benchmark/  # 6 benchmark scenarios
     __main__.py           # CLI entrypoint (python -m eval)
     models.py             # Pydantic data models (Scenario, EvalReport, etc.)
     loader.py             # YAML scenario loader

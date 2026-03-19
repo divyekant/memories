@@ -122,7 +122,7 @@ class EventBus:
             return self._webhooks.pop(webhook_id, None) is not None
 
     def _dispatch_webhooks(self, event: Event) -> None:
-        """Best-effort async webhook delivery."""
+        """Best-effort webhook delivery (async when possible, sync fallback)."""
         with self._lock:
             targets = [
                 wh for wh in self._webhooks.values()
@@ -135,11 +135,12 @@ class EventBus:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 loop.create_task(self._send_webhooks(targets, event))
-            else:
-                asyncio.run(self._send_webhooks(targets, event))
+                return
         except RuntimeError:
-            # No event loop — skip webhook delivery
             pass
+
+        # Sync fallback for threads without an event loop
+        self._send_webhooks_sync(targets, event)
 
     async def _send_webhooks(self, targets: List[Dict], event: Event) -> None:
         """Send event to all matching webhook URLs."""
@@ -151,6 +152,19 @@ class EventBus:
                 await self._http_client.post(wh["url"], json=payload)
             except Exception as e:
                 logger.warning("Webhook %s failed: %s", wh["id"], e)
+
+    def _send_webhooks_sync(self, targets: List[Dict], event: Event) -> None:
+        """Synchronous webhook delivery for threads without an event loop."""
+        payload = event.to_dict()
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                for wh in targets:
+                    try:
+                        client.post(wh["url"], json=payload)
+                    except Exception as e:
+                        logger.warning("Webhook %s sync failed: %s", wh["id"], e)
+        except Exception as e:
+            logger.warning("Sync webhook client error: %s", e)
 
 
 # Singleton

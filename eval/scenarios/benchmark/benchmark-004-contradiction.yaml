@@ -1,0 +1,17 @@
+id: benchmark-004
+category: benchmark
+name: "Contradiction handling"
+description: "Store fact A (Redis cache TTL is 300s), then store contradicting fact B (TTL changed to 60s). The agent should report the updated value."
+memories:
+  - text: "Meridian API cache configuration: Redis cache TTL is set to 300 seconds for all GET endpoints. Cache key format is 'mrd:{endpoint}:{hash(params)}'. Configured in config/cache.yaml."
+    source: eval/benchmark-004
+  - text: "UPDATE 2026-03-01: Meridian cache TTL reduced from 300s to 60s for all GET endpoints after customer complaints about stale pricing data. The 300s TTL caused users to see outdated product prices for up to 5 minutes. Change applied in PR #847 by @sarah."
+    source: eval/benchmark-004
+prompt: "What is the current cache TTL for Meridian API GET endpoints?"
+expected:
+  - type: contains
+    value: "60"
+    weight: 0.5
+  - type: recall_accuracy
+    value: "The answer should mention 60 seconds as the current TTL, not 300 seconds. It may mention the change from 300 to 60 for context, but must be clear that 60 is the current value."
+    weight: 0.5

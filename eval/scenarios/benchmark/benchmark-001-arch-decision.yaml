@@ -1,0 +1,18 @@
+id: benchmark-001
+category: benchmark
+name: "Architectural decision recall"
+description: "Store an ADR about database choice, then ask about it later. The specific tech (CockroachDB) and reason (multi-region) are arbitrary and unguessable."
+memories:
+  - text: "ADR-017: Chose CockroachDB over PostgreSQL for the OrderService because we need multi-region active-active writes with automatic conflict resolution. Postgres logical replication was evaluated but rejected due to DDL propagation limitations. Decision date: 2026-01-15, decided by platform team lead."
+    source: eval/benchmark-001
+prompt: "What database does the OrderService use and why was it chosen over PostgreSQL?"
+expected:
+  - type: contains
+    value: "CockroachDB"
+    weight: 0.4
+  - type: contains
+    value: "multi-region"
+    weight: 0.3
+  - type: contains
+    value: "ADR-017"
+    weight: 0.3

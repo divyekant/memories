@@ -1,0 +1,50 @@
+id: benchmark-006
+category: benchmark
+name: "Retrieval under growing store"
+description: "Seed a target memory among many distractors. The specific fact (Grafana dashboard UID 'ops-kx7-main') must be retrievable despite noise from 20+ distractor memories."
+memories:
+  - text: "Nexus ops Grafana dashboard UID is 'ops-kx7-main'. Access at https://grafana.nexus.internal/d/ops-kx7-main. Shows request rate, error rate, p99 latency, and pod count. Created by DevOps team, January 2026."
+    source: eval/benchmark-006
+  - text: "Nexus uses Datadog for APM traces. Service name is 'nexus-api-prod'. Retention is 15 days for traces, 30 days for metrics."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus CI/CD runs on GitHub Actions. Build workflow is in .github/workflows/build.yml. Average build time is 4 minutes."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus deployment uses ArgoCD with auto-sync disabled. Manifests are in the nexus-k8s-manifests repo."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus API rate limiting: 1000 req/min for authenticated users, 100 req/min for anonymous. Implemented with Redis sliding window."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus database backups run daily at 03:00 UTC via pg_dump to S3 bucket nexus-db-backups. Retention: 30 days."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus logging uses structured JSON format. Log aggregation in Loki with 14-day retention. Query via Grafana Explore."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus authentication uses Auth0 with custom rules for role-based access. JWT expiry is 1 hour with refresh tokens valid for 7 days."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus feature flags managed via LaunchDarkly. SDK key in Vault at secret/nexus/launchdarkly. Evaluation context includes user tier and region."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus error tracking uses Sentry. DSN in environment variable SENTRY_DSN. PII scrubbing enabled. Alert threshold: 10 events per 5 minutes."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus message queue uses RabbitMQ with 3-node cluster. Vhost is /nexus-prod. Dead letter exchange: nexus.dlx."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus CDN configuration: CloudFront distribution d1234abcd.cloudfront.net. Origin: nexus-api-lb.us-east-1.elb.amazonaws.com. Cache TTL: 3600s for static assets."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus secret management uses HashiCorp Vault. Secrets engine at secret/nexus/. Auto-rotation enabled for database credentials every 24 hours."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus API versioning follows URI path scheme: /v1/, /v2/. V1 deprecated, sunset date 2026-06-01. Migration guide in docs/v2-migration.md."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus health checks: /health for liveness (checks process), /ready for readiness (checks DB + Redis + RabbitMQ). Kubernetes probes configured with 10s period."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus observability stack: Prometheus for metrics scraping (15s interval), Grafana for dashboards, Alertmanager for routing. PagerDuty integration for P1/P2."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus data pipeline uses Apache Airflow. DAGs in nexus-etl repo. Schedule: hourly for event processing, daily for aggregation reports."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus staging environment: staging.nexus.internal. Uses same Docker images as prod with NEXUS_ENV=staging. Database is a daily restore from prod backup with PII masking."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus incident response: P1 = full outage (15 min response), P2 = degraded (30 min), P3 = non-critical (4 hours). Runbooks in Confluence under Nexus Ops."
+    source: eval/benchmark-006-distractor
+  - text: "Nexus API documentation generated via Swagger/OpenAPI. Spec at /api/docs. Auto-generated from FastAPI route decorators. Published to docs.nexus.io on every release."
+    source: eval/benchmark-006-distractor
+prompt: "What is the Grafana dashboard UID for the Nexus ops dashboard?"
+expected:
+  - type: contains
+    value: "ops-kx7-main"
+    weight: 1.0

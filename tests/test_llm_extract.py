@@ -206,7 +206,7 @@ class TestAUDNCycle:
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = []
 
-        decisions, _ = run_audn(
+        decisions, _, _ = run_audn(
             mock_provider, mock_engine,
             facts=[{"text": "Uses Drizzle ORM", "category": "decision"}],
             source="test/project"
@@ -228,7 +228,7 @@ class TestAUDNCycle:
             {"id": 42, "text": "Uses Drizzle ORM", "similarity": 0.95}
         ]
 
-        decisions, _ = run_audn(
+        decisions, _, _ = run_audn(
             mock_provider, mock_engine,
             facts=[{"text": "Uses Drizzle ORM", "category": "decision"}],
             source="test/project"
@@ -250,7 +250,7 @@ class TestAUDNCycle:
             {"id": 10, "text": "Uses Prisma ORM", "similarity": 0.75}
         ]
 
-        decisions, _ = run_audn(
+        decisions, _, _ = run_audn(
             mock_provider, mock_engine,
             facts=[{"text": "Switched from Prisma to Drizzle ORM", "category": "decision"}],
             source="test/project"
@@ -267,7 +267,7 @@ class TestAUDNCycle:
         mock_engine = MagicMock()
         mock_engine.is_novel.return_value = (True, None)
 
-        decisions, _ = run_audn(
+        decisions, _, _ = run_audn(
             mock_provider, mock_engine,
             facts=[{"text": "New fact", "category": "detail"}],
             source="test/project"
@@ -286,7 +286,7 @@ class TestAUDNCycle:
         mock_engine = MagicMock()
         mock_engine.is_novel.return_value = (False, {"id": 5, "text": "Existing fact", "similarity": 0.95})
 
-        decisions, _ = run_audn(
+        decisions, _, _ = run_audn(
             mock_provider, mock_engine,
             facts=[{"text": "Existing fact", "category": "detail"}],
             source="test/project"

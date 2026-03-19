@@ -1,0 +1,18 @@
+id: benchmark-003
+category: benchmark
+name: "Preference retention"
+description: "Store a user's code style preference (4-space indent with trailing commas in Python, ruff as formatter), then verify it's recalled when asking about formatting."
+memories:
+  - text: "User preference: Python code must use 4-space indentation, trailing commas on all multi-line collections, and ruff as the formatter (not black). Line length limit is 110 characters. These preferences override any default suggestions. Configured in pyproject.toml under [tool.ruff]."
+    source: eval/benchmark-003
+prompt: "I need to format some Python code. What formatter and style settings should I use?"
+expected:
+  - type: contains
+    value: "ruff"
+    weight: 0.4
+  - type: contains
+    value: "trailing comma"
+    weight: 0.3
+  - type: contains
+    value: "110"
+    weight: 0.3

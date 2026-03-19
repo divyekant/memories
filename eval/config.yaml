@@ -7,3 +7,4 @@ category_weights:
   coding: 0.40
   recall: 0.35
   compounding: 0.25
+  benchmark: 0.30

@@ -1,0 +1,18 @@
+id: benchmark-002
+category: benchmark
+name: "Debugging pattern recall"
+description: "Store a fix for a specific gotcha (gRPC deadline exceeded due to DNS TTL), then encounter the same symptom. The root cause is non-obvious."
+memories:
+  - text: "Gotcha: gRPC DEADLINE_EXCEEDED errors in the PaymentGateway service are caused by stale DNS entries. The default DNS TTL in our Kubernetes cluster is 30s but CockroachDB load balancer rotates IPs every 15s. Fix: set GRPC_DNS_RESOLVER=native and grpc.dns_min_time_between_resolutions_ms=5000. Discovered during incident INC-2026-042."
+    source: eval/benchmark-002
+prompt: "We're seeing intermittent gRPC DEADLINE_EXCEEDED errors in the PaymentGateway service. Any known issues?"
+expected:
+  - type: contains
+    value: "DNS"
+    weight: 0.4
+  - type: contains
+    value: "GRPC_DNS_RESOLVER"
+    weight: 0.3
+  - type: contains
+    value: "INC-2026-042"
+    weight: 0.3

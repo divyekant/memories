@@ -365,6 +365,8 @@ install_hooks_target() {
 
   mkdir -p "$hooks_dir"
   cp "$HOOKS_SRC"/memory-*.sh "$hooks_dir/"
+  [ -f "$HOOKS_SRC/_lib.sh" ] && cp "$HOOKS_SRC/_lib.sh" "$hooks_dir/"
+  [ -f "$HOOKS_SRC/response-hints.json" ] && cp "$HOOKS_SRC/response-hints.json" "$hooks_dir/"
   chmod +x "$hooks_dir"/*.sh
   echo -e "  ${GREEN}[OK]${NC} Installed $client hooks: $hooks_dir"
 
@@ -387,6 +389,15 @@ install_hooks_target() {
 
   echo "$merged" > "$settings_file"
   echo -e "  ${GREEN}[OK]${NC} Merged hook config into $settings_file"
+
+  # Merge read-only memory tool permissions into permissions.allow
+  local readonly_tools='["mcp__memories__memory_search","mcp__memories__memory_list","mcp__memories__memory_count","mcp__memories__memory_stats","mcp__memories__memory_is_novel","mcp__memories__memory_is_useful","mcp__memories__memory_conflicts"]'
+  merged=$(jq --argjson tools "$readonly_tools" '
+    .permissions.allow = ((.permissions.allow // []) + $tools | unique)
+  ' "$settings_file")
+
+  echo "$merged" > "$settings_file"
+  echo -e "  ${GREEN}[OK]${NC} Merged read-only memory tool permissions into $settings_file"
 }
 
 install_mcp_json_target() {
@@ -595,3 +606,20 @@ echo -e "${GREEN}Done.${NC}"
 echo -e "Installed targets: ${BLUE}$TARGETS_CSV${NC}"
 echo -e "Hook env file:     ${BLUE}$MEMORIES_ENV_FILE${NC}"
 [ -n "$EXTRACT_PROVIDER" ] && echo -e "Docker env file:   ${BLUE}$REPO_ROOT/.env${NC}"
+
+# Print hook summary from hooks.json
+if [ "$hooks_target_count" -gt 0 ] && [ -f "$HOOKS_SRC/hooks.json" ]; then
+  echo ""
+  echo -e "${BLUE}Installed hooks:${NC}"
+  jq -r '
+    .hooks | to_entries[] |
+    .key as $event |
+    .value[] |
+    .matcher as $matcher |
+    .hooks[] |
+    $event + " -> " + (.command | split("/") | last)
+      + (if $matcher != "" then " (matcher: " + $matcher + ")" else "" end)
+  ' "$HOOKS_SRC/hooks.json" 2>/dev/null | while read -r line; do
+    echo -e "  ${GREEN}*${NC} $line"
+  done
+fi

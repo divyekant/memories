@@ -244,3 +244,50 @@ For simple cases (2 clear, novel facts), individual `memory_add` calls are fine.
 
 This skill activates at natural breakpoints *within* whatever workflow is running,
 not as a standalone phase.
+
+## Hook Lifecycle
+
+The integration hooks fire at these Claude Code events, providing seamless memory recall and extraction without manual intervention:
+
+| Hook | Event | What It Does |
+|------|-------|-------------|
+| `memory-recall.sh` | SessionStart | Loads project memories, hydrates MEMORY.md via sync marker, checks service health |
+| `memory-query.sh` | UserPromptSubmit | Searches for memories relevant to the current prompt using transcript context |
+| `memory-extract.sh` | Stop | Extracts facts from the last user+assistant pair (context: `stop`, ~4K chars) |
+| `memory-flush.sh` | PreCompact | Aggressive extraction before context loss (context: `pre_compact`, ~12K chars) |
+| `memory-commit.sh` | SessionEnd | Final extraction pass (context: `session_end`, ~8K chars) |
+| `memory-rehydrate.sh` | PostCompact | Re-injects memories using the compact summary as a targeted search query |
+| `memory-subagent-capture.sh` | SubagentStop | Captures architectural decisions from Plan/Explore subagents |
+| `memory-observe.sh` | PostToolUse | Logs when memory MCP tools are called (observability) |
+| `memory-guard.sh` | PreToolUse | Blocks direct writes to MEMORY.md (managed by sync) |
+| `memory-config-guard.sh` | ConfigChange | Warns if memory hooks are removed from settings |
+
+The extraction `context` parameter controls aggressiveness:
+- `stop`: Standard — skips task completion details, commit hashes, metrics
+- `pre_compact`: Aggressive — includes file paths, config patterns, naming conventions
+- `session_end`: Same as pre_compact (context about to be lost permanently)
+- `subagent_stop`: Standard — captures subagent decisions
+
+## Auto-Memory Hydration
+
+On every session start, `memory-recall.sh` syncs top memories into Claude Code's auto-memory file at `~/.claude/projects/{encoded-cwd}/memory/MEMORY.md`.
+
+The sync uses a marker comment: `<!-- SYNCED-FROM-MEMORIES-MCP -->`
+
+- Everything **above** the marker is preserved (your manual/pinned content)
+- Everything **below** the marker is replaced with fresh memories from MCP
+- Claude Code loads the first 200 lines of MEMORY.md at session start — synced content counts against this limit
+- To pin important context, write it above the marker manually
+
+This ensures the most relevant memories are always in Claude's context window, even before the skill triggers any active recall.
+
+## Manual vs Automatic Extraction
+
+**Automatic** (hooks handle): Lifecycle boundaries — session stop, pre-compaction, session end, subagent completion. These capture facts from recent conversation without intervention.
+
+**Manual** (you trigger): Mid-session moments hooks miss:
+- A decision just reversed or updated — call `memory_extract` with the conversation chunk so AUDN can UPDATE the old memory
+- Deferred work identified — call `memory_add` with the deferred item
+- User explicitly says "remember this" — call `memory_add` immediately
+
+AUDN deduplicates across both paths. If a hook extracts a fact that `memory_add` already stored, AUDN issues a NOOP. If you manually extract something a hook will also extract, the duplicate is harmless.

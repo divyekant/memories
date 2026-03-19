@@ -5,10 +5,22 @@
 # so the most important memories are always in context (200-line cap).
 # Sync hook: blocks until done, injects additionalContext.
 
+MEMORIES_HOOK_NAME="memory-recall"
+
 set -euo pipefail
 
 # Load from dedicated env file — avoids requiring shell profile changes
 [ -f "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}" ] && . "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
+_LIB="$(dirname "$0")/_lib.sh"
+if [ -f "$_LIB" ]; then
+  source "$_LIB"
+else
+  _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
+  _rotate_log() { :; }; _health_check() { return 0; }
+fi
+
+# Rotate log on session start
+_rotate_log
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
@@ -19,6 +31,9 @@ fi
 MEMORIES_RECALL_SCOPED_THRESHOLD="${MEMORIES_RECALL_SCOPED_THRESHOLD:-0.35}"
 MEMORIES_RECALL_FALLBACK_THRESHOLD="${MEMORIES_RECALL_FALLBACK_THRESHOLD:-0.55}"
 
+# Configurable recall limit (Task 1.2)
+RECALL_LIMIT="${MEMORIES_RECALL_LIMIT:-8}"
+
 INPUT=$(cat)
 CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // empty')
 if [ -z "$CWD" ]; then
@@ -28,6 +43,20 @@ fi
 PROJECT=$(basename "$CWD")
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   exit 0
+fi
+
+_log_info "Session start for project=$PROJECT cwd=$CWD"
+
+# Health check — warn if service unreachable
+HEALTH_WARNING=""
+if ! _health_check; then
+  _log_warn "Service unreachable at $MEMORIES_URL"
+  HEALTH_WARNING=$(cat <<HWEOF
+## Memories Service Warning
+
+Memories service is not reachable at $MEMORIES_URL. Memory recall and extraction are unavailable this session. Check that the service is running.
+HWEOF
+)
 fi
 
 search_memories() {
@@ -67,7 +96,7 @@ search_memories() {
     -H "Content-Type: application/json" \
     -H "X-API-Key: $MEMORIES_API_KEY" \
     -d "$body" \
-    2>/dev/null || true
+    2>/dev/null || { _log_error "Search failed for prefix=${prefix:-<none>}"; true; }
 }
 
 query_for_prefix() {
@@ -114,12 +143,12 @@ for raw_prefix in "${prefix_templates[@]}"; do
   SCOPED_PREFIX_LIST="$SCOPED_PREFIX_LIST$prefix"
 done
 
-RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr '
+RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$RECALL_LIMIT" '
   map(select(type == "object") | (.results // []))
   | add
   | unique_by(.id)
   | sort_by(-(.similarity // .rrf_score // 0))
-  | .[0:8]
+  | .[0:$limit]
 ' 2>/dev/null) || RESULTS_JSON="[]"
 
 if [ "$RESULTS_JSON" = "[]" ]; then
@@ -134,6 +163,8 @@ CONTEXT_RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
     map("- [\(.source)] \(.text)") | join("\n")
   end
 ' 2>/dev/null) || true
+
+_log_info "Recalled $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0) memories for $PROJECT"
 
 PLAYBOOK=$(cat <<EOF
 ## Memory Playbook
@@ -197,10 +228,11 @@ if [ -n "$MEMORY_RESULTS" ] && [ "$MEMORY_RESULTS" != "null" ]; then
 fi
 
 # --- Output context for Claude Code ---
-jq -n --arg memories "$CONTEXT_RESULTS" --arg playbook "$PLAYBOOK" '{
+jq -n --arg memories "$CONTEXT_RESULTS" --arg playbook "$PLAYBOOK" --arg health_warning "$HEALTH_WARNING" '{
   hookSpecificOutput: {
     hookEventName: "SessionStart",
     additionalContext: (
+      (if ($health_warning | length) > 0 then $health_warning + "\n\n" else "" end) +
       (if ($memories | length) > 0 then "## Relevant Memories\n\n" + $memories + "\n\n" else "" end) +
       $playbook
     )

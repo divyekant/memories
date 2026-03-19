@@ -726,6 +726,7 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data["source"],
                 request_data["context"],
                 request_data.get("allowed_prefixes"),
+                request_data.get("debug", False),
             )
             if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result):
                 fallback_result = await run_in_threadpool(
@@ -1240,6 +1241,7 @@ class ExtractRequest(BaseModel):
     )
     source: str = Field(default="", description="Source identifier (e.g., 'claude-code/my-project')")
     context: str = Field(default="stop", description="Extraction context: stop, pre_compact, session_end")
+    debug: bool = Field(default=False, description="When True, return detailed extraction trace")
 
 
 class SupersedeRequest(BaseModel):
@@ -1415,7 +1417,14 @@ class SearchFeedbackRequest(BaseModel):
 @app.post("/search/feedback")
 async def search_feedback(request_body: SearchFeedbackRequest, request: Request):
     """Record explicit relevance feedback for a search result."""
-    _get_auth(request)
+    auth = _get_auth(request)
+    # Verify memory exists (all callers) and scoped key can read its source
+    try:
+        mem = memory.get_memory(request_body.memory_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Memory {request_body.memory_id} not found")
+    if auth.prefixes is not None and not auth.can_read(mem.get("source", "")):
+        raise HTTPException(status_code=403, detail="Memory is outside your allowed source scope")
     usage_tracker.log_search_feedback(
         memory_id=request_body.memory_id,
         query=request_body.query,
@@ -1429,10 +1438,24 @@ async def search_feedback(request_body: SearchFeedbackRequest, request: Request)
 async def search_quality_metrics(
     request: Request,
     period: str = Query("7d", pattern="^(today|7d|30d|all)$"),
+    source_prefix: Optional[str] = Query(None, max_length=500, description="Filter metrics to memories matching this source prefix"),
 ):
     """Aggregated search quality metrics — rank distribution, feedback ratios, volume."""
-    _get_auth(request)
-    return usage_tracker.get_search_quality(period)
+    auth = _get_auth(request)
+    # Resolve accessible memory IDs for scoped callers
+    scoped_ids = None
+    if auth.prefixes is not None or source_prefix:
+        metadata = getattr(memory, "metadata", [])
+        ids = []
+        for m in metadata:
+            src = m.get("source", "")
+            if source_prefix and not src.startswith(source_prefix):
+                continue
+            if auth.prefixes is not None and not auth.can_read(src):
+                continue
+            ids.append(m["id"])
+        scoped_ids = ids
+    return usage_tracker.get_search_quality(period, memory_ids=scoped_ids)
 
 
 @app.get("/metrics/extraction-quality")
@@ -1444,6 +1467,29 @@ async def extraction_quality_metrics(
     auth = _get_auth(request)
     _require_admin(auth)
     return usage_tracker.get_extraction_quality(period)
+
+
+@app.get("/metrics/quality-summary")
+async def quality_summary_metrics(
+    request: Request,
+    period: str = Query("7d", pattern="^(today|7d|30d|all)$"),
+):
+    """Top-level efficacy metrics — retrieval precision and extraction accuracy."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    return usage_tracker.get_quality_summary(period)
+
+
+@app.get("/metrics/failures")
+async def quality_failures(
+    request: Request,
+    type: str = Query("retrieval", pattern="^(retrieval|extraction)$"),
+    limit: int = Query(10, ge=1, le=100),
+):
+    """Recent low-quality results for debugging — negative feedback or high-noop extractions."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    return usage_tracker.get_failures(failure_type=type, limit=limit)
 
 
 @app.get("/audit")
@@ -1542,9 +1588,12 @@ class CompactRequest(BaseModel):
 
 @app.post("/maintenance/compact")
 async def compact_memories(request_body: CompactRequest, request: Request):
-    """Find clusters of similar memories that could be consolidated.
+    """Discover clusters of similar memories (read-only / dry-run).
 
-    Returns clusters in dry-run mode only (merge is not yet implemented).
+    This endpoint ONLY identifies clusters — it never modifies data.
+    Use ``/maintenance/consolidate`` to merge clusters via LLM.
+
+    Returns a list of clusters with their member memories.
     Admin only.
     """
     auth = _get_auth(request)
@@ -1582,7 +1631,17 @@ async def consolidate(
     dry_run: bool = Query(True),
     source_prefix: str = Query(""),
 ):
-    """Run memory consolidation. Merges redundant memory clusters."""
+    """Merge redundant memory clusters using an LLM.
+
+    Unlike ``/maintenance/compact`` (which only discovers clusters),
+    this endpoint uses the configured LLM provider to merge each
+    cluster into 1-2 concise consolidated memories.
+
+    When ``dry_run=true`` (default), returns what would be merged
+    without mutating any data. Set ``dry_run=false`` to execute.
+
+    Requires an active LLM provider. Admin only.
+    """
     auth = _get_auth(request)
     _require_admin(auth)
     if not extract_provider:
@@ -1663,6 +1722,34 @@ async def search(request_body: SearchRequest, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/search/explain")
+async def search_explain(request_body: SearchRequest, request: Request):
+    """Search with detailed scoring breakdown (admin-only)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    logger.info("Search explain: q=%r k=%d", request_body.query[:80], request_body.k)
+    try:
+        explain_result = memory.hybrid_search_explain(
+            query=request_body.query,
+            k=request_body.k,
+            threshold=request_body.threshold,
+            vector_weight=request_body.vector_weight,
+            source_prefix=request_body.source_prefix,
+            recency_weight=request_body.recency_weight,
+            recency_half_life_days=request_body.recency_half_life_days,
+        )
+        # Apply auth filtering to results and track how many were removed
+        raw_results = explain_result["results"]
+        filtered_results = auth.filter_results(raw_results)
+        filtered_by_auth = len(raw_results) - len(filtered_results)
+        explain_result["results"] = filtered_results
+        explain_result["explain"]["filtered_by_auth"] = filtered_by_auth
+        return explain_result
+    except Exception as e:
+        logger.exception("Search explain failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.post("/search/batch")
 async def search_batch(request_body: SearchBatchRequest, request: Request):
     """Run multiple searches in one request."""
@@ -1698,8 +1785,8 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                         rank=rank,
                         result_count=batch_result_count,
                     )
+            usage_tracker.log_api_event("search", item.source)
             outputs.append({"query": item.query, "results": results, "count": batch_result_count})
-        usage_tracker.log_api_event("search_batch", count=len(request_body.queries))
         return {"results": outputs, "count": len(outputs)}
     except Exception as e:
         logger.exception("Batch search failed")
@@ -1798,10 +1885,10 @@ async def delete_memory(memory_id: int, request: Request):
     auth = _get_auth(request)
     logger.info("Delete memory: id=%d", memory_id)
     try:
+        existing = memory.get_memory(memory_id)
         if auth.prefixes is not None:
-            existing = memory.get_memory(memory_id)
             _require_write(auth, existing.get("source", ""))
-        delete_source = existing.get("source", "") if auth.prefixes is not None else ""
+        delete_source = existing.get("source", "")
         result = memory.delete_memory(memory_id)
         usage_tracker.log_api_event("delete")
         _audit(request, "delete", resource_id=str(memory_id), source=delete_source)
@@ -2564,6 +2651,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
                     "source": request_body.source,
                     "context": request_body.context,
                     "allowed_prefixes": auth.prefixes,
+                    "debug": request_body.debug,
                 },
             }
         )

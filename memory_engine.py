@@ -246,10 +246,12 @@ class MemoryEngine:
             )
 
     def _reindex_store_from_metadata(self):
-        self.qdrant_store.recreate_collection(self.dim)
         if not self.metadata:
+            self.qdrant_store.recreate_collection(self.dim)
             return
 
+        # Phase 1: embed all texts BEFORE touching the collection.
+        # If embedding fails, the original collection is untouched.
         texts = [m["text"] for m in self.metadata]
         embeddings = self._encode(
             texts,
@@ -257,19 +259,37 @@ class MemoryEngine:
             show_progress_bar=False,
         )
 
+        # Phase 2: cache all points in memory before destructive recreate.
         batch_size = 256
-        for start in range(0, len(self.metadata), batch_size):
-            end = min(start + batch_size, len(self.metadata))
-            points = []
-            for i in range(start, end):
-                points.append(
-                    {
-                        "id": self.metadata[i]["id"],
-                        "vector": embeddings[i].astype("float32").tolist(),
-                        "payload": self._point_payload(self.metadata[i]),
-                    }
-                )
-            self.qdrant_store.upsert_points(points)
+        all_points: list = []
+        for i in range(len(self.metadata)):
+            all_points.append(
+                {
+                    "id": self.metadata[i]["id"],
+                    "vector": embeddings[i].astype("float32").tolist(),
+                    "payload": self._point_payload(self.metadata[i]),
+                }
+            )
+
+        # Phase 3: recreate collection and upsert.
+        # If upsert fails mid-way, we still have all_points in memory and
+        # can attempt to rebuild.
+        self.qdrant_store.recreate_collection(self.dim)
+        try:
+            for start in range(0, len(all_points), batch_size):
+                end = min(start + batch_size, len(all_points))
+                self.qdrant_store.upsert_points(all_points[start:end])
+        except Exception:
+            # Upsert failed — attempt to restore from cached points
+            logger.error("Re-embed upsert failed; attempting rollback from cached points")
+            try:
+                self.qdrant_store.recreate_collection(self.dim)
+                for start in range(0, len(all_points), batch_size):
+                    end = min(start + batch_size, len(all_points))
+                    self.qdrant_store.upsert_points(all_points[start:end])
+            except Exception:
+                logger.error("Rollback also failed; collection may be inconsistent")
+            raise
 
     # ------------------------------------------------------------------
     # Chunking
@@ -647,7 +667,7 @@ class MemoryEngine:
         self.save()
 
         logger.info("Link added: %d --%s--> %d", from_id, link_type, to_id)
-        event_bus.emit("memory.linked", {"from_id": from_id, "to_id": to_id, "type": link_type})
+        event_bus.emit("memory.linked", {"from_id": from_id, "to_id": to_id, "type": link_type, "source": meta.get("source", "")})
         return {"from_id": from_id, "to_id": to_id, "type": link_type, "created_at": created_at}
 
     def remove_link(self, from_id: int, to_id: int, link_type: str) -> Dict[str, Any]:
@@ -886,7 +906,8 @@ class MemoryEngine:
                 if "text" in updated_fields:
                     self._rebuild_bm25()
 
-        event_bus.emit("memory.updated", {"id": memory_id, "updated_fields": updated_fields})
+        mem_source = meta.get("source", "")
+        event_bus.emit("memory.updated", {"id": memory_id, "updated_fields": updated_fields, "source": mem_source})
         return {"id": memory_id, "updated_fields": updated_fields}
 
     def upsert_memory(
@@ -1174,6 +1195,203 @@ class MemoryEngine:
                 self.reinforce(doc_id)
 
         return results
+
+    def _search_no_reinforce(
+        self,
+        query: str,
+        k: int = 5,
+        threshold: Optional[float] = None,
+        source_prefix: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Vector search without reinforcement side effects (for explain/debug)."""
+        if not self.metadata:
+            return []
+        k = min(k, len(self.metadata), 100)
+        query_vec = self._encode([query], normalize_embeddings=True, show_progress_bar=False)[0].astype("float32").tolist()
+        query_filter = self._build_source_filter(source_prefix=source_prefix)
+        hits = self.qdrant_store.search(
+            query_vector=query_vec, limit=k, score_threshold=threshold,
+            consistency=self.qdrant_settings.read_consistency, query_filter=query_filter,
+        )
+        results: List[Dict[str, Any]] = []
+        for hit in hits:
+            mem_id = hit.get("id")
+            if not isinstance(mem_id, int) or not self._id_exists(mem_id):
+                continue
+            meta = self._get_meta_by_id(mem_id)
+            source = str(meta.get("source", ""))
+            if source_prefix and not source.startswith(source_prefix):
+                continue
+            similarity = float(hit.get("score", 0.0))
+            if threshold is not None and similarity < threshold:
+                continue
+            result = self._enrich_with_confidence({**meta, "similarity": round(similarity, 6)})
+            results.append(result)
+        return results
+
+    def hybrid_search_explain(
+        self,
+        query: str,
+        k: int = 5,
+        threshold: Optional[float] = None,
+        vector_weight: float = 0.7,
+        source_prefix: Optional[str] = None,
+        recency_weight: float = 0.0,
+        recency_half_life_days: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Hybrid search with detailed scoring breakdown for explainability.
+
+        Returns the same results as hybrid_search PLUS an ``explain`` dict
+        containing candidate lists, filtering counts, and scoring parameters.
+        """
+        if not self.metadata:
+            return {
+                "results": [],
+                "explain": {
+                    "candidates_considered": 0,
+                    "vector_candidates": [],
+                    "bm25_candidates": [],
+                    "filtered_by_source": 0,
+                    "filtered_by_auth": 0,
+                    "scoring_weights": {
+                        "vector": vector_weight,
+                        "bm25": round(1.0 - vector_weight, 4),
+                        "recency": recency_weight,
+                    },
+                    "rrf_k": 60,
+                },
+            }
+
+        k = min(k, len(self.metadata), 100)
+        oversample = min(k * 3, len(self.metadata))
+
+        # --- Vector retrieval (no reinforcement — explain is read-only) ---
+        vector_results = self._search_no_reinforce(
+            query=query,
+            k=oversample,
+            threshold=threshold,
+            source_prefix=source_prefix,
+        )
+
+        vector_candidates = [
+            {
+                "id": r["id"],
+                "text": r.get("text", "")[:200],
+                "score": round(r.get("similarity", 0.0), 6),
+            }
+            for r in vector_results
+        ]
+
+        # --- BM25 retrieval ---
+        bm25_ranked = []
+        if self.bm25_index is not None:
+            tokenized = query.lower().split()
+            bm25_scores = self.bm25_index.get_scores(tokenized)
+            if source_prefix:
+                bm25_ranked = [
+                    (pos, score)
+                    for pos, score in enumerate(bm25_scores)
+                    if pos < len(self._bm25_pos_to_id)
+                    and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                ]
+                bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
+            else:
+                bm25_ranked = sorted(enumerate(bm25_scores), key=lambda x: x[1], reverse=True)[:oversample]
+
+        bm25_candidates = []
+        for pos, score in bm25_ranked:
+            if score > 0 and pos < len(self._bm25_pos_to_id):
+                doc_id = self._bm25_pos_to_id[pos]
+                if self._id_exists(doc_id):
+                    meta = self._get_meta_by_id(doc_id)
+                    bm25_candidates.append({
+                        "id": doc_id,
+                        "text": meta.get("text", "")[:200],
+                        "score": round(float(score), 6),
+                    })
+
+        # Count unique candidates considered
+        all_candidate_ids = set()
+        for vc in vector_candidates:
+            all_candidate_ids.add(vc["id"])
+        for bc in bm25_candidates:
+            all_candidate_ids.add(bc["id"])
+        candidates_considered = len(all_candidate_ids)
+
+        # Count how many were filtered by source prefix
+        filtered_by_source = 0
+        if source_prefix and self.bm25_index is not None:
+            tokenized = query.lower().split()
+            raw_bm25 = self.bm25_index.get_scores(tokenized)
+            total_bm25_with_score = sum(1 for s in raw_bm25 if s > 0)
+            bm25_after_source = len([
+                pos for pos, score in enumerate(raw_bm25)
+                if score > 0 and pos < len(self._bm25_pos_to_id)
+                and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+            ])
+            filtered_by_source = total_bm25_with_score - bm25_after_source
+
+        # --- RRF scoring (mirrors hybrid_search logic) ---
+        rrf_k = 60
+        rrf_scores: Dict[int, float] = {}
+
+        recency_weight = max(0.0, min(1.0, recency_weight))
+        if recency_half_life_days <= 0:
+            recency_half_life_days = 30.0
+
+        effective_vector_weight = vector_weight * (1.0 - recency_weight)
+        effective_bm25_weight = (1.0 - vector_weight) * (1.0 - recency_weight)
+
+        for rank, result in enumerate(vector_results):
+            doc_id = result["id"]
+            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + effective_vector_weight * (1.0 / (rank + rrf_k))
+
+        for rank, (pos, score) in enumerate(bm25_ranked):
+            if score > 0 and pos < len(self._bm25_pos_to_id):
+                doc_id = self._bm25_pos_to_id[pos]
+                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + effective_bm25_weight * (1.0 / (rank + rrf_k))
+
+        if recency_weight > 0:
+            recency_scored = []
+            for doc_id in rrf_scores:
+                if self._id_exists(doc_id):
+                    meta = self._get_meta_by_id(doc_id)
+                    created_at = meta.get("created_at") or meta.get("timestamp")
+                    rs = self._recency_score(created_at, half_life_days=recency_half_life_days)
+                    recency_scored.append((doc_id, rs))
+            recency_scored.sort(key=lambda x: x[1], reverse=True)
+            for rank, (doc_id, _) in enumerate(recency_scored):
+                rrf_scores[doc_id] += recency_weight * (1.0 / (rank + rrf_k))
+
+        sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+
+        results = []
+        for doc_id, rrf_score in sorted_ids:
+            if self._id_exists(doc_id):
+                meta = self._get_meta_by_id(doc_id)
+                result = self._enrich_with_confidence({**meta, "rrf_score": round(rrf_score, 6)})
+                if threshold is not None:
+                    vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
+                    if vec_match and vec_match["similarity"] < threshold:
+                        continue
+                results.append(result)
+
+        return {
+            "results": results,
+            "explain": {
+                "candidates_considered": candidates_considered,
+                "vector_candidates": vector_candidates,
+                "bm25_candidates": bm25_candidates,
+                "filtered_by_source": filtered_by_source,
+                "filtered_by_auth": 0,  # populated by API layer after auth filtering
+                "scoring_weights": {
+                    "vector": round(vector_weight, 4),
+                    "bm25": round(1.0 - vector_weight, 4),
+                    "recency": round(recency_weight, 4),
+                },
+                "rrf_k": rrf_k,
+            },
+        }
 
     def is_novel(self, text: str, threshold: float = 0.88) -> Tuple[bool, Optional[Dict]]:
         """Check if text is novel (not too similar to existing memories)."""

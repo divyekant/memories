@@ -223,7 +223,8 @@ def run_audn(
     facts: list[dict],
     source: str,
     allowed_prefixes: Optional[List[str]] = None,
-) -> tuple[list[dict], dict]:
+    debug: bool = False,
+) -> tuple[list[dict], dict, Optional[dict]]:
     """Run AUDN cycle on extracted facts.
 
     For providers with supports_audn=True: uses LLM to decide action per fact.
@@ -231,11 +232,12 @@ def run_audn(
 
     Args:
         facts: list of {"category": str, "text": str} dicts
+        debug: when True, return similar memories per fact in debug_info
 
-    Returns: (list of action dicts, token usage dict)
+    Returns: (list of action dicts, token usage dict, optional debug info dict)
     """
     if not facts:
-        return [], {"input": 0, "output": 0}
+        return [], {"input": 0, "output": 0}, None
 
     if not provider.supports_audn:
         # Ollama fallback: novelty check only
@@ -247,7 +249,7 @@ def run_audn(
                 decisions.append({"action": "ADD", "fact_index": i})
             else:
                 decisions.append({"action": "NOOP", "fact_index": i})
-        return decisions, {"input": 0, "output": 0}
+        return decisions, {"input": 0, "output": 0}, None
 
     # Full AUDN with LLM
     similar_per_fact = {}
@@ -263,6 +265,20 @@ def run_audn(
             similar_per_fact[i] = results
         except Exception:
             similar_per_fact[i] = []
+
+    # Capture debug info before we serialize and discard
+    debug_similar = None
+    if debug:
+        debug_similar = {}
+        for i, mems in similar_per_fact.items():
+            debug_similar[i] = [
+                {
+                    "id": m.get("id"),
+                    "text": _clip_text(str(m.get("text", "")), EXTRACT_SIMILAR_TEXT_CHARS),
+                    "similarity": round(float(m.get("similarity", m.get("rrf_score", 0.0))), 4),
+                }
+                for m in mems[:EXTRACT_SIMILAR_PER_FACT]
+            ]
 
     facts_json = json.dumps(
         [{"index": i, "text": _clip_text(f["text"], EXTRACT_MAX_FACT_CHARS), "category": f.get("category", "detail")} for i, f in enumerate(facts)],
@@ -295,10 +311,10 @@ def run_audn(
             if isinstance(d, dict) and "action" in d:
                 d["action"] = d["action"].upper()
                 valid.append(d)
-        return valid, tokens
+        return valid, tokens, debug_similar
     except Exception as e:
         logger.error("AUDN cycle failed: %s", e)
-        return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}
+        return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}, debug_similar
 
 
 def execute_actions(
@@ -422,6 +438,7 @@ def run_extraction(
     source: str,
     context: str = "stop",
     allowed_prefixes: Optional[List[str]] = None,
+    debug: bool = False,
 ) -> dict:
     """Full extraction pipeline: extract facts -> AUDN -> execute.
 
@@ -431,6 +448,7 @@ def run_extraction(
         messages: conversation text
         source: memory source identifier
         context: "stop", "pre_compact", or "session_end"
+        debug: when True, include detailed debug_trace in result
 
     Returns: result dict with actions and counts
     """
@@ -469,12 +487,13 @@ def run_extraction(
         }
 
     # Step 2: AUDN decisions
-    decisions, audn_tokens = run_audn(
+    decisions, audn_tokens, debug_similar = run_audn(
         provider,
         engine,
         facts,
         source,
         allowed_prefixes=allowed_prefixes,
+        debug=debug,
     )
 
     # Step 3: Execute
@@ -487,6 +506,59 @@ def run_extraction(
     )
     result["extracted_count"] = len(facts)
     result["tokens"] = {"extract": extract_tokens, "audn": audn_tokens}
+
+    # Step 4: Build debug trace when requested
+    if debug:
+        # Build AUDN decisions trace with similar memories
+        audn_trace = []
+        for d in decisions:
+            entry = {
+                "fact_index": d.get("fact_index", -1),
+                "action": d.get("action", "UNKNOWN"),
+                "similar_memories": [],
+            }
+            fi = d.get("fact_index", -1)
+            if debug_similar and fi in debug_similar:
+                entry["similar_memories"] = debug_similar[fi]
+
+            # Attach resulting IDs from execution
+            for ra in result.get("actions", []):
+                act = ra.get("action", "")
+                if act == "add" and ra.get("text") == (facts[fi]["text"] if 0 <= fi < len(facts) else ""):
+                    entry["new_id"] = ra.get("id")
+                elif act == "update" and d.get("old_id") == ra.get("old_id"):
+                    entry["old_id"] = ra.get("old_id")
+                    entry["new_id"] = ra.get("new_id")
+                elif act == "delete" and d.get("old_id") == ra.get("old_id"):
+                    entry["old_id"] = ra.get("old_id")
+                elif act == "noop" and ra.get("text") == (facts[fi]["text"] if 0 <= fi < len(facts) else ""):
+                    entry["existing_id"] = ra.get("existing_id")
+                elif act == "conflict" and ra.get("text") == (facts[fi]["text"] if 0 <= fi < len(facts) else ""):
+                    entry["new_id"] = ra.get("id")
+                    entry["conflicts_with"] = ra.get("conflicts_with")
+            audn_trace.append(entry)
+
+        # Build execution summary
+        added_ids = [a.get("id") for a in result.get("actions", []) if a.get("action") == "add" and a.get("id") is not None]
+        updated_entries = [{"old": a.get("old_id"), "new": a.get("new_id")} for a in result.get("actions", []) if a.get("action") == "update"]
+        deleted_ids = [a.get("old_id") for a in result.get("actions", []) if a.get("action") == "delete" and a.get("old_id") is not None]
+        noop_count = sum(1 for a in result.get("actions", []) if a.get("action") == "noop")
+        conflict_count = sum(1 for a in result.get("actions", []) if a.get("action") == "conflict")
+
+        result["debug_trace"] = {
+            "extracted_facts": [
+                {"text": f["text"], "category": f.get("category", "detail")}
+                for f in facts
+            ],
+            "audn_decisions": audn_trace,
+            "execution_summary": {
+                "added": added_ids,
+                "updated": updated_entries,
+                "deleted": deleted_ids,
+                "noops": noop_count,
+                "conflicts": conflict_count,
+            },
+        }
 
     logger.info(
         "Extraction complete: %d extracted, %d stored, %d updated, %d deleted",
