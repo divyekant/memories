@@ -834,15 +834,15 @@ registerPage("memories", async (container) => {
       }
 
       headerEl.appendChild(rightSide);
+      item.appendChild(headerEl);
 
-      // Text row with optional feedback buttons
-      const textRow = h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } },
-        h("div", { className: "memory-item-text", style: { flex: "1" } })
-      );
-      textRow.firstChild.innerHTML = truncText;
-
-      // Feedback buttons (only for search results)
       if (mem.rrf_score != null) {
+        // Search result: text + feedback buttons in a flex row
+        const textRow = h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } },
+          h("div", { className: "memory-item-text", style: { flex: "1" } })
+        );
+        textRow.firstChild.innerHTML = truncText;
+
         const feedbackDiv = h("div", { style: { display: "flex", gap: "4px", marginLeft: "8px", flexShrink: "0" } });
 
         const upBtn = h("button", { className: "feedback-btn", title: "Relevant" }, "\u25B2");
@@ -877,10 +877,13 @@ registerPage("memories", async (container) => {
         feedbackDiv.appendChild(upBtn);
         feedbackDiv.appendChild(downBtn);
         textRow.appendChild(feedbackDiv);
+        item.appendChild(textRow);
+      } else {
+        // Browse mode: preserve original card structure
+        const textDiv = h("div", { className: "memory-item-text" });
+        textDiv.innerHTML = truncText;
+        item.appendChild(textDiv);
       }
-
-      item.appendChild(headerEl);
-      item.appendChild(textRow);
 
       item.addEventListener("click", () => {
         memState.selected = mem;
