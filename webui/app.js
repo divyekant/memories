@@ -769,9 +769,11 @@ registerPage("memories", async (container) => {
           clearGlobalTooltip();
           if (explainLoaded) return;
           try {
+            const explainBody = { query: memState.searchQuery, k: 20, hybrid: true };
+            if (memState.source) explainBody.source_prefix = memState.source;
             const explainData = await api("/search/explain", {
               method: "POST",
-              body: JSON.stringify({ query: memState.searchQuery, k: 20, hybrid: true }),
+              body: JSON.stringify(explainBody),
             });
             explainLoaded = true;
             const vectorCandidates = explainData.explain?.vector_candidates || [];
@@ -1319,9 +1321,11 @@ registerPage("memories", async (container) => {
     }
 
     try {
+      const searchBody = { query, k: 20, hybrid: true };
+      if (memState.source) searchBody.source_prefix = memState.source;
       const data = await api("/search", {
         method: "POST",
-        body: JSON.stringify({ query, k: 20, hybrid: true }),
+        body: JSON.stringify(searchBody),
       });
       memState.searchQuery = query;
       memState.searchResults = data.results || [];

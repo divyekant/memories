@@ -2064,10 +2064,14 @@ class MemoryEngine:
             with self._write_lock:
                 self._backup(prefix="pre_reembed")
 
+                model_swapped = False
+                old_embed_model = self._embed_model
+                old_model_name_val = self._model_name
+                old_dim = self.dim
+                old_embedder = None
+
                 if model_name and model_name != old_model_name:
                     # Swap embedder to new model
-                    old_embed_model = self._embed_model
-                    old_model_name_val = self._model_name
                     try:
                         self._embed_model = model_name
                         self._model_name = model_name
@@ -2077,12 +2081,7 @@ class MemoryEngine:
                             new_dim = self.model.get_sentence_embedding_dimension()
                             if new_dim != self.dim:
                                 self.dim = new_dim
-                            close_fn = getattr(old_embedder, "close", None)
-                            if callable(close_fn):
-                                try:
-                                    close_fn()
-                                except Exception:
-                                    pass
+                        model_swapped = True
                     except Exception as e:
                         # Rollback on failure
                         self._embed_model = old_embed_model
@@ -2090,7 +2089,34 @@ class MemoryEngine:
                         raise RuntimeError(f"Failed to load model {model_name}: {e}")
 
                 # Re-embed all memories
-                self._reindex_store_from_metadata()
+                try:
+                    self._reindex_store_from_metadata()
+                except Exception:
+                    if model_swapped:
+                        # Restore old embedder so queries stay consistent
+                        with self._embedder_lock:
+                            failed_embedder = self.model
+                            self.model = old_embedder
+                            old_embedder = None  # prevent cleanup below
+                        self._embed_model = old_embed_model
+                        self._model_name = old_model_name_val
+                        self.dim = old_dim
+                        close_fn = getattr(failed_embedder, "close", None)
+                        if callable(close_fn):
+                            try:
+                                close_fn()
+                            except Exception:
+                                pass
+                    raise
+
+                # Reindex succeeded — safe to close old embedder
+                if old_embedder is not None:
+                    close_fn = getattr(old_embedder, "close", None)
+                    if callable(close_fn):
+                        try:
+                            close_fn()
+                        except Exception:
+                            pass
 
                 self.config["model"] = self._active_embed_model()
                 self.config["dimension"] = self.dim

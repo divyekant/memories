@@ -313,7 +313,7 @@ class UsageTracker:
 
             # Unique memories ever retrieved
             unretrieved_row = conn.execute(
-                f"SELECT COUNT(DISTINCT memory_id) as cnt FROM retrieval_log WHERE 1=1{mem_filter}",
+                f"SELECT COUNT(DISTINCT memory_id) as cnt FROM retrieval_log WHERE 1=1 {period_filter}{mem_filter}",
                 mem_params,
             ).fetchone()
             retrieved_unique = unretrieved_row["cnt"]
