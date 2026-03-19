@@ -184,7 +184,7 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
     assert "Unrelated global memory" not in ctx
     assert "## Retrieved Memories" in ctx
     assert "## Follow-up Response Hint" in ctx
-    assert "say that explicitly in sentence one" in ctx
+    assert "Search memories for the new topic" in ctx
     assert all(call["body"].get("source_prefix", "") != "" for call in calls)
     assert any("notifications" in call["body"]["query"] for call in calls)
 
@@ -254,10 +254,8 @@ def test_memory_query_adds_confirmation_hint_for_confirmation_followups(tmp_path
     output = json.loads(result.stdout)
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "## Follow-up Response Hint" in ctx
-    assert "short confirmation follow-up" in ctx
-    assert "Answer directly in the first sentence" in ctx
-    assert "boundary condition" in ctx
-    assert "use this answer shape: Yes — SQLite is preferred over Redis for the local cache in single-node deployments." in ctx
+    assert "prior decision or fact still holds" in ctx
+    assert "yes, still applies because" in ctx
 
 
 def test_memory_query_adds_continuation_hint_for_resume_prompts(tmp_path: Path) -> None:
@@ -291,9 +289,8 @@ def test_memory_query_adds_continuation_hint_for_resume_prompts(tmp_path: Path) 
     output = json.loads(result.stdout)
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "## Context Continuation Hint" in ctx
-    assert "restating the remembered choice" in ctx
-    assert "Do not answer with meta phrases" in ctx
-    assert "Suggested first sentence: SQLite is preferred over Redis for the local cache in single-node deployments." in ctx
+    assert "confirming a current choice" in ctx
+    assert "Do not ask to reconfirm" in ctx
 
 
 def test_memory_query_adds_switch_now_hint_for_change_prompts(tmp_path: Path) -> None:
@@ -327,10 +324,8 @@ def test_memory_query_adds_switch_now_hint_for_change_prompts(tmp_path: Path) ->
     output = json.loads(result.stdout)
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "## Follow-up Response Hint" in ctx
-    assert "switch-now follow-up" in ctx
-    assert "Answer yes or no in the first sentence" in ctx
-    assert "Do not answer with meta phrases" in ctx
-    assert "use this answer shape: Not yet — keep the build cache manifest in SQLite until multiple workers need shared invalidation." in ctx
+    assert "considering a switch" in ctx
+    assert "evaluate the proposed switch" in ctx
 
 
 def test_memory_query_adds_for_now_hint_for_simple_followups(tmp_path: Path) -> None:
@@ -364,10 +359,8 @@ def test_memory_query_adds_for_now_hint_for_simple_followups(tmp_path: Path) -> 
     output = json.loads(result.stdout)
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "## Follow-up Response Hint" in ctx
-    assert "simple-for-now follow-up" in ctx
-    assert "Answer directly in the first sentence" in ctx
-    assert "Do not answer with meta phrases" in ctx
-    assert "use this answer shape: Yes — keep field-note drafts in local Markdown files until cross-device sync is required." in ctx
+    assert "current state provisionally" in ctx
+    assert "boundary condition" in ctx
 
 
 def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> None:

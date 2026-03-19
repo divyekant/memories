@@ -59,7 +59,7 @@ class NullTracker:
     def log_search_feedback(self, memory_id: int, query: str = "", signal: str = "", search_id: str = "") -> None:
         pass
 
-    def get_search_quality(self, period: str = "7d") -> Dict[str, Any]:
+    def get_search_quality(self, period: str = "7d", memory_ids: list | None = None) -> Dict[str, Any]:
         return {"enabled": False}
 
     def log_extraction_outcome(self, source: str = "", extracted: int = 0, stored: int = 0,
@@ -67,6 +67,12 @@ class NullTracker:
         pass
 
     def get_extraction_quality(self, period: str = "7d") -> Dict[str, Any]:
+        return {"enabled": False}
+
+    def get_quality_summary(self, period: str = "7d") -> Dict[str, Any]:
+        return {"enabled": False}
+
+    def get_failures(self, failure_type: str = "retrieval", limit: int = 10) -> Dict[str, Any]:
         return {"enabled": False}
 
     def get_usage(self, period: str = "7d") -> Dict[str, Any]:
@@ -246,27 +252,46 @@ class UsageTracker:
         except Exception:
             logger.debug("Failed to log search feedback", exc_info=True)
 
-    def get_search_quality(self, period: str = "7d") -> Dict[str, Any]:
+    def get_search_quality(self, period: str = "7d", memory_ids: list | None = None) -> Dict[str, Any]:
         period_filter = PERIOD_SQL.get(period, PERIOD_SQL["7d"])
         conn = self._connect()
         conn.row_factory = sqlite3.Row
         try:
+            # Build optional memory_id filter for scoped callers
+            mem_filter = ""
+            mem_params: list = []
+            if memory_ids is not None:
+                if not memory_ids:
+                    # No accessible memories — return empty metrics
+                    return {
+                        "period": period,
+                        "total_searches": 0,
+                        "rank_distribution": {"top_3": 0, "rank_4_plus": 0},
+                        "feedback": {"useful": 0, "not_useful": 0, "useful_ratio": 0.0},
+                        "unique_memories_retrieved": 0,
+                    }
+                placeholders = ",".join("?" * len(memory_ids))
+                mem_filter = f" AND memory_id IN ({placeholders})"
+                mem_params = list(memory_ids)
+
             # Total searches
             row = conn.execute(
-                f"SELECT COALESCE(SUM(count), 0) as total FROM api_events WHERE operation = 'search' {period_filter}"
+                f"SELECT COALESCE(SUM(count), 0) as total FROM api_events WHERE operation IN ('search', 'search_batch') {period_filter}"
             ).fetchone()
             total_searches = row["total"]
 
             # Rank distribution (only where rank > 0, i.e. tracked)
             rows = conn.execute(
-                f"SELECT rank, COUNT(*) as cnt FROM retrieval_log WHERE rank > 0 {period_filter} GROUP BY rank"
+                f"SELECT rank, COUNT(*) as cnt FROM retrieval_log WHERE rank > 0 {period_filter}{mem_filter} GROUP BY rank",
+                mem_params,
             ).fetchall()
             top_3 = sum(r["cnt"] for r in rows if r["rank"] <= 3)
             rank_4_plus = sum(r["cnt"] for r in rows if r["rank"] > 3)
 
             # Feedback counts
             fb_rows = conn.execute(
-                f"SELECT signal, COUNT(*) as cnt FROM search_feedback WHERE 1=1 {period_filter} GROUP BY signal"
+                f"SELECT signal, COUNT(*) as cnt FROM search_feedback WHERE 1=1 {period_filter}{mem_filter} GROUP BY signal",
+                mem_params,
             ).fetchall()
             useful = 0
             not_useful = 0
@@ -280,7 +305,8 @@ class UsageTracker:
 
             # Unique memories ever retrieved
             unretrieved_row = conn.execute(
-                "SELECT COUNT(DISTINCT memory_id) as cnt FROM retrieval_log"
+                f"SELECT COUNT(DISTINCT memory_id) as cnt FROM retrieval_log WHERE 1=1{mem_filter}",
+                mem_params,
             ).fetchone()
             retrieved_unique = unretrieved_row["cnt"]
 
@@ -433,5 +459,127 @@ class UsageTracker:
                     "estimated_cost_usd": round(estimated_cost, 4),
                 },
             }
+        finally:
+            conn.close()
+
+    def get_quality_summary(self, period: str = "7d") -> Dict[str, Any]:
+        """Top-level efficacy metrics combining retrieval and extraction quality."""
+        period_filter = PERIOD_SQL.get(period, PERIOD_SQL["7d"])
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            # --- Retrieval precision (from search feedback) ---
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(count), 0) as total FROM api_events "
+                f"WHERE operation IN ('search', 'search_batch') {period_filter}"
+            ).fetchone()
+            total_searches = row["total"]
+
+            fb_rows = conn.execute(
+                f"SELECT signal, COUNT(*) as cnt FROM search_feedback "
+                f"WHERE 1=1 {period_filter} GROUP BY signal"
+            ).fetchall()
+            useful = 0
+            not_useful = 0
+            for r in fb_rows:
+                if r["signal"] == "useful":
+                    useful = r["cnt"]
+                elif r["signal"] == "not_useful":
+                    not_useful = r["cnt"]
+            total_fb = useful + not_useful
+            positive_rate = round(useful / total_fb, 4) if total_fb > 0 else 0.0
+
+            # --- Extraction accuracy (from extraction outcomes) ---
+            ext_row = conn.execute(
+                f"SELECT COUNT(*) as cnt, "
+                f"COALESCE(SUM(extracted), 0) as extracted, "
+                f"COALESCE(SUM(stored), 0) as stored, "
+                f"COALESCE(SUM(updated), 0) as updated, "
+                f"COALESCE(SUM(deleted), 0) as deleted, "
+                f"COALESCE(SUM(noop), 0) as noop, "
+                f"COALESCE(SUM(conflict), 0) as conflict "
+                f"FROM extraction_outcomes WHERE 1=1 {period_filter}"
+            ).fetchone()
+            total_extractions = ext_row["cnt"]
+            total_extracted = ext_row["extracted"]
+            add_rate = round(ext_row["stored"] / total_extracted, 4) if total_extracted > 0 else 0.0
+            update_rate = round(ext_row["updated"] / total_extracted, 4) if total_extracted > 0 else 0.0
+            noop_rate = round(ext_row["noop"] / total_extracted, 4) if total_extracted > 0 else 0.0
+            delete_rate = round(ext_row["deleted"] / total_extracted, 4) if total_extracted > 0 else 0.0
+            conflict_rate = round(ext_row["conflict"] / total_extracted, 4) if total_extracted > 0 else 0.0
+
+            return {
+                "retrieval_precision": {
+                    "positive_feedback_rate": positive_rate,
+                    "total_searches": total_searches,
+                    "searches_with_feedback": total_fb,
+                },
+                "extraction_accuracy": {
+                    "total_extractions": total_extractions,
+                    "add_rate": add_rate,
+                    "update_rate": update_rate,
+                    "noop_rate": noop_rate,
+                    "delete_rate": delete_rate,
+                    "conflict_rate": conflict_rate,
+                },
+                "period": period,
+            }
+        finally:
+            conn.close()
+
+    def get_failures(self, failure_type: str = "retrieval", limit: int = 10) -> Dict[str, Any]:
+        """Return recent low-quality results for debugging.
+
+        Args:
+            failure_type: 'retrieval' for negative search feedback,
+                          'extraction' for high-noop extraction batches.
+            limit: Maximum number of failures to return.
+        """
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            failures: list[Dict[str, Any]] = []
+
+            if failure_type == "retrieval":
+                rows = conn.execute(
+                    "SELECT sf.ts, sf.memory_id, sf.query, sf.signal, sf.search_id "
+                    "FROM search_feedback sf "
+                    "WHERE sf.signal = 'not_useful' "
+                    "ORDER BY sf.ts DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                for r in rows:
+                    failures.append({
+                        "type": "retrieval",
+                        "query": r["query"],
+                        "timestamp": r["ts"],
+                        "feedback": "negative",
+                        "memory_id": r["memory_id"],
+                        "search_id": r["search_id"],
+                    })
+
+            elif failure_type == "extraction":
+                rows = conn.execute(
+                    "SELECT ts, source, extracted, stored, updated, deleted, noop, conflict "
+                    "FROM extraction_outcomes "
+                    "WHERE extracted > 0 AND noop > 0 "
+                    "ORDER BY CAST(noop AS REAL) / extracted DESC, ts DESC "
+                    "LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                for r in rows:
+                    noop_ratio = round(r["noop"] / r["extracted"], 4) if r["extracted"] > 0 else 0.0
+                    failures.append({
+                        "type": "extraction",
+                        "source": r["source"],
+                        "timestamp": r["ts"],
+                        "extracted": r["extracted"],
+                        "stored": r["stored"],
+                        "noop": r["noop"],
+                        "noop_ratio": noop_ratio,
+                        "conflict": r["conflict"],
+                    })
+
+            return {"failures": failures}
         finally:
             conn.close()

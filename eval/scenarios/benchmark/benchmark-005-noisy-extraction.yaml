@@ -1,0 +1,15 @@
+id: benchmark-005
+category: benchmark
+name: "Extraction from noisy conversation"
+description: "Store facts embedded in a messy multi-turn conversation with tangents, corrections, and off-topic chatter. The agent must extract the key fact (Terraform state bucket name)."
+memories:
+  - text: "Discussion between Alice and Bob: Alice: 'hey, did we ever settle on the terraform state bucket?' Bob: 'oh yeah, it's nexus-tf-state-prod-us-east-1, I set it up last week' Alice: 'wait not the old one? I thought we were using infra-state-2025' Bob: 'no that got decommissioned, the new one is nexus-tf-state-prod-us-east-1 in the shared-infra AWS account' Alice: 'cool, also did you see the game last night?' Bob: 'yeah amazing, anyway the state bucket has versioning and DynamoDB locking enabled, table name is nexus-tf-locks' Alice: 'perfect, I'll update the backend config'"
+    source: eval/benchmark-005
+prompt: "What S3 bucket is used for Terraform state and what DynamoDB table handles locking?"
+expected:
+  - type: contains
+    value: "nexus-tf-state-prod-us-east-1"
+    weight: 0.5
+  - type: contains
+    value: "nexus-tf-locks"
+    weight: 0.5
