@@ -277,6 +277,7 @@ function navigate(page) {
     memories: "Memories",
     extractions: "Extractions",
     keys: "API Keys",
+    health: "Health",
     settings: "Settings",
   };
   if (titleEl) {

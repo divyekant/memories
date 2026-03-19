@@ -51,3 +51,16 @@ def test_styles_contain_confidence_and_health_classes(client):
     assert ".score-tooltip" in css_response.text
     assert ".conflict-card" in css_response.text
     assert ".health-stat-grid" in css_response.text
+
+
+def test_health_nav_item_exists(client):
+    response = client.get("/ui")
+    assert response.status_code == 200
+    assert 'data-page="health"' in response.text
+    assert "Health" in response.text
+
+
+def test_app_js_has_health_page_title(client):
+    js_response = client.get("/ui/static/app.js")
+    assert js_response.status_code == 200
+    assert "health:" in js_response.text
