@@ -1247,6 +1247,12 @@ class ExtractRequest(BaseModel):
     source: str = Field(default="", description="Source identifier (e.g., 'claude-code/my-project')")
     context: str = Field(default="stop", description="Extraction context: stop, pre_compact, session_end")
     debug: bool = Field(default=False, description="When True, return detailed extraction trace")
+    dry_run: bool = Field(default=False, description="Return actions without executing")
+
+
+class ExtractCommitRequest(BaseModel):
+    actions: List[dict]
+    source: str = Field(..., min_length=1, max_length=500)
 
 
 class SupersedeRequest(BaseModel):
@@ -2639,6 +2645,8 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
     _audit(request, "extract", source=request_body.source)
     effective_source = request_body.source or "extract/unknown"
     profile = extraction_profiles.resolve(effective_source)
+    if request_body.dry_run:
+        profile["dry_run"] = True
     job_id = uuid4().hex
     extract_jobs[job_id] = {
         "job_id": job_id,
@@ -2710,6 +2718,29 @@ async def memory_extract_job(job_id: str, request: Request):
     if not _can_access_extract_job(auth, job):
         raise HTTPException(status_code=403, detail="Access denied to extraction job")
     return job
+
+
+@app.post("/memory/extract/commit")
+async def extract_commit(request_body: ExtractCommitRequest, request: Request):
+    """Execute a subset of pre-extracted AUDN actions (from dry-run)."""
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source)
+
+    approved = [a for a in request_body.actions if a.get("approved")]
+    if not approved:
+        return {"stored_count": 0, "updated_count": 0, "deleted_count": 0, "conflict_count": 0}
+
+    facts = [a.get("fact", {"text": "", "category": "detail"}) for a in approved]
+
+    from llm_extract import execute_actions
+    result = execute_actions(
+        engine=memory,
+        actions=approved,
+        facts=facts,
+        source=request_body.source,
+        allowed_prefixes=auth.prefixes,
+    )
+    return result
 
 
 @app.post("/memory/supersede")

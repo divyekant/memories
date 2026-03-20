@@ -629,7 +629,24 @@ def run_extraction(
         rules=rules,
     )
 
-    # Step 3: Execute
+    # Step 3: Dry-run intercept — return planned actions without executing
+    if profile and profile.get("dry_run"):
+        # Attach fact info to each decision for caller inspection
+        annotated = []
+        for d in decisions:
+            entry = dict(d)
+            fi = d.get("fact_index", -1)
+            if 0 <= fi < len(facts):
+                entry["fact"] = facts[fi]
+            annotated.append(entry)
+        return {
+            "dry_run": True,
+            "actions": annotated,
+            "extracted_count": len(facts),
+            "tokens": {"extract": extract_tokens, "audn": audn_tokens},
+        }
+
+    # Step 4: Execute
     result = execute_actions(
         engine,
         decisions,
@@ -640,7 +657,7 @@ def run_extraction(
     result["extracted_count"] = len(facts)
     result["tokens"] = {"extract": extract_tokens, "audn": audn_tokens}
 
-    # Step 4: Build debug trace when requested
+    # Step 5: Build debug trace when requested
     if debug:
         # Build AUDN decisions trace with similar memories
         audn_trace = []
