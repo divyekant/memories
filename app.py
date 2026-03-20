@@ -733,7 +733,8 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data.get("debug", False),
                 request_data.get("profile"),
             )
-            if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result):
+            is_dry_run = request_data.get("profile", {}).get("dry_run", False)
+            if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result) and not is_dry_run:
                 fallback_result = await run_in_threadpool(
                     _run_fallback_extraction,
                     request_data["messages"],
@@ -2834,7 +2835,13 @@ async def extract_commit(request_body: ExtractCommitRequest, request: Request):
     if not approved:
         return {"stored_count": 0, "updated_count": 0, "deleted_count": 0, "conflict_count": 0}
 
-    facts = [a.get("fact", {"text": "", "category": "detail"}) for a in approved]
+    # Rebuild facts list and renumber fact_index to match dense ordering.
+    # Original fact_index values may be non-contiguous (e.g., 0, 3, 5) but
+    # execute_actions() looks up facts[fact_index], so indices must be dense.
+    facts = []
+    for i, action in enumerate(approved):
+        facts.append(action.get("fact", {"text": "", "category": "detail"}))
+        action["fact_index"] = i  # renumber to match dense facts list
 
     from llm_extract import execute_actions
     result = execute_actions(
@@ -3010,13 +3017,17 @@ async def extract_status():
 
 @app.get("/extraction/profiles")
 async def list_extraction_profiles(request: Request):
-    """List all extraction profiles."""
+    """List all extraction profiles (admin only)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     return extraction_profiles.list_all()
 
 
 @app.get("/extraction/profiles/{prefix:path}")
 async def get_extraction_profile(prefix: str, request: Request):
-    """Get a specific extraction profile by source prefix."""
+    """Get a specific extraction profile by source prefix (admin only)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     profile = extraction_profiles.get(prefix)
     if profile is None:
         raise HTTPException(status_code=404, detail=f"Profile not found: {prefix}")

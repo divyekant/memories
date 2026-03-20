@@ -344,10 +344,14 @@ def run_audn(
 
 SINGLE_CALL_PROMPT = """You are a memory extraction and classification system.
 
-Given conversation text, extract important facts AND decide what action to take for each.
+Given conversation text, extract important durable facts.
+
+IMPORTANT: You have no access to existing memories, so you can only ADD new facts
+or NOOP facts that are generic knowledge. Do NOT use UPDATE, DELETE, or CONFLICT
+— those require existing memory context that is not available in single-call mode.
 
 For each fact, output a JSON object with:
-- "action": "ADD" | "UPDATE" | "DELETE" | "NOOP" | "CONFLICT"
+- "action": "ADD" or "NOOP"
 - "fact_index": sequential index starting at 0
 - "category": "decision" | "learning" | "detail"
 - "text": the extracted fact text
@@ -361,8 +365,8 @@ Rules:
 - Skip generic programming knowledge
 - Skip task status / commit hashes / counts
 - Skip ephemeral session context
-- ADD for new durable facts
-- NOOP if the fact is already commonly known
+- ADD for new durable facts worth remembering long-term
+- NOOP if the fact is already commonly known or too ephemeral
 
 {rules_section}
 
@@ -403,6 +407,10 @@ def extract_and_decide_single_call(
         action.setdefault("category", "detail")
         if "text" not in action:
             action["text"] = ""
+        # Single-call has no existing-memory context, so force ADD/NOOP only.
+        # If the model returns UPDATE/DELETE/CONFLICT anyway, demote to ADD.
+        if action["action"] not in ("ADD", "NOOP"):
+            action["action"] = "ADD"
 
     return actions[:max_facts], usage, None
 
