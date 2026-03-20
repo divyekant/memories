@@ -33,6 +33,7 @@ from memory_engine import MemoryEngine
 from runtime_memory import MemoryTrimmer
 from audit_log import AuditLog, NullAuditLog
 from usage_tracker import UsageTracker, NullTracker
+from extraction_profiles import ExtractionProfiles
 
 # -- Logging ------------------------------------------------------------------
 
@@ -363,6 +364,9 @@ def _can_access_extract_job(auth: AuthContext, job: Dict[str, Any]) -> bool:
 # -- App lifecycle ------------------------------------------------------------
 
 memory: MemoryEngine = None  # type: ignore
+extraction_profiles: ExtractionProfiles = ExtractionProfiles(
+    os.path.join(os.environ.get("DATA_DIR", "data"), "extraction_profiles.json")
+)
 
 
 def _utc_now_iso() -> str:
@@ -727,6 +731,7 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data["context"],
                 request_data.get("allowed_prefixes"),
                 request_data.get("debug", False),
+                request_data.get("profile"),
             )
             if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result):
                 fallback_result = await run_in_threadpool(
@@ -1253,6 +1258,12 @@ class ExtractRequest(BaseModel):
     source: str = Field(default="", description="Source identifier (e.g., 'claude-code/my-project')")
     context: str = Field(default="stop", description="Extraction context: stop, pre_compact, session_end")
     debug: bool = Field(default=False, description="When True, return detailed extraction trace")
+    dry_run: bool = Field(default=False, description="Return actions without executing")
+
+
+class ExtractCommitRequest(BaseModel):
+    actions: List[dict]
+    source: str = Field(..., min_length=1, max_length=500)
 
 
 class SupersedeRequest(BaseModel):
@@ -2736,6 +2747,10 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
     _ensure_extract_workers_started()
     usage_tracker.log_api_event("extract", request_body.source)
     _audit(request, "extract", source=request_body.source)
+    effective_source = request_body.source or "extract/unknown"
+    profile = extraction_profiles.resolve(effective_source)
+    if request_body.dry_run:
+        profile["dry_run"] = True
     job_id = uuid4().hex
     extract_jobs[job_id] = {
         "job_id": job_id,
@@ -2756,6 +2771,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
                     "context": request_body.context,
                     "allowed_prefixes": auth.prefixes,
                     "debug": request_body.debug,
+                    "profile": profile,
                 },
             }
         )
@@ -2806,6 +2822,29 @@ async def memory_extract_job(job_id: str, request: Request):
     if not _can_access_extract_job(auth, job):
         raise HTTPException(status_code=403, detail="Access denied to extraction job")
     return job
+
+
+@app.post("/memory/extract/commit")
+async def extract_commit(request_body: ExtractCommitRequest, request: Request):
+    """Execute a subset of pre-extracted AUDN actions (from dry-run)."""
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source)
+
+    approved = [a for a in request_body.actions if a.get("approved")]
+    if not approved:
+        return {"stored_count": 0, "updated_count": 0, "deleted_count": 0, "conflict_count": 0}
+
+    facts = [a.get("fact", {"text": "", "category": "detail"}) for a in approved]
+
+    from llm_extract import execute_actions
+    result = execute_actions(
+        engine=memory,
+        actions=approved,
+        facts=facts,
+        source=request_body.source,
+        allowed_prefixes=auth.prefixes,
+    )
+    return result
 
 
 @app.post("/memory/supersede")
@@ -2965,6 +3004,82 @@ async def extract_status():
             "status": f"error: {e}",
             **status_payload,
         }
+
+
+# -- Extraction profiles ------------------------------------------------------
+
+@app.get("/extraction/profiles")
+async def list_extraction_profiles(request: Request):
+    """List all extraction profiles."""
+    return extraction_profiles.list_all()
+
+
+@app.get("/extraction/profiles/{prefix:path}")
+async def get_extraction_profile(prefix: str, request: Request):
+    """Get a specific extraction profile by source prefix."""
+    profile = extraction_profiles.get(prefix)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Profile not found: {prefix}")
+    return profile
+
+
+@app.put("/extraction/profiles/{prefix:path}")
+async def put_extraction_profile(prefix: str, request: Request):
+    """Create or update an extraction profile (admin only)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    config = await request.json()
+    profile = extraction_profiles.put(prefix, config)
+    _audit(request, "extraction.profile_updated", resource_id=prefix)
+    return profile
+
+
+@app.delete("/extraction/profiles/{prefix:path}")
+async def delete_extraction_profile(prefix: str, request: Request):
+    """Delete an extraction profile (admin only)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    deleted = extraction_profiles.delete(prefix)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Profile not found: {prefix}")
+    return {"deleted": True, "source_prefix": prefix}
+
+
+# -- Missed memory capture ----------------------------------------------------
+
+_missed_counts: Dict[str, int] = {}
+
+
+class MissedMemoryRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=50000)
+    source: str = Field(..., min_length=1, max_length=500)
+    context: Optional[str] = Field(None, max_length=10000)
+
+
+@app.post("/memory/missed")
+async def missed_memory(request_body: MissedMemoryRequest, request: Request):
+    """Flag a memory that should have been captured by extraction."""
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source)
+
+    metadata: Dict[str, Any] = {"origin": "missed_capture"}
+    if request_body.context:
+        metadata["capture_context"] = request_body.context
+
+    ids = memory.add_memories(
+        texts=[request_body.text],
+        sources=[request_body.source],
+        metadata_list=[metadata],
+    )
+
+    _missed_counts[request_body.source] = _missed_counts.get(request_body.source, 0) + 1
+    _audit(request, "memory.missed", resource_id=str(ids[0]), source=request_body.source)
+
+    return {
+        "id": ids[0],
+        "source": request_body.source,
+        "missed_count": _missed_counts[request_body.source],
+    }
 
 
 # -- Main ---------------------------------------------------------------------

@@ -35,7 +35,7 @@ async function memoriesRequest(path, options = {}) {
 
 const server = new McpServer({
   name: "memories",
-  version: "2.0.0",
+  version: "3.1.0",
 });
 
 // -- Tools -------------------------------------------------------------------
@@ -126,6 +126,9 @@ server.tool(
     ids: z.array(z.number().int().min(0)).min(1).max(1000).describe("Memory IDs to delete"),
   },
   async ({ ids }) => {
+    // Auto-snapshot before bulk delete (no opt-out for agents)
+    await memoriesRequest("/snapshots", { method: "POST" });
+
     const data = await memoriesRequest("/memory/delete-batch", {
       method: "POST",
       body: JSON.stringify({ ids }),
@@ -178,6 +181,9 @@ server.tool(
     source: z.string().min(1).describe("Source prefix to match (e.g. 'old-project/' deletes all memories from that project)"),
   },
   async ({ source }) => {
+    // Auto-snapshot before bulk delete (no opt-out for agents)
+    await memoriesRequest("/snapshots", { method: "POST" });
+
     const data = await memoriesRequest(`/memories?source=${encodeURIComponent(source)}`, {
       method: "DELETE",
     });
@@ -369,6 +375,30 @@ server.tool(
     }
 
     return { content: [{ type: "text", text: lines.join("\n") }] };
+  }
+);
+
+server.tool(
+  "memory_missed",
+  "Flag a memory that should have been captured by extraction but wasn't.",
+  {
+    text: z.string().min(1).describe("The fact that should have been remembered"),
+    source: z.string().min(1).describe("Source identifier"),
+    context: z.string().optional().describe("Optional context"),
+  },
+  async ({ text, source, context }) => {
+    const body = { text, source };
+    if (context) body.context = context;
+    const data = await memoriesRequest("/memory/missed", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return {
+      content: [{
+        type: "text",
+        text: `Memory stored (id: ${data.id}) from ${data.source}. Missed count: ${data.missed_count}`,
+      }],
+    };
   }
 );
 

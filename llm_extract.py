@@ -115,6 +115,27 @@ Output a JSON array of decisions. Each decision must have:
 - For CONFLICT: "old_id" (int) of the contradicted memory"""
 
 
+def _build_rules_section(rules: dict | None) -> str:
+    """Build a prompt section from extraction rules."""
+    if not rules:
+        return ""
+    parts = ["## Project-Specific Rules"]
+    always = rules.get("always_remember", [])
+    if always:
+        parts.append("ALWAYS remember these types of information:")
+        for item in always:
+            parts.append(f"  - {item}")
+    never = rules.get("never_remember", [])
+    if never:
+        parts.append("NEVER remember these types of information:")
+        for item in never:
+            parts.append(f"  - {item}")
+    custom = rules.get("custom_instructions", "")
+    if custom:
+        parts.append(f"Additional instructions: {custom}")
+    return "\n".join(parts)
+
+
 def _parse_json_array(text: str) -> list:
     """Parse a JSON array from LLM output, handling common edge cases."""
     text = text.strip()
@@ -224,6 +245,7 @@ def run_audn(
     source: str,
     allowed_prefixes: Optional[List[str]] = None,
     debug: bool = False,
+    rules: dict | None = None,
 ) -> tuple[list[dict], dict, Optional[dict]]:
     """Run AUDN cycle on extracted facts.
 
@@ -300,6 +322,9 @@ def run_audn(
     )
 
     prompt = AUDN_PROMPT.format(facts_json=facts_json, similar_json=similar_json)
+    rules_section = _build_rules_section(rules)
+    if rules_section:
+        prompt = prompt + "\n\n" + rules_section
 
     try:
         result = provider.complete("You are a memory manager. Output only valid JSON.", prompt)
@@ -315,6 +340,71 @@ def run_audn(
     except Exception as e:
         logger.error("AUDN cycle failed: %s", e)
         return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}, debug_similar
+
+
+SINGLE_CALL_PROMPT = """You are a memory extraction and classification system.
+
+Given conversation text, extract important facts AND decide what action to take for each.
+
+For each fact, output a JSON object with:
+- "action": "ADD" | "UPDATE" | "DELETE" | "NOOP" | "CONFLICT"
+- "fact_index": sequential index starting at 0
+- "category": "decision" | "learning" | "detail"
+- "text": the extracted fact text
+
+Categories:
+- DECISION: architectural choices, technology selections, trade-off resolutions
+- LEARNING: non-obvious findings, gotchas, performance insights
+- DETAIL: specific configs, paths, versions, API signatures
+
+Rules:
+- Skip generic programming knowledge
+- Skip task status / commit hashes / counts
+- Skip ephemeral session context
+- ADD for new durable facts
+- NOOP if the fact is already commonly known
+
+{rules_section}
+
+Output ONLY a JSON array of action objects. No markdown, no explanation."""
+
+
+def extract_and_decide_single_call(
+    provider,
+    messages: str,
+    source: str,
+    engine,
+    rules: dict | None = None,
+    max_facts: int = 30,
+) -> tuple[list[dict], dict, None]:
+    """Extract facts AND decide AUDN actions in a single LLM call.
+    ~50% cost reduction, less accurate (no per-fact similar-memory lookup).
+    Returns: (actions, token_usage, None) — same shape as run_audn().
+    """
+    rules_section = _build_rules_section(rules)
+    prompt = SINGLE_CALL_PROMPT.format(rules_section=rules_section)
+
+    result = provider.complete(
+        system=prompt,
+        user=f"Extract and classify facts from this conversation:\n\n{messages[:max_facts * 500]}",
+    )
+    usage = {"input_tokens": result.input_tokens, "output_tokens": result.output_tokens}
+
+    try:
+        actions = json.loads(result.text.strip())
+        if not isinstance(actions, list):
+            actions = []
+    except (json.JSONDecodeError, ValueError):
+        actions = []
+
+    for i, action in enumerate(actions[:max_facts]):
+        action.setdefault("fact_index", i)
+        action.setdefault("action", "ADD")
+        action.setdefault("category", "detail")
+        if "text" not in action:
+            action["text"] = ""
+
+    return actions[:max_facts], usage, None
 
 
 def execute_actions(
@@ -449,6 +539,7 @@ def run_extraction(
     context: str = "stop",
     allowed_prefixes: Optional[List[str]] = None,
     debug: bool = False,
+    profile: dict | None = None,
 ) -> dict:
     """Full extraction pipeline: extract facts -> AUDN -> execute.
 
@@ -459,20 +550,61 @@ def run_extraction(
         source: memory source identifier
         context: "stop", "pre_compact", or "session_end"
         debug: when True, include detailed debug_trace in result
+        profile: resolved extraction profile (from ExtractionProfiles.resolve)
 
     Returns: result dict with actions and counts
     """
     if provider is None:
         return {"error": "extraction_disabled"}
 
-    # Step 1: Extract facts
-    facts, extract_error, extract_tokens = extract_facts(
-        provider,
-        messages,
-        context=context,
-        return_error=True,
-        source=source,
-    )
+    # Apply profile settings
+    if profile:
+        max_facts = profile.get("max_facts", 30)
+        max_chars = profile.get("max_fact_chars", 500)
+        mode = profile.get("mode", "standard")
+        if mode == "aggressive":
+            context = "pre_compact"
+        rules = profile.get("rules", {})
+    else:
+        max_facts = 30
+        max_chars = 500
+        rules = {}
+
+    # Single-call mode: combine extraction + AUDN in one LLM call
+    if profile and profile.get("single_call"):
+        actions, usage, _ = extract_and_decide_single_call(
+            provider=provider,
+            messages=messages,
+            source=source,
+            engine=engine,
+            rules=rules,
+            max_facts=max_facts,
+        )
+        facts = [{"text": a.get("text", ""), "category": a.get("category", "detail")}
+                 for a in actions]
+        result = execute_actions(engine, actions, facts, source, allowed_prefixes)
+        result["tokens"] = {"single_call": usage}
+        return result
+
+    # Temporarily override module-level constants for extract_facts
+    import llm_extract as _mod
+    orig_max_facts = _mod.EXTRACT_MAX_FACTS
+    orig_max_chars = _mod.EXTRACT_MAX_FACT_CHARS
+    if profile:
+        _mod.EXTRACT_MAX_FACTS = max_facts
+        _mod.EXTRACT_MAX_FACT_CHARS = max_chars
+    try:
+        # Step 1: Extract facts
+        facts, extract_error, extract_tokens = extract_facts(
+            provider,
+            messages,
+            context=context,
+            return_error=True,
+            source=source,
+        )
+    finally:
+        _mod.EXTRACT_MAX_FACTS = orig_max_facts
+        _mod.EXTRACT_MAX_FACT_CHARS = orig_max_chars
     if extract_error:
         return {
             "actions": [],
@@ -504,9 +636,27 @@ def run_extraction(
         source,
         allowed_prefixes=allowed_prefixes,
         debug=debug,
+        rules=rules,
     )
 
-    # Step 3: Execute
+    # Step 3: Dry-run intercept — return planned actions without executing
+    if profile and profile.get("dry_run"):
+        # Attach fact info to each decision for caller inspection
+        annotated = []
+        for d in decisions:
+            entry = dict(d)
+            fi = d.get("fact_index", -1)
+            if 0 <= fi < len(facts):
+                entry["fact"] = facts[fi]
+            annotated.append(entry)
+        return {
+            "dry_run": True,
+            "actions": annotated,
+            "extracted_count": len(facts),
+            "tokens": {"extract": extract_tokens, "audn": audn_tokens},
+        }
+
+    # Step 4: Execute
     result = execute_actions(
         engine,
         decisions,
@@ -517,7 +667,7 @@ def run_extraction(
     result["extracted_count"] = len(facts)
     result["tokens"] = {"extract": extract_tokens, "audn": audn_tokens}
 
-    # Step 4: Build debug trace when requested
+    # Step 5: Build debug trace when requested
     if debug:
         # Build AUDN decisions trace with similar memories
         audn_trace = []
