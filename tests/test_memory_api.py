@@ -53,6 +53,7 @@ def test_search_accepts_source_prefix_and_passes_to_engine(client):
         k=3,
         threshold=None,
         source_prefix="carto/poet-pads/",
+        include_archived=False,
     )
 
 
@@ -158,7 +159,7 @@ def test_delete_by_prefix(client):
     )
     assert response.status_code == 200
     assert response.json()["deleted_count"] == 4
-    mock_engine.delete_by_prefix.assert_called_once_with("carto/poet-pads/")
+    mock_engine.delete_by_prefix.assert_called_once_with("carto/poet-pads/", skip_snapshot=False, dry_run=False)
 
 
 def test_patch_memory(client):
@@ -175,6 +176,8 @@ def test_patch_memory(client):
         text="updated",
         source=None,
         metadata_patch=None,
+        pinned=None,
+        archived=None,
     )
 
 

@@ -1158,6 +1158,7 @@ class SearchRequest(BaseModel):
         description="Half-life in days for recency decay (default 30).",
     )
     source: str = Field("", max_length=500, description="Caller source for usage tracking")
+    include_archived: bool = Field(default=False, description="Include archived memories in search results")
 
 
 class SearchBatchRequest(BaseModel):
@@ -1196,6 +1197,8 @@ class DeduplicateRequest(BaseModel):
 
 class DeleteBySourceRequest(BaseModel):
     source_pattern: str = Field(..., min_length=1, max_length=500)
+    dry_run: bool = False
+    skip_snapshot: bool = False
 
 
 class DeleteBatchRequest(BaseModel):
@@ -1219,6 +1222,8 @@ class UpsertBatchRequest(BaseModel):
 
 class DeleteByPrefixRequest(BaseModel):
     source_prefix: str = Field(..., min_length=1, max_length=500)
+    dry_run: bool = False
+    skip_snapshot: bool = False
 
 
 class RenameFolderRequest(BaseModel):
@@ -1230,6 +1235,12 @@ class PatchMemoryRequest(BaseModel):
     text: Optional[str] = Field(None, min_length=1, max_length=50000)
     source: Optional[str] = Field(None, min_length=1, max_length=500)
     metadata_patch: Optional[dict] = None
+    pinned: Optional[bool] = None
+    archived: Optional[bool] = None
+
+
+class ArchiveBatchRequest(BaseModel):
+    ids: List[int] = Field(..., min_length=1, max_length=1000)
 
 
 class ExtractRequest(BaseModel):
@@ -1696,6 +1707,7 @@ async def search(request_body: SearchRequest, request: Request):
                 source_prefix=request_body.source_prefix,
                 recency_weight=request_body.recency_weight,
                 recency_half_life_days=request_body.recency_half_life_days,
+                include_archived=request_body.include_archived,
             )
         else:
             results = memory.search(
@@ -1703,6 +1715,7 @@ async def search(request_body: SearchRequest, request: Request):
                 k=request_body.k,
                 threshold=request_body.threshold,
                 source_prefix=request_body.source_prefix,
+                include_archived=request_body.include_archived,
             )
         results = auth.filter_results(results)
         result_count = len(results)
@@ -1737,6 +1750,7 @@ async def search_explain(request_body: SearchRequest, request: Request):
             source_prefix=request_body.source_prefix,
             recency_weight=request_body.recency_weight,
             recency_half_life_days=request_body.recency_half_life_days,
+            include_archived=request_body.include_archived,
         )
         # Apply auth filtering to results and track how many were removed
         raw_results = explain_result["results"]
@@ -1942,7 +1956,11 @@ async def delete_by_source(request_body: DeleteBySourceRequest, request: Request
     try:
         # Backward-compatible behavior for admin/unrestricted callers.
         if auth.prefixes is None:
-            result = memory.delete_by_source(request_body.source_pattern)
+            result = memory.delete_by_source(
+                request_body.source_pattern,
+                skip_snapshot=request_body.skip_snapshot,
+                dry_run=request_body.dry_run,
+            )
             return {"success": True, **result}
 
         # Scoped keys: resolve matching IDs and enforce source-level checks before deletion.
@@ -1961,7 +1979,13 @@ async def delete_by_source(request_body: DeleteBySourceRequest, request: Request
         if not matching_ids:
             return {"success": True, "deleted_count": 0}
 
-        result = memory.delete_memories(matching_ids)
+        if request_body.dry_run:
+            return {"success": True, "count": len(matching_ids), "would_delete": matching_ids}
+
+        if not request_body.skip_snapshot and len(matching_ids) > 10:
+            memory._snapshot_before_delete(f"delete_by_source_scoped:{request_body.source_pattern}")
+
+        result = memory.delete_memories(matching_ids, skip_snapshot=True)
         return {
             "success": True,
             "deleted_count": result.get("deleted_count", 0),
@@ -2019,10 +2043,56 @@ async def delete_by_prefix(request_body: DeleteByPrefixRequest, request: Request
     _require_write(auth, request_body.source_prefix)
     logger.info("Delete by prefix: prefix=%s", request_body.source_prefix)
     try:
-        result = memory.delete_by_prefix(request_body.source_prefix)
+        result = memory.delete_by_prefix(
+            request_body.source_prefix,
+            skip_snapshot=request_body.skip_snapshot,
+            dry_run=request_body.dry_run,
+        )
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete by prefix failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/snapshots")
+async def list_snapshots(request: Request):
+    """List all snapshots recorded in the manifest."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    try:
+        snapshots = memory.list_snapshots()
+        return {"snapshots": snapshots, "count": len(snapshots)}
+    except Exception as e:
+        logger.exception("List snapshots failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/snapshots")
+async def create_snapshot(request: Request):
+    """Manually create a snapshot."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    try:
+        name = memory._snapshot_before_delete("manual")
+        _audit(request, "snapshot.created", resource_id=name)
+        return {"snapshot": name}
+    except Exception as e:
+        logger.exception("Create snapshot failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/snapshots/{name}/restore")
+async def restore_snapshot(name: str, request: Request):
+    """Restore a snapshot by name (admin only)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    try:
+        memory.qdrant_store.restore_snapshot(name)
+        # Reload engine state from restored Qdrant data
+        memory.reload_from_qdrant()
+        return {"success": True, "restored": name}
+    except Exception as e:
+        logger.exception("Restore snapshot failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -2030,7 +2100,13 @@ async def delete_by_prefix(request_body: DeleteByPrefixRequest, request: Request
 async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request: Request):
     """Patch selected fields on an existing memory."""
     auth = _get_auth(request)
-    if request_body.text is None and request_body.source is None and not request_body.metadata_patch:
+    if (
+        request_body.text is None
+        and request_body.source is None
+        and not request_body.metadata_patch
+        and request_body.pinned is None
+        and request_body.archived is None
+    ):
         raise HTTPException(status_code=400, detail="At least one field must be provided")
     try:
         if auth.prefixes is not None:
@@ -2043,13 +2119,38 @@ async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request
             text=request_body.text,
             source=request_body.source,
             metadata_patch=request_body.metadata_patch,
+            pinned=request_body.pinned,
+            archived=request_body.archived,
         )
+        if request_body.pinned is not None:
+            action = "memory.pinned" if request_body.pinned else "memory.unpinned"
+            _audit(request, action, resource_id=str(memory_id))
+        if request_body.archived is not None:
+            action = "memory.archived" if request_body.archived else "memory.unarchived"
+            _audit(request, action, resource_id=str(memory_id))
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Patch memory failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/memory/archive-batch")
+async def archive_batch(request_body: ArchiveBatchRequest, request: Request):
+    """Archive multiple memories in a single call."""
+    auth = _get_auth(request)
+    archived = 0
+    for mid in request_body.ids:
+        try:
+            existing = memory.get_memory(mid)
+            _require_write(auth, existing.get("source", ""))
+            memory.update_memory(mid, archived=True)
+            _audit(request, "memory.archived", resource_id=str(mid))
+            archived += 1
+        except (ValueError, PermissionError):
+            continue
+    return {"archived_count": archived}
 
 
 @app.post("/memory/upsert")
@@ -2137,14 +2238,17 @@ async def list_memories(
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=5000),
     source: Optional[str] = Query(None, max_length=500),
+    pinned: Optional[bool] = Query(None),
 ):
-    """List memories with pagination and optional source filter"""
+    """List memories with pagination and optional source/pinned filter"""
     auth = _get_auth(request)
     if source and not auth.can_read(source):
         raise HTTPException(status_code=403, detail=f"Key does not have read access to source: {source}")
 
     result = memory.list_memories(offset=offset, limit=limit, source_filter=source)
     filtered_memories = auth.filter_results(result.get("memories", []))
+    if pinned is not None:
+        filtered_memories = [m for m in filtered_memories if m.get("pinned") == pinned]
     result["memories"] = filtered_memories
     if auth.prefixes is not None:
         scoped_total = _count_accessible_memories(auth, source_prefix=source)
@@ -2725,6 +2829,32 @@ async def memory_supersede(request_body: SupersedeRequest, request: Request):
     except Exception as e:
         logger.exception("Supersede failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+class MergeRequest(BaseModel):
+    ids: List[int] = Field(..., min_length=2)
+    merged_text: str = Field(..., min_length=1, max_length=50000)
+    source: str = Field(..., min_length=1, max_length=500)
+
+
+@app.post("/memory/merge")
+async def merge_memories(request_body: MergeRequest, request: Request):
+    """Merge multiple memories into one combined memory, archiving originals."""
+    auth = _get_auth(request)
+    for mid in request_body.ids:
+        existing = memory.get_memory(mid)
+        _require_write(auth, existing.get("source", ""))
+    _require_write(auth, request_body.source)  # validate destination source
+    try:
+        result = memory.merge_memories(
+            ids=request_body.ids,
+            merged_text=request_body.merged_text,
+            source=request_body.source,
+        )
+        _audit(request, "memory.merged", resource_id=str(result["id"]), source=request_body.source)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 class AddLinkRequest(BaseModel):

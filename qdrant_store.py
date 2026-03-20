@@ -6,6 +6,9 @@ memory engine can swap vector backends with minimal surface-area changes.
 
 from __future__ import annotations
 
+import os
+import shutil
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from qdrant_client import QdrantClient, models
@@ -33,12 +36,14 @@ class QdrantStore:
         self.collection = settings.collection
         if client is not None:
             self.client = client
+            self._local_path: Optional[str] = None
         else:
             if settings.url:
                 kwargs: Dict[str, Any] = {}
                 if settings.api_key:
                     kwargs["api_key"] = settings.api_key
                 self.client = QdrantClient(url=settings.url, **kwargs)
+                self._local_path = None
             else:
                 if not local_path:
                     raise ValueError("local_path is required when QDRANT_URL is empty")
@@ -47,6 +52,7 @@ class QdrantStore:
                     existing = QdrantClient(path=local_path)
                     _LOCAL_CLIENTS[local_path] = existing
                 self.client = existing
+                self._local_path = local_path
 
     def ensure_collection(self, dim: int) -> None:
         try:
@@ -139,6 +145,15 @@ class QdrantStore:
         except Exception:
             pass  # Already exists or collection missing — safe to ignore
 
+        try:
+            self.client.create_payload_index(
+                collection_name=self.collection,
+                field_name="archived",
+                field_schema=models.PayloadSchemaType.BOOL,
+            )
+        except Exception:
+            pass
+
     def count_filtered(
         self,
         count_filter: Optional[models.Filter] = None,
@@ -205,4 +220,57 @@ class QdrantStore:
             points_selector=models.PointIdsList(points=normalized_ids),
             wait=self.settings.wait,
             ordering=self.settings.write_ordering,
+        )
+
+    def create_snapshot(self) -> str:
+        if self._local_path is not None:
+            timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            backup_name = f"local-backup-{timestamp}"
+            snapshots_dir = os.path.join(self._local_path, ".snapshots")
+            os.makedirs(snapshots_dir, exist_ok=True)
+            dst = os.path.join(snapshots_dir, backup_name)
+            shutil.copytree(self._local_path, dst,
+                            ignore=shutil.ignore_patterns(".snapshots"))
+            return backup_name
+        snapshot = self.client.create_snapshot(collection_name=self.collection)
+        return snapshot.name
+
+    def list_snapshots(self) -> List[Dict[str, Any]]:
+        if self._local_path is not None:
+            snapshots_dir = os.path.join(self._local_path, ".snapshots")
+            if not os.path.isdir(snapshots_dir):
+                return []
+            return [
+                {"name": entry, "creation_time": None, "size": None}
+                for entry in sorted(os.listdir(snapshots_dir))
+                if os.path.isdir(os.path.join(snapshots_dir, entry))
+            ]
+        snapshots = self.client.list_snapshots(collection_name=self.collection)
+        return [
+            {
+                "name": s.name,
+                "creation_time": s.creation_time,
+                "size": s.size,
+            }
+            for s in snapshots
+        ]
+
+    def restore_snapshot(self, name: str) -> None:
+        if self._local_path is not None:
+            snapshots_dir = os.path.join(self._local_path, ".snapshots")
+            backup_path = os.path.join(snapshots_dir, name)
+            # Remove everything in local_path except .snapshots
+            for entry in os.listdir(self._local_path):
+                if entry == ".snapshots":
+                    continue
+                full = os.path.join(self._local_path, entry)
+                if os.path.isdir(full):
+                    shutil.rmtree(full)
+                else:
+                    os.remove(full)
+            shutil.copytree(backup_path, self._local_path, dirs_exist_ok=True)
+            return
+        self.client.recover_snapshot(
+            collection_name=self.collection,
+            location=name,
         )

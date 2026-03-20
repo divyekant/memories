@@ -191,6 +191,31 @@ class MemoryEngine:
         self._bm25_pos_to_id = [m["id"] for m in self.metadata]
         self._next_id = max(self._id_map.keys(), default=-1) + 1
 
+    def reload_from_qdrant(self):
+        """Rebuild in-memory state (metadata, _id_map, BM25) from Qdrant points.
+
+        Used after restoring a snapshot so the engine reflects the restored data.
+        """
+        with self._write_lock:
+            all_points: list = []
+            offset = None
+            while True:
+                points, next_offset = self.qdrant_store.scroll_all(offset=offset, limit=100)
+                all_points.extend(points)
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            self.metadata = []
+            for p in all_points:
+                meta = dict(p["payload"])
+                meta["id"] = p["id"]
+                self.metadata.append(meta)
+
+            self._rebuild_id_map()
+            self._rebuild_bm25()
+            self.save()
+
     def _get_meta_by_id(self, memory_id: int) -> Dict[str, Any]:
         """Fetch metadata dict for a memory by its sparse ID."""
         idx = self._id_map.get(memory_id)
@@ -580,7 +605,36 @@ class MemoryEngine:
         event_bus.emit("memory.deleted", {"id": memory_id, "source": deleted.get("source", "")})
         return {"deleted_id": memory_id, "deleted_text": deleted["text"][:100]}
 
-    def delete_memories(self, memory_ids: List[int]) -> Dict[str, Any]:
+    def _snapshot_before_delete(self, reason: str) -> str:
+        """Create a Qdrant snapshot and record it in the manifest."""
+        name = self.qdrant_store.create_snapshot()
+        snapshots_dir = self.data_dir / "snapshots"
+        snapshots_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = snapshots_dir / "manifest.json"
+        if manifest_path.exists():
+            with open(manifest_path) as f:
+                entries = json.load(f)
+        else:
+            entries = []
+        entries.append({
+            "name": name,
+            "reason": reason,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "point_count": self.qdrant_store.count(),
+        })
+        with open(manifest_path, "w") as f:
+            json.dump(entries, f)
+        return name
+
+    def list_snapshots(self) -> List[Dict[str, Any]]:
+        """Return entries from the snapshot manifest."""
+        manifest_path = self.data_dir / "snapshots" / "manifest.json"
+        if not manifest_path.exists():
+            return []
+        with open(manifest_path) as f:
+            return json.load(f)
+
+    def delete_memories(self, memory_ids: List[int], skip_snapshot: bool = False) -> Dict[str, Any]:
         """Delete multiple memories by IDs in one pass."""
         unique_ids = sorted(set(memory_ids))
         if not unique_ids:
@@ -591,6 +645,9 @@ class MemoryEngine:
         missing = [mid for mid in unique_ids if mid not in existing_set]
         if not existing:
             return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing}
+
+        if len(unique_ids) > 10 and not skip_snapshot:
+            self._snapshot_before_delete("pre_delete_batch")
 
         keys = [self._entity_key(self._get_meta_by_id(mid).get("source", "")) for mid in existing]
         with self._entity_locks.acquire_many(keys):
@@ -636,6 +693,29 @@ class MemoryEngine:
 
         logger.info("Superseded memory %d → %d", old_id, new_id)
         return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text}
+
+    def merge_memories(self, ids: List[int], merged_text: str, source: str) -> Dict[str, Any]:
+        """Merge multiple memories into one, archiving originals and linking via supersedes."""
+        if len(ids) < 2:
+            raise ValueError("merge_memories requires at least 2 IDs")
+        for mid in ids:
+            if not self._id_exists(mid):
+                raise ValueError(f"Memory {mid} not found")
+
+        added_ids = self.add_memories(texts=[merged_text], sources=[source], deduplicate=False)
+        new_id = added_ids[0]
+
+        for mid in ids:
+            self.add_link(new_id, mid, "supersedes")
+
+        for mid in ids:
+            meta = self._get_meta_by_id(mid)
+            meta["archived"] = True
+            self.qdrant_store.set_payload(mid, {"archived": True})
+
+        self.save()
+        logger.info("Merged memories %s → %d", ids, new_id)
+        return {"id": new_id, "archived": ids}
 
     # ------------------------------------------------------------------
     # Memory Links (lightweight graph edges)
@@ -735,13 +815,23 @@ class MemoryEngine:
 
         return results
 
-    def delete_by_source(self, source_pattern: str) -> Dict[str, Any]:
+    def delete_by_source(self, source_pattern: str, skip_snapshot: bool = False, dry_run: bool = False) -> Dict[str, Any]:
         """Delete all memories matching a source pattern."""
         with self._entity_locks.acquire_many(["__all__"]):
             with self._write_lock:
-                matching = [m for m in self.metadata if source_pattern in m.get("source", "")]
+                matching = [m for m in self.metadata
+                           if source_pattern in m.get("source", "")
+                           and not m.get("pinned")]
                 if not matching:
+                    if dry_run:
+                        return {"count": 0, "would_delete": []}
                     return {"deleted_count": 0}
+
+                if dry_run:
+                    return {"count": len(matching), "would_delete": [m["id"] for m in matching]}
+
+                if not skip_snapshot:
+                    self._snapshot_before_delete("pre_delete_source")
 
                 self._backup(prefix="pre_delete_source")
 
@@ -754,13 +844,23 @@ class MemoryEngine:
 
         return {"deleted_count": len(matching)}
 
-    def delete_by_prefix(self, source_prefix: str) -> Dict[str, Any]:
+    def delete_by_prefix(self, source_prefix: str, skip_snapshot: bool = False, dry_run: bool = False) -> Dict[str, Any]:
         """Delete all memories whose source starts with a prefix."""
         with self._entity_locks.acquire_many(["__all__"]):
             with self._write_lock:
-                matching = [m for m in self.metadata if m.get("source", "").startswith(source_prefix)]
+                matching = [m for m in self.metadata
+                           if m.get("source", "").startswith(source_prefix)
+                           and not m.get("pinned")]
                 if not matching:
+                    if dry_run:
+                        return {"count": 0, "would_delete": []}
                     return {"deleted_count": 0}
+
+                if dry_run:
+                    return {"count": len(matching), "would_delete": [m["id"] for m in matching]}
+
+                if not skip_snapshot:
+                    self._snapshot_before_delete("pre_delete_prefix")
 
                 self._backup(prefix="pre_delete_prefix")
                 ids_to_remove = {m["id"] for m in matching}
@@ -831,6 +931,8 @@ class MemoryEngine:
         text: Optional[str] = None,
         source: Optional[str] = None,
         metadata_patch: Optional[Dict[str, Any]] = None,
+        pinned: Optional[bool] = None,
+        archived: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Update fields on an existing memory without changing its ID."""
         if not self._id_exists(memory_id):
@@ -846,6 +948,8 @@ class MemoryEngine:
             source is not None
             and text is None
             and not metadata_patch
+            and pinned is None
+            and archived is None
             and source != current.get("source", "")
         )
 
@@ -882,6 +986,16 @@ class MemoryEngine:
                             continue
                         meta[key] = value
                     updated_fields.append("metadata")
+
+                if pinned is not None:
+                    meta["pinned"] = pinned
+                    self.qdrant_store.set_payload(memory_id, {"pinned": pinned})
+                    updated_fields.append("pinned")
+
+                if archived is not None:
+                    meta["archived"] = archived
+                    self.qdrant_store.set_payload(memory_id, {"archived": archived})
+                    updated_fields.append("archived")
 
                 meta["updated_at"] = datetime.now(timezone.utc).isoformat()
                 # Don't touch created_at or timestamp
@@ -986,42 +1100,62 @@ class MemoryEngine:
         self,
         source_prefix: Optional[str] = None,
         allowed_prefixes: Optional[List[str]] = None,
+        include_archived: bool = False,
     ) -> Optional[qdrant_models.Filter]:
-        """Build a Qdrant filter from source prefix and/or auth prefixes.
+        """Build a Qdrant filter from source prefix, auth prefixes, and archive state.
 
-        Returns None when no filtering is needed (admin / no prefix), letting
-        the existing call path behave exactly as before.
+        Returns None when no filtering is needed (admin / no prefix / include_archived),
+        letting the existing call path behave exactly as before.
         """
-        if source_prefix is None and allowed_prefixes is None:
-            return None
+        filter_obj: Optional[qdrant_models.Filter] = None
 
-        all_sources = self.distinct_sources()
+        if source_prefix is not None or allowed_prefixes is not None:
+            all_sources = self.distinct_sources()
 
-        # Narrow by source_prefix first
-        if source_prefix:
-            candidates = [s for s in all_sources if s.startswith(source_prefix)]
-        else:
-            candidates = all_sources
+            # Narrow by source_prefix first
+            if source_prefix:
+                candidates = [s for s in all_sources if s.startswith(source_prefix)]
+            else:
+                candidates = all_sources
 
-        # Further narrow by auth allowed_prefixes
-        if allowed_prefixes is not None:
-            from auth_context import source_matches_prefixes
-            candidates = [s for s in candidates if source_matches_prefixes(s, allowed_prefixes)]
+            # Further narrow by auth allowed_prefixes
+            if allowed_prefixes is not None:
+                from auth_context import source_matches_prefixes
+                candidates = [s for s in candidates if source_matches_prefixes(s, allowed_prefixes)]
 
-        if not candidates:
-            return qdrant_models.Filter(
-                must=[qdrant_models.FieldCondition(
-                    key="source",
-                    match=qdrant_models.MatchValue(value="__no_match__"),
-                )]
+            if not candidates:
+                filter_obj = qdrant_models.Filter(
+                    must=[qdrant_models.FieldCondition(
+                        key="source",
+                        match=qdrant_models.MatchValue(value="__no_match__"),
+                    )]
+                )
+            else:
+                filter_obj = qdrant_models.Filter(
+                    must=[qdrant_models.FieldCondition(
+                        key="source",
+                        match=qdrant_models.MatchAny(any=candidates),
+                    )]
+                )
+
+        # Exclude archived memories unless explicitly requested
+        must_not = []
+        if not include_archived:
+            must_not.append(
+                qdrant_models.FieldCondition(
+                    key="archived",
+                    match=qdrant_models.MatchValue(value=True),
+                )
             )
+        if must_not:
+            if filter_obj is None:
+                filter_obj = qdrant_models.Filter(must_not=must_not)
+            else:
+                existing_must_not = list(filter_obj.must_not or [])
+                existing_must_not.extend(must_not)
+                filter_obj.must_not = existing_must_not
 
-        return qdrant_models.Filter(
-            must=[qdrant_models.FieldCondition(
-                key="source",
-                match=qdrant_models.MatchAny(any=candidates),
-            )]
-        )
+        return filter_obj
 
     def search(
         self,
@@ -1029,6 +1163,7 @@ class MemoryEngine:
         k: int = 5,
         threshold: Optional[float] = None,
         source_prefix: Optional[str] = None,
+        include_archived: bool = False,
     ) -> List[Dict[str, Any]]:
         """Vector-only search for similar memories."""
         if not self.metadata:
@@ -1043,7 +1178,7 @@ class MemoryEngine:
         )[0].astype("float32").tolist()
 
         # Pre-filter at Qdrant level when source_prefix is specified
-        query_filter = self._build_source_filter(source_prefix=source_prefix)
+        query_filter = self._build_source_filter(source_prefix=source_prefix, include_archived=include_archived)
 
         hits = self.qdrant_store.search(
             query_vector=query_vec,
@@ -1109,6 +1244,7 @@ class MemoryEngine:
         source_prefix: Optional[str] = None,
         recency_weight: float = 0.0,
         recency_half_life_days: float = 30.0,
+        include_archived: bool = False,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -1128,6 +1264,7 @@ class MemoryEngine:
             k=oversample,
             threshold=threshold,
             source_prefix=source_prefix,
+            include_archived=include_archived,
         )
 
         bm25_ranked = []
@@ -1140,10 +1277,17 @@ class MemoryEngine:
                     for pos, score in enumerate(bm25_scores)
                     if pos < len(self._bm25_pos_to_id)
                     and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                    and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
                 ]
                 bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
             else:
-                bm25_ranked = sorted(enumerate(bm25_scores), key=lambda x: x[1], reverse=True)[:oversample]
+                bm25_ranked = [
+                    (pos, score)
+                    for pos, score in enumerate(bm25_scores)
+                    if pos < len(self._bm25_pos_to_id)
+                    and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
+                ]
+                bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
 
         rrf_k = 60
         rrf_scores: Dict[int, float] = {}
@@ -1202,13 +1346,14 @@ class MemoryEngine:
         k: int = 5,
         threshold: Optional[float] = None,
         source_prefix: Optional[str] = None,
+        include_archived: bool = False,
     ) -> List[Dict[str, Any]]:
         """Vector search without reinforcement side effects (for explain/debug)."""
         if not self.metadata:
             return []
         k = min(k, len(self.metadata), 100)
         query_vec = self._encode([query], normalize_embeddings=True, show_progress_bar=False)[0].astype("float32").tolist()
-        query_filter = self._build_source_filter(source_prefix=source_prefix)
+        query_filter = self._build_source_filter(source_prefix=source_prefix, include_archived=include_archived)
         hits = self.qdrant_store.search(
             query_vector=query_vec, limit=k, score_threshold=threshold,
             consistency=self.qdrant_settings.read_consistency, query_filter=query_filter,
@@ -1238,6 +1383,7 @@ class MemoryEngine:
         source_prefix: Optional[str] = None,
         recency_weight: float = 0.0,
         recency_half_life_days: float = 30.0,
+        include_archived: bool = False,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -1271,6 +1417,7 @@ class MemoryEngine:
             k=oversample,
             threshold=threshold,
             source_prefix=source_prefix,
+            include_archived=include_archived,
         )
 
         vector_candidates = [
@@ -1293,10 +1440,17 @@ class MemoryEngine:
                     for pos, score in enumerate(bm25_scores)
                     if pos < len(self._bm25_pos_to_id)
                     and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                    and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
                 ]
                 bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
             else:
-                bm25_ranked = sorted(enumerate(bm25_scores), key=lambda x: x[1], reverse=True)[:oversample]
+                bm25_ranked = [
+                    (pos, score)
+                    for pos, score in enumerate(bm25_scores)
+                    if pos < len(self._bm25_pos_to_id)
+                    and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
+                ]
+                bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
 
         bm25_candidates = []
         for pos, score in bm25_ranked:
