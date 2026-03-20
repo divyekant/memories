@@ -115,6 +115,27 @@ Output a JSON array of decisions. Each decision must have:
 - For CONFLICT: "old_id" (int) of the contradicted memory"""
 
 
+def _build_rules_section(rules: dict | None) -> str:
+    """Build a prompt section from extraction rules."""
+    if not rules:
+        return ""
+    parts = ["## Project-Specific Rules"]
+    always = rules.get("always_remember", [])
+    if always:
+        parts.append("ALWAYS remember these types of information:")
+        for item in always:
+            parts.append(f"  - {item}")
+    never = rules.get("never_remember", [])
+    if never:
+        parts.append("NEVER remember these types of information:")
+        for item in never:
+            parts.append(f"  - {item}")
+    custom = rules.get("custom_instructions", "")
+    if custom:
+        parts.append(f"Additional instructions: {custom}")
+    return "\n".join(parts)
+
+
 def _parse_json_array(text: str) -> list:
     """Parse a JSON array from LLM output, handling common edge cases."""
     text = text.strip()
@@ -224,6 +245,7 @@ def run_audn(
     source: str,
     allowed_prefixes: Optional[List[str]] = None,
     debug: bool = False,
+    rules: dict | None = None,
 ) -> tuple[list[dict], dict, Optional[dict]]:
     """Run AUDN cycle on extracted facts.
 
@@ -300,6 +322,9 @@ def run_audn(
     )
 
     prompt = AUDN_PROMPT.format(facts_json=facts_json, similar_json=similar_json)
+    rules_section = _build_rules_section(rules)
+    if rules_section:
+        prompt = prompt + "\n\n" + rules_section
 
     try:
         result = provider.complete("You are a memory manager. Output only valid JSON.", prompt)
@@ -439,6 +464,7 @@ def run_extraction(
     context: str = "stop",
     allowed_prefixes: Optional[List[str]] = None,
     debug: bool = False,
+    profile: dict | None = None,
 ) -> dict:
     """Full extraction pipeline: extract facts -> AUDN -> execute.
 
@@ -449,20 +475,45 @@ def run_extraction(
         source: memory source identifier
         context: "stop", "pre_compact", or "session_end"
         debug: when True, include detailed debug_trace in result
+        profile: resolved extraction profile (from ExtractionProfiles.resolve)
 
     Returns: result dict with actions and counts
     """
     if provider is None:
         return {"error": "extraction_disabled"}
 
-    # Step 1: Extract facts
-    facts, extract_error, extract_tokens = extract_facts(
-        provider,
-        messages,
-        context=context,
-        return_error=True,
-        source=source,
-    )
+    # Apply profile settings
+    if profile:
+        max_facts = profile.get("max_facts", 30)
+        max_chars = profile.get("max_fact_chars", 500)
+        mode = profile.get("mode", "standard")
+        if mode == "aggressive":
+            context = "pre_compact"
+        rules = profile.get("rules", {})
+    else:
+        max_facts = 30
+        max_chars = 500
+        rules = {}
+
+    # Temporarily override module-level constants for extract_facts
+    import llm_extract as _mod
+    orig_max_facts = _mod.EXTRACT_MAX_FACTS
+    orig_max_chars = _mod.EXTRACT_MAX_FACT_CHARS
+    if profile:
+        _mod.EXTRACT_MAX_FACTS = max_facts
+        _mod.EXTRACT_MAX_FACT_CHARS = max_chars
+    try:
+        # Step 1: Extract facts
+        facts, extract_error, extract_tokens = extract_facts(
+            provider,
+            messages,
+            context=context,
+            return_error=True,
+            source=source,
+        )
+    finally:
+        _mod.EXTRACT_MAX_FACTS = orig_max_facts
+        _mod.EXTRACT_MAX_FACT_CHARS = orig_max_chars
     if extract_error:
         return {
             "actions": [],
@@ -494,6 +545,7 @@ def run_extraction(
         source,
         allowed_prefixes=allowed_prefixes,
         debug=debug,
+        rules=rules,
     )
 
     # Step 3: Execute

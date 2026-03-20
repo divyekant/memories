@@ -731,6 +731,7 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data["context"],
                 request_data.get("allowed_prefixes"),
                 request_data.get("debug", False),
+                request_data.get("profile"),
             )
             if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result):
                 fallback_result = await run_in_threadpool(
@@ -2636,6 +2637,8 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
     _ensure_extract_workers_started()
     usage_tracker.log_api_event("extract", request_body.source)
     _audit(request, "extract", source=request_body.source)
+    effective_source = request_body.source or "extract/unknown"
+    profile = extraction_profiles.resolve(effective_source)
     job_id = uuid4().hex
     extract_jobs[job_id] = {
         "job_id": job_id,
@@ -2656,6 +2659,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
                     "context": request_body.context,
                     "allowed_prefixes": auth.prefixes,
                     "debug": request_body.debug,
+                    "profile": profile,
                 },
             }
         )

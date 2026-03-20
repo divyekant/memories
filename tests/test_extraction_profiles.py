@@ -253,3 +253,46 @@ class TestProfileAPI:
         resp = client.get("/extraction/profiles")
         assert resp.status_code == 200
         assert len(resp.json()) == 2
+
+
+class TestProfileAwareExtraction:
+    def test_rules_injection_format(self):
+        from llm_extract import _build_rules_section
+        rules = {
+            "always_remember": ["API contracts", "architectural decisions"],
+            "never_remember": ["temp debugging state"],
+            "custom_instructions": "Treat port numbers as durable facts",
+        }
+        section = _build_rules_section(rules)
+        assert "## Project-Specific Rules" in section
+        assert "API contracts" in section
+        assert "architectural decisions" in section
+        assert "temp debugging state" in section
+        assert "Treat port numbers" in section
+
+    def test_empty_rules_returns_empty_string(self):
+        from llm_extract import _build_rules_section
+        assert _build_rules_section({}) == ""
+        assert _build_rules_section(None) == ""
+
+    def test_rules_with_only_always_remember(self):
+        from llm_extract import _build_rules_section
+        rules = {"always_remember": ["port assignments"]}
+        section = _build_rules_section(rules)
+        assert "ALWAYS remember" in section
+        assert "port assignments" in section
+        assert "NEVER" not in section
+
+    def test_rules_with_only_never_remember(self):
+        from llm_extract import _build_rules_section
+        rules = {"never_remember": ["passwords"]}
+        section = _build_rules_section(rules)
+        assert "NEVER remember" in section
+        assert "passwords" in section
+        assert "ALWAYS" not in section
+
+    def test_rules_with_only_custom_instructions(self):
+        from llm_extract import _build_rules_section
+        rules = {"custom_instructions": "Focus on config values"}
+        section = _build_rules_section(rules)
+        assert "Additional instructions: Focus on config values" in section

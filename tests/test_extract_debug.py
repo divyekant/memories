@@ -111,7 +111,7 @@ class TestExtractDebugMode:
         # Mock run_extraction to return result WITHOUT debug_trace
         result_no_debug = _make_mock_extraction_result(debug=False)
 
-        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False):
+        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False, profile=None):
             return result_no_debug
 
         with patch.object(app_module, "run_extraction", fake_run_extraction):
@@ -141,7 +141,7 @@ class TestExtractDebugMode:
 
         result_with_debug = _make_mock_extraction_result(debug=True)
 
-        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False):
+        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False, profile=None):
             if debug:
                 return result_with_debug
             return _make_mock_extraction_result(debug=False)
@@ -179,7 +179,7 @@ class TestExtractDebugMode:
 
         result_with_debug = _make_mock_extraction_result(debug=True)
 
-        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False):
+        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False, profile=None):
             if debug:
                 return result_with_debug
             return _make_mock_extraction_result(debug=False)
@@ -212,7 +212,7 @@ class TestExtractDebugMode:
 
         result_with_debug = _make_mock_extraction_result(debug=True)
 
-        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False):
+        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False, profile=None):
             if debug:
                 return result_with_debug
             return _make_mock_extraction_result(debug=False)
@@ -247,7 +247,7 @@ class TestExtractDebugMode:
 
         result_with_debug = _make_mock_extraction_result(debug=True)
 
-        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False):
+        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False, profile=None):
             if debug:
                 return result_with_debug
             return _make_mock_extraction_result(debug=False)
@@ -282,7 +282,7 @@ class TestExtractDebugMode:
 
         called_with_debug = []
 
-        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False):
+        def fake_run_extraction(provider, engine, messages, source, context, allowed_prefixes=None, debug=False, profile=None):
             called_with_debug.append(debug)
             return _make_mock_extraction_result(debug=False)
 
