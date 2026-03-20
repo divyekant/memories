@@ -33,6 +33,7 @@ from memory_engine import MemoryEngine
 from runtime_memory import MemoryTrimmer
 from audit_log import AuditLog, NullAuditLog
 from usage_tracker import UsageTracker, NullTracker
+from extraction_profiles import ExtractionProfiles
 
 # -- Logging ------------------------------------------------------------------
 
@@ -363,6 +364,9 @@ def _can_access_extract_job(auth: AuthContext, job: Dict[str, Any]) -> bool:
 # -- App lifecycle ------------------------------------------------------------
 
 memory: MemoryEngine = None  # type: ignore
+extraction_profiles: ExtractionProfiles = ExtractionProfiles(
+    os.path.join(os.environ.get("DATA_DIR", "data"), "extraction_profiles.json")
+)
 
 
 def _utc_now_iso() -> str:
@@ -2835,6 +2839,45 @@ async def extract_status():
             "status": f"error: {e}",
             **status_payload,
         }
+
+
+# -- Extraction profiles ------------------------------------------------------
+
+@app.get("/extraction/profiles")
+async def list_extraction_profiles(request: Request):
+    """List all extraction profiles."""
+    return extraction_profiles.list_all()
+
+
+@app.get("/extraction/profiles/{prefix:path}")
+async def get_extraction_profile(prefix: str, request: Request):
+    """Get a specific extraction profile by source prefix."""
+    profile = extraction_profiles.get(prefix)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Profile not found: {prefix}")
+    return profile
+
+
+@app.put("/extraction/profiles/{prefix:path}")
+async def put_extraction_profile(prefix: str, request: Request):
+    """Create or update an extraction profile (admin only)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    config = await request.json()
+    profile = extraction_profiles.put(prefix, config)
+    _audit(request, "extraction.profile_updated", resource_id=prefix)
+    return profile
+
+
+@app.delete("/extraction/profiles/{prefix:path}")
+async def delete_extraction_profile(prefix: str, request: Request):
+    """Delete an extraction profile (admin only)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    deleted = extraction_profiles.delete(prefix)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Profile not found: {prefix}")
+    return {"deleted": True, "source_prefix": prefix}
 
 
 # -- Main ---------------------------------------------------------------------

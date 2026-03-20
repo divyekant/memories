@@ -1,10 +1,13 @@
 """Tests for extraction profiles — CRUD and cascade resolution."""
 
+import importlib
 import json
 import os
 import tempfile
+from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 
 from extraction_profiles import DEFAULTS, ExtractionProfiles
 
@@ -176,3 +179,77 @@ class TestRulesCascade:
     def test_no_profile_rules_defaults_to_empty(self, ep):
         result = ep.resolve("claude-code/memories")
         assert result["rules"] == {}
+
+
+class TestProfileAPI:
+    @pytest.fixture
+    def client(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {"API_KEY": "", "EXTRACT_PROVIDER": "", "DATA_DIR": tmpdir}
+            with patch.dict(os.environ, env):
+                import app as app_module
+                importlib.reload(app_module)
+                from extraction_profiles import ExtractionProfiles
+                app_module.extraction_profiles = ExtractionProfiles(
+                    os.path.join(tmpdir, "extraction_profiles.json")
+                )
+                mock_engine = MagicMock()
+                mock_engine.metadata = []
+                app_module.memory = mock_engine
+                yield TestClient(app_module.app)
+
+    def test_list_empty(self, client):
+        resp = client.get("/extraction/profiles")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_create_profile(self, client):
+        resp = client.put("/extraction/profiles/claude-code/", json={"mode": "aggressive"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["source_prefix"] == "claude-code/"
+        assert body["mode"] == "aggressive"
+
+    def test_get_profile(self, client):
+        client.put("/extraction/profiles/claude-code/", json={"mode": "aggressive"})
+        resp = client.get("/extraction/profiles/claude-code/")
+        assert resp.status_code == 200
+        assert resp.json()["mode"] == "aggressive"
+
+    def test_delete_profile(self, client):
+        client.put("/extraction/profiles/work/", json={"mode": "conservative"})
+        resp = client.delete("/extraction/profiles/work/")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] is True
+
+    def test_get_after_delete_returns_404(self, client):
+        client.put("/extraction/profiles/work/", json={"mode": "conservative"})
+        client.delete("/extraction/profiles/work/")
+        resp = client.get("/extraction/profiles/work/")
+        assert resp.status_code == 404
+
+    def test_delete_nonexistent_returns_404(self, client):
+        resp = client.delete("/extraction/profiles/nonexistent/")
+        assert resp.status_code == 404
+
+    def test_get_nonexistent_returns_404(self, client):
+        resp = client.get("/extraction/profiles/nonexistent/")
+        assert resp.status_code == 404
+
+    def test_prefix_with_slashes(self, client):
+        resp = client.put(
+            "/extraction/profiles/claude-code/memories/",
+            json={"max_facts": 10},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["source_prefix"] == "claude-code/memories/"
+        resp2 = client.get("/extraction/profiles/claude-code/memories/")
+        assert resp2.status_code == 200
+        assert resp2.json()["max_facts"] == 10
+
+    def test_list_after_creates(self, client):
+        client.put("/extraction/profiles/a/", json={"mode": "standard"})
+        client.put("/extraction/profiles/b/", json={"mode": "aggressive"})
+        resp = client.get("/extraction/profiles")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 2
