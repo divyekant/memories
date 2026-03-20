@@ -771,7 +771,9 @@ class MemoryEngine:
         """Delete all memories matching a source pattern."""
         with self._entity_locks.acquire_many(["__all__"]):
             with self._write_lock:
-                matching = [m for m in self.metadata if source_pattern in m.get("source", "")]
+                matching = [m for m in self.metadata
+                           if source_pattern in m.get("source", "")
+                           and not m.get("pinned")]
                 if not matching:
                     if dry_run:
                         return {"count": 0, "would_delete": []}
@@ -798,7 +800,9 @@ class MemoryEngine:
         """Delete all memories whose source starts with a prefix."""
         with self._entity_locks.acquire_many(["__all__"]):
             with self._write_lock:
-                matching = [m for m in self.metadata if m.get("source", "").startswith(source_prefix)]
+                matching = [m for m in self.metadata
+                           if m.get("source", "").startswith(source_prefix)
+                           and not m.get("pinned")]
                 if not matching:
                     if dry_run:
                         return {"count": 0, "would_delete": []}
@@ -879,6 +883,8 @@ class MemoryEngine:
         text: Optional[str] = None,
         source: Optional[str] = None,
         metadata_patch: Optional[Dict[str, Any]] = None,
+        pinned: Optional[bool] = None,
+        archived: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Update fields on an existing memory without changing its ID."""
         if not self._id_exists(memory_id):
@@ -894,6 +900,8 @@ class MemoryEngine:
             source is not None
             and text is None
             and not metadata_patch
+            and pinned is None
+            and archived is None
             and source != current.get("source", "")
         )
 
@@ -930,6 +938,16 @@ class MemoryEngine:
                             continue
                         meta[key] = value
                     updated_fields.append("metadata")
+
+                if pinned is not None:
+                    meta["pinned"] = pinned
+                    self.qdrant_store.set_payload(memory_id, {"pinned": pinned})
+                    updated_fields.append("pinned")
+
+                if archived is not None:
+                    meta["archived"] = archived
+                    self.qdrant_store.set_payload(memory_id, {"archived": archived})
+                    updated_fields.append("archived")
 
                 meta["updated_at"] = datetime.now(timezone.utc).isoformat()
                 # Don't touch created_at or timestamp

@@ -175,6 +175,8 @@ def test_patch_memory(client):
         text="updated",
         source=None,
         metadata_patch=None,
+        pinned=None,
+        archived=None,
     )
 
 

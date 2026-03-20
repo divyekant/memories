@@ -1234,6 +1234,8 @@ class PatchMemoryRequest(BaseModel):
     text: Optional[str] = Field(None, min_length=1, max_length=50000)
     source: Optional[str] = Field(None, min_length=1, max_length=500)
     metadata_patch: Optional[dict] = None
+    pinned: Optional[bool] = None
+    archived: Optional[bool] = None
 
 
 class ExtractRequest(BaseModel):
@@ -2078,7 +2080,13 @@ async def restore_snapshot(name: str, request: Request):
 async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request: Request):
     """Patch selected fields on an existing memory."""
     auth = _get_auth(request)
-    if request_body.text is None and request_body.source is None and not request_body.metadata_patch:
+    if (
+        request_body.text is None
+        and request_body.source is None
+        and not request_body.metadata_patch
+        and request_body.pinned is None
+        and request_body.archived is None
+    ):
         raise HTTPException(status_code=400, detail="At least one field must be provided")
     try:
         if auth.prefixes is not None:
@@ -2091,7 +2099,15 @@ async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request
             text=request_body.text,
             source=request_body.source,
             metadata_patch=request_body.metadata_patch,
+            pinned=request_body.pinned,
+            archived=request_body.archived,
         )
+        if request_body.pinned is not None:
+            action = "memory.pinned" if request_body.pinned else "memory.unpinned"
+            _audit(request, action, resource_id=str(memory_id))
+        if request_body.archived is not None:
+            action = "memory.archived" if request_body.archived else "memory.unarchived"
+            _audit(request, action, resource_id=str(memory_id))
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2185,14 +2201,17 @@ async def list_memories(
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=5000),
     source: Optional[str] = Query(None, max_length=500),
+    pinned: Optional[bool] = Query(None),
 ):
-    """List memories with pagination and optional source filter"""
+    """List memories with pagination and optional source/pinned filter"""
     auth = _get_auth(request)
     if source and not auth.can_read(source):
         raise HTTPException(status_code=403, detail=f"Key does not have read access to source: {source}")
 
     result = memory.list_memories(offset=offset, limit=limit, source_filter=source)
     filtered_memories = auth.filter_results(result.get("memories", []))
+    if pinned is not None:
+        filtered_memories = [m for m in filtered_memories if m.get("pinned") == pinned]
     result["memories"] = filtered_memories
     if auth.prefixes is not None:
         scoped_total = _count_accessible_memories(auth, source_prefix=source)
