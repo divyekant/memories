@@ -323,7 +323,7 @@ class TestScopedSecurityHardening:
         )
         assert resp.status_code == 200
         assert resp.json()["deleted_count"] == 1
-        mock_engine.delete_memories.assert_called_once_with([1])
+        mock_engine.delete_memories.assert_called_once_with([1], skip_snapshot=True)
         mock_engine.delete_by_source.assert_not_called()
 
     def test_delete_by_source_admin_keeps_legacy_behavior(self, app_with_keys):

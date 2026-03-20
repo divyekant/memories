@@ -1979,7 +1979,13 @@ async def delete_by_source(request_body: DeleteBySourceRequest, request: Request
         if not matching_ids:
             return {"success": True, "deleted_count": 0}
 
-        result = memory.delete_memories(matching_ids)
+        if request_body.dry_run:
+            return {"success": True, "count": len(matching_ids), "would_delete": matching_ids}
+
+        if not request_body.skip_snapshot and len(matching_ids) > 10:
+            memory._snapshot_before_delete(f"delete_by_source_scoped:{request_body.source_pattern}")
+
+        result = memory.delete_memories(matching_ids, skip_snapshot=True)
         return {
             "success": True,
             "deleted_count": result.get("deleted_count", 0),
@@ -2051,6 +2057,8 @@ async def delete_by_prefix(request_body: DeleteByPrefixRequest, request: Request
 @app.get("/snapshots")
 async def list_snapshots(request: Request):
     """List all snapshots recorded in the manifest."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     try:
         snapshots = memory.list_snapshots()
         return {"snapshots": snapshots, "count": len(snapshots)}
@@ -2062,6 +2070,8 @@ async def list_snapshots(request: Request):
 @app.post("/snapshots")
 async def create_snapshot(request: Request):
     """Manually create a snapshot."""
+    auth = _get_auth(request)
+    _require_admin(auth)
     try:
         name = memory._snapshot_before_delete("manual")
         _audit(request, "snapshot.created", resource_id=name)
@@ -2078,6 +2088,8 @@ async def restore_snapshot(name: str, request: Request):
     _require_admin(auth)
     try:
         memory.qdrant_store.restore_snapshot(name)
+        # Reload engine state from restored Qdrant data
+        memory.reload_from_qdrant()
         return {"success": True, "restored": name}
     except Exception as e:
         logger.exception("Restore snapshot failed")
@@ -2131,10 +2143,12 @@ async def archive_batch(request_body: ArchiveBatchRequest, request: Request):
     archived = 0
     for mid in request_body.ids:
         try:
+            existing = memory.get_memory(mid)
+            _require_write(auth, existing.get("source", ""))
             memory.update_memory(mid, archived=True)
             _audit(request, "memory.archived", resource_id=str(mid))
             archived += 1
-        except ValueError:
+        except (ValueError, PermissionError):
             continue
     return {"archived_count": archived}
 
@@ -2830,6 +2844,7 @@ async def merge_memories(request_body: MergeRequest, request: Request):
     for mid in request_body.ids:
         existing = memory.get_memory(mid)
         _require_write(auth, existing.get("source", ""))
+    _require_write(auth, request_body.source)  # validate destination source
     try:
         result = memory.merge_memories(
             ids=request_body.ids,

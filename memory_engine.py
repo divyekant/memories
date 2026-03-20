@@ -191,6 +191,31 @@ class MemoryEngine:
         self._bm25_pos_to_id = [m["id"] for m in self.metadata]
         self._next_id = max(self._id_map.keys(), default=-1) + 1
 
+    def reload_from_qdrant(self):
+        """Rebuild in-memory state (metadata, _id_map, BM25) from Qdrant points.
+
+        Used after restoring a snapshot so the engine reflects the restored data.
+        """
+        with self._write_lock:
+            all_points: list = []
+            offset = None
+            while True:
+                points, next_offset = self.qdrant_store.scroll_all(offset=offset, limit=100)
+                all_points.extend(points)
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            self.metadata = []
+            for p in all_points:
+                meta = dict(p["payload"])
+                meta["id"] = p["id"]
+                self.metadata.append(meta)
+
+            self._rebuild_id_map()
+            self._rebuild_bm25()
+            self.save()
+
     def _get_meta_by_id(self, memory_id: int) -> Dict[str, Any]:
         """Fetch metadata dict for a memory by its sparse ID."""
         idx = self._id_map.get(memory_id)
@@ -1252,10 +1277,17 @@ class MemoryEngine:
                     for pos, score in enumerate(bm25_scores)
                     if pos < len(self._bm25_pos_to_id)
                     and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                    and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
                 ]
                 bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
             else:
-                bm25_ranked = sorted(enumerate(bm25_scores), key=lambda x: x[1], reverse=True)[:oversample]
+                bm25_ranked = [
+                    (pos, score)
+                    for pos, score in enumerate(bm25_scores)
+                    if pos < len(self._bm25_pos_to_id)
+                    and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
+                ]
+                bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
 
         rrf_k = 60
         rrf_scores: Dict[int, float] = {}
@@ -1408,10 +1440,17 @@ class MemoryEngine:
                     for pos, score in enumerate(bm25_scores)
                     if pos < len(self._bm25_pos_to_id)
                     and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                    and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
                 ]
                 bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
             else:
-                bm25_ranked = sorted(enumerate(bm25_scores), key=lambda x: x[1], reverse=True)[:oversample]
+                bm25_ranked = [
+                    (pos, score)
+                    for pos, score in enumerate(bm25_scores)
+                    if pos < len(self._bm25_pos_to_id)
+                    and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
+                ]
+                bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
 
         bm25_candidates = []
         for pos, score in bm25_ranked:
