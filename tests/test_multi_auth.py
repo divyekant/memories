@@ -336,7 +336,7 @@ class TestScopedSecurityHardening:
         )
         assert resp.status_code == 200
         assert resp.json()["deleted_count"] == 2
-        mock_engine.delete_by_source.assert_called_once_with("claude-code")
+        mock_engine.delete_by_source.assert_called_once_with("claude-code", skip_snapshot=False, dry_run=False)
         mock_engine.delete_memories.assert_not_called()
 
     def test_memories_count_is_scoped(self, app_with_keys):

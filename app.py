@@ -1196,6 +1196,8 @@ class DeduplicateRequest(BaseModel):
 
 class DeleteBySourceRequest(BaseModel):
     source_pattern: str = Field(..., min_length=1, max_length=500)
+    dry_run: bool = False
+    skip_snapshot: bool = False
 
 
 class DeleteBatchRequest(BaseModel):
@@ -1219,6 +1221,8 @@ class UpsertBatchRequest(BaseModel):
 
 class DeleteByPrefixRequest(BaseModel):
     source_prefix: str = Field(..., min_length=1, max_length=500)
+    dry_run: bool = False
+    skip_snapshot: bool = False
 
 
 class RenameFolderRequest(BaseModel):
@@ -1942,7 +1946,11 @@ async def delete_by_source(request_body: DeleteBySourceRequest, request: Request
     try:
         # Backward-compatible behavior for admin/unrestricted callers.
         if auth.prefixes is None:
-            result = memory.delete_by_source(request_body.source_pattern)
+            result = memory.delete_by_source(
+                request_body.source_pattern,
+                skip_snapshot=request_body.skip_snapshot,
+                dry_run=request_body.dry_run,
+            )
             return {"success": True, **result}
 
         # Scoped keys: resolve matching IDs and enforce source-level checks before deletion.
@@ -2019,10 +2027,50 @@ async def delete_by_prefix(request_body: DeleteByPrefixRequest, request: Request
     _require_write(auth, request_body.source_prefix)
     logger.info("Delete by prefix: prefix=%s", request_body.source_prefix)
     try:
-        result = memory.delete_by_prefix(request_body.source_prefix)
+        result = memory.delete_by_prefix(
+            request_body.source_prefix,
+            skip_snapshot=request_body.skip_snapshot,
+            dry_run=request_body.dry_run,
+        )
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete by prefix failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/snapshots")
+async def list_snapshots(request: Request):
+    """List all snapshots recorded in the manifest."""
+    try:
+        snapshots = memory.list_snapshots()
+        return {"snapshots": snapshots, "count": len(snapshots)}
+    except Exception as e:
+        logger.exception("List snapshots failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/snapshots")
+async def create_snapshot(request: Request):
+    """Manually create a snapshot."""
+    try:
+        name = memory._snapshot_before_delete("manual")
+        _audit(request, "snapshot.created", resource_id=name)
+        return {"snapshot": name}
+    except Exception as e:
+        logger.exception("Create snapshot failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/snapshots/{name}/restore")
+async def restore_snapshot(name: str, request: Request):
+    """Restore a snapshot by name (admin only)."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    try:
+        memory.qdrant_store.restore_snapshot(name)
+        return {"success": True, "restored": name}
+    except Exception as e:
+        logger.exception("Restore snapshot failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

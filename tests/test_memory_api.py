@@ -158,7 +158,7 @@ def test_delete_by_prefix(client):
     )
     assert response.status_code == 200
     assert response.json()["deleted_count"] == 4
-    mock_engine.delete_by_prefix.assert_called_once_with("carto/poet-pads/")
+    mock_engine.delete_by_prefix.assert_called_once_with("carto/poet-pads/", skip_snapshot=False, dry_run=False)
 
 
 def test_patch_memory(client):

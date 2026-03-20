@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import importlib
 import os
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, call
 
 import pytest
+from fastapi.testclient import TestClient
 
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
@@ -150,3 +153,317 @@ class TestQdrantStoreSnapshots:
         src_arg, dst_arg = mock_shutil.copytree.call_args[0]
         assert src_arg == backup_path
         assert dst_arg == local_path
+
+
+class TestEngineSnapshotBeforeDelete:
+    """Tests for MemoryEngine snapshot-before-delete, dry_run, and snapshot API endpoints."""
+
+    @pytest.fixture
+    def client(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {"API_KEY": "", "EXTRACT_PROVIDER": "", "DATA_DIR": tmpdir}
+            with patch.dict(os.environ, env):
+                import app as app_module
+                importlib.reload(app_module)
+
+                mock_engine = MagicMock()
+                mock_engine.metadata = []
+                mock_engine.list_snapshots.return_value = []
+                mock_engine._snapshot_before_delete.return_value = "snap-001"
+                mock_engine.delete_by_source.return_value = {"deleted_count": 2}
+                mock_engine.delete_by_prefix.return_value = {"deleted_count": 3}
+                mock_engine.qdrant_store = MagicMock()
+                mock_engine.qdrant_store.create_snapshot.return_value = "snap-001"
+
+                app_module.memory = mock_engine
+                yield TestClient(app_module.app), mock_engine
+
+    # --- /snapshots API ---
+
+    def test_list_snapshots(self, client):
+        tc, mock = client
+        mock.list_snapshots.return_value = [
+            {"name": "snap-001", "reason": "manual", "timestamp": "2026-03-19T00:00:00Z", "point_count": 10}
+        ]
+        resp = tc.get("/snapshots")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "snapshots" in data
+        assert len(data["snapshots"]) == 1
+        assert data["snapshots"][0]["name"] == "snap-001"
+
+    def test_list_snapshots_empty(self, client):
+        tc, mock = client
+        mock.list_snapshots.return_value = []
+        resp = tc.get("/snapshots")
+        assert resp.status_code == 200
+        assert resp.json()["snapshots"] == []
+
+    def test_create_snapshot_manual(self, client):
+        tc, mock = client
+        mock._snapshot_before_delete.return_value = "snap-manual-001"
+        resp = tc.post("/snapshots")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["snapshot"] == "snap-manual-001"
+        mock._snapshot_before_delete.assert_called_once_with("manual")
+
+    def test_restore_snapshot_admin_required(self, client):
+        tc, mock = client
+        # Non-admin auth context should get 403
+        from auth_context import AuthContext
+        with patch("app._get_auth", return_value=AuthContext(role="reader", prefixes=["test/"], key_type="scoped")):
+            resp = tc.post("/snapshots/snap-001/restore")
+        assert resp.status_code == 403
+
+    def test_restore_snapshot_calls_qdrant(self, client):
+        tc, mock = client
+        # Patch auth to be admin
+        with patch("app._require_admin"):
+            resp = tc.post("/snapshots/snap-001/restore")
+        assert resp.status_code == 200
+        mock.qdrant_store.restore_snapshot.assert_called_once_with("snap-001")
+
+    # --- delete-by-source dry_run / skip_snapshot ---
+
+    def test_delete_by_source_dry_run(self, client):
+        tc, mock = client
+        mock.delete_by_source.return_value = {"count": 2, "would_delete": [1, 2]}
+        resp = tc.post(
+            "/memory/delete-by-source",
+            json={"source_pattern": "test/", "dry_run": True},
+        )
+        assert resp.status_code == 200
+        mock.delete_by_source.assert_called_once()
+        call_kwargs = mock.delete_by_source.call_args
+        assert call_kwargs.kwargs.get("dry_run") is True or (
+            len(call_kwargs.args) > 1 and call_kwargs.args[1]
+        )
+
+    def test_delete_by_source_skip_snapshot(self, client):
+        tc, mock = client
+        resp = tc.post(
+            "/memory/delete-by-source",
+            json={"source_pattern": "test/", "skip_snapshot": True},
+        )
+        assert resp.status_code == 200
+        call_kwargs = mock.delete_by_source.call_args
+        assert call_kwargs.kwargs.get("skip_snapshot") is True or (
+            len(call_kwargs.args) > 2 and call_kwargs.args[2]
+        )
+
+    def test_delete_by_prefix_dry_run(self, client):
+        tc, mock = client
+        mock.delete_by_prefix.return_value = {"count": 3, "would_delete": [1, 2, 3]}
+        resp = tc.post(
+            "/memory/delete-by-prefix",
+            json={"source_prefix": "test/", "dry_run": True},
+        )
+        assert resp.status_code == 200
+        call_kwargs = mock.delete_by_prefix.call_args
+        assert call_kwargs.kwargs.get("dry_run") is True or (
+            len(call_kwargs.args) > 1 and call_kwargs.args[1]
+        )
+
+    # --- Engine _snapshot_before_delete and list_snapshots ---
+
+    def test_engine_snapshot_before_delete_writes_manifest(self, tmp_path):
+        """_snapshot_before_delete writes to manifest.json and returns name."""
+        from memory_engine import MemoryEngine
+
+        with patch("memory_engine.QdrantStore") as MockStore, \
+             patch("memory_engine.QdrantSettings") as MockSettings:
+            mock_store = MagicMock()
+            mock_store.ensure_collection.return_value = None
+            mock_store.count.return_value = 5
+            mock_store.create_snapshot.return_value = "snap-engine-001"
+            MockStore.return_value = mock_store
+
+            mock_settings = MagicMock()
+            mock_settings.read_consistency = "majority"
+            MockSettings.from_env.return_value = mock_settings
+
+            eng = MemoryEngine(data_dir=str(tmp_path / "data"))
+            name = eng._snapshot_before_delete("pre_delete_test")
+
+        assert name == "snap-engine-001"
+        manifest_path = tmp_path / "data" / "snapshots" / "manifest.json"
+        assert manifest_path.exists()
+        import json
+        entries = json.loads(manifest_path.read_text())
+        assert len(entries) == 1
+        assert entries[0]["name"] == "snap-engine-001"
+        assert entries[0]["reason"] == "pre_delete_test"
+        assert "timestamp" in entries[0]
+        assert "point_count" in entries[0]
+
+    def test_engine_list_snapshots_empty(self, tmp_path):
+        from memory_engine import MemoryEngine
+
+        with patch("memory_engine.QdrantStore") as MockStore, \
+             patch("memory_engine.QdrantSettings") as MockSettings:
+            mock_store = MagicMock()
+            mock_store.ensure_collection.return_value = None
+            mock_store.count.return_value = 0
+            MockStore.return_value = mock_store
+            MockSettings.from_env.return_value = MagicMock(read_consistency="majority")
+
+            eng = MemoryEngine(data_dir=str(tmp_path / "data"))
+            result = eng.list_snapshots()
+
+        assert result == []
+
+    def test_engine_list_snapshots_returns_manifest(self, tmp_path):
+        import json
+        from memory_engine import MemoryEngine
+
+        data_dir = tmp_path / "data"
+        snapshots_dir = data_dir / "snapshots"
+        snapshots_dir.mkdir(parents=True, exist_ok=True)
+        manifest = [
+            {"name": "snap-001", "reason": "manual", "timestamp": "2026-03-19T00:00:00Z", "point_count": 10}
+        ]
+        (snapshots_dir / "manifest.json").write_text(json.dumps(manifest))
+
+        with patch("memory_engine.QdrantStore") as MockStore, \
+             patch("memory_engine.QdrantSettings") as MockSettings:
+            mock_store = MagicMock()
+            mock_store.ensure_collection.return_value = None
+            mock_store.count.return_value = 0
+            MockStore.return_value = mock_store
+            MockSettings.from_env.return_value = MagicMock(read_consistency="majority")
+
+            eng = MemoryEngine(data_dir=str(data_dir))
+            result = eng.list_snapshots()
+
+        assert len(result) == 1
+        assert result[0]["name"] == "snap-001"
+
+    def test_engine_delete_by_source_dry_run(self, tmp_path):
+        """delete_by_source with dry_run=True returns count without deleting."""
+        from memory_engine import MemoryEngine
+
+        with patch("memory_engine.QdrantStore") as MockStore, \
+             patch("memory_engine.QdrantSettings") as MockSettings:
+            mock_store = MagicMock()
+            mock_store.ensure_collection.return_value = None
+            mock_store.count.return_value = 0
+            mock_store.search.return_value = []
+            mock_store.upsert_points.return_value = None
+            mock_store.delete_points.return_value = None
+            MockStore.return_value = mock_store
+            MockSettings.from_env.return_value = MagicMock(read_consistency="majority")
+
+            eng = MemoryEngine(data_dir=str(tmp_path / "data"))
+            eng.metadata = [
+                {"id": 1, "text": "hello", "source": "test/proj"},
+                {"id": 2, "text": "world", "source": "test/proj"},
+                {"id": 3, "text": "other", "source": "other/proj"},
+            ]
+
+            result = eng.delete_by_source("test/proj", dry_run=True)
+
+        assert result["count"] == 2
+        assert set(result["would_delete"]) == {1, 2}
+        # No deletion occurred
+        mock_store.delete_points.assert_not_called()
+
+    def test_engine_delete_by_source_auto_snapshots(self, tmp_path):
+        """delete_by_source calls _snapshot_before_delete by default."""
+        from memory_engine import MemoryEngine
+
+        with patch("memory_engine.QdrantStore") as MockStore, \
+             patch("memory_engine.QdrantSettings") as MockSettings:
+            mock_store = MagicMock()
+            mock_store.ensure_collection.return_value = None
+            mock_store.count.return_value = 2
+            mock_store.create_snapshot.return_value = "auto-snap-001"
+            mock_store.search.return_value = []
+            mock_store.upsert_points.return_value = None
+            mock_store.delete_points.return_value = None
+            MockStore.return_value = mock_store
+            MockSettings.from_env.return_value = MagicMock(read_consistency="majority")
+
+            eng = MemoryEngine(data_dir=str(tmp_path / "data"))
+            eng.metadata = [
+                {"id": 1, "text": "hello", "source": "test/proj"},
+            ]
+
+            eng.delete_by_source("test/proj")
+
+        mock_store.create_snapshot.assert_called_once()
+
+    def test_engine_delete_by_source_skip_snapshot(self, tmp_path):
+        """delete_by_source with skip_snapshot=True skips the auto-snapshot."""
+        from memory_engine import MemoryEngine
+
+        with patch("memory_engine.QdrantStore") as MockStore, \
+             patch("memory_engine.QdrantSettings") as MockSettings:
+            mock_store = MagicMock()
+            mock_store.ensure_collection.return_value = None
+            mock_store.count.return_value = 2
+            mock_store.search.return_value = []
+            mock_store.upsert_points.return_value = None
+            mock_store.delete_points.return_value = None
+            MockStore.return_value = mock_store
+            MockSettings.from_env.return_value = MagicMock(read_consistency="majority")
+
+            eng = MemoryEngine(data_dir=str(tmp_path / "data"))
+            eng.metadata = [
+                {"id": 1, "text": "hello", "source": "test/proj"},
+            ]
+
+            eng.delete_by_source("test/proj", skip_snapshot=True)
+
+        mock_store.create_snapshot.assert_not_called()
+
+    def test_engine_delete_memories_snapshots_above_threshold(self, tmp_path):
+        """delete_memories with >10 IDs triggers auto-snapshot."""
+        from memory_engine import MemoryEngine
+
+        with patch("memory_engine.QdrantStore") as MockStore, \
+             patch("memory_engine.QdrantSettings") as MockSettings:
+            mock_store = MagicMock()
+            mock_store.ensure_collection.return_value = None
+            mock_store.count.return_value = 15
+            mock_store.create_snapshot.return_value = "auto-snap-002"
+            mock_store.search.return_value = []
+            mock_store.upsert_points.return_value = None
+            mock_store.delete_points.return_value = None
+            MockStore.return_value = mock_store
+            MockSettings.from_env.return_value = MagicMock(read_consistency="majority")
+
+            eng = MemoryEngine(data_dir=str(tmp_path / "data"))
+            ids = list(range(11))
+            eng.metadata = [{"id": i, "text": f"mem {i}", "source": "src"} for i in ids]
+            # Sync _id_map so _id_exists returns True
+            eng._id_map = {i: i for i in ids}
+
+            eng.delete_memories(ids)
+
+        mock_store.create_snapshot.assert_called_once()
+
+    def test_engine_delete_memories_no_snapshot_below_threshold(self, tmp_path):
+        """delete_memories with <=10 IDs does NOT trigger auto-snapshot."""
+        from memory_engine import MemoryEngine
+
+        with patch("memory_engine.QdrantStore") as MockStore, \
+             patch("memory_engine.QdrantSettings") as MockSettings:
+            mock_store = MagicMock()
+            mock_store.ensure_collection.return_value = None
+            mock_store.count.return_value = 5
+            mock_store.search.return_value = []
+            mock_store.upsert_points.return_value = None
+            mock_store.delete_points.return_value = None
+            MockStore.return_value = mock_store
+            MockSettings.from_env.return_value = MagicMock(read_consistency="majority")
+
+            eng = MemoryEngine(data_dir=str(tmp_path / "data"))
+            ids = list(range(5))
+            eng.metadata = [{"id": i, "text": f"mem {i}", "source": "src"} for i in ids]
+            # Sync _id_map so _id_exists returns True
+            eng._id_map = {i: i for i in ids}
+
+            eng.delete_memories(ids)
+
+        mock_store.create_snapshot.assert_not_called()

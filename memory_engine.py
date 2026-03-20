@@ -580,7 +580,36 @@ class MemoryEngine:
         event_bus.emit("memory.deleted", {"id": memory_id, "source": deleted.get("source", "")})
         return {"deleted_id": memory_id, "deleted_text": deleted["text"][:100]}
 
-    def delete_memories(self, memory_ids: List[int]) -> Dict[str, Any]:
+    def _snapshot_before_delete(self, reason: str) -> str:
+        """Create a Qdrant snapshot and record it in the manifest."""
+        name = self.qdrant_store.create_snapshot()
+        snapshots_dir = self.data_dir / "snapshots"
+        snapshots_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = snapshots_dir / "manifest.json"
+        if manifest_path.exists():
+            with open(manifest_path) as f:
+                entries = json.load(f)
+        else:
+            entries = []
+        entries.append({
+            "name": name,
+            "reason": reason,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "point_count": self.qdrant_store.count(),
+        })
+        with open(manifest_path, "w") as f:
+            json.dump(entries, f)
+        return name
+
+    def list_snapshots(self) -> List[Dict[str, Any]]:
+        """Return entries from the snapshot manifest."""
+        manifest_path = self.data_dir / "snapshots" / "manifest.json"
+        if not manifest_path.exists():
+            return []
+        with open(manifest_path) as f:
+            return json.load(f)
+
+    def delete_memories(self, memory_ids: List[int], skip_snapshot: bool = False) -> Dict[str, Any]:
         """Delete multiple memories by IDs in one pass."""
         unique_ids = sorted(set(memory_ids))
         if not unique_ids:
@@ -591,6 +620,9 @@ class MemoryEngine:
         missing = [mid for mid in unique_ids if mid not in existing_set]
         if not existing:
             return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing}
+
+        if len(unique_ids) > 10 and not skip_snapshot:
+            self._snapshot_before_delete("pre_delete_batch")
 
         keys = [self._entity_key(self._get_meta_by_id(mid).get("source", "")) for mid in existing]
         with self._entity_locks.acquire_many(keys):
@@ -735,13 +767,21 @@ class MemoryEngine:
 
         return results
 
-    def delete_by_source(self, source_pattern: str) -> Dict[str, Any]:
+    def delete_by_source(self, source_pattern: str, skip_snapshot: bool = False, dry_run: bool = False) -> Dict[str, Any]:
         """Delete all memories matching a source pattern."""
         with self._entity_locks.acquire_many(["__all__"]):
             with self._write_lock:
                 matching = [m for m in self.metadata if source_pattern in m.get("source", "")]
                 if not matching:
+                    if dry_run:
+                        return {"count": 0, "would_delete": []}
                     return {"deleted_count": 0}
+
+                if dry_run:
+                    return {"count": len(matching), "would_delete": [m["id"] for m in matching]}
+
+                if not skip_snapshot:
+                    self._snapshot_before_delete("pre_delete_source")
 
                 self._backup(prefix="pre_delete_source")
 
@@ -754,13 +794,21 @@ class MemoryEngine:
 
         return {"deleted_count": len(matching)}
 
-    def delete_by_prefix(self, source_prefix: str) -> Dict[str, Any]:
+    def delete_by_prefix(self, source_prefix: str, skip_snapshot: bool = False, dry_run: bool = False) -> Dict[str, Any]:
         """Delete all memories whose source starts with a prefix."""
         with self._entity_locks.acquire_many(["__all__"]):
             with self._write_lock:
                 matching = [m for m in self.metadata if m.get("source", "").startswith(source_prefix)]
                 if not matching:
+                    if dry_run:
+                        return {"count": 0, "would_delete": []}
                     return {"deleted_count": 0}
+
+                if dry_run:
+                    return {"count": len(matching), "would_delete": [m["id"] for m in matching]}
+
+                if not skip_snapshot:
+                    self._snapshot_before_delete("pre_delete_prefix")
 
                 self._backup(prefix="pre_delete_prefix")
                 ids_to_remove = {m["id"] for m in matching}
