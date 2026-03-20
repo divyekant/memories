@@ -1052,42 +1052,62 @@ class MemoryEngine:
         self,
         source_prefix: Optional[str] = None,
         allowed_prefixes: Optional[List[str]] = None,
+        include_archived: bool = False,
     ) -> Optional[qdrant_models.Filter]:
-        """Build a Qdrant filter from source prefix and/or auth prefixes.
+        """Build a Qdrant filter from source prefix, auth prefixes, and archive state.
 
-        Returns None when no filtering is needed (admin / no prefix), letting
-        the existing call path behave exactly as before.
+        Returns None when no filtering is needed (admin / no prefix / include_archived),
+        letting the existing call path behave exactly as before.
         """
-        if source_prefix is None and allowed_prefixes is None:
-            return None
+        filter_obj: Optional[qdrant_models.Filter] = None
 
-        all_sources = self.distinct_sources()
+        if source_prefix is not None or allowed_prefixes is not None:
+            all_sources = self.distinct_sources()
 
-        # Narrow by source_prefix first
-        if source_prefix:
-            candidates = [s for s in all_sources if s.startswith(source_prefix)]
-        else:
-            candidates = all_sources
+            # Narrow by source_prefix first
+            if source_prefix:
+                candidates = [s for s in all_sources if s.startswith(source_prefix)]
+            else:
+                candidates = all_sources
 
-        # Further narrow by auth allowed_prefixes
-        if allowed_prefixes is not None:
-            from auth_context import source_matches_prefixes
-            candidates = [s for s in candidates if source_matches_prefixes(s, allowed_prefixes)]
+            # Further narrow by auth allowed_prefixes
+            if allowed_prefixes is not None:
+                from auth_context import source_matches_prefixes
+                candidates = [s for s in candidates if source_matches_prefixes(s, allowed_prefixes)]
 
-        if not candidates:
-            return qdrant_models.Filter(
-                must=[qdrant_models.FieldCondition(
-                    key="source",
-                    match=qdrant_models.MatchValue(value="__no_match__"),
-                )]
+            if not candidates:
+                filter_obj = qdrant_models.Filter(
+                    must=[qdrant_models.FieldCondition(
+                        key="source",
+                        match=qdrant_models.MatchValue(value="__no_match__"),
+                    )]
+                )
+            else:
+                filter_obj = qdrant_models.Filter(
+                    must=[qdrant_models.FieldCondition(
+                        key="source",
+                        match=qdrant_models.MatchAny(any=candidates),
+                    )]
+                )
+
+        # Exclude archived memories unless explicitly requested
+        must_not = []
+        if not include_archived:
+            must_not.append(
+                qdrant_models.FieldCondition(
+                    key="archived",
+                    match=qdrant_models.MatchValue(value=True),
+                )
             )
+        if must_not:
+            if filter_obj is None:
+                filter_obj = qdrant_models.Filter(must_not=must_not)
+            else:
+                existing_must_not = list(filter_obj.must_not or [])
+                existing_must_not.extend(must_not)
+                filter_obj.must_not = existing_must_not
 
-        return qdrant_models.Filter(
-            must=[qdrant_models.FieldCondition(
-                key="source",
-                match=qdrant_models.MatchAny(any=candidates),
-            )]
-        )
+        return filter_obj
 
     def search(
         self,
@@ -1095,6 +1115,7 @@ class MemoryEngine:
         k: int = 5,
         threshold: Optional[float] = None,
         source_prefix: Optional[str] = None,
+        include_archived: bool = False,
     ) -> List[Dict[str, Any]]:
         """Vector-only search for similar memories."""
         if not self.metadata:
@@ -1109,7 +1130,7 @@ class MemoryEngine:
         )[0].astype("float32").tolist()
 
         # Pre-filter at Qdrant level when source_prefix is specified
-        query_filter = self._build_source_filter(source_prefix=source_prefix)
+        query_filter = self._build_source_filter(source_prefix=source_prefix, include_archived=include_archived)
 
         hits = self.qdrant_store.search(
             query_vector=query_vec,
@@ -1175,6 +1196,7 @@ class MemoryEngine:
         source_prefix: Optional[str] = None,
         recency_weight: float = 0.0,
         recency_half_life_days: float = 30.0,
+        include_archived: bool = False,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -1194,6 +1216,7 @@ class MemoryEngine:
             k=oversample,
             threshold=threshold,
             source_prefix=source_prefix,
+            include_archived=include_archived,
         )
 
         bm25_ranked = []
@@ -1268,13 +1291,14 @@ class MemoryEngine:
         k: int = 5,
         threshold: Optional[float] = None,
         source_prefix: Optional[str] = None,
+        include_archived: bool = False,
     ) -> List[Dict[str, Any]]:
         """Vector search without reinforcement side effects (for explain/debug)."""
         if not self.metadata:
             return []
         k = min(k, len(self.metadata), 100)
         query_vec = self._encode([query], normalize_embeddings=True, show_progress_bar=False)[0].astype("float32").tolist()
-        query_filter = self._build_source_filter(source_prefix=source_prefix)
+        query_filter = self._build_source_filter(source_prefix=source_prefix, include_archived=include_archived)
         hits = self.qdrant_store.search(
             query_vector=query_vec, limit=k, score_threshold=threshold,
             consistency=self.qdrant_settings.read_consistency, query_filter=query_filter,
@@ -1304,6 +1328,7 @@ class MemoryEngine:
         source_prefix: Optional[str] = None,
         recency_weight: float = 0.0,
         recency_half_life_days: float = 30.0,
+        include_archived: bool = False,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -1337,6 +1362,7 @@ class MemoryEngine:
             k=oversample,
             threshold=threshold,
             source_prefix=source_prefix,
+            include_archived=include_archived,
         )
 
         vector_candidates = [

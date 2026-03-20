@@ -1158,6 +1158,7 @@ class SearchRequest(BaseModel):
         description="Half-life in days for recency decay (default 30).",
     )
     source: str = Field("", max_length=500, description="Caller source for usage tracking")
+    include_archived: bool = Field(default=False, description="Include archived memories in search results")
 
 
 class SearchBatchRequest(BaseModel):
@@ -1236,6 +1237,10 @@ class PatchMemoryRequest(BaseModel):
     metadata_patch: Optional[dict] = None
     pinned: Optional[bool] = None
     archived: Optional[bool] = None
+
+
+class ArchiveBatchRequest(BaseModel):
+    ids: List[int] = Field(..., min_length=1, max_length=1000)
 
 
 class ExtractRequest(BaseModel):
@@ -1702,6 +1707,7 @@ async def search(request_body: SearchRequest, request: Request):
                 source_prefix=request_body.source_prefix,
                 recency_weight=request_body.recency_weight,
                 recency_half_life_days=request_body.recency_half_life_days,
+                include_archived=request_body.include_archived,
             )
         else:
             results = memory.search(
@@ -1709,6 +1715,7 @@ async def search(request_body: SearchRequest, request: Request):
                 k=request_body.k,
                 threshold=request_body.threshold,
                 source_prefix=request_body.source_prefix,
+                include_archived=request_body.include_archived,
             )
         results = auth.filter_results(results)
         result_count = len(results)
@@ -1743,6 +1750,7 @@ async def search_explain(request_body: SearchRequest, request: Request):
             source_prefix=request_body.source_prefix,
             recency_weight=request_body.recency_weight,
             recency_half_life_days=request_body.recency_half_life_days,
+            include_archived=request_body.include_archived,
         )
         # Apply auth filtering to results and track how many were removed
         raw_results = explain_result["results"]
@@ -2114,6 +2122,21 @@ async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request
     except Exception as e:
         logger.exception("Patch memory failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/memory/archive-batch")
+async def archive_batch(request_body: ArchiveBatchRequest, request: Request):
+    """Archive multiple memories in a single call."""
+    auth = _get_auth(request)
+    archived = 0
+    for mid in request_body.ids:
+        try:
+            memory.update_memory(mid, archived=True)
+            _audit(request, "memory.archived", resource_id=str(mid))
+            archived += 1
+        except ValueError:
+            continue
+    return {"archived_count": archived}
 
 
 @app.post("/memory/upsert")

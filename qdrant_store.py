@@ -145,6 +145,15 @@ class QdrantStore:
         except Exception:
             pass  # Already exists or collection missing — safe to ignore
 
+        try:
+            self.client.create_payload_index(
+                collection_name=self.collection,
+                field_name="archived",
+                field_schema=models.PayloadSchemaType.BOOL,
+            )
+        except Exception:
+            pass
+
     def count_filtered(
         self,
         count_filter: Optional[models.Filter] = None,

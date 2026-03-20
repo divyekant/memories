@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from memory_engine import MemoryEngine
+
 
 class TestPinProtect:
     """Pin/archive fields on PATCH /memory/{id} and bulk-delete exclusion."""
@@ -223,3 +225,142 @@ class TestPinnedBulkDeleteExclusion:
         assert result["count"] == 1
         assert 1 not in result["would_delete"]
         assert 2 in result["would_delete"]
+
+
+class TestSoftArchive:
+    """Soft archive — search filter excludes archived, archive-batch endpoint."""
+
+    @pytest.fixture
+    def engine(self, tmp_path):
+        """Real MemoryEngine with local Qdrant for testing filter behavior."""
+        return MemoryEngine(data_dir=str(tmp_path / "data"))
+
+    @pytest.fixture
+    def client(self):
+        """FastAPI test client with mock engine for endpoint tests."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {"API_KEY": "", "EXTRACT_PROVIDER": "", "DATA_DIR": tmpdir}
+            with patch.dict(os.environ, env):
+                import app as app_module
+                importlib.reload(app_module)
+
+                mock_engine = MagicMock()
+                mock_engine.metadata = []
+                mock_engine.update_memory.return_value = {"id": 1, "updated_fields": ["archived"]}
+                mock_engine.get_memory.return_value = {"id": 1, "text": "test", "source": "test/src"}
+
+                app_module.memory = mock_engine
+                yield TestClient(app_module.app), mock_engine
+
+    def test_archive_memory(self, engine):
+        """PATCH archived=True succeeds via engine update_memory."""
+        ids = engine.add_memories(
+            texts=["test memory for archiving"],
+            sources=["test/src"],
+        )
+        result = engine.update_memory(ids[0], archived=True)
+        assert "archived" in result["updated_fields"]
+        meta = engine.get_memory(ids[0])
+        assert meta["archived"] is True
+
+    def test_archived_excluded_from_search(self, engine):
+        """Archived memories are excluded from search by default."""
+        ids = engine.add_memories(
+            texts=["unique quantum computing fact alpha beta gamma"],
+            sources=["test/src"],
+        )
+        # Verify it appears in search first
+        results = engine.search("quantum computing alpha beta gamma", k=5)
+        found_ids = [r["id"] for r in results]
+        assert ids[0] in found_ids
+
+        # Archive it
+        engine.update_memory(ids[0], archived=True)
+
+        # Now it should be excluded from search
+        results = engine.search("quantum computing alpha beta gamma", k=5)
+        found_ids = [r["id"] for r in results]
+        assert ids[0] not in found_ids
+
+    def test_archived_included_with_flag(self, engine):
+        """Search with include_archived=True finds archived memories."""
+        ids = engine.add_memories(
+            texts=["unique quantum computing fact alpha beta gamma"],
+            sources=["test/src"],
+        )
+        engine.update_memory(ids[0], archived=True)
+
+        # Without flag — excluded
+        results = engine.search("quantum computing alpha beta gamma", k=5)
+        found_ids = [r["id"] for r in results]
+        assert ids[0] not in found_ids
+
+        # With flag — included
+        results = engine.search("quantum computing alpha beta gamma", k=5, include_archived=True)
+        found_ids = [r["id"] for r in results]
+        assert ids[0] in found_ids
+
+    def test_unarchive_restores_searchability(self, engine):
+        """Unarchiving a memory makes it searchable again."""
+        ids = engine.add_memories(
+            texts=["unique quantum computing fact alpha beta gamma"],
+            sources=["test/src"],
+        )
+        # Archive
+        engine.update_memory(ids[0], archived=True)
+        results = engine.search("quantum computing alpha beta gamma", k=5)
+        assert ids[0] not in [r["id"] for r in results]
+
+        # Unarchive
+        engine.update_memory(ids[0], archived=False)
+        results = engine.search("quantum computing alpha beta gamma", k=5)
+        assert ids[0] in [r["id"] for r in results]
+
+    def test_archive_batch_endpoint(self, client):
+        """POST /memory/archive-batch archives multiple memories."""
+        tc, mock = client
+        mock.update_memory.return_value = {"id": 1, "updated_fields": ["archived"]}
+
+        resp = tc.post("/memory/archive-batch", json={"ids": [1, 2, 3]})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["archived_count"] == 3
+        assert mock.update_memory.call_count == 3
+
+    def test_archive_batch_skips_missing(self, client):
+        """POST /memory/archive-batch skips IDs that raise ValueError."""
+        tc, mock = client
+        mock.update_memory.side_effect = [
+            {"id": 1, "updated_fields": ["archived"]},
+            ValueError("not found"),
+            {"id": 3, "updated_fields": ["archived"]},
+        ]
+
+        resp = tc.post("/memory/archive-batch", json={"ids": [1, 2, 3]})
+
+        assert resp.status_code == 200
+        assert resp.json()["archived_count"] == 2
+
+    def test_search_request_include_archived(self, client):
+        """SearchRequest passes include_archived to engine search."""
+        tc, mock = client
+        mock.search.return_value = []
+        mock.hybrid_search.return_value = []
+
+        resp = tc.post("/search", json={"query": "test", "include_archived": True})
+
+        assert resp.status_code == 200
+        call_kwargs = mock.search.call_args[1]
+        assert call_kwargs["include_archived"] is True
+
+    def test_search_request_defaults_archived_false(self, client):
+        """SearchRequest defaults include_archived to False."""
+        tc, mock = client
+        mock.search.return_value = []
+
+        resp = tc.post("/search", json={"query": "test"})
+
+        assert resp.status_code == 200
+        call_kwargs = mock.search.call_args[1]
+        assert call_kwargs["include_archived"] is False

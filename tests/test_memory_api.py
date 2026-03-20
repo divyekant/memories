@@ -53,6 +53,7 @@ def test_search_accepts_source_prefix_and_passes_to_engine(client):
         k=3,
         threshold=None,
         source_prefix="carto/poet-pads/",
+        include_archived=False,
     )
 
 
