@@ -358,6 +358,11 @@ def execute_actions(
 
             elif act == "UPDATE":
                 old_id = action.get("old_id")
+                if old_id is not None:
+                    existing = engine.get_memory(old_id)
+                    if existing and (existing.get("pinned") is True or existing.get("archived") is True):
+                        result_actions.append({"action": "skipped", "reason": "protected", "old_id": old_id})
+                        continue
                 new_text = action.get("new_text", fact_text)
                 if old_id is not None and allowed_prefixes is not None:
                     existing = engine.get_memory(old_id)
@@ -381,6 +386,11 @@ def execute_actions(
 
             elif act == "DELETE":
                 old_id = action.get("old_id")
+                if old_id is not None:
+                    existing = engine.get_memory(old_id)
+                    if existing and (existing.get("pinned") is True or existing.get("archived") is True):
+                        result_actions.append({"action": "skipped", "reason": "protected", "old_id": old_id})
+                        continue
                 if old_id is not None:
                     if allowed_prefixes is not None:
                         existing = engine.get_memory(old_id)

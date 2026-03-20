@@ -364,3 +364,48 @@ class TestSoftArchive:
         assert resp.status_code == 200
         call_kwargs = mock.search.call_args[1]
         assert call_kwargs["include_archived"] is False
+
+
+class TestPinExtractionProtection:
+
+    def test_pinned_excluded_from_audn_delete(self):
+        from unittest.mock import MagicMock
+        from llm_extract import execute_actions
+        engine = MagicMock()
+        engine.get_memory.return_value = {"id": 42, "text": "pinned", "source": "test/", "pinned": True}
+        engine.add_memories.return_value = []
+        actions = [{"action": "DELETE", "fact_index": 0, "old_id": 42}]
+        facts = [{"text": "delete this", "category": "detail"}]
+        result = execute_actions(engine, actions, facts, source="test/")
+        engine.delete_memory.assert_not_called()
+
+    def test_pinned_excluded_from_audn_update(self):
+        from unittest.mock import MagicMock
+        from llm_extract import execute_actions
+        engine = MagicMock()
+        engine.get_memory.return_value = {"id": 42, "text": "pinned", "source": "test/", "pinned": True}
+        engine.add_memories.return_value = [99]
+        actions = [{"action": "UPDATE", "fact_index": 0, "old_id": 42, "new_text": "updated"}]
+        facts = [{"text": "updated", "category": "decision"}]
+        result = execute_actions(engine, actions, facts, source="test/")
+        engine.delete_memory.assert_not_called()
+
+    def test_unpinned_allows_audn_delete(self):
+        from unittest.mock import MagicMock
+        from llm_extract import execute_actions
+        engine = MagicMock()
+        engine.get_memory.return_value = {"id": 42, "text": "not pinned", "source": "test/"}
+        actions = [{"action": "DELETE", "fact_index": 0, "old_id": 42}]
+        facts = [{"text": "delete this", "category": "detail"}]
+        execute_actions(engine, actions, facts, source="test/")
+        engine.delete_memory.assert_called_once_with(42)
+
+    def test_archived_excluded_from_audn_delete(self):
+        from unittest.mock import MagicMock
+        from llm_extract import execute_actions
+        engine = MagicMock()
+        engine.get_memory.return_value = {"id": 42, "text": "archived", "source": "test/", "archived": True}
+        actions = [{"action": "DELETE", "fact_index": 0, "old_id": 42}]
+        facts = [{"text": "delete this", "category": "detail"}]
+        execute_actions(engine, actions, facts, source="test/")
+        engine.delete_memory.assert_not_called()
