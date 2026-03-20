@@ -669,6 +669,29 @@ class MemoryEngine:
         logger.info("Superseded memory %d → %d", old_id, new_id)
         return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text}
 
+    def merge_memories(self, ids: List[int], merged_text: str, source: str) -> Dict[str, Any]:
+        """Merge multiple memories into one, archiving originals and linking via supersedes."""
+        if len(ids) < 2:
+            raise ValueError("merge_memories requires at least 2 IDs")
+        for mid in ids:
+            if not self._id_exists(mid):
+                raise ValueError(f"Memory {mid} not found")
+
+        added_ids = self.add_memories(texts=[merged_text], sources=[source], deduplicate=False)
+        new_id = added_ids[0]
+
+        for mid in ids:
+            self.add_link(new_id, mid, "supersedes")
+
+        for mid in ids:
+            meta = self._get_meta_by_id(mid)
+            meta["archived"] = True
+            self.qdrant_store.set_payload(mid, {"archived": True})
+
+        self.save()
+        logger.info("Merged memories %s → %d", ids, new_id)
+        return {"id": new_id, "archived": ids}
+
     # ------------------------------------------------------------------
     # Memory Links (lightweight graph edges)
     # ------------------------------------------------------------------

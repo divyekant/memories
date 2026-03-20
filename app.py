@@ -2817,6 +2817,31 @@ async def memory_supersede(request_body: SupersedeRequest, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+class MergeRequest(BaseModel):
+    ids: List[int] = Field(..., min_length=2)
+    merged_text: str = Field(..., min_length=1, max_length=50000)
+    source: str = Field(..., min_length=1, max_length=500)
+
+
+@app.post("/memory/merge")
+async def merge_memories(request_body: MergeRequest, request: Request):
+    """Merge multiple memories into one combined memory, archiving originals."""
+    auth = _get_auth(request)
+    for mid in request_body.ids:
+        existing = memory.get_memory(mid)
+        _require_write(auth, existing.get("source", ""))
+    try:
+        result = memory.merge_memories(
+            ids=request_body.ids,
+            merged_text=request_body.merged_text,
+            source=request_body.source,
+        )
+        _audit(request, "memory.merged", resource_id=str(result["id"]), source=request_body.source)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 class AddLinkRequest(BaseModel):
     to_id: int = Field(..., description="Target memory ID")
     type: str = Field(..., description="Link type: supersedes, related_to, blocked_by, caused_by, reinforces")
