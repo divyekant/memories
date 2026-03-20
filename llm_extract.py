@@ -342,6 +342,71 @@ def run_audn(
         return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}, debug_similar
 
 
+SINGLE_CALL_PROMPT = """You are a memory extraction and classification system.
+
+Given conversation text, extract important facts AND decide what action to take for each.
+
+For each fact, output a JSON object with:
+- "action": "ADD" | "UPDATE" | "DELETE" | "NOOP" | "CONFLICT"
+- "fact_index": sequential index starting at 0
+- "category": "decision" | "learning" | "detail"
+- "text": the extracted fact text
+
+Categories:
+- DECISION: architectural choices, technology selections, trade-off resolutions
+- LEARNING: non-obvious findings, gotchas, performance insights
+- DETAIL: specific configs, paths, versions, API signatures
+
+Rules:
+- Skip generic programming knowledge
+- Skip task status / commit hashes / counts
+- Skip ephemeral session context
+- ADD for new durable facts
+- NOOP if the fact is already commonly known
+
+{rules_section}
+
+Output ONLY a JSON array of action objects. No markdown, no explanation."""
+
+
+def extract_and_decide_single_call(
+    provider,
+    messages: str,
+    source: str,
+    engine,
+    rules: dict | None = None,
+    max_facts: int = 30,
+) -> tuple[list[dict], dict, None]:
+    """Extract facts AND decide AUDN actions in a single LLM call.
+    ~50% cost reduction, less accurate (no per-fact similar-memory lookup).
+    Returns: (actions, token_usage, None) — same shape as run_audn().
+    """
+    rules_section = _build_rules_section(rules)
+    prompt = SINGLE_CALL_PROMPT.format(rules_section=rules_section)
+
+    result = provider.complete(
+        system=prompt,
+        user=f"Extract and classify facts from this conversation:\n\n{messages[:max_facts * 500]}",
+    )
+    usage = {"input_tokens": result.input_tokens, "output_tokens": result.output_tokens}
+
+    try:
+        actions = json.loads(result.text.strip())
+        if not isinstance(actions, list):
+            actions = []
+    except (json.JSONDecodeError, ValueError):
+        actions = []
+
+    for i, action in enumerate(actions[:max_facts]):
+        action.setdefault("fact_index", i)
+        action.setdefault("action", "ADD")
+        action.setdefault("category", "detail")
+        if "text" not in action:
+            action["text"] = ""
+
+    return actions[:max_facts], usage, None
+
+
 def execute_actions(
     engine,
     actions: list[dict],
@@ -494,6 +559,22 @@ def run_extraction(
         max_facts = 30
         max_chars = 500
         rules = {}
+
+    # Single-call mode: combine extraction + AUDN in one LLM call
+    if profile and profile.get("single_call"):
+        actions, usage, _ = extract_and_decide_single_call(
+            provider=provider,
+            messages=messages,
+            source=source,
+            engine=engine,
+            rules=rules,
+            max_facts=max_facts,
+        )
+        facts = [{"text": a.get("text", ""), "category": a.get("category", "detail")}
+                 for a in actions]
+        result = execute_actions(engine, actions, facts, source, allowed_prefixes)
+        result["tokens"] = {"single_call": usage}
+        return result
 
     # Temporarily override module-level constants for extract_facts
     import llm_extract as _mod
