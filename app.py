@@ -2915,6 +2915,43 @@ async def delete_extraction_profile(prefix: str, request: Request):
     return {"deleted": True, "source_prefix": prefix}
 
 
+# -- Missed memory capture ----------------------------------------------------
+
+_missed_counts: Dict[str, int] = {}
+
+
+class MissedMemoryRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=50000)
+    source: str = Field(..., min_length=1, max_length=500)
+    context: Optional[str] = Field(None, max_length=10000)
+
+
+@app.post("/memory/missed")
+async def missed_memory(request_body: MissedMemoryRequest, request: Request):
+    """Flag a memory that should have been captured by extraction."""
+    auth = _get_auth(request)
+    _require_write(auth, request_body.source)
+
+    metadata: Dict[str, Any] = {"origin": "missed_capture"}
+    if request_body.context:
+        metadata["capture_context"] = request_body.context
+
+    ids = memory.add_memories(
+        texts=[request_body.text],
+        sources=[request_body.source],
+        metadata_list=[metadata],
+    )
+
+    _missed_counts[request_body.source] = _missed_counts.get(request_body.source, 0) + 1
+    _audit(request, "memory.missed", resource_id=str(ids[0]), source=request_body.source)
+
+    return {
+        "id": ids[0],
+        "source": request_body.source,
+        "missed_count": _missed_counts[request_body.source],
+    }
+
+
 # -- Main ---------------------------------------------------------------------
 
 if __name__ == "__main__":

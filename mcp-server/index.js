@@ -378,6 +378,30 @@ server.tool(
   }
 );
 
+server.tool(
+  "memory_missed",
+  "Flag a memory that should have been captured by extraction but wasn't.",
+  {
+    text: z.string().min(1).describe("The fact that should have been remembered"),
+    source: z.string().min(1).describe("Source identifier"),
+    context: z.string().optional().describe("Optional context"),
+  },
+  async ({ text, source, context }) => {
+    const body = { text, source };
+    if (context) body.context = context;
+    const data = await memoriesRequest("/memory/missed", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return {
+      content: [{
+        type: "text",
+        text: `Memory stored (id: ${data.id}) from ${data.source}. Missed count: ${data.missed_count}`,
+      }],
+    };
+  }
+);
+
 // -- Start -------------------------------------------------------------------
 
 const transport = new StdioServerTransport();
