@@ -1,0 +1,257 @@
+<h2>B3: Memories Page — Write-Path Features</h2>
+<p class="subtitle">All new write affordances overlaid on the existing Memories page. Kalos dark brand.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Memories Page — Full Write-Path</div>
+  <div class="mockup-body" style="background:#0a0a0a; color:#e5e5e5; font-family:Inter,system-ui,sans-serif; padding:0; min-height:600px; display:flex;">
+
+    <!-- Sidebar -->
+    <div style="width:200px; background:#111111; border-right:1px solid rgba(212,175,55,0.15); padding:16px 0; flex-shrink:0;">
+      <div style="padding:0 16px 20px; font-size:15px; font-weight:600; color:#d4af37;">⬡ Memories</div>
+      <div style="display:flex; flex-direction:column; gap:2px;">
+        <div style="padding:8px 16px; font-size:13px; color:#a3a3a3;">Dashboard</div>
+        <div style="padding:8px 16px; font-size:13px; color:#e5e5e5; background:rgba(212,175,55,0.08); border-left:2px solid #d4af37;">Memories</div>
+        <div style="padding:8px 16px; font-size:13px; color:#a3a3a3;">Extractions</div>
+        <div style="padding:8px 16px; font-size:13px; color:#a3a3a3;">API Keys</div>
+        <div style="padding:8px 16px; font-size:13px; color:#a3a3a3;">♥ Health</div>
+        <div style="padding:8px 16px; font-size:13px; color:#a3a3a3;">Settings</div>
+      </div>
+    </div>
+
+    <!-- Main Content -->
+    <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+
+      <!-- Topbar with NEW buttons -->
+      <div style="height:56px; border-bottom:1px solid rgba(212,175,55,0.15); display:flex; align-items:center; padding:0 20px; gap:12px; flex-shrink:0;">
+        <h1 style="font-size:16px; font-weight:600; color:#e5e5e5; margin:0;">Memories</h1>
+        <div style="flex:1;"></div>
+
+        <!-- NEW: Create button -->
+        <button style="background:#d4af37; color:#0a0a0a; border:none; padding:6px 14px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit;">+ Create</button>
+
+        <!-- NEW: Extract button -->
+        <button style="background:rgba(212,175,55,0.12); color:#d4af37; border:1px solid rgba(212,175,55,0.2); padding:6px 14px; border-radius:4px; font-size:12px; cursor:pointer; font-family:inherit;">Extract</button>
+
+        <!-- NEW: Select toggle -->
+        <button style="background:rgba(255,255,255,0.06); color:#a3a3a3; border:1px solid rgba(255,255,255,0.06); padding:6px 14px; border-radius:4px; font-size:12px; cursor:pointer; font-family:inherit;">☐ Select</button>
+
+        <input style="background:#1a1a1a; border:1px solid rgba(212,175,55,0.15); color:#e5e5e5; padding:6px 12px; border-radius:4px; font-size:12px; width:200px; font-family:inherit;" placeholder="Search memories..." />
+      </div>
+
+      <!-- Filter Bar + Bulk Actions Bar (shown when Select mode active) -->
+      <div style="padding:8px 20px; border-bottom:1px solid rgba(255,255,255,0.06); display:flex; align-items:center; gap:8px; background:rgba(212,175,55,0.05);">
+        <span style="font-size:11px; color:#d4af37; font-weight:600;">3 selected</span>
+        <button style="background:rgba(202,138,4,0.1); border:1px solid rgba(202,138,4,0.25); color:#CA8A04; padding:3px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit;">Archive</button>
+        <button style="background:rgba(220,38,38,0.1); border:1px solid rgba(220,38,38,0.25); color:#DC2626; padding:3px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit;">Delete</button>
+        <button style="background:rgba(212,175,55,0.1); border:1px solid rgba(212,175,55,0.2); color:#d4af37; padding:3px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit;">Retag</button>
+        <button style="background:rgba(212,175,55,0.1); border:1px solid rgba(212,175,55,0.2); color:#d4af37; padding:3px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit;">Re-source</button>
+        <button style="background:rgba(37,99,235,0.1); border:1px solid rgba(37,99,235,0.25); color:#2563EB; padding:3px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit;">Merge</button>
+      </div>
+
+      <!-- Split: List + Detail -->
+      <div style="flex:1; display:flex; min-height:0;">
+
+        <!-- Memory List -->
+        <div style="width:380px; border-right:1px solid rgba(212,175,55,0.15); overflow-y:auto; padding:8px;">
+
+          <!-- Memory card with checkbox (select mode) -->
+          <div style="padding:10px; margin-bottom:4px; border-radius:8px; background:rgba(212,175,55,0.06); border-left:3px solid #16A34A; display:flex; gap:8px; align-items:flex-start;">
+            <input type="checkbox" checked style="margin-top:3px; accent-color:#d4af37;" />
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-size:11px; color:#d4af37;">claude-code/memories</span>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <span style="font-size:10px; color:#a3a3a3;">#26919</span>
+                  <!-- Confidence mini-bar -->
+                  <div style="display:flex; align-items:center; gap:3px;">
+                    <div style="width:24px; height:3px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden;">
+                      <div style="width:85%; height:100%; background:#16A34A; border-radius:2px;"></div>
+                    </div>
+                    <span style="font-size:9px; color:#16A34A;">85</span>
+                  </div>
+                </div>
+              </div>
+              <div style="font-size:12px; color:#e5e5e5; margin-top:4px; line-height:1.4;">Memories project uses a functional architecture focused on stateless operations...</div>
+            </div>
+          </div>
+
+          <!-- Another card (selected) -->
+          <div style="padding:10px; margin-bottom:4px; border-radius:8px; background:rgba(212,175,55,0.06); border-left:3px solid #CA8A04; display:flex; gap:8px; align-items:flex-start;">
+            <input type="checkbox" checked style="margin-top:3px; accent-color:#d4af37;" />
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-size:11px; color:#d4af37;">wip/memories/r1</span>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <span style="font-size:10px; color:#a3a3a3;">#26922</span>
+                  <div style="display:flex; align-items:center; gap:3px;">
+                    <div style="width:24px; height:3px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden;">
+                      <div style="width:60%; height:100%; background:#CA8A04; border-radius:2px;"></div>
+                    </div>
+                    <span style="font-size:9px; color:#CA8A04;">60</span>
+                  </div>
+                </div>
+              </div>
+              <div style="font-size:12px; color:#e5e5e5; margin-top:4px; line-height:1.4;">R1 item 1: Extraction profiles — per-source-prefix extraction configuration...</div>
+            </div>
+          </div>
+
+          <!-- Regular card (not selected, active) -->
+          <div style="padding:10px; margin-bottom:4px; border-radius:8px; background:#1a1a1a; border:1px solid rgba(212,175,55,0.25); display:flex; gap:8px; align-items:flex-start;">
+            <input type="checkbox" checked style="margin-top:3px; accent-color:#d4af37;" />
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-size:11px; color:#d4af37;">wip/memories/r1</span>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <span style="font-size:10px; color:#a3a3a3;">#26927</span>
+                  <span style="font-size:9px; background:rgba(212,175,55,0.12); color:#d4af37; padding:1px 5px; border-radius:3px;">📌</span>
+                  <div style="display:flex; align-items:center; gap:3px;">
+                    <div style="width:24px; height:3px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden;">
+                      <div style="width:92%; height:100%; background:#16A34A; border-radius:2px;"></div>
+                    </div>
+                    <span style="font-size:9px; color:#16A34A;">92</span>
+                  </div>
+                </div>
+              </div>
+              <div style="font-size:12px; color:#e5e5e5; margin-top:4px; line-height:1.4;">R1 item 6: UI write-path — create memories from the UI with source and category...</div>
+            </div>
+          </div>
+
+          <!-- More cards (dimmed) -->
+          <div style="padding:10px; margin-bottom:4px; border-radius:8px; display:flex; gap:8px; align-items:flex-start;">
+            <input type="checkbox" style="margin-top:3px;" />
+            <div style="flex:1;">
+              <div style="display:flex; justify-content:space-between;">
+                <span style="font-size:11px; color:#666666;">learning/memories</span>
+                <span style="font-size:10px; color:#666666;">#26930</span>
+              </div>
+              <div style="font-size:12px; color:#a3a3a3; margin-top:4px;">R1 item 9: UI write-path — merge two or more memories...</div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Detail Panel (Enhanced with Tabs) -->
+        <div style="flex:1; padding:20px; overflow-y:auto;">
+
+          <!-- Header with source + confidence + pin -->
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-size:13px; color:#d4af37; font-weight:500;">wip/memories/r1</span>
+              <span style="font-size:9px; background:rgba(212,175,55,0.12); color:#d4af37; padding:2px 6px; border-radius:3px; cursor:pointer;">📌 Pinned</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-size:12px; color:#a3a3a3;">#26927</span>
+              <!-- Confidence bar (md) -->
+              <div style="display:flex; align-items:center; gap:4px;">
+                <div style="width:48px; height:6px; background:rgba(255,255,255,0.06); border-radius:3px; overflow:hidden;">
+                  <div style="width:92%; height:100%; background:#16A34A; border-radius:3px;"></div>
+                </div>
+                <span style="font-size:11px; font-weight:600; color:#16A34A;">92%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tabs: Overview | Lifecycle | Links -->
+          <div style="display:flex; gap:0; margin-bottom:16px; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <button style="padding:8px 16px; font-size:12px; color:#d4af37; background:none; border:none; border-bottom:2px solid #d4af37; cursor:pointer; font-family:inherit;">Overview</button>
+            <button style="padding:8px 16px; font-size:12px; color:#666666; background:none; border:none; border-bottom:2px solid transparent; cursor:pointer; font-family:inherit;">Lifecycle</button>
+            <button style="padding:8px 16px; font-size:12px; color:#666666; background:none; border:none; border-bottom:2px solid transparent; cursor:pointer; font-family:inherit;">Links (3)</button>
+          </div>
+
+          <!-- Editable text (click-to-edit) -->
+          <div style="background:#1a1a1a; border:1px solid rgba(255,255,255,0.06); border-radius:8px; padding:12px; margin-bottom:12px; position:relative; cursor:text;">
+            <div style="position:absolute; top:8px; right:8px; font-size:10px; color:#666666;">click to edit</div>
+            <div style="font-size:13px; line-height:1.6; color:#e5e5e5;">R1 item 6: UI write-path — create memories from the UI with source and category selection. Currently the UI has no write-path at all. P0 priority.</div>
+          </div>
+
+          <!-- Meta row (editable source, category) -->
+          <div style="display:flex; gap:16px; margin-bottom:12px;">
+            <div>
+              <div style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; margin-bottom:2px;">Source</div>
+              <div style="font-size:12px; color:#e5e5e5; cursor:pointer; border-bottom:1px dashed rgba(255,255,255,0.15); padding-bottom:1px;">wip/memories/r1</div>
+            </div>
+            <div>
+              <div style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; margin-bottom:2px;">Category</div>
+              <div style="font-size:12px; color:#e5e5e5; cursor:pointer; border-bottom:1px dashed rgba(255,255,255,0.15); padding-bottom:1px;">decision</div>
+            </div>
+            <div>
+              <div style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; margin-bottom:2px;">Created</div>
+              <div style="font-size:12px; color:#a3a3a3;">2 hours ago</div>
+            </div>
+          </div>
+
+          <!-- Decay status -->
+          <div style="font-size:11px; color:#CA8A04; margin-bottom:16px;">Decaying · confidence 92%</div>
+
+          <!-- Linked Memories section (collapsible) -->
+          <div style="border-top:1px solid rgba(255,255,255,0.06); padding-top:12px; margin-top:4px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-size:11px; text-transform:uppercase; color:#666666; letter-spacing:0.5px;">Linked Memories</span>
+              <button style="font-size:11px; color:#d4af37; background:none; border:none; cursor:pointer; font-family:inherit;">+ Add</button>
+            </div>
+            <div style="background:#1a1a1a; padding:8px 10px; border-radius:4px; font-size:12px; display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <div>
+                <span style="font-size:10px; font-weight:600; text-transform:uppercase; color:#2563EB;">related_to</span>
+                <div style="font-size:11px; color:#a3a3a3; margin-top:2px;">Memory #26919 — Functional architecture...</div>
+              </div>
+              <span style="color:#666666; cursor:pointer; font-size:10px;">×</span>
+            </div>
+            <div style="background:#1a1a1a; padding:8px 10px; border-radius:4px; font-size:12px; display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <div>
+                <span style="font-size:10px; font-weight:600; text-transform:uppercase; color:#d4af37;">reinforces</span>
+                <div style="font-size:11px; color:#a3a3a3; margin-top:2px;">Memory #26920 — Functional scope document...</div>
+              </div>
+              <span style="color:#666666; cursor:pointer; font-size:10px;">×</span>
+            </div>
+          </div>
+
+          <!-- Action buttons -->
+          <div style="display:flex; gap:8px; margin-top:16px;">
+            <button style="background:rgba(202,138,4,0.1); border:1px solid rgba(202,138,4,0.25); color:#CA8A04; padding:5px 12px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit;">Archive</button>
+            <button style="background:rgba(220,38,38,0.1); border:1px solid rgba(220,38,38,0.25); color:#DC2626; padding:5px 12px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit;">Delete</button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:24px;">
+  <h3>New Write Affordances Shown</h3>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; font-size:13px;">
+    <div>
+      <span class="label">Topbar</span>
+      <ul style="margin:4px 0;">
+        <li><strong style="color:#d4af37;">+ Create</strong> — opens create memory modal</li>
+        <li><strong style="color:#d4af37;">Extract</strong> — paste text, run extraction, review per-fact</li>
+        <li><strong>☐ Select</strong> — toggles multi-select mode with checkboxes</li>
+      </ul>
+    </div>
+    <div>
+      <span class="label">Bulk Actions Bar</span>
+      <ul style="margin:4px 0;">
+        <li>Archive, Delete, Retag, Re-source, Merge</li>
+        <li>Appears when items are selected</li>
+        <li>Count badge shows selection size</li>
+      </ul>
+    </div>
+    <div>
+      <span class="label">Detail Panel</span>
+      <ul style="margin:4px 0;">
+        <li>📌 Pin/unpin toggle</li>
+        <li>Click-to-edit on text, source, category</li>
+        <li>Tabbed view: Overview | Lifecycle | Links</li>
+        <li>Archive button (soft delete)</li>
+      </ul>
+    </div>
+    <div>
+      <span class="label">Memory Cards</span>
+      <ul style="margin:4px 0;">
+        <li>Checkboxes in select mode</li>
+        <li>Pin indicator badge</li>
+        <li>Confidence mini-bar with color coding</li>
+      </ul>
+    </div>
+  </div>
+</div>

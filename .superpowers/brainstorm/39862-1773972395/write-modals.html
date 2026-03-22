@@ -1,0 +1,221 @@
+<h2>Write-Path Modals</h2>
+<p class="subtitle">Three core write modals: Create, Merge, and Extract. All use existing showModal() infrastructure.</p>
+
+<div style="display:flex; flex-direction:column; gap:32px;">
+
+  <!-- CREATE MODAL -->
+  <div class="mockup">
+    <div class="mockup-header">Create Memory Modal</div>
+    <div class="mockup-body" style="background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; min-height:400px;">
+      <div style="background:#111111; border:1px solid rgba(212,175,55,0.15); border-radius:12px; padding:24px; width:480px; font-family:Inter,system-ui,sans-serif; color:#e5e5e5;">
+
+        <h3 style="font-size:15px; font-weight:600; margin:0 0 20px; color:#e5e5e5;">Create Memory</h3>
+
+        <!-- Text -->
+        <div style="margin-bottom:16px;">
+          <label style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; display:block; margin-bottom:4px;">Memory Text</label>
+          <textarea style="width:100%; height:100px; background:#1a1a1a; border:1px solid rgba(212,175,55,0.15); border-radius:8px; color:#e5e5e5; padding:10px; font-size:13px; font-family:inherit; resize:vertical; box-sizing:border-box;" placeholder="What should be remembered...">The extraction pipeline uses a two-stage architecture: fact extraction then AUDN classification. This doubles cost but improves accuracy.</textarea>
+        </div>
+
+        <!-- Source + Category row -->
+        <div style="display:flex; gap:12px; margin-bottom:16px;">
+          <div style="flex:1;">
+            <label style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; display:block; margin-bottom:4px;">Source</label>
+            <input style="width:100%; background:#1a1a1a; border:1px solid rgba(212,175,55,0.15); border-radius:4px; color:#e5e5e5; padding:8px 10px; font-size:12px; font-family:inherit; box-sizing:border-box;" value="claude-code/memories" />
+          </div>
+          <div style="width:140px;">
+            <label style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; display:block; margin-bottom:4px;">Category</label>
+            <select style="width:100%; background:#1a1a1a; border:1px solid rgba(212,175,55,0.15); border-radius:4px; color:#e5e5e5; padding:8px 10px; font-size:12px; font-family:inherit; box-sizing:border-box;">
+              <option selected>decision</option>
+              <option>learning</option>
+              <option>detail</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div style="display:flex; justify-content:flex-end; gap:8px;">
+          <button style="background:none; border:1px solid rgba(255,255,255,0.06); color:#a3a3a3; padding:8px 16px; border-radius:4px; font-size:12px; cursor:pointer; font-family:inherit;">Cancel</button>
+          <button style="background:#d4af37; color:#0a0a0a; border:none; padding:8px 16px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit;">Create Memory</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MERGE MODAL -->
+  <div class="mockup">
+    <div class="mockup-header">Merge Memories Modal — preview consolidated result</div>
+    <div class="mockup-body" style="background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; min-height:520px;">
+      <div style="background:#111111; border:1px solid rgba(212,175,55,0.15); border-radius:12px; padding:24px; width:560px; font-family:Inter,system-ui,sans-serif; color:#e5e5e5;">
+
+        <h3 style="font-size:15px; font-weight:600; margin:0 0 4px; color:#e5e5e5;">Merge 2 Memories</h3>
+        <p style="font-size:11px; color:#666666; margin:0 0 16px;">Originals will be archived and linked via <span style="color:#CA8A04;">supersedes</span></p>
+
+        <!-- Source memories -->
+        <div style="margin-bottom:16px;">
+          <label style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; display:block; margin-bottom:6px;">Source Memories</label>
+
+          <div style="background:#1a1a1a; border-radius:4px; padding:8px 10px; margin-bottom:6px; font-size:12px; border-left:2px solid #DC2626;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="color:#a3a3a3;">#26922 · wip/memories/r1</span>
+              <span style="font-size:10px; color:#666666;">will be archived</span>
+            </div>
+            <div style="color:#e5e5e5; margin-top:4px; line-height:1.4;">R1 item 1: Extraction profiles — per-source-prefix extraction configuration (aggressive capture for code projects, conservative for learning notes).</div>
+          </div>
+
+          <div style="background:#1a1a1a; border-radius:4px; padding:8px 10px; font-size:12px; border-left:2px solid #DC2626;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="color:#a3a3a3;">#26923 · wip/memories/r1</span>
+              <span style="font-size:10px; color:#666666;">will be archived</span>
+            </div>
+            <div style="color:#e5e5e5; margin-top:4px; line-height:1.4;">R1 item 2: User-definable extraction rules per project — allow users to specify what to always remember, what to never remember.</div>
+          </div>
+        </div>
+
+        <!-- Arrow -->
+        <div style="text-align:center; color:#666666; font-size:18px; margin:4px 0;">↓</div>
+
+        <!-- Merged result (editable) -->
+        <div style="margin-bottom:16px;">
+          <label style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; display:block; margin-bottom:4px;">Merged Result <span style="color:#d4af37; text-transform:none;">(editable)</span></label>
+          <textarea style="width:100%; height:80px; background:#1a1a1a; border:1px solid rgba(22,163,74,0.25); border-left:2px solid #16A34A; border-radius:4px; color:#e5e5e5; padding:10px; font-size:12px; font-family:inherit; resize:vertical; box-sizing:border-box; line-height:1.4;">Extraction profiles enable per-source-prefix configuration (aggressive for code projects, conservative for learning notes) with user-definable rules specifying what to always remember, what to never remember, and custom retention logic beyond the hardcoded 30-day heuristic.</textarea>
+        </div>
+
+        <!-- Source for merged -->
+        <div style="margin-bottom:16px;">
+          <label style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; display:block; margin-bottom:4px;">Source</label>
+          <input style="width:100%; background:#1a1a1a; border:1px solid rgba(212,175,55,0.15); border-radius:4px; color:#e5e5e5; padding:8px 10px; font-size:12px; font-family:inherit; box-sizing:border-box;" value="wip/memories/r1" />
+        </div>
+
+        <!-- Actions -->
+        <div style="display:flex; justify-content:flex-end; gap:8px;">
+          <button style="background:none; border:1px solid rgba(255,255,255,0.06); color:#a3a3a3; padding:8px 16px; border-radius:4px; font-size:12px; cursor:pointer; font-family:inherit;">Cancel</button>
+          <button style="background:#d4af37; color:#0a0a0a; border:none; padding:8px 16px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit;">Merge & Archive Originals</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- EXTRACT MODAL -->
+  <div class="mockup">
+    <div class="mockup-header">Extract from Text — dry-run results with per-fact approve/reject</div>
+    <div class="mockup-body" style="background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; min-height:580px;">
+      <div style="background:#111111; border:1px solid rgba(212,175,55,0.15); border-radius:12px; padding:24px; width:600px; font-family:Inter,system-ui,sans-serif; color:#e5e5e5;">
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+          <h3 style="font-size:15px; font-weight:600; margin:0; color:#e5e5e5;">Extract Memories</h3>
+          <span style="font-size:10px; background:rgba(22,163,74,0.1); color:#16A34A; padding:3px 8px; border-radius:4px;">Dry Run</span>
+        </div>
+
+        <!-- Input section (collapsed since results are showing) -->
+        <div style="background:#1a1a1a; border-radius:8px; padding:10px 12px; margin-bottom:16px; border:1px solid rgba(255,255,255,0.06);">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:11px; color:#a3a3a3;">Pasted text · 342 words</span>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <span style="font-size:11px; color:#666666;">Source:</span>
+              <span style="font-size:11px; color:#d4af37;">claude-code/memories</span>
+              <span style="font-size:11px; color:#666666;">Mode:</span>
+              <span style="font-size:11px; color:#e5e5e5;">standard</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Results header -->
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <span style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px;">5 facts extracted</span>
+          <div style="display:flex; gap:8px;">
+            <button style="font-size:10px; color:#16A34A; background:none; border:none; cursor:pointer; font-family:inherit;">Approve All</button>
+            <span style="color:#666666;">|</span>
+            <button style="font-size:10px; color:#DC2626; background:none; border:none; cursor:pointer; font-family:inherit;">Reject All</button>
+          </div>
+        </div>
+
+        <!-- Fact list -->
+        <div style="display:flex; flex-direction:column; gap:6px; max-height:280px; overflow-y:auto; margin-bottom:16px;">
+
+          <!-- ADD fact (approved) -->
+          <div style="background:#1a1a1a; border-radius:4px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:4px; flex-shrink:0;">
+              <button style="width:24px; height:24px; border-radius:4px; background:rgba(22,163,74,0.15); border:1px solid rgba(22,163,74,0.3); color:#16A34A; cursor:pointer; font-size:11px; display:flex; align-items:center; justify-content:center;">✓</button>
+            </div>
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; gap:6px; align-items:center; margin-bottom:4px;">
+                <span style="font-size:9px; font-weight:600; text-transform:uppercase; background:rgba(22,163,74,0.15); color:#16A34A; padding:1px 6px; border-radius:3px;">ADD</span>
+                <span style="font-size:9px; color:#666666;">decision</span>
+              </div>
+              <div style="font-size:12px; color:#e5e5e5; line-height:1.4;">Pre-delete snapshots are required before all bulk delete operations to prevent irreversible data loss.</div>
+            </div>
+          </div>
+
+          <!-- UPDATE fact (approved) -->
+          <div style="background:#1a1a1a; border-radius:4px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:4px; flex-shrink:0;">
+              <button style="width:24px; height:24px; border-radius:4px; background:rgba(22,163,74,0.15); border:1px solid rgba(22,163,74,0.3); color:#16A34A; cursor:pointer; font-size:11px; display:flex; align-items:center; justify-content:center;">✓</button>
+            </div>
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; gap:6px; align-items:center; margin-bottom:4px;">
+                <span style="font-size:9px; font-weight:600; text-transform:uppercase; background:rgba(37,99,235,0.15); color:#2563EB; padding:1px 6px; border-radius:3px;">UPDATE</span>
+                <span style="font-size:9px; color:#666666;">learning · replaces #26919</span>
+              </div>
+              <div style="font-size:12px; color:#e5e5e5; line-height:1.4;">Functional architecture uses stateless operations with backward compatibility guarantees for all hook scripts.</div>
+            </div>
+          </div>
+
+          <!-- NOOP fact (dimmed) -->
+          <div style="background:#1a1a1a; border-radius:4px; padding:10px; display:flex; gap:10px; align-items:flex-start; opacity:0.5;">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:4px; flex-shrink:0;">
+              <button style="width:24px; height:24px; border-radius:4px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.06); color:#666666; cursor:pointer; font-size:11px; display:flex; align-items:center; justify-content:center;">—</button>
+            </div>
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; gap:6px; align-items:center; margin-bottom:4px;">
+                <span style="font-size:9px; font-weight:600; text-transform:uppercase; background:rgba(255,255,255,0.06); color:#666666; padding:1px 6px; border-radius:3px;">NOOP</span>
+                <span style="font-size:9px; color:#666666;">matches #26920</span>
+              </div>
+              <div style="font-size:12px; color:#a3a3a3; line-height:1.4;">Functional scope document is the primary artifact for tracking roadmap.</div>
+            </div>
+          </div>
+
+          <!-- CONFLICT fact (rejected) -->
+          <div style="background:#1a1a1a; border-radius:4px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:4px; flex-shrink:0;">
+              <button style="width:24px; height:24px; border-radius:4px; background:rgba(220,38,38,0.15); border:1px solid rgba(220,38,38,0.3); color:#DC2626; cursor:pointer; font-size:11px; display:flex; align-items:center; justify-content:center;">✕</button>
+            </div>
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; gap:6px; align-items:center; margin-bottom:4px;">
+                <span style="font-size:9px; font-weight:600; text-transform:uppercase; background:rgba(220,38,38,0.15); color:#DC2626; padding:1px 6px; border-radius:3px;">CONFLICT</span>
+                <span style="font-size:9px; color:#666666;">contradicts #26921</span>
+              </div>
+              <div style="font-size:12px; color:#e5e5e5; line-height:1.4;">CLI commands should be built during R1 alongside engine work.</div>
+            </div>
+          </div>
+
+          <!-- ADD fact (approved) -->
+          <div style="background:#1a1a1a; border-radius:4px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:4px; flex-shrink:0;">
+              <button style="width:24px; height:24px; border-radius:4px; background:rgba(22,163,74,0.15); border:1px solid rgba(22,163,74,0.3); color:#16A34A; cursor:pointer; font-size:11px; display:flex; align-items:center; justify-content:center;">✓</button>
+            </div>
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; gap:6px; align-items:center; margin-bottom:4px;">
+                <span style="font-size:9px; font-weight:600; text-transform:uppercase; background:rgba(22,163,74,0.15); color:#16A34A; padding:1px 6px; border-radius:3px;">ADD</span>
+                <span style="font-size:9px; color:#666666;">decision</span>
+              </div>
+              <div style="font-size:12px; color:#e5e5e5; line-height:1.4;">Soft archive is the default for all conflict resolution — nothing permanently deleted during resolution.</div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Summary + actions -->
+        <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid rgba(255,255,255,0.06); padding-top:12px;">
+          <span style="font-size:11px; color:#a3a3a3;">3 approved · 1 rejected · 1 skipped</span>
+          <div style="display:flex; gap:8px;">
+            <button style="background:none; border:1px solid rgba(255,255,255,0.06); color:#a3a3a3; padding:8px 16px; border-radius:4px; font-size:12px; cursor:pointer; font-family:inherit;">Cancel</button>
+            <button style="background:#d4af37; color:#0a0a0a; border:none; padding:8px 16px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit;">Commit 3 Memories</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>

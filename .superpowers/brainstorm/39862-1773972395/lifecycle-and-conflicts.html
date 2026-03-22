@@ -1,0 +1,219 @@
+<h2>Lifecycle Tab & Conflict Resolution</h2>
+<p class="subtitle">Detail panel Lifecycle tab + enhanced conflict resolution modal on Health page</p>
+
+<div class="split">
+
+  <!-- LIFECYCLE TAB -->
+  <div class="mockup">
+    <div class="mockup-header">Detail Panel — Lifecycle Tab</div>
+    <div class="mockup-body" style="background:#0a0a0a; color:#e5e5e5; font-family:Inter,system-ui,sans-serif; padding:20px; min-height:500px;">
+
+      <!-- Header -->
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:13px; color:#d4af37; font-weight:500;">claude-code/memories</span>
+          <span style="font-size:9px; background:rgba(212,175,55,0.12); color:#d4af37; padding:2px 6px; border-radius:3px;">📌</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span style="font-size:12px; color:#a3a3a3;">#26919</span>
+          <div style="display:flex; align-items:center; gap:4px;">
+            <div style="width:48px; height:6px; background:rgba(255,255,255,0.06); border-radius:3px; overflow:hidden;">
+              <div style="width:78%; height:100%; background:#16A34A; border-radius:3px;"></div>
+            </div>
+            <span style="font-size:11px; font-weight:600; color:#16A34A;">78%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div style="display:flex; gap:0; margin-bottom:20px; border-bottom:1px solid rgba(255,255,255,0.06);">
+        <button style="padding:8px 16px; font-size:12px; color:#666666; background:none; border:none; border-bottom:2px solid transparent; cursor:pointer; font-family:inherit;">Overview</button>
+        <button style="padding:8px 16px; font-size:12px; color:#d4af37; background:none; border:none; border-bottom:2px solid #d4af37; cursor:pointer; font-family:inherit;">Lifecycle</button>
+        <button style="padding:8px 16px; font-size:12px; color:#666666; background:none; border:none; border-bottom:2px solid transparent; cursor:pointer; font-family:inherit;">Links (2)</button>
+      </div>
+
+      <!-- Origin -->
+      <div style="margin-bottom:20px;">
+        <div style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; margin-bottom:8px;">Origin</div>
+        <div style="background:#1a1a1a; border-radius:8px; padding:12px; display:flex; gap:12px; align-items:center;">
+          <div style="width:32px; height:32px; border-radius:8px; background:rgba(37,99,235,0.15); display:flex; align-items:center; justify-content:center; color:#2563EB; font-size:14px; flex-shrink:0;">⚡</div>
+          <div>
+            <div style="font-size:12px; color:#e5e5e5;">Extracted from conversation</div>
+            <div style="font-size:11px; color:#666666; margin-top:2px;">Job #ext-4821 · standard mode · 2026-03-19 10:34</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Confidence curve -->
+      <div style="margin-bottom:20px;">
+        <div style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; margin-bottom:8px;">Confidence</div>
+        <div style="background:#1a1a1a; border-radius:8px; padding:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span style="font-size:11px; color:#CA8A04;">Decaying · 45d half-life</span>
+            <span style="font-size:11px; color:#e5e5e5;">100% → 78%</span>
+          </div>
+          <!-- Mini sparkline -->
+          <div style="height:32px; display:flex; align-items:flex-end; gap:2px;">
+            <div style="flex:1; background:#16A34A; border-radius:2px 2px 0 0; height:100%;"></div>
+            <div style="flex:1; background:#16A34A; border-radius:2px 2px 0 0; height:95%;"></div>
+            <div style="flex:1; background:#16A34A; border-radius:2px 2px 0 0; height:90%;"></div>
+            <div style="flex:1; background:#16A34A; border-radius:2px 2px 0 0; height:88%;"></div>
+            <div style="flex:1; background:#16A34A; border-radius:2px 2px 0 0; height:85%;"></div>
+            <div style="flex:1; background:#16A34A; border-radius:2px 2px 0 0; height:82%;"></div>
+            <div style="flex:1; background:#16A34A; border-radius:2px 2px 0 0; height:80%;"></div>
+            <div style="flex:1; background:#16A34A; border-radius:2px 2px 0 0; height:78%;"></div>
+          </div>
+          <div style="display:flex; justify-content:space-between; margin-top:4px;">
+            <span style="font-size:9px; color:#666666;">Mar 1</span>
+            <span style="font-size:9px; color:#666666;">Mar 19</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Timeline -->
+      <div>
+        <div style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; margin-bottom:8px;">History</div>
+
+        <!-- Timeline items -->
+        <div style="border-left:1px solid rgba(255,255,255,0.06); margin-left:6px; padding-left:16px; display:flex; flex-direction:column; gap:12px;">
+
+          <div style="position:relative;">
+            <div style="position:absolute; left:-21px; top:2px; width:10px; height:10px; border-radius:50%; background:#16A34A; border:2px solid #0a0a0a;"></div>
+            <div style="font-size:11px; color:#e5e5e5;">Created via extraction</div>
+            <div style="font-size:10px; color:#666666;">Mar 1, 2026 · 14:22 · job #ext-4821</div>
+          </div>
+
+          <div style="position:relative;">
+            <div style="position:absolute; left:-21px; top:2px; width:10px; height:10px; border-radius:50%; background:#2563EB; border:2px solid #0a0a0a;"></div>
+            <div style="font-size:11px; color:#e5e5e5;">Linked to #26920 <span style="color:#2563EB;">related_to</span></div>
+            <div style="font-size:10px; color:#666666;">Mar 5, 2026 · 09:14</div>
+          </div>
+
+          <div style="position:relative;">
+            <div style="position:absolute; left:-21px; top:2px; width:10px; height:10px; border-radius:50%; background:#d4af37; border:2px solid #0a0a0a;"></div>
+            <div style="font-size:11px; color:#e5e5e5;">Text updated <span style="color:#666666; font-size:10px;">(extraction AUDN)</span></div>
+            <div style="font-size:10px; color:#666666;">Mar 12, 2026 · 16:45 · job #ext-5102</div>
+          </div>
+
+          <div style="position:relative;">
+            <div style="position:absolute; left:-21px; top:2px; width:10px; height:10px; border-radius:50%; background:#d4af37; border:2px solid #0a0a0a;"></div>
+            <div style="font-size:11px; color:#e5e5e5;">Pinned</div>
+            <div style="font-size:10px; color:#666666;">Mar 15, 2026 · 11:02 · manual</div>
+          </div>
+
+          <div style="position:relative;">
+            <div style="position:absolute; left:-21px; top:2px; width:10px; height:10px; border-radius:50%; background:#CA8A04; border:2px solid #0a0a0a;"></div>
+            <div style="font-size:11px; color:#e5e5e5;">Reinforced via search feedback <span style="color:#16A34A;">▲ useful</span></div>
+            <div style="font-size:10px; color:#666666;">Mar 18, 2026 · 08:30</div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- CONFLICT RESOLUTION -->
+  <div class="mockup">
+    <div class="mockup-header">Health Page — Conflict Resolution Modal</div>
+    <div class="mockup-body" style="background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; min-height:500px;">
+      <div style="background:#111111; border:1px solid rgba(220,38,38,0.2); border-radius:12px; padding:24px; width:520px; font-family:Inter,system-ui,sans-serif; color:#e5e5e5;">
+
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+          <span style="font-size:9px; font-weight:600; text-transform:uppercase; background:rgba(220,38,38,0.15); color:#DC2626; padding:2px 8px; border-radius:3px;">CONTRADICTS</span>
+          <h3 style="font-size:15px; font-weight:600; margin:0; color:#e5e5e5;">Resolve Conflict</h3>
+        </div>
+        <p style="font-size:11px; color:#666666; margin:0 0 16px;">Both memories claim different things. Choose how to resolve.</p>
+
+        <!-- Side by side full text -->
+        <div style="display:flex; gap:12px; margin-bottom:20px;">
+
+          <!-- Memory A -->
+          <div style="flex:1; background:rgba(220,38,38,0.05); border-left:2px solid #DC2626; border-radius:4px; padding:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-size:10px; color:#a3a3a3;">Memory A</span>
+              <span style="font-size:10px; color:#666666;">#26959</span>
+            </div>
+            <div style="font-size:12px; color:#e5e5e5; line-height:1.5; margin-bottom:8px;">CLI commands should be built during R1 alongside engine work to maintain feature parity across all interfaces.</div>
+            <div style="display:flex; gap:8px;">
+              <span style="font-size:10px; color:#666666;">claude-code/memories</span>
+              <div style="display:flex; align-items:center; gap:3px;">
+                <div style="width:24px; height:3px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden;">
+                  <div style="width:65%; height:100%; background:#CA8A04; border-radius:2px;"></div>
+                </div>
+                <span style="font-size:9px; color:#CA8A04;">65%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Memory B -->
+          <div style="flex:1; background:rgba(22,163,74,0.05); border-left:2px solid #16A34A; border-radius:4px; padding:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-size:10px; color:#a3a3a3;">Memory B</span>
+              <span style="font-size:10px; color:#666666;">#27001</span>
+            </div>
+            <div style="font-size:12px; color:#e5e5e5; line-height:1.5; margin-bottom:8px;">CLI commands should be deferred until after R3 because underlying APIs will change significantly in R2/R3, causing rework.</div>
+            <div style="display:flex; gap:8px;">
+              <span style="font-size:10px; color:#666666;">claude-code/memories</span>
+              <div style="display:flex; align-items:center; gap:3px;">
+                <div style="width:24px; height:3px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden;">
+                  <div style="width:92%; height:100%; background:#16A34A; border-radius:2px;"></div>
+                </div>
+                <span style="font-size:9px; color:#16A34A;">92%</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Resolution options -->
+        <div style="font-size:10px; text-transform:uppercase; color:#666666; letter-spacing:0.5px; margin-bottom:8px;">Resolution</div>
+        <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:16px;">
+
+          <div style="background:#1a1a1a; border:1px solid rgba(255,255,255,0.06); border-radius:4px; padding:10px 12px; cursor:pointer; display:flex; align-items:center; gap:10px;">
+            <div style="width:16px; height:16px; border-radius:50%; border:2px solid #666666; flex-shrink:0;"></div>
+            <div>
+              <div style="font-size:12px; color:#e5e5e5;">Keep A</div>
+              <div style="font-size:10px; color:#666666;">Archive Memory B</div>
+            </div>
+          </div>
+
+          <div style="background:#1a1a1a; border:1px solid rgba(22,163,74,0.25); border-radius:4px; padding:10px 12px; cursor:pointer; display:flex; align-items:center; gap:10px;">
+            <div style="width:16px; height:16px; border-radius:50%; border:2px solid #16A34A; flex-shrink:0; display:flex; align-items:center; justify-content:center;">
+              <div style="width:8px; height:8px; border-radius:50%; background:#16A34A;"></div>
+            </div>
+            <div>
+              <div style="font-size:12px; color:#e5e5e5;">Keep B <span style="font-size:10px; color:#16A34A;">(recommended — higher confidence, newer)</span></div>
+              <div style="font-size:10px; color:#666666;">Archive Memory A</div>
+            </div>
+          </div>
+
+          <div style="background:#1a1a1a; border:1px solid rgba(255,255,255,0.06); border-radius:4px; padding:10px 12px; cursor:pointer; display:flex; align-items:center; gap:10px;">
+            <div style="width:16px; height:16px; border-radius:50%; border:2px solid #666666; flex-shrink:0;"></div>
+            <div>
+              <div style="font-size:12px; color:#e5e5e5;">Merge</div>
+              <div style="font-size:10px; color:#666666;">Open merge modal with both texts pre-filled</div>
+            </div>
+          </div>
+
+          <div style="background:#1a1a1a; border:1px solid rgba(255,255,255,0.06); border-radius:4px; padding:10px 12px; cursor:pointer; display:flex; align-items:center; gap:10px;">
+            <div style="width:16px; height:16px; border-radius:50%; border:2px solid #666666; flex-shrink:0;"></div>
+            <div>
+              <div style="font-size:12px; color:#e5e5e5;">Defer</div>
+              <div style="font-size:10px; color:#666666;">Hide from queue, revisit later</div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Actions -->
+        <div style="display:flex; justify-content:flex-end; gap:8px;">
+          <button style="background:none; border:1px solid rgba(255,255,255,0.06); color:#a3a3a3; padding:8px 16px; border-radius:4px; font-size:12px; cursor:pointer; font-family:inherit;">Cancel</button>
+          <button style="background:#d4af37; color:#0a0a0a; border:none; padding:8px 16px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit;">Resolve</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>

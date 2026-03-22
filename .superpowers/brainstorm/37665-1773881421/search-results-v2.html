@@ -1,0 +1,129 @@
+<h2>Search Results — Feedback & Explainability</h2>
+<p class="subtitle">Tooltip explain on score hover + thumbs up/down feedback — using Kalos dark brand tokens</p>
+
+<div class="mockup" style="max-width: 720px; margin: 0 auto 24px;">
+  <div class="mockup-header">Enhanced Search Results (Kalos Dark Brand)</div>
+  <div class="mockup-body" style="font-family: Inter, system-ui, sans-serif; background: #0a0a0a; color: #e5e5e5; padding: 16px;">
+
+    <!-- Search bar -->
+    <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+      <div style="flex: 1; background: #111111; border: 1px solid rgba(212,175,55,0.15); border-radius: 8px; padding: 10px 14px; color: #a3a3a3; font-size: 13px;">dashboard widget approach</div>
+      <div style="background: #d4af37; color: #0a0a0a; padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;">Search</div>
+    </div>
+
+    <div style="font-size: 11px; color: #666666; margin-bottom: 12px;">3 results · 42ms</div>
+
+    <!-- Result 1 — high match, tooltip hint on score -->
+    <div style="background: #111111; border-radius: 8px; padding: 14px; margin-bottom: 8px; border-left: 3px solid #16A34A;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <div style="flex: 1;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+            <span style="font-size: 12px; color: #d4af37;">learning/deck</span>
+            <!-- Score badge — tooltip trigger -->
+            <span style="font-size: 10px; background: rgba(22,163,74,0.15); color: #16A34A; padding: 2px 8px; border-radius: 4px; cursor: help; position: relative;" title="Vector: 0.87 | BM25: 0.94 | Recency: 0.91 | Confidence: 0.88 → Final: 0.92">92%</span>
+            <!-- Confidence mini -->
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <div style="width: 24px; height: 3px; background: #333; border-radius: 4px; overflow: hidden;"><div style="width: 88%; height: 100%; background: #16A34A; border-radius: 4px;"></div></div>
+              <span style="font-size: 9px; color: #666666;">88</span>
+            </div>
+          </div>
+          <div style="font-size: 13px; line-height: 1.6; color: #e5e5e5;">Dashboard widget approach (e.g., 'Cost by Model', 'Activity') is more valuable than full dedicated pages for the same data.</div>
+        </div>
+        <!-- Feedback buttons -->
+        <div style="display: flex; gap: 4px; margin-left: 12px; flex-shrink: 0;">
+          <div style="width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; background: rgba(22,163,74,0.1); border: 1px solid rgba(22,163,74,0.25); font-size: 13px;" title="Relevant">&#x25B2;</div>
+          <div style="width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; background: #111111; border: 1px solid rgba(212,175,55,0.15); font-size: 13px; color: #666666;" title="Not relevant">&#x25BC;</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Result 2 — medium match -->
+    <div style="background: #111111; border-radius: 8px; padding: 14px; margin-bottom: 8px; border-left: 3px solid #CA8A04;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <div style="flex: 1;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+            <span style="font-size: 12px; color: #d4af37;">claude-code/memories</span>
+            <span style="font-size: 10px; background: rgba(202,138,4,0.15); color: #CA8A04; padding: 2px 8px; border-radius: 4px; cursor: help;" title="Vector: 0.68 | BM25: 0.72 | Recency: 0.80 | Confidence: 0.65 → Final: 0.71">71%</span>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <div style="width: 24px; height: 3px; background: #333; border-radius: 4px; overflow: hidden;"><div style="width: 65%; height: 100%; background: #CA8A04; border-radius: 4px;"></div></div>
+              <span style="font-size: 9px; color: #666666;">65</span>
+            </div>
+          </div>
+          <div style="font-size: 13px; line-height: 1.6; color: #e5e5e5;">Usage/analytics tab was removed in Web UI v2 rewrite. Need to restore operations breakdown, extraction token counts...</div>
+        </div>
+        <div style="display: flex; gap: 4px; margin-left: 12px; flex-shrink: 0;">
+          <div style="width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; background: #111111; border: 1px solid rgba(212,175,55,0.15); font-size: 13px; color: #666666;">&#x25B2;</div>
+          <div style="width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; background: #111111; border: 1px solid rgba(212,175,55,0.15); font-size: 13px; color: #666666;">&#x25BC;</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Result 3 — low match -->
+    <div style="background: #111111; border-radius: 8px; padding: 14px; border-left: 3px solid #DC2626;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <div style="flex: 1;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+            <span style="font-size: 12px; color: #d4af37;">learning/kai</span>
+            <span style="font-size: 10px; background: rgba(220,38,38,0.15); color: #DC2626; padding: 2px 8px; border-radius: 4px; cursor: help;" title="Vector: 0.31 | BM25: 0.38 | Recency: 0.45 | Confidence: 0.42 → Final: 0.34">34%</span>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <div style="width: 24px; height: 3px; background: #333; border-radius: 4px; overflow: hidden;"><div style="width: 42%; height: 100%; background: #DC2626; border-radius: 4px;"></div></div>
+              <span style="font-size: 9px; color: #666666;">42</span>
+            </div>
+          </div>
+          <div style="font-size: 13px; line-height: 1.6; color: #e5e5e5;">Claude Code Dashboard project: single web dashboard that wraps CC CLI...</div>
+        </div>
+        <div style="display: flex; gap: 4px; margin-left: 12px; flex-shrink: 0;">
+          <div style="width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; background: #111111; border: 1px solid rgba(212,175,55,0.15); font-size: 13px; color: #666666;">&#x25B2;</div>
+          <div style="width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; background: #111111; border: 1px solid rgba(212,175,55,0.15); font-size: 13px; color: #666666;">&#x25BC;</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tooltip mockup overlay -->
+    <div style="margin-top: 16px; background: #1a1a1a; border: 1px solid rgba(212,175,55,0.25); border-radius: 8px; padding: 12px 16px; max-width: 320px;">
+      <div style="font-size: 10px; text-transform: uppercase; color: #a3a3a3; letter-spacing: 0.5px; margin-bottom: 8px;">Score Breakdown (tooltip preview)</div>
+      <div style="display: flex; gap: 16px; font-size: 12px;">
+        <div style="text-align: center;">
+          <div style="color: #666666; font-size: 10px; margin-bottom: 2px;">Vector</div>
+          <div style="color: #d4af37; font-weight: 600;">0.87</div>
+        </div>
+        <div style="text-align: center;">
+          <div style="color: #666666; font-size: 10px; margin-bottom: 2px;">BM25</div>
+          <div style="color: #d4af37; font-weight: 600;">0.94</div>
+        </div>
+        <div style="text-align: center;">
+          <div style="color: #666666; font-size: 10px; margin-bottom: 2px;">Recency</div>
+          <div style="color: #d4af37; font-weight: 600;">0.91</div>
+        </div>
+        <div style="text-align: center;">
+          <div style="color: #666666; font-size: 10px; margin-bottom: 2px;">Confidence</div>
+          <div style="color: #d4af37; font-weight: 600;">0.88</div>
+        </div>
+        <div style="text-align: center;">
+          <div style="color: #666666; font-size: 10px; margin-bottom: 2px;">Final</div>
+          <div style="color: #16A34A; font-weight: 600;">0.92</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<p class="subtitle">&#x2191; Hover over any score badge to see the tooltip breakdown. Arrows (&#x25B2;/&#x25BC;) replace emoji thumbs for cleaner look.</p>
+
+<div class="options">
+  <div class="option" data-choice="approve" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Looks good — move to next component</h3>
+      <p>Tooltip explain + arrow feedback buttons with Kalos tokens applied</p>
+    </div>
+  </div>
+  <div class="option" data-choice="tweak" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Needs tweaks</h3>
+      <p>Tell me what to adjust (colors, layout, feedback style, etc.)</p>
+    </div>
+  </div>
+</div>
