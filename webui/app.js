@@ -1019,6 +1019,7 @@ registerPage("memories", async (container) => {
               const resultsList = h("div", { className: "extract-results" });
               actions.forEach((action, i) => {
                 const isNoop = action.action === "NOOP";
+                const wrapper = h("div", { style: { marginBottom: "4px" } });
                 const row = h("div", { className: `extract-fact${isNoop ? " extract-fact--noop" : ""}` });
                 row.appendChild(actionBadge(action.action));
                 const factText = action.fact?.text || action.text || "";
@@ -1030,7 +1031,31 @@ registerPage("memories", async (container) => {
                     renderResults();
                   },
                 }));
-                resultsList.appendChild(row);
+                wrapper.appendChild(row);
+
+                // Reasoning detail line
+                const act = action.action;
+                let detailText = null;
+                let detailColor = "var(--color-text-faint)";
+                if (act === "NOOP" && action.existing_id != null) {
+                  detailText = `Similar to memory #${action.existing_id}`;
+                } else if (act === "CONFLICT" && action.old_id != null) {
+                  detailText = `Conflicts with memory #${action.old_id}`;
+                  detailColor = "var(--color-warning, #CA8A04)";
+                } else if (act === "UPDATE" && action.old_id != null) {
+                  detailText = `Updates memory #${action.old_id}`;
+                  detailColor = "var(--color-info, #2563EB)";
+                } else if (act === "DELETE" && action.old_id != null) {
+                  detailText = `Removes memory #${action.old_id}`;
+                  detailColor = "var(--color-error, #DC2626)";
+                }
+                if (detailText) {
+                  wrapper.appendChild(h("div", {
+                    style: { fontSize: "0.72rem", color: detailColor, paddingLeft: "28px", marginTop: "2px" },
+                  }, detailText));
+                }
+
+                resultsList.appendChild(wrapper);
               });
               content.appendChild(resultsList);
 
@@ -1458,6 +1483,7 @@ registerPage("memories", async (container) => {
   // -- Action color mapping for audit events --
   const auditActionColors = {
     "memory.created": "success",
+    // Legacy/backward compat (may appear in old audit entries)
     "add": "success",
     "memory.updated": "info",
     "memory.linked": "info",
@@ -1466,7 +1492,9 @@ registerPage("memories", async (container) => {
     "memory.archived": "warning",
     "memory.unarchived": "info",
     "memory.merged": "info",
+    // Future (events planned but not yet emitted)
     "conflict.detected": "error",
+    // Legacy/backward compat (may appear in old audit entries)
     "delete": "error",
     "memory.deleted": "error",
     "extract": "primary",
@@ -3366,10 +3394,21 @@ registerPage("health", async (container) => {
       );
     } else {
       problemQueries.forEach((pq) => {
+        // Evidence strength based on total feedback count
+        let pqEvidenceLabel, pqEvidenceClass;
+        if (pq.total >= 10) { pqEvidenceLabel = "strong"; pqEvidenceClass = "badge badge-error"; }
+        else if (pq.total >= 5) { pqEvidenceLabel = "moderate"; pqEvidenceClass = "badge badge-warning"; }
+        else if (pq.total >= 2) { pqEvidenceLabel = "weak"; pqEvidenceClass = "badge badge-info"; }
+
+        const ratioSpan = h("span", { style: { display: "flex", alignItems: "center", gap: "6px", fontSize: "0.75rem", color: "var(--color-text-muted)", whiteSpace: "nowrap" } },
+          `${pq.not_useful}/${pq.total} negative (${Math.round(pq.ratio * 100)}%)`);
+        if (pqEvidenceLabel) {
+          ratioSpan.appendChild(h("span", { className: pqEvidenceClass, style: { fontSize: "0.65rem" } }, pqEvidenceLabel));
+        }
+
         const row = h("div", { className: "problem-query-row" },
           h("div", { className: "problem-query-text" }, pq.query),
-          h("span", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)", whiteSpace: "nowrap" } },
-            `${pq.not_useful}/${pq.total} negative (${Math.round(pq.ratio * 100)}%)`),
+          ratioSpan,
           h("a", {
             className: "replay-link",
             href: `#/memories?q=${encodeURIComponent(pq.query)}`,
@@ -3425,10 +3464,21 @@ registerPage("health", async (container) => {
           window.location.hash = `#/memories?select=${sm.memory_id}`;
         });
 
+        // Evidence strength based on not_useful feedback count
+        let smEvidenceLabel, smEvidenceClass;
+        if (sm.not_useful >= 5) { smEvidenceLabel = "strong"; smEvidenceClass = "badge badge-error"; }
+        else if (sm.not_useful >= 2) { smEvidenceLabel = "moderate"; smEvidenceClass = "badge badge-warning"; }
+        else if (sm.not_useful >= 1) { smEvidenceLabel = "weak"; smEvidenceClass = "badge badge-info"; }
+
+        const staleInfoSpan = h("span", { style: { display: "flex", alignItems: "center", gap: "6px", fontSize: "0.75rem", color: "var(--color-text-muted)", flex: "1" } },
+          `${sm.retrievals} retrievals \u00b7 0 useful \u00b7 ${sm.not_useful} not useful`);
+        if (smEvidenceLabel) {
+          staleInfoSpan.appendChild(h("span", { className: smEvidenceClass, style: { fontSize: "0.65rem" } }, smEvidenceLabel));
+        }
+
         const row = h("div", { className: "stale-memory-row" },
           h("span", { style: { fontSize: "0.8125rem", fontWeight: "600", color: "var(--color-text)" } }, `#${sm.memory_id}`),
-          h("span", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)", flex: "1" } },
-            `${sm.retrievals} retrievals \u00b7 0 useful \u00b7 ${sm.not_useful} not useful`),
+          staleInfoSpan,
           archiveBtn,
           viewBtn
         );
