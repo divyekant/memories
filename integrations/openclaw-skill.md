@@ -1,7 +1,7 @@
 ---
 name: memories
 version: 2.2.0
-description: Memories-based semantic memory with hybrid BM25+vector search. Three responsibilities — proactive recall, hybrid write (extract for lifecycle, add for simple facts), and maintain (updates, deletes, cleanup via AUDN). Includes OpenClaw QMD bridge for unified memory_search integration.
+description: Use when recalling past decisions, project history, preferences, or learnings; storing new facts or insights; searching what was previously discussed or built. Provides persistent semantic memory across sessions via the Memories service.
 metadata:
   clawdbot:
     emoji: "🧠"
@@ -30,7 +30,18 @@ Local semantic memory using Memories vector search + BM25 hybrid retrieval (Dock
 
 - Docker service running: `docker ps | grep memories`
 - If not running: `cd /path/to/memories && docker compose up -d memories`
-- `MEMORIES_API_KEY` env var must be set (loaded from shell profile)
+
+### Making API key available to OpenClaw
+
+OpenClaw agents run inside the gateway process and do not automatically inherit shell env vars
+from `~/.config/memories/env` or your shell profile. Add Memories credentials to the gateway
+config so `$MEMORIES_API_KEY` and `$MEMORIES_URL` are available in skill exec calls:
+
+```bash
+openclaw config patch '{"env": {"vars": {"MEMORIES_URL": "http://localhost:8900", "MEMORIES_API_KEY": "your-key"}}}'
+```
+
+Or edit `~/.openclaw/openclaw.json` directly under `env.vars`, then restart the gateway.
 
 ---
 
@@ -77,29 +88,36 @@ set -euo pipefail
 
 MEMORIES_API="${MEMORIES_API:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
+MEMORIES_ENV_FILE="${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
 AGENT_ID="${OPENCLAW_AGENT_ID:-jack}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
 EXPORT_DIR="$STATE_DIR/agents/$AGENT_ID/qmd/memories-export"
 COLLECTION="memories-$AGENT_ID"
 
+if [[ -f "$MEMORIES_ENV_FILE" ]]; then
+  set -a
+  source "$MEMORIES_ENV_FILE"
+  set +a
+fi
+
 export XDG_CONFIG_HOME="$STATE_DIR/agents/$AGENT_ID/qmd/xdg-config"
 export XDG_CACHE_HOME="$STATE_DIR/agents/$AGENT_ID/qmd/xdg-cache"
 
 # Auth header (optional — only needed if MEMORIES_API_KEY is set)
-AUTH_HEADER=""
+CURL_HEADERS=()
 if [[ -n "$MEMORIES_API_KEY" ]]; then
-  AUTH_HEADER="-H \"X-API-Key: $MEMORIES_API_KEY\""
+  CURL_HEADERS+=(-H "X-API-Key: $MEMORIES_API_KEY")
 fi
 
 # Check API is up
-if ! curl -sf "$MEMORIES_API/health" >/dev/null 2>&1; then
+if ! curl -sf "${CURL_HEADERS[@]}" "$MEMORIES_API/health" >/dev/null 2>&1; then
   echo "❌ Memories API not responding at $MEMORIES_API"
   exit 1
 fi
 
 mkdir -p "$EXPORT_DIR"
 
-TOTAL=$(curl -sf "$MEMORIES_API/health" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_memories',0))")
+TOTAL=$(curl -sf "${CURL_HEADERS[@]}" "$MEMORIES_API/health" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_memories',0))")
 echo "📦 Exporting $TOTAL memories from Memories..."
 
 # Export all memories and write as grouped markdown files
@@ -292,6 +310,7 @@ function memory_search_memories() {
     local k="${2:-5}"
     local threshold="${3:-0.0}"
     local hybrid="${4:-true}"
+    local api="${MEMORIES_URL:-http://localhost:8900}"
 
     local payload
     payload=$(jq -n \
@@ -301,7 +320,7 @@ function memory_search_memories() {
         --argjson h "$hybrid" \
         '{query: $q, k: $k, threshold: $t, hybrid: $h}')
 
-    curl -s -X POST http://localhost:8900/search \
+    curl -s -X POST "$api/search" \
         -H "Content-Type: application/json" \
         -H "X-API-Key: $MEMORIES_API_KEY" \
         -d "$payload" \
@@ -606,20 +625,56 @@ Call this at the start of any task to load relevant project memories:
 ```bash
 function memory_recall_memories() {
     local project="${1:-$(basename "$PWD")}"
-    local k="${2:-8}"
+    local api="${MEMORIES_URL:-http://localhost:8900}"
+    local scoped_threshold="${2:-0.35}"
+    local fallback_threshold="${3:-0.50}"
 
-    local payload
-    payload=$(jq -n \
-        --arg q "project $project conventions decisions patterns" \
-        --argjson k "$k" \
-        '{query: $q, k: $k, hybrid: true}')
+    run_search() {
+        local query="$1"
+        local prefix="${2:-}"
+        local k="$3"
+        local threshold="$4"
+
+        local payload
+        if [[ -n "$prefix" ]]; then
+            payload=$(jq -n \
+                --arg q "$query" \
+                --arg p "$prefix" \
+                --argjson k "$k" \
+                --argjson t "$threshold" \
+                '{query: $q, source_prefix: $p, k: $k, hybrid: true, threshold: $t}')
+        else
+            payload=$(jq -n \
+                --arg q "$query" \
+                --argjson k "$k" \
+                --argjson t "$threshold" \
+                '{query: $q, k: $k, hybrid: true, threshold: $t}')
+        fi
+
+        curl -s -X POST "$api/search" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $MEMORIES_API_KEY" \
+            -d "$payload"
+    }
+
+    local merged
+    merged=$(
+        {
+            run_search "project $project architecture decisions conventions" "openclaw/$project" 4 "$scoped_threshold"
+            run_search "project $project fixes gotchas learnings workarounds" "learning/$project" 3 "$scoped_threshold"
+            run_search "project $project deferred work blockers open threads" "wip/$project" 2 "$scoped_threshold"
+        } | jq -sr '[.[].results[]?] | unique_by(.id) | sort_by(-(.similarity // .rrf_score // 0)) | .[0:8]'
+    )
 
     local results
-    results=$(curl -s -X POST http://localhost:8900/search \
-        -H "Content-Type: application/json" \
-        -H "X-API-Key: $MEMORIES_API_KEY" \
-        -d "$payload" \
-    | jq -r '[.results[] | select(.similarity > 0.3)] | .[0:8] | map("- \(.text)") | join("\n")')
+    results=$(printf '%s' "$merged" | jq -r 'map("- [\(.source)] \(.text)") | join("\n")')
+
+    if [[ -z "$results" || "$results" == "null" ]]; then
+        results=$(
+            run_search "project $project conventions decisions patterns" "" 6 "$fallback_threshold" \
+            | jq -r '[.results[]?] | .[0:8] | map("- [\(.source)] \(.text)") | join("\n")'
+        )
+    fi
 
     if [[ -n "$results" && "$results" != "null" ]]; then
         echo "## Relevant Memories"
@@ -656,6 +711,7 @@ function memory_extract_memories() {
     local messages="$1"
     local source="${2:-openclaw/$(basename "$PWD")}"
     local context="${3:-stop}"
+    local api="${MEMORIES_URL:-http://localhost:8900}"
 
     local payload
     payload=$(jq -n \
@@ -664,7 +720,7 @@ function memory_extract_memories() {
         --arg c "$context" \
         '{messages: $m, source: $s, context: $c}')
 
-    curl -s -X POST http://localhost:8900/memory/extract \
+    curl -s -X POST "$api/memory/extract" \
         -H "Content-Type: application/json" \
         -H "X-API-Key: $MEMORIES_API_KEY" \
         -d "$payload" \
@@ -685,6 +741,77 @@ memory_extract_memories "conversation text" "openclaw/my-project" "session_end"
 #   "duplicates_skipped": 0
 # }
 ```
+
+## OpenClaw Smart Recall Protocol
+
+### When to recall proactively
+
+- Any question about past decisions, project history, or architecture
+- Starting work on a project you have touched before
+- When the user says `remember`, `last time`, `we decided`, or `what was`
+- Before making a significant technical decision
+
+### How to recall
+
+Use a multi-prefix strategy instead of one generic search:
+
+- `openclaw/{project}` for architecture, decisions, and conventions
+- `learning/{project}` for fixes, gotchas, and workarounds
+- `wip/{project}` for deferred work, blockers, and open threads
+
+The built-in `memory_recall_memories` helper already does this merge + dedup flow. If you need
+manual control, use these tuned searches directly:
+
+```bash
+PROJECT="my-project"
+
+# Decisions + architecture
+curl -s -X POST "$MEMORIES_URL/search" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
+  -d "{\"query\":\"project $PROJECT architecture decisions conventions\",\"source_prefix\":\"openclaw/$PROJECT\",\"k\":4,\"hybrid\":true,\"threshold\":0.35}"
+
+# Learnings + fixes
+curl -s -X POST "$MEMORIES_URL/search" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
+  -d "{\"query\":\"project $PROJECT fixes gotchas learnings workarounds\",\"source_prefix\":\"learning/$PROJECT\",\"k\":3,\"hybrid\":true,\"threshold\":0.35}"
+
+# Deferred work + blockers
+curl -s -X POST "$MEMORIES_URL/search" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
+  -d "{\"query\":\"project $PROJECT deferred work blockers open threads\",\"source_prefix\":\"wip/$PROJECT\",\"k\":2,\"hybrid\":true,\"threshold\":0.35}"
+```
+
+If all scoped searches return empty, fall back to a broader global search around `0.5`.
+
+### Memory Playbook
+
+- Surface deferred or blocked work explicitly before the rest of the context
+- Carry boundary conditions forward, especially `until`, `unless`, and `because`
+- Do not ask the user to reconfirm a remembered decision before acting on it
+- For short follow-up prompts, include recent conversation context in the search query
+
+## Automatic Lifecycle (OpenClaw)
+
+OpenClaw has no hook system, so the agent must call the memory helpers explicitly.
+
+**At the start of any non-trivial task:**
+```bash
+memory_recall_memories "<topic or project name>"
+```
+
+**After completing significant work (decision made, bug fixed, feature built):**
+```bash
+memory_extract_memories "<summary of what happened>" "openclaw/<project>" "stop"
+```
+
+**During heartbeats or maintenance cycles:**
+- Search for stale, contradicted, or deferred memories that need cleanup
+- Sync the QMD bridge with `bash ~/your-workspace/scripts/sync-memories-to-qmd.sh`
+
+Add these reminders to `HEARTBEAT.md` if you want them enforced on every heartbeat cycle.
 
 ## Memory Discipline — Three Responsibilities
 

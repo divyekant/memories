@@ -209,10 +209,10 @@ If you prefer MCP-only manual config, add this to `~/.cursor/mcp.json`:
 
 ## Setup for Codex
 
-Codex does **not** use Claude's 5-hook `settings.json` format. Codex-native integration uses:
-- `~/.codex/config.toml` for MCP + notify
-- a notify script for after-turn extraction
-- developer instructions to bias retrieval (`memory_search`) every turn
+Codex uses:
+- `~/.codex/settings.json` for a 5-hook lifecycle (`SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`, `SessionEnd`)
+- `~/.codex/config.toml` for MCP + developer instructions
+- hook defaults that read/write `codex/{project}` memories unless you override them
 
 ### Option A: Run the installer (recommended)
 
@@ -223,30 +223,81 @@ cd mcp-server && npm install && cd ..
 ```
 
 The installer will:
-1. Install `memory-codex-notify.sh` to `~/.codex/hooks/memory/`
-2. Add `notify = ["/Users/you/.codex/hooks/memory/memory-codex-notify.sh"]` to `~/.codex/config.toml` when `notify` is not already set
+1. Install memory hook scripts to `~/.codex/hooks/memory/`
+2. Merge the 5 Codex hook events into `~/.codex/settings.json`
 3. Add MCP server config for `memories` to `~/.codex/config.toml` when missing
 4. Add default `developer_instructions` (if not already set) to bias `memory_search` usage
 
-If `~/.codex/config.toml` already has `notify = [...]`, merge the Memories hook path into that existing list manually.
-The notify script loads `MEMORIES_URL` / `MEMORIES_API_KEY` from `~/.config/memories/env` (or `MEMORIES_ENV_FILE` override).
-For scoped API keys, set `MEMORIES_SOURCE_PREFIX` (or `MEMORIES_SOURCE`) so notify writes stay inside authorized prefixes.
+The hooks load `MEMORIES_URL` / `MEMORIES_API_KEY` from `~/.config/memories/env` (or `MEMORIES_ENV_FILE` override).
+Default scoped prefixes are `codex/{project},learning/{project},wip/{project}` for retrieval and `codex/{project}` for extraction.
+For scoped API keys, override them with `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE`.
 
 ### Option B: Manual setup
 
-**Step 1: Install notify script**
+**Step 1: Install hook scripts**
 
 ```bash
 mkdir -p ~/.codex/hooks/memory
-cp ~/projects/memories/integrations/codex/memory-codex-notify.sh ~/.codex/hooks/memory/
-chmod +x ~/.codex/hooks/memory/memory-codex-notify.sh
+cp ~/projects/memories/integrations/claude-code/hooks/memory-*.sh ~/.codex/hooks/memory/
+cp ~/projects/memories/integrations/claude-code/hooks/_lib.sh ~/.codex/hooks/memory/
+cp ~/projects/memories/integrations/claude-code/hooks/response-hints.json ~/.codex/hooks/memory/
+chmod +x ~/.codex/hooks/memory/*.sh
 ```
 
-**Step 2: Edit `~/.codex/config.toml`**
+**Step 2: Edit `~/.codex/settings.json`**
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "/Users/you/.codex/hooks/memory/memory-recall.sh",
+        "timeout": 5
+      }]
+    }],
+    "UserPromptSubmit": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "/Users/you/.codex/hooks/memory/memory-query.sh",
+        "timeout": 3
+      }]
+    }],
+    "Stop": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "/Users/you/.codex/hooks/memory/memory-extract.sh",
+        "timeout": 30
+      }]
+    }],
+    "PreCompact": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "/Users/you/.codex/hooks/memory/memory-flush.sh",
+        "timeout": 30
+      }]
+    }],
+    "SessionEnd": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "/Users/you/.codex/hooks/memory/memory-commit.sh",
+        "timeout": 30
+      }]
+    }]
+  }
+}
+```
+
+If `~/.codex/settings.json` already has hooks, merge these entries instead of replacing the file.
+
+**Step 3: Edit `~/.codex/config.toml`**
 
 ```toml
-notify = ["/Users/you/.codex/hooks/memory/memory-codex-notify.sh"]
-
 [mcp_servers.memories]
 command = "node"
 args = ["/path/to/memories/mcp-server/index.js"]
@@ -256,15 +307,16 @@ MEMORIES_URL = "http://localhost:8900"
 MEMORIES_API_KEY = "your-api-key-here"
 ```
 
-If your API key is prefix-scoped and does not allow `codex/*`, set one of these in `~/.config/memories/env`:
+**Step 4: Optional source overrides for scoped keys**
+
+If your API key is prefix-scoped and does not allow `codex/*`, set these in `~/.config/memories/env`:
 
 ```bash
-MEMORIES_SOURCE_PREFIX="your-authorized-prefix"
-# or exact source:
-# MEMORIES_SOURCE="your-authorized-prefix/your-project"
+MEMORIES_SOURCE_PREFIXES="your-authorized-prefix/{project},learning/{project},wip/{project}"
+MEMORIES_EXTRACT_SOURCE="your-authorized-prefix/{project}"
 ```
 
-**Step 3: Restart Codex**
+**Step 5: Restart Codex**
 
 Codex will expose `memory_search`, `memory_add`, `memory_delete`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, and other tools via MCP.
 
@@ -275,8 +327,28 @@ Codex will expose `memory_search`, `memory_add`, `memory_delete`, `memory_delete
 OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update the skill file:
 
 1. Copy `integrations/openclaw-skill.md` to your OpenClaw skills directory
-2. The skill includes `memory_recall_memories` (called at task start) and `memory_extract_memories` (called after completing tasks)
-3. The agent is instructed when to call these automatically
+2. Add `MEMORIES_URL` / `MEMORIES_API_KEY` to the OpenClaw gateway config (`openclaw config patch ...`) so skill exec calls can authenticate
+3. The skill instructs the agent to call `memory_recall_memories` at task start, `memory_extract_memories` after significant work, and the QMD sync script from heartbeat/maintenance flows
+
+### Capturing context on compaction
+
+OpenClaw supports `compaction.memoryFlush`, which lets you run a prompt before the gateway compacts context. You can use that to write a markdown summary and send the same summary to Memories:
+
+```bash
+openclaw config patch '{
+  "agents": {
+    "defaults": {
+      "compaction": {
+        "memoryFlush": {
+          "prompt": "Session nearing compaction. Do ALL of the following:\n1. Write key context to memory/YYYY-MM-DD.md.\n2. Extract to Memories: curl -s -X POST $MEMORIES_URL/memory/extract -H '\''Content-Type: application/json'\'' -H '\''X-API-Key: $MEMORIES_API_KEY'\'' -d '\''{\"messages\":\"<session summary>\",\"source\":\"openclaw/jack\",\"context\":\"pre_compact\"}'\''\n3. Reply NO_REPLY."
+        }
+      }
+    }
+  }
+}'
+```
+
+This makes compaction events populate Memories automatically instead of relying only on manual extraction.
 
 ---
 
@@ -296,10 +368,14 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 
 | Mechanism | Event | What It Does |
 |-----------|-------|--------------|
-| `notify` + `memory-codex-notify.sh` | After each completed turn | Sends user+assistant exchange to `/memory/extract` (`context=after_agent`), handling snake/camel/kebab payloads and transcript fallback when available |
+| `settings.json` + `memory-recall.sh` | Session start | Loads project-scoped memories and recall guidance |
+| `settings.json` + `memory-query.sh` | Before each prompt | Searches relevant memories using transcript context when available |
+| `settings.json` + `memory-extract.sh` | After response | Sends the last exchange to `/memory/extract` (`context=stop`) |
+| `settings.json` + `memory-flush.sh` | Pre-compact | Sends a larger transcript slice to `/memory/extract` (`context=pre_compact`) |
+| `settings.json` + `memory-commit.sh` | Session end | Final extraction pass when the session closes |
 | MCP tools + developer instructions | Each new user turn | Drives `memory_search` usage before implementation-heavy responses |
 
-Codex currently does not expose Claude-style SessionStart/UserPromptSubmit/PreCompact/SessionEnd hook callbacks in `config.toml`.
+Codex uses `~/.codex/settings.json` for hooks and `~/.codex/config.toml` for MCP + developer instructions.
 
 **Token cost:** ~1500 tokens/turn injected context (retrieval). Extraction is async and free if using Ollama, ~$0.001/turn with API providers.
 
@@ -328,9 +404,11 @@ Codex currently does not expose Claude-style SessionStart/UserPromptSubmit/PreCo
 |----------|---------|-------------|
 | `MEMORIES_URL` | `http://localhost:8900` | Memories service URL |
 | `MEMORIES_API_KEY` | (empty) | API key for Memories service auth |
-| `MEMORIES_ENV_FILE` | `~/.config/memories/env` | Hook env file path for Claude/Codex notify scripts |
-| `MEMORIES_SOURCE_PREFIX` | `codex` (Codex notify) | Prefix used to build notify extraction source (`<prefix>/<project>`) |
-| `MEMORIES_SOURCE` | (empty) | Full source override for Codex notify extraction payloads |
+| `MEMORIES_ENV_FILE` | `~/.config/memories/env` | Hook env file path for Claude/Codex hooks and OpenClaw QMD sync snippets |
+| `MEMORIES_SOURCE_PREFIXES` | client-specific | Retrieval prefixes for settings-based hooks. Defaults to `claude-code/{project},learning/{project},wip/{project}` for Claude/Cursor and `codex/{project},learning/{project},wip/{project}` under `~/.codex/hooks/memory`. |
+| `MEMORIES_EXTRACT_SOURCE` | client-specific | Extraction source for settings-based hooks. Defaults to `claude-code/{project}` for Claude/Cursor and `codex/{project}` under `~/.codex/hooks/memory`. |
+| `MEMORIES_SOURCE_PREFIX` | `codex` | Legacy notify-hook prefix used only by `memory-codex-notify.sh` |
+| `MEMORIES_SOURCE` | (empty) | Legacy notify-hook full source override used only by `memory-codex-notify.sh` |
 | `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `chatgpt-subscription`, `ollama`, or empty to disable |
 | `EXTRACT_MODEL` | (per provider) | Override model. Defaults: `claude-haiku-4-5-20251001`, `gpt-4.1-nano`, `gemma3:4b` |
 | `ANTHROPIC_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=anthropic` |
@@ -427,17 +505,17 @@ This enables strict add-only fallback writes (no AUDN update/delete behavior), i
 # Remove Claude hooks
 rm -rf ~/.claude/hooks/memory/
 
-# Remove Codex notify hook
+# Remove Codex hooks
 rm -rf ~/.codex/hooks/memory/
 
-# Remove Codex config entries
-# Edit ~/.codex/config.toml and remove:
-# - notify entry that points to memory-codex-notify.sh
+# Remove Codex hook entries from ~/.codex/settings.json
+
+# Remove Codex config entries from ~/.codex/config.toml:
 # - [mcp_servers.memories] section
 # - [mcp_servers.memories.env] section
 
 # Remove env vars from hook/repo env files
-# Edit ~/.config/memories/env and remove MEMORIES_URL/MEMORIES_API_KEY/MEMORIES_SOURCE_PREFIX/MEMORIES_SOURCE
+# Edit ~/.config/memories/env and remove MEMORIES_URL/MEMORIES_API_KEY/MEMORIES_SOURCE_PREFIXES/MEMORIES_EXTRACT_SOURCE
 # Edit ~/projects/memories/.env and remove EXTRACT_PROVIDER/provider keys
 ```
 
@@ -445,7 +523,7 @@ rm -rf ~/.codex/hooks/memory/
 
 ## Troubleshooting
 
-### Hooks / notify not firing
+### Hooks not firing
 
 ```bash
 # Claude: check hook scripts are executable
@@ -454,11 +532,12 @@ ls -la ~/.claude/hooks/memory/
 # Claude: test recall hook manually
 echo '{"cwd": "/Users/you/project", "session_type": "startup"}' | bash ~/.claude/hooks/memory/memory-recall.sh
 
-# Codex: check notify script
+# Codex: check hook scripts and merged config
 ls -la ~/.codex/hooks/memory/
+jq '.hooks' ~/.codex/settings.json
 
-# Codex: test notify script manually with a sample payload
-bash ~/.codex/hooks/memory/memory-codex-notify.sh '{"type":"agent-turn-complete","cwd":"/Users/you/project","input-messages":["remember this decision"],"last-assistant-message":"stored"}'
+# Codex: test recall hook manually
+echo '{"cwd": "/Users/you/project", "session_type": "startup"}' | bash ~/.codex/hooks/memory/memory-recall.sh
 ```
 
 ### Extraction returning 501

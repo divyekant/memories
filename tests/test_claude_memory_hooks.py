@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from pathlib import Path
 HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "claude-code" / "hooks"
 QUERY_SCRIPT = HOOKS_DIR / "memory-query.sh"
 RECALL_SCRIPT = HOOKS_DIR / "memory-recall.sh"
+EXTRACT_SCRIPT = HOOKS_DIR / "memory-extract.sh"
 
 
 def _write_fake_curl(bin_dir: Path) -> Path:
@@ -111,6 +113,16 @@ def _run_hook(
         calls = [json.loads(line) for line in calls_file.read_text().splitlines() if line.strip()]
 
     return result, calls, home_dir
+
+
+def _install_hook_fixture(home_dir: Path, filename: str) -> Path:
+    hook_dir = home_dir / ".codex" / "hooks" / "memory"
+    hook_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(HOOKS_DIR / filename, hook_dir / filename)
+    shutil.copy2(HOOKS_DIR / "_lib.sh", hook_dir / "_lib.sh")
+    if (HOOKS_DIR / "response-hints.json").exists():
+        shutil.copy2(HOOKS_DIR / "response-hints.json", hook_dir / "response-hints.json")
+    return hook_dir / filename
 
 
 def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path) -> None:
@@ -470,3 +482,60 @@ def test_memory_recall_replaces_existing_synced_block_without_duplication(tmp_pa
     updated = memory_file.read_text()
     assert updated.count("<!-- SYNCED-FROM-MEMORIES-MCP -->") == 1
     assert updated.count("## Synced from Memories") == 1
+
+
+def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    installed_recall = _install_hook_fixture(home_dir, "memory-recall.sh")
+
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 1,
+                        "source": "codex/memories",
+                        "text": "Codex sessions should recall project decisions from codex/{project}.",
+                        "similarity": 0.92,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "learning/memories",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "wip/memories",
+            "response": {"results": [], "count": 0},
+        },
+    ]
+
+    payload = {"cwd": "/Users/example/memories"}
+    result, calls, _ = _run_hook(installed_recall, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    prefixes = [call["body"].get("source_prefix", "") for call in calls]
+    assert prefixes == ["codex/memories", "learning/memories", "wip/memories"]
+
+
+def test_memory_extract_uses_codex_source_when_installed_under_codex(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    installed_extract = _install_hook_fixture(home_dir, "memory-extract.sh")
+
+    payload = {
+        "cwd": "/Users/example/memories",
+        "last_assistant_message": "Assistant: remembered and stored the decision.",
+    }
+
+    result, calls, _ = _run_hook(installed_extract, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0
+    assert calls
+    body = calls[0]["body"]
+    assert body["source"] == "codex/memories"

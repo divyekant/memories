@@ -1752,3 +1752,67 @@ body,
     transition-duration: 0.01ms !important;
   }
 }
+
+/* -- Editable Field ---------------------------------------------------- */
+.editable-field { cursor: pointer; border-bottom: 1px dashed var(--color-text-faint); }
+.editable-field:hover { border-bottom-color: var(--color-primary); }
+.editable-textarea { width: 100%; min-height: 80px; resize: vertical; background: var(--color-bg-surface); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; padding: 8px; font: inherit; }
+.editable-input { width: 100%; background: var(--color-bg-surface); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; padding: 6px 8px; font: inherit; }
+.editable-select { background: var(--color-bg-surface); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; padding: 6px 8px; font: inherit; }
+.editable-actions { display: flex; gap: 6px; margin-top: 6px; }
+
+/* -- Action Badge ------------------------------------------------------ */
+.action-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.action-badge--success { background: rgba(22,163,74,0.15); color: var(--color-success); }
+.action-badge--info { background: rgba(37,99,235,0.15); color: var(--color-info); }
+.action-badge--error { background: rgba(220,38,38,0.15); color: var(--color-error); }
+.action-badge--warning { background: rgba(202,138,4,0.15); color: var(--color-warning); }
+.action-badge--muted { background: rgba(102,102,102,0.15); color: var(--color-text-faint); }
+
+/* -- Approval Toggle --------------------------------------------------- */
+.approval-toggle { width: 28px; height: 28px; border-radius: 4px; border: 1px solid var(--color-border); background: transparent; color: var(--color-text); cursor: pointer; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; }
+.approval-toggle--approved { background: rgba(22,163,74,0.15); color: var(--color-success); border-color: var(--color-success); }
+.approval-toggle--rejected { background: rgba(220,38,38,0.15); color: var(--color-error); border-color: var(--color-error); }
+.approval-toggle--skipped { color: var(--color-text-faint); }
+
+/* -- Bulk Select ------------------------------------------------------- */
+.bulk-action-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: var(--color-bg-elevated); border: 1px solid var(--color-border); border-radius: 8px; margin-bottom: 12px; }
+.bulk-select-all { display: flex; align-items: center; gap: 6px; font-size: 0.8125rem; cursor: pointer; color: var(--color-text-muted); }
+.bulk-count { font-size: 0.8125rem; color: var(--color-primary); font-weight: 600; }
+.bulk-actions { display: flex; gap: 6px; margin-left: auto; }
+.bulk-checkbox { margin-right: 8px; accent-color: var(--color-primary); }
+.memory-item.selected { background: var(--color-primary-dim); }
+
+/* -- Timeline ---------------------------------------------------------- */
+.timeline-event { display: flex; gap: 12px; padding: 8px 0; position: relative; }
+.timeline-event:not(:last-child)::after { content: ""; position: absolute; left: 5px; top: 24px; bottom: -8px; width: 1px; background: var(--color-border); }
+.timeline-dot { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+.timeline-dot--success { background: var(--color-success); }
+.timeline-dot--info { background: var(--color-info); }
+.timeline-dot--error { background: var(--color-error); }
+.timeline-dot--warning { background: var(--color-warning); }
+.timeline-dot--primary { background: var(--color-primary); }
+.timeline-content { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.timeline-title { font-size: 0.8125rem; color: var(--color-text); }
+.timeline-detail { font-size: 0.75rem; color: var(--color-text-muted); }
+.timeline-ts { font-size: 0.6875rem; color: var(--color-text-faint); }
+
+/* -- Comparison Panel -------------------------------------------------- */
+.comparison-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.comparison-side { padding: 14px; border-radius: 8px; border-left: 3px solid transparent; background: var(--color-bg-surface); }
+.comparison-side--error { border-left-color: var(--color-error); }
+.comparison-side--success { border-left-color: var(--color-success); }
+.comparison-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; color: var(--color-text-muted); margin-bottom: 8px; }
+.comparison-source { font-size: 0.75rem; color: var(--color-primary); margin-bottom: 6px; }
+.comparison-text { font-size: 0.8125rem; color: var(--color-text); line-height: 1.5; white-space: pre-wrap; }
+
+/* -- Score Dot (search mode) ------------------------------------------- */
+.memory-item-score { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.score-dot { width: 6px; height: 6px; border-radius: 50%; }
+.score-dot--success { background: var(--color-success); }
+.score-dot--warning { background: var(--color-warning); }
+.score-dot--error { background: var(--color-error); }
+
+@media (max-width: 768px) {
+  .comparison-panel { grid-template-columns: 1fr; }
+}

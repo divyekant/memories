@@ -131,3 +131,15 @@ def test_links_include_incoming(client):
     """Linked memories should request include_incoming=true."""
     js = client.get("/ui/static/app.js").text
     assert "include_incoming=true" in js
+
+
+def test_components_js_exports(client):
+    """components.js should export all 7 reusable component functions."""
+    resp = client.get("/ui/static/components.js")
+    assert resp.status_code == 200
+    js = resp.text
+    for fn in [
+        "editableField", "actionBadge", "approvalToggle",
+        "bulkSelectMode", "memoryCard", "timelineEvent", "comparisonPanel",
+    ]:
+        assert f"export function {fn}" in js, f"Missing export: {fn}"

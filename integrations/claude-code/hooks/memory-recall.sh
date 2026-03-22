@@ -17,6 +17,7 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
+  _default_source_prefixes() { echo 'claude-code/{project},learning/{project},wip/{project}'; }
 fi
 
 # Rotate log on session start
@@ -26,7 +27,7 @@ MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 MEMORIES_SOURCE_PREFIXES="${MEMORIES_SOURCE_PREFIXES:-}"
 if [ -z "$MEMORIES_SOURCE_PREFIXES" ]; then
-  MEMORIES_SOURCE_PREFIXES='claude-code/{project},learning/{project},wip/{project}'
+  MEMORIES_SOURCE_PREFIXES="$(_default_source_prefixes)"
 fi
 MEMORIES_RECALL_SCOPED_THRESHOLD="${MEMORIES_RECALL_SCOPED_THRESHOLD:-0.35}"
 MEMORIES_RECALL_FALLBACK_THRESHOLD="${MEMORIES_RECALL_FALLBACK_THRESHOLD:-0.55}"
@@ -102,7 +103,7 @@ search_memories() {
 query_for_prefix() {
   local prefix="$1"
   case "$prefix" in
-    claude-code/*)
+    claude-code/*|codex/*)
       printf 'project %s architecture decisions conventions patterns' "$PROJECT"
       ;;
     learning/*)
@@ -128,7 +129,7 @@ for raw_prefix in "${prefix_templates[@]}"; do
   query=$(query_for_prefix "$prefix")
   limit=3
   case "$prefix" in
-    claude-code/*) limit=4 ;;
+    claude-code/*|codex/*) limit=4 ;;
     learning/*|wip/*) limit=2 ;;
   esac
 

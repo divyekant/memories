@@ -17,13 +17,14 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
+  _default_source_prefixes() { echo 'claude-code/{project},learning/{project},wip/{project}'; }
 fi
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 MEMORIES_SOURCE_PREFIXES="${MEMORIES_SOURCE_PREFIXES:-}"
 if [ -z "$MEMORIES_SOURCE_PREFIXES" ]; then
-  MEMORIES_SOURCE_PREFIXES='claude-code/{project},learning/{project},wip/{project}'
+  MEMORIES_SOURCE_PREFIXES="$(_default_source_prefixes)"
 fi
 MEMORIES_QUERY_SCOPED_K="${MEMORIES_QUERY_SCOPED_K:-3}"
 MEMORIES_QUERY_FALLBACK_K="${MEMORIES_QUERY_FALLBACK_K:-5}"

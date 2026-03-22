@@ -14,6 +14,7 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
+  _default_extract_source() { echo 'claude-code/{project}'; }
 fi
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
@@ -34,7 +35,7 @@ TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
 TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
 
 # Build extraction source — supports {project} placeholder (Task 1.3)
-_DEFAULT_SRC="claude-code/{project}"
+_DEFAULT_SRC="$(_default_extract_source)"
 _EXTRACT_SRC="${MEMORIES_EXTRACT_SOURCE:-$_DEFAULT_SRC}"
 SOURCE="${_EXTRACT_SRC//\{project\}/$PROJECT}"
 

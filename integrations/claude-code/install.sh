@@ -14,7 +14,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HOOKS_SRC="$SCRIPT_DIR/hooks"
 OPENCLAW_SKILL_SRC="$REPO_ROOT/integrations/openclaw-skill.md"
-CODEX_NOTIFY_SRC="$REPO_ROOT/integrations/codex/memory-codex-notify.sh"
 
 CODEX_NOTIFY_MARKER="Memories Codex notify"
 CODEX_MCP_MARKER="Memories Codex MCP"
@@ -39,7 +38,7 @@ Usage:
 Options:
   --auto       Auto-detect targets (default)
   --claude     Install Claude Code hooks + MCP
-  --codex      Install Codex integration (notify + MCP)
+  --codex      Install Codex integration (settings hooks + MCP)
   --cursor     Install Cursor hooks + MCP
   --openclaw   Install OpenClaw skill
   --uninstall  Remove installed files for selected targets
@@ -247,11 +246,11 @@ if [ "$UNINSTALL" = true ]; then
   fi
 
   if [ "$TARGET_CODEX" = true ]; then
-    remove_target "Codex notify hook" "$HOME/.codex/hooks/memory"
+    remove_target "Codex hooks" "$HOME/.codex/hooks/memory"
     remove_marked_block "$HOME/.codex/config.toml" "$CODEX_NOTIFY_MARKER"
     remove_marked_block "$HOME/.codex/config.toml" "$CODEX_MCP_MARKER"
     remove_marked_block "$HOME/.codex/config.toml" "$CODEX_DEV_INSTR_MARKER"
-    echo "  Manual cleanup (if needed): remove custom notify/mcp/developer_instructions entries from $HOME/.codex/config.toml"
+    echo "  Manual cleanup: remove Memories hook entries from $HOME/.codex/settings.json and any custom config blocks from $HOME/.codex/config.toml"
   fi
 
   if [ "$TARGET_CURSOR" = true ]; then
@@ -358,10 +357,36 @@ render_hooks_json() {
   ' "$HOOKS_SRC/hooks.json"
 }
 
+render_codex_hooks_json() {
+  local hooks_dir="$1"
+  jq --arg hooks_dir "$hooks_dir" '
+    .hooks |= with_entries(
+      select(
+        .key == "SessionStart" or
+        .key == "UserPromptSubmit" or
+        .key == "Stop" or
+        .key == "PreCompact" or
+        .key == "SessionEnd"
+      )
+    )
+    | .hooks |= with_entries(
+      .value |= map(
+        .hooks |= map(
+          if .type == "command"
+          then .command = ($hooks_dir + "/" + (.command | split("/") | last))
+          else .
+          end
+        )
+      )
+    )
+  ' "$HOOKS_SRC/hooks.json"
+}
+
 install_hooks_target() {
   local client="$1"
   local hooks_dir="$2"
   local settings_file="$3"
+  local hooks_profile="${4:-default}"
 
   mkdir -p "$hooks_dir"
   cp "$HOOKS_SRC"/memory-*.sh "$hooks_dir/"
@@ -378,7 +403,11 @@ install_hooks_target() {
   fi
 
   local hooks_json
-  hooks_json=$(render_hooks_json "$hooks_dir")
+  if [ "$hooks_profile" = "codex" ]; then
+    hooks_json=$(render_codex_hooks_json "$hooks_dir")
+  else
+    hooks_json=$(render_hooks_json "$hooks_dir")
+  fi
 
   local merged
   merged=$(jq -s '
@@ -457,31 +486,13 @@ install_openclaw_target() {
 
 install_codex_target() {
   local hook_dir="$HOME/.codex/hooks/memory"
-  local notify_script="$hook_dir/memory-codex-notify.sh"
+  local codex_settings="$HOME/.codex/settings.json"
   local codex_config="$HOME/.codex/config.toml"
 
-  mkdir -p "$hook_dir"
-  cp "$CODEX_NOTIFY_SRC" "$notify_script"
-  chmod +x "$notify_script"
-  echo -e "  ${GREEN}[OK]${NC} Installed Codex notify hook: $notify_script"
+  install_hooks_target "Codex" "$hook_dir" "$codex_settings" "codex"
 
   mkdir -p "$(dirname "$codex_config")"
   touch "$codex_config"
-
-  if grep -Eq '^[[:space:]]*notify[[:space:]]*=' "$codex_config"; then
-    if grep -Fq "$notify_script" "$codex_config"; then
-      echo -e "  ${YELLOW}[SKIP]${NC} Codex notify already references Memories hook"
-    else
-      echo -e "  ${YELLOW}[WARN]${NC} Existing notify entry found in $codex_config"
-      echo "       Add this manually to enable extraction hook:"
-      echo "       notify = [\"$notify_script\"]"
-    fi
-  else
-    local escaped_notify_script
-    escaped_notify_script=$(toml_escape "$notify_script")
-    append_marked_block "$codex_config" "$CODEX_NOTIFY_MARKER" "notify = [\"$escaped_notify_script\"]"
-    echo -e "  ${GREEN}[OK]${NC} Added Codex notify config in $codex_config"
-  fi
 
   if grep -Eq '^[[:space:]]*\[mcp_servers\.memories\][[:space:]]*$' "$codex_config"; then
     echo -e "  ${YELLOW}[SKIP]${NC} Codex MCP server 'memories' already configured"
@@ -527,7 +538,7 @@ EOF
     echo -e "  ${GREEN}[OK]${NC} Added Codex developer instructions in $codex_config"
   fi
 
-  echo -e "  ${YELLOW}[NOTE]${NC} Scoped-key tip: set MEMORIES_SOURCE_PREFIX (or MEMORIES_SOURCE) in ~/.config/memories/env if your key is restricted to non-codex prefixes."
+  echo -e "  ${YELLOW}[NOTE]${NC} Scoped-key tip: set MEMORIES_SOURCE_PREFIXES and MEMORIES_EXTRACT_SOURCE in ~/.config/memories/env if your key is restricted to non-codex prefixes."
 }
 
 if [ "$TARGET_CLAUDE" = true ]; then

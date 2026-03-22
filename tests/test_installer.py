@@ -1,22 +1,70 @@
-"""Tests for auto-detect installer target selection."""
+"""Tests for installer target selection and Codex integration behavior."""
 
+import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 
-INSTALL_SCRIPT = Path(__file__).resolve().parents[1] / "integrations" / "claude-code" / "install.sh"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+INSTALL_SCRIPT = REPO_ROOT / "integrations" / "claude-code" / "install.sh"
 
 
-def _run_installer(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _prepare_installer_fixture(tmp_path: Path) -> Path:
+    repo_root = tmp_path / "repo"
+    shutil.copytree(
+        REPO_ROOT / "integrations" / "claude-code",
+        repo_root / "integrations" / "claude-code",
+        dirs_exist_ok=True,
+    )
+    codex_dir = repo_root / "integrations" / "codex"
+    codex_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        REPO_ROOT / "integrations" / "codex" / "memory-codex-notify.sh",
+        codex_dir / "memory-codex-notify.sh",
+    )
+    mcp_dir = repo_root / "mcp-server"
+    mcp_dir.mkdir(parents=True, exist_ok=True)
+    (mcp_dir / "index.js").write_text("// installer test fixture\n")
+    return repo_root / "integrations" / "claude-code" / "install.sh"
+
+
+def _write_fake_curl(bin_dir: Path) -> None:
+    script = bin_dir / "curl"
+    script.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+
+if printf '%s\n' "$@" | grep -q '/health'; then
+  printf '{"total_memories":7}\n'
+  exit 0
+fi
+
+printf '{"job_id":"job-1"}\n'
+"""
+    )
+    script.chmod(0o755)
+
+
+def _run_installer(
+    home: Path,
+    *args: str,
+    install_script: Path = INSTALL_SCRIPT,
+    input_text: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
-        [str(INSTALL_SCRIPT), *args],
-        cwd=str(INSTALL_SCRIPT.parent),
+        [str(install_script), *args],
+        cwd=str(install_script.parent),
         env=env,
         text=True,
         capture_output=True,
+        input=input_text,
         check=False,
     )
 
@@ -53,3 +101,47 @@ def test_uninstall_mode_does_not_require_shell_profile_variable(tmp_path: Path) 
     result = _run_installer(tmp_path, "--claude", "--uninstall")
     assert result.returncode == 0
     assert "unbound variable" not in (result.stderr + result.stdout).lower()
+
+
+def test_codex_install_uses_settings_json_hooks_instead_of_notify(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write_fake_curl(bin_dir)
+
+    result = _run_installer(
+        home,
+        "--codex",
+        install_script=install_script,
+        input_text="4\n",
+        extra_env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+
+    settings = json.loads((home / ".codex" / "settings.json").read_text())
+    hooks = settings["hooks"]
+    assert (
+        hooks["SessionStart"][0]["hooks"][0]["command"]
+        == f"{home}/.codex/hooks/memory/memory-recall.sh"
+    )
+    assert (
+        hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
+        == f"{home}/.codex/hooks/memory/memory-query.sh"
+    )
+    assert (
+        hooks["Stop"][0]["hooks"][0]["command"]
+        == f"{home}/.codex/hooks/memory/memory-extract.sh"
+    )
+
+    config_toml = (home / ".codex" / "config.toml").read_text()
+    assert "[mcp_servers.memories]" in config_toml
+    assert "developer_instructions" in config_toml
+    assert "notify =" not in config_toml
+
+    hook_dir = home / ".codex" / "hooks" / "memory"
+    assert (hook_dir / "memory-recall.sh").exists()
+    assert (hook_dir / "memory-query.sh").exists()
+    assert (hook_dir / "memory-extract.sh").exists()
+    assert not (hook_dir / "memory-codex-notify.sh").exists()

@@ -315,9 +315,8 @@ MEMORIES_API_KEY = "your-api-key-here"
 If your API key is prefix-scoped and does not allow `codex/*`, set hook source overrides in `~/.config/memories/env`:
 
 ```bash
-MEMORIES_SOURCE_PREFIX="your-authorized-prefix"
-# or exact source:
-# MEMORIES_SOURCE="your-authorized-prefix/your-project"
+MEMORIES_SOURCE_PREFIXES="your-authorized-prefix/{project},learning/{project},wip/{project}"
+MEMORIES_EXTRACT_SOURCE="your-authorized-prefix/{project}"
 ```
 
 3. Restart Codex. The `memory_search`, `memory_add`, `memory_extract`, `memory_delete`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, and other tools will be available.
@@ -332,17 +331,16 @@ cd ..
 ```
 
 This configures:
+- 5 Codex hooks in `~/.codex/settings.json` (`SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`, `SessionEnd`)
+- hook scripts in `~/.codex/hooks/memory/`
 - MCP server registration in `~/.codex/config.toml`
-- `notify` hook script at `~/.codex/hooks/memory/memory-codex-notify.sh` for after-turn extraction
 - default `developer_instructions` (if not already set) to bias `memory_search` usage on each turn
-- hook env loading from `~/.config/memories/env` (or `MEMORIES_ENV_FILE`) for `MEMORIES_URL`, `MEMORIES_API_KEY`, and optional source overrides (`MEMORIES_SOURCE_PREFIX`, `MEMORIES_SOURCE`)
+- hook env loading from `~/.config/memories/env` (or `MEMORIES_ENV_FILE`) for `MEMORIES_URL`, `MEMORIES_API_KEY`, and optional source overrides (`MEMORIES_SOURCE_PREFIXES`, `MEMORIES_EXTRACT_SOURCE`)
 
 The installer requires `jq`, `curl`, and a running Memories service (`/health` must respond).
-If `~/.codex/config.toml` already has a `notify = [...]` entry, the installer will not overwrite it —
-merge the Memories notify script into that array manually.
-For scoped API keys, set `MEMORIES_SOURCE_PREFIX` (or `MEMORIES_SOURCE`) so hook writes stay inside authorized prefixes.
+For scoped API keys, set `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE` so hook reads/writes stay inside authorized prefixes.
 
-Codex currently exposes an after-turn `notify` hook, not Claude's 5-event hook surface.
+Codex uses `~/.codex/settings.json` for lifecycle hooks and `~/.codex/config.toml` for MCP + developer instructions.
 
 **Usage** (Codex will discover the tools automatically):
 
@@ -578,13 +576,14 @@ cp integrations/openclaw-skill.md ~/.openclaw/skills/memories/SKILL.md
 
 Or see the full SKILL.md in this repo at `integrations/openclaw-skill.md`.
 
-2. Set the API key in your shell profile (`~/.zshrc` or `~/.bashrc`):
+2. Add the API key to the OpenClaw gateway config so skill exec calls can authenticate:
 
 ```bash
-export MEMORIES_API_KEY="your-api-key-here"
+openclaw config patch '{"env": {"vars": {"MEMORIES_URL": "http://localhost:8900", "MEMORIES_API_KEY": "your-api-key-here"}}}'
 ```
 
-The SKILL.md reads `$MEMORIES_API_KEY` from the environment — the key is never stored in the skill file itself.
+Or edit `~/.openclaw/openclaw.json` directly under `env.vars`, then restart the gateway.
+The SKILL.md reads `$MEMORIES_API_KEY` from the environment and includes automatic lifecycle guidance for when to recall, extract, and sync memories.
 
 **Key commands available to OpenClaw agents:**
 
@@ -605,7 +604,7 @@ memory_backup [prefix]
 memory_restore "backup_name"
 ```
 
-All functions use `jq` for safe JSON construction and read auth from `$MEMORIES_API_KEY` env var (no hardcoded secrets).
+All functions use `jq` for safe JSON construction and read auth from `$MEMORIES_API_KEY` in the gateway environment (no hardcoded secrets).
 
 ---
 
@@ -912,7 +911,7 @@ Default compose files now include:
 Memories supports automatic retrieval/extraction, with client-specific behavior:
 - Claude Code: full 10-hook lifecycle (session start, each prompt, after response, pre-compact, post-compact, subagent stop, tool use, file write guard, config change, session end)
 - Cursor: same 10-hook lifecycle via Third-party skills (loads from `~/.claude/settings.json`)
-- Codex: native `notify` hook after each completed turn + MCP/developer instructions for retrieval
+- Codex: 5-hook lifecycle via `~/.codex/settings.json` + MCP/developer instructions in `~/.codex/config.toml`
 - OpenClaw: skill-driven retrieval/extraction flow
 
 ### Claude Code / Cursor Hook Lifecycle
@@ -932,14 +931,18 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 
 **Cursor compatibility note:** Cursor sends `workspace_roots[]` (not `cwd`) and `transcript_path` (not inline `messages`) in hook payloads. The hook scripts handle both formats automatically — no separate configuration needed.
 
-### Codex Lifecycle (Native)
+### Codex Lifecycle
 
 | Event | Mechanism | What happens |
 |-------|-----------|--------------|
-| After each completed turn | `notify` -> `memory-codex-notify.sh` | Sends user+assistant exchange to `/memory/extract` asynchronously (loads hook env file, handles snake/camel/kebab payload variants, supports transcript fallback and source overrides) |
+| Session start | `settings.json` -> `memory-recall.sh` | Loads project-scoped memories and recall guidance for the session |
+| Every prompt | `settings.json` -> `memory-query.sh` | Retrieves relevant memories using transcript context for short follow-ups |
+| After response | `settings.json` -> `memory-extract.sh` | Extracts facts via AUDN |
+| Before compaction | `settings.json` -> `memory-flush.sh` | Aggressive extraction before context loss |
+| Session end | `settings.json` -> `memory-commit.sh` | Final extraction pass |
 | On new turns | MCP tools + developer instructions | Encourages focused `memory_search` before implementation-heavy responses |
 
-Codex does not currently expose the Claude-style SessionStart/UserPromptSubmit/PreCompact/SessionEnd hook callbacks in `config.toml`.
+Codex uses `~/.codex/settings.json` for these hooks and `~/.codex/config.toml` for MCP + developer instructions.
 
 ### Quick setup
 
@@ -960,13 +963,13 @@ npm install
 
 This detects and configures any available targets on your machine:
 - Claude Code hooks (`~/.claude/settings.json`)
-- Codex native config (`~/.codex/config.toml`)
+- Codex hooks (`~/.codex/settings.json`) + MCP/developer instructions (`~/.codex/config.toml`)
 - OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
 
 Cursor is supported via manual MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`).
 
 The installer writes runtime config to:
-- `~/.config/memories/env` for hook vars (`MEMORIES_URL`, optional `MEMORIES_API_KEY`, optional `MEMORIES_SOURCE_PREFIX` / `MEMORIES_SOURCE` for Codex notify source control)
+- `~/.config/memories/env` for hook vars (`MEMORIES_URL`, optional `MEMORIES_API_KEY`, optional `MEMORIES_SOURCE_PREFIXES` / `MEMORIES_EXTRACT_SOURCE` to override default source families)
 - repo `.env` for extraction vars (`EXTRACT_PROVIDER`, provider keys/URL)
 
 Claude/Cursor read hooks also support an optional `MEMORIES_SOURCE_PREFIXES` env var in
@@ -1283,7 +1286,7 @@ memories/
         memory-config-guard.sh      # ConfigChange settings watchdog
         response-hints.json   # Response hint patterns
     codex/
-      memory-codex-notify.sh # Codex notify hook script (after-turn extraction)
+      memory-codex-notify.sh # Legacy Codex notify hook (compatibility/manual fallback)
     claude-code.md        # Claude Code guide
     openclaw-skill.md     # OpenClaw SKILL.md
     QUICKSTART-LLM.md     # LLM-friendly setup guide

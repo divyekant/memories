@@ -68,15 +68,14 @@ cd ..
 
 This auto-detects and configures:
 - Claude Code hooks (`~/.claude/settings.json`)
-- Codex native integration (`~/.codex/config.toml` + notify hook)
+- Codex hooks (`~/.codex/settings.json`) + MCP/developer instructions (`~/.codex/config.toml`)
 - OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
 
 Cursor is supported via MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`) and is currently manual.
 
-Note for Codex: if `~/.codex/config.toml` already contains a `notify` entry, merge
-`~/.codex/hooks/memory/memory-codex-notify.sh` into that list manually.
-For scoped API keys, set `MEMORIES_SOURCE_PREFIX` (or `MEMORIES_SOURCE`) in
-`~/.config/memories/env` so notify writes stay inside authorized prefixes.
+Note for Codex: source defaults are `codex/{project},learning/{project},wip/{project}`
+for retrieval and `codex/{project}` for extraction. For scoped API keys, override them with
+`MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE` in `~/.config/memories/env`.
 
 The installer writes:
 - hook runtime vars to `~/.config/memories/env` (`MEMORIES_URL`, optional `MEMORIES_API_KEY`)

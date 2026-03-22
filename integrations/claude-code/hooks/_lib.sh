@@ -23,6 +23,31 @@ _rotate_log() {
   fi
 }
 
+_memory_client_prefix() {
+  local hook_dir
+  hook_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  case "$hook_dir" in
+    *"/.codex/"*)
+      printf 'codex'
+      ;;
+    *)
+      printf 'claude-code'
+      ;;
+  esac
+}
+
+_default_source_prefixes() {
+  local client_prefix
+  client_prefix="$(_memory_client_prefix)"
+  printf '%s/{project},learning/{project},wip/{project}' "$client_prefix"
+}
+
+_default_extract_source() {
+  local client_prefix
+  client_prefix="$(_memory_client_prefix)"
+  printf '%s/{project}' "$client_prefix"
+}
+
 # Health check — returns 0 if service is reachable
 _health_check() {
   local url="${MEMORIES_URL:-http://localhost:8900}"
