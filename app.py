@@ -908,17 +908,74 @@ async def _periodic_embedder_reload() -> None:
             logger.debug("Periodic auto reload error", exc_info=True)
 
 
+_MAINTENANCE_SLOW_THRESHOLD_SEC = 30
+_MAINTENANCE_RSS_DELTA_WARN_MB = 100
+
+
+def _get_rss_mb():
+    """Return current process RSS in MB."""
+    try:
+        # Linux/Docker: read current RSS from /proc (not high-water mark)
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024  # VmRSS is in kB
+    except (OSError, IOError):
+        pass
+    try:
+        # macOS: ru_maxrss is in bytes; Linux: ru_maxrss is in kB
+        import resource
+        import sys
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if sys.platform == "darwin":
+            return rss / (1024 * 1024)  # bytes -> MB
+        else:
+            return rss / 1024  # kB -> MB
+    except Exception:
+        return 0
+
+
 def _run_scheduled_consolidation():
     """Run consolidation synchronously (called from threadpool)."""
+    rss_start = _get_rss_mb()
+    t0 = time.monotonic()
+    logger.info("Maintenance started: consolidation, RSS=%.0fMB", rss_start)
+
     from consolidator import find_clusters, consolidate_cluster
     clusters = find_clusters(memory)
     for cluster in clusters:
         consolidate_cluster(extract_provider, memory, cluster, dry_run=False)
+
+    elapsed = time.monotonic() - t0
+    rss_end = _get_rss_mb()
+    rss_delta = rss_end - rss_start
+
+    logger.info(
+        "Maintenance complete: consolidation, %d clusters merged, "
+        "%.1fs elapsed, RSS=%.0fMB (%+.0fMB)",
+        len(clusters), elapsed, rss_end, rss_delta,
+    )
+
+    if elapsed > _MAINTENANCE_SLOW_THRESHOLD_SEC:
+        logger.warning(
+            "Maintenance slow: consolidation took %.1fs (threshold %ds)",
+            elapsed, _MAINTENANCE_SLOW_THRESHOLD_SEC,
+        )
+    if rss_delta > _MAINTENANCE_RSS_DELTA_WARN_MB:
+        logger.warning(
+            "Maintenance RSS growth: consolidation +%.0fMB (threshold %dMB)",
+            rss_delta, _MAINTENANCE_RSS_DELTA_WARN_MB,
+        )
+
     return len(clusters)
 
 
 def _run_scheduled_pruning():
     """Run pruning synchronously (called from threadpool)."""
+    rss_start = _get_rss_mb()
+    t0 = time.monotonic()
+    logger.info("Maintenance started: pruning, RSS=%.0fMB", rss_start)
+
     from consolidator import find_prune_candidates
     all_mems = [m for m in memory.metadata if m]
     all_ids = [m["id"] for m in all_mems]
@@ -933,8 +990,28 @@ def _run_scheduled_pruning():
         except Exception:
             skipped += 1
             logger.debug("Pruning: memory %s already deleted (concurrent remove), skipping", c["id"])
-    if skipped:
-        logger.info("Pruning: %d deleted, %d skipped (concurrent deletes)", deleted, skipped)
+
+    elapsed = time.monotonic() - t0
+    rss_end = _get_rss_mb()
+    rss_delta = rss_end - rss_start
+
+    logger.info(
+        "Maintenance complete: pruning, %d pruned, %d skipped, "
+        "%.1fs elapsed, RSS=%.0fMB (%+.0fMB)",
+        deleted, skipped, elapsed, rss_end, rss_delta,
+    )
+
+    if elapsed > _MAINTENANCE_SLOW_THRESHOLD_SEC:
+        logger.warning(
+            "Maintenance slow: pruning took %.1fs (threshold %ds)",
+            elapsed, _MAINTENANCE_SLOW_THRESHOLD_SEC,
+        )
+    if rss_delta > _MAINTENANCE_RSS_DELTA_WARN_MB:
+        logger.warning(
+            "Maintenance RSS growth: pruning +%.0fMB (threshold %dMB)",
+            rss_delta, _MAINTENANCE_RSS_DELTA_WARN_MB,
+        )
+
     return deleted
 
 

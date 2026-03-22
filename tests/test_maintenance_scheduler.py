@@ -2,9 +2,11 @@
 
 import asyncio
 import inspect
+import logging
 import random
+import sys
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 
 class TestMaintenanceSchedulerUsesThreadpool:
@@ -297,3 +299,187 @@ class TestPruningToleratesConcurrentDeletes:
 
             # Only 2 out of 3 succeeded
             assert result == 2
+
+
+class TestMaintenanceObservability:
+    """Verify maintenance helpers log elapsed time and RSS for debugging."""
+
+    def test_consolidation_logs_elapsed_and_rss(self):
+        """_run_scheduled_consolidation must log start RSS and elapsed time."""
+        import app as app_module
+
+        with patch("consolidator.find_clusters", return_value=[]) as mock_find, \
+             patch.object(app_module, "memory") as mock_memory, \
+             patch.object(app_module, "extract_provider") as mock_provider:
+            mock_memory.metadata = []
+
+            with patch("app.logger") as mock_logger:
+                app_module._run_scheduled_consolidation()
+
+                all_logs = [str(c) for c in mock_logger.info.call_args_list]
+                assert any("RSS" in msg for msg in all_logs), \
+                    "Should log RSS at start or end of consolidation"
+                assert any("elapsed" in msg.lower() or "s elapsed" in msg.lower()
+                           or "took" in msg.lower() for msg in all_logs), \
+                    "Should log elapsed time"
+
+    def test_pruning_logs_elapsed_and_rss(self):
+        """_run_scheduled_pruning must log start RSS and elapsed time."""
+        import app as app_module
+
+        with patch("consolidator.find_prune_candidates", return_value=[]) as mock_prune, \
+             patch.object(app_module, "memory") as mock_memory, \
+             patch.object(app_module, "usage_tracker") as mock_tracker:
+            mock_memory.metadata = [{"id": 1, "text": "t", "source": "s"}]
+            mock_tracker.get_unretrieved_memory_ids.return_value = []
+
+            with patch("app.logger") as mock_logger:
+                app_module._run_scheduled_pruning()
+
+                all_logs = [str(c) for c in mock_logger.info.call_args_list]
+                assert any("RSS" in msg for msg in all_logs), \
+                    "Should log RSS at start or end of pruning"
+
+    def test_slow_consolidation_emits_warning(self):
+        """Consolidation exceeding threshold should log a warning."""
+        import app as app_module
+
+        def slow_find(*args, **kwargs):
+            return []
+
+        with patch("consolidator.find_clusters", side_effect=slow_find), \
+             patch.object(app_module, "memory") as mock_memory, \
+             patch.object(app_module, "extract_provider") as mock_provider, \
+             patch("app.time") as mock_time, \
+             patch("app.logger") as mock_logger:
+            mock_memory.metadata = []
+            # Simulate 45 seconds elapsed
+            mock_time.monotonic.side_effect = [0.0, 45.0]
+            mock_time.time = __import__("time").time
+
+            app_module._run_scheduled_consolidation()
+
+            warn_logs = [str(c) for c in mock_logger.warning.call_args_list]
+            assert any("slow" in msg.lower() or "elapsed" in msg.lower()
+                       for msg in warn_logs), \
+                "Should emit warning when consolidation takes >30s"
+
+    def test_fast_consolidation_no_warning(self):
+        """Fast consolidation should NOT emit a warning."""
+        import app as app_module
+
+        with patch("consolidator.find_clusters", return_value=[]), \
+             patch.object(app_module, "memory") as mock_memory, \
+             patch.object(app_module, "extract_provider") as mock_provider, \
+             patch("app.time") as mock_time, \
+             patch("app.logger") as mock_logger:
+            mock_memory.metadata = []
+            # Simulate 2 seconds elapsed
+            mock_time.monotonic.side_effect = [0.0, 2.0]
+            mock_time.time = __import__("time").time
+
+            app_module._run_scheduled_consolidation()
+
+            warn_logs = [str(c) for c in mock_logger.warning.call_args_list]
+            assert not any("slow" in msg.lower() or "elapsed" in msg.lower()
+                           for msg in warn_logs), \
+                "Should NOT warn when consolidation is fast"
+
+    def test_high_rss_delta_emits_warning(self):
+        """Large RSS growth during maintenance should log a warning."""
+        import app as app_module
+
+        rss_call_count = [0]
+
+        def fake_get_rss():
+            rss_call_count[0] += 1
+            if rss_call_count[0] == 1:
+                return 400  # start: 400 MB
+            return 520  # end: 520 MB (+120 MB)
+
+        with patch("consolidator.find_clusters", return_value=[]), \
+             patch.object(app_module, "memory") as mock_memory, \
+             patch.object(app_module, "extract_provider") as mock_provider, \
+             patch("app.time") as mock_time, \
+             patch("app._get_rss_mb", side_effect=fake_get_rss), \
+             patch("app.logger") as mock_logger:
+            mock_memory.metadata = []
+            mock_time.monotonic.side_effect = [0.0, 5.0]
+            mock_time.time = __import__("time").time
+
+            app_module._run_scheduled_consolidation()
+
+            warn_logs = [str(c) for c in mock_logger.warning.call_args_list]
+            assert any("RSS" in msg for msg in warn_logs), \
+                "Should warn when RSS grows significantly during maintenance"
+
+
+class TestGetRssMb:
+    """Verify _get_rss_mb returns current RSS, not high-water mark."""
+
+    def test_returns_positive_number(self):
+        """_get_rss_mb should return a positive number on any platform."""
+        import app as app_module
+
+        result = app_module._get_rss_mb()
+        assert result > 0, "_get_rss_mb should return positive RSS on macOS/Linux"
+
+    def test_prefers_proc_self_status_on_linux(self):
+        """On Linux, should read /proc/self/status VmRSS for current RSS."""
+        import app as app_module
+
+        proc_content = (
+            "Name:\tpython\n"
+            "VmPeak:\t  512000 kB\n"
+            "VmRSS:\t  256000 kB\n"
+            "VmSize:\t  400000 kB\n"
+        )
+        m = mock_open(read_data=proc_content)
+        with patch("builtins.open", m):
+            result = app_module._get_rss_mb()
+        # 256000 kB = 250 MB
+        assert result == 250.0, f"Expected 250.0 MB, got {result}"
+
+    def test_falls_back_to_resource_on_macos(self):
+        """When /proc/self/status is unavailable, fall back to resource module."""
+        import app as app_module
+
+        with patch("builtins.open", side_effect=OSError("no /proc on macOS")):
+            result = app_module._get_rss_mb()
+        # Should still return a positive number via resource fallback
+        assert result > 0, "Should fall back to resource module when /proc unavailable"
+
+    def test_macos_divides_ru_maxrss_by_1048576(self):
+        """On macOS, ru_maxrss is in bytes; must divide by 1024*1024."""
+        import app as app_module
+
+        mock_usage = MagicMock()
+        mock_usage.ru_maxrss = 200 * 1024 * 1024  # 200 MB in bytes
+
+        with patch("builtins.open", side_effect=OSError("no /proc")), \
+             patch("resource.getrusage", return_value=mock_usage), \
+             patch.object(sys, "platform", "darwin"):
+            result = app_module._get_rss_mb()
+        assert result == 200.0, f"Expected 200.0 MB on macOS, got {result}"
+
+    def test_linux_divides_ru_maxrss_by_1024(self):
+        """On Linux (without /proc), ru_maxrss is in kB; must divide by 1024."""
+        import app as app_module
+
+        mock_usage = MagicMock()
+        mock_usage.ru_maxrss = 200 * 1024  # 200 MB in kB
+
+        with patch("builtins.open", side_effect=OSError("no /proc")), \
+             patch("resource.getrusage", return_value=mock_usage), \
+             patch.object(sys, "platform", "linux"):
+            result = app_module._get_rss_mb()
+        assert result == 200.0, f"Expected 200.0 MB on Linux fallback, got {result}"
+
+    def test_returns_zero_when_all_methods_fail(self):
+        """If both /proc and resource fail, should return 0."""
+        import app as app_module
+
+        with patch("builtins.open", side_effect=OSError("no /proc")), \
+             patch("resource.getrusage", side_effect=Exception("no resource")):
+            result = app_module._get_rss_mb()
+        assert result == 0, f"Expected 0 when all methods fail, got {result}"
