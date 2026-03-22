@@ -12,6 +12,10 @@ DEFAULTS = {
     "single_call": False,
     "enabled": True,
     "rules": {},
+    "ttl_days": None,
+    "confidence_threshold": None,
+    "min_age_days": None,
+    "confidence_half_life_days": None,
 }
 
 # Internal key used to track which fields were explicitly set by the user.
