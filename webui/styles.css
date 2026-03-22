@@ -1780,8 +1780,9 @@ body,
 .bulk-select-all { display: flex; align-items: center; gap: 6px; font-size: 0.8125rem; cursor: pointer; color: var(--color-text-muted); }
 .bulk-count { font-size: 0.8125rem; color: var(--color-primary); font-weight: 600; }
 .bulk-actions { display: flex; gap: 6px; margin-left: auto; }
-.bulk-checkbox { margin-right: 8px; accent-color: var(--color-primary); }
-.memory-item.selected { background: var(--color-primary-dim); }
+.bulk-checkbox { margin-right: 8px; accent-color: var(--color-primary); cursor: pointer; }
+.bulk-select-toggle.active { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.memory-item.selected, .memory-card.selected { background: var(--color-primary-dim); }
 
 /* -- Timeline ---------------------------------------------------------- */
 .timeline-event { display: flex; gap: 12px; padding: 8px 0; position: relative; }
@@ -1816,3 +1817,33 @@ body,
 @media (max-width: 768px) {
   .comparison-panel { grid-template-columns: 1fr; }
 }
+
+/* -- Toast Action Button ----------------------------------------------- */
+.toast-action-btn { background: transparent; border: 1px solid currentColor; color: inherit; padding: 2px 10px; border-radius: 4px; cursor: pointer; font-size: 0.75rem; margin-left: 12px; font-weight: 600; }
+.toast-action-btn:hover { background: rgba(255,255,255,0.1); }
+
+/* -- Extraction Modal ----------------------------------------------------- */
+.extract-results { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; }
+.extract-fact { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border-radius: 4px; background: var(--color-bg-surface); }
+.extract-fact--noop { opacity: 0.5; }
+.extract-fact-text { line-height: 1.5; }
+.extract-summary { display: flex; gap: 12px; padding: 8px 0; font-size: 0.8125rem; color: var(--color-text-muted); border-top: 1px solid var(--color-border); margin-top: 8px; }
+.extract-mode-toggle { display: flex; gap: 4px; }
+.extract-mode-toggle .btn.active { background: var(--color-primary); color: var(--color-bg); }
+
+/* -- Create Memory Button & Modal ----------------------------------------- */
+.create-memory-btn { font-size: 0.8125rem; }
+.modal-label { display: block; font-size: 0.75rem; font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+
+/* -- Detail Panel Tabs ---------------------------------------------------- */
+.detail-tabs { display: flex; border-bottom: 1px solid var(--color-border); margin-bottom: 16px; }
+.detail-tab { background: transparent; border: none; padding: 8px 16px; color: var(--color-text-muted); cursor: pointer; font-size: 0.8125rem; border-bottom: 2px solid transparent; font-family: var(--font-body); transition: color var(--transition-fast), border-color var(--transition-fast); }
+.detail-tab.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+.detail-tab:hover { color: var(--color-text); }
+.detail-tab-content { min-height: 0; }
+
+/* -- Lifecycle Tab -------------------------------------------------------- */
+.lifecycle-origin { display: flex; align-items: center; gap: 8px; padding: 12px; background: var(--color-bg-surface); border-radius: 8px; margin-bottom: 16px; }
+.lifecycle-section { margin-bottom: 16px; }
+.lifecycle-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; color: var(--color-text-muted); margin-bottom: 8px; }
+.lifecycle-timeline { padding: 8px 0; }
