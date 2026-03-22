@@ -65,7 +65,7 @@ except Exception as e:
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/workspace")
 API_KEY = os.getenv("API_KEY", "")  # Empty = no auth (local-only)
-AUTH_RATE_LIMIT = int(os.getenv("AUTH_RATE_LIMIT", "500"))
+AUTH_RATE_LIMIT = int(os.getenv("AUTH_RATE_LIMIT", "10"))
 key_store: KeyStore = None  # type: ignore  — initialized in lifespan
 PORT = int(os.getenv("PORT", "8000"))
 BASE_DIR = Path(__file__).resolve().parent
