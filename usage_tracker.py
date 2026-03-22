@@ -666,7 +666,7 @@ class UsageTracker:
                 f"SUM(CASE WHEN signal='not_useful' THEN 1 ELSE 0 END) as not_useful "
                 f"FROM search_feedback WHERE query != '' {mem_filter}"
                 f"GROUP BY query "
-                f"HAVING not_useful >= ? AND CAST(not_useful AS FLOAT) / COUNT(*) >= ? "
+                f"HAVING COUNT(*) >= ? AND CAST(not_useful AS FLOAT) / COUNT(*) >= ? "
                 f"ORDER BY not_useful DESC LIMIT ?",
                 params,
             ).fetchall()
@@ -696,6 +696,7 @@ class UsageTracker:
                 f"  SUM(CASE WHEN signal='not_useful' THEN 1 ELSE 0 END) as not_useful "
                 f"  FROM search_feedback GROUP BY memory_id) f ON r.memory_id = f.memory_id "
                 f"WHERE r.retrievals >= ? AND COALESCE(f.useful, 0) = 0 "
+                f"AND (COALESCE(f.useful, 0) + COALESCE(f.not_useful, 0)) > 0 "
                 f"ORDER BY r.retrievals DESC LIMIT ?",
                 params,
             ).fetchall()

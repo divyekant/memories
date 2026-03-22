@@ -45,3 +45,22 @@ def test_get_stale_memories_below_threshold(tracker):
     tracker.log_retrieval(memory_id=1, query="q", source="test")
     stale = tracker.get_stale_memories(min_retrievals=3)
     assert len(stale) == 0
+
+
+def test_get_stale_memories_unreviewed_not_stale(tracker):
+    """Memories with many retrievals but zero feedback are unreviewed, not stale."""
+    for _ in range(10):
+        tracker.log_retrieval(memory_id=1, query="q", source="test")
+    # No feedback at all — should NOT appear as stale
+    stale = tracker.get_stale_memories(min_retrievals=3)
+    assert len(stale) == 0
+
+
+def test_get_problem_queries_min_feedback_total(tracker):
+    """min_feedback applies to total feedback count, not just negative count."""
+    tracker.log_search_feedback(memory_id=1, query="mixed", signal="not_useful")
+    tracker.log_search_feedback(memory_id=1, query="mixed", signal="useful")
+    # total=2 >= min_feedback=2, negative ratio = 0.5 >= 0.5 — should appear
+    problems = tracker.get_problem_queries(min_feedback=2, min_negative_ratio=0.5)
+    assert len(problems) == 1
+    assert problems[0]["query"] == "mixed"

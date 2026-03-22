@@ -1582,6 +1582,7 @@ async def feedback_history(
 @app.delete("/search/feedback/{feedback_id}")
 async def retract_feedback(feedback_id: int, request: Request):
     auth = _get_auth(request)
+    _require_admin(auth)
     deleted = usage_tracker.delete_feedback(feedback_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Feedback {feedback_id} not found")

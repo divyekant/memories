@@ -2278,7 +2278,34 @@ registerPage("memories", async (container) => {
     try { return decodeURIComponent(raw); } catch { return raw; }
   })();
 
-  if (hashQuery) {
+  // Check URL hash for ?select=<id> parameter (e.g. from health page stale memory View)
+  const selectId = (() => {
+    const hash = window.location.hash || "";
+    const match = hash.match(/[?&]select=(\d+)/);
+    return match ? parseInt(match[1], 10) : null;
+  })();
+
+  if (selectId) {
+    // Load the memory by ID and select it directly
+    await loadMemories();
+    try {
+      const mem = await api(`/memory/${selectId}`);
+      if (mem) {
+        memState.selected = mem;
+        renderContent();
+        // Scroll to and highlight the memory in the list
+        requestAnimationFrame(() => {
+          const item = document.querySelector(`.memory-item[data-mem-id="${selectId}"]`);
+          if (item) {
+            item.classList.add("active");
+            item.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        });
+      }
+    } catch {
+      showToast(`Memory #${selectId} not found`, "error");
+    }
+  } else if (hashQuery) {
     if (globalSearch) globalSearch.value = hashQuery;
     await searchMemories(hashQuery);
   } else if (pendingQuery) {
@@ -3386,7 +3413,7 @@ registerPage("health", async (container) => {
 
         const viewBtn = h("button", { className: "btn btn-sm" }, "View");
         viewBtn.addEventListener("click", () => {
-          window.location.hash = `#/memories?q=${encodeURIComponent(`id:${sm.memory_id}`)}`;
+          window.location.hash = `#/memories?select=${sm.memory_id}`;
         });
 
         const row = h("div", { className: "stale-memory-row" },
