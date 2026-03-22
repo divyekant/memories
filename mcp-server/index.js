@@ -404,6 +404,33 @@ server.tool(
   }
 );
 
+server.tool(
+  "memory_deferred",
+  "List deferred/WIP memories for a project. Surfaces incomplete threads from wip/{project} source prefix.",
+  {
+    project: z.string().min(1).describe("Project name to search wip/ prefix for"),
+    k: z.number().int().min(1).max(20).default(5).describe("Number of results"),
+  },
+  async ({ project, k = 5 }) => {
+    const data = await memoriesRequest("/search", {
+      method: "POST",
+      body: JSON.stringify({
+        query: "deferred incomplete blocked todo revisit wip",
+        k,
+        hybrid: true,
+        source_prefix: `wip/${project}`,
+      }),
+    });
+    if (data.count === 0) {
+      return { content: [{ type: "text", text: `No deferred work found for project "${project}"` }] };
+    }
+    const lines = data.results.map((r, i) => `[${i + 1}] ${r.source}\n${r.text}`);
+    return {
+      content: [{ type: "text", text: `${data.count} deferred item(s) for "${project}":\n\n${lines.join("\n\n---\n\n")}` }],
+    };
+  }
+);
+
 // -- Start -------------------------------------------------------------------
 
 const transport = new StdioServerTransport();
