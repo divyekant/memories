@@ -35,7 +35,7 @@ async function memoriesRequest(path, options = {}) {
 
 const server = new McpServer({
   name: "memories",
-  version: "3.1.0",
+  version: "3.4.0",
 });
 
 // -- Tools -------------------------------------------------------------------
@@ -49,11 +49,13 @@ server.tool(
     hybrid: z.boolean().default(true).describe("Use hybrid BM25+vector search (recommended)"),
     threshold: z.number().min(0).max(1).optional().describe("Minimum similarity score (0-1)"),
     feedback_weight: z.number().min(0).max(1).default(0.1).describe("Weight for feedback-based ranking (0=disabled, default 0.1)"),
+    confidence_weight: z.number().min(0).max(1).default(0).describe("Weight for confidence-based ranking (0=disabled)"),
   },
-  async ({ query, k = 5, hybrid = true, threshold, feedback_weight }) => {
+  async ({ query, k = 5, hybrid = true, threshold, feedback_weight, confidence_weight }) => {
     const body = { query, k, hybrid };
     if (threshold !== undefined) body.threshold = threshold;
     if (feedback_weight !== undefined) body.feedback_weight = feedback_weight;
+    if (confidence_weight !== undefined && confidence_weight > 0) body.confidence_weight = confidence_weight;
 
     const data = await memoriesRequest("/search", {
       method: "POST",

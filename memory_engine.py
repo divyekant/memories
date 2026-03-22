@@ -906,7 +906,14 @@ class MemoryEngine:
     def _enrich_with_confidence(self, mem: Dict[str, Any]) -> Dict[str, Any]:
         """Add computed confidence to a memory dict."""
         anchor = mem.get("updated_at") or mem.get("created_at") or mem.get("timestamp")
-        mem["confidence"] = round(self.compute_confidence(anchor), 4)
+        # Resolve per-prefix half-life
+        half_life = 90.0  # default
+        if hasattr(self, '_profiles') and self._profiles:
+            source = mem.get("source", "")
+            resolved = self._profiles.resolve(source)
+            if resolved.get("confidence_half_life_days") is not None:
+                half_life = resolved["confidence_half_life_days"]
+        mem["confidence"] = round(self.compute_confidence(anchor, half_life_days=half_life), 4)
         return mem
 
     def get_memory(self, memory_id: int) -> Dict[str, Any]:
@@ -982,7 +989,7 @@ class MemoryEngine:
                 if metadata_patch:
                     _reserved = {"id", "text", "source", "timestamp", "created_at", "updated_at", "entity_key"}
                     for key, value in metadata_patch.items():
-                        if key in _reserved:
+                        if key in _reserved or key.startswith("_policy_"):
                             continue
                         meta[key] = value
                     updated_fields.append("metadata")
@@ -1023,6 +1030,176 @@ class MemoryEngine:
         mem_source = meta.get("source", "")
         event_bus.emit("memory.updated", {"id": memory_id, "updated_fields": updated_fields, "source": mem_source})
         return {"id": memory_id, "updated_fields": updated_fields}
+
+    def enforce_policies(self, dry_run: bool = True) -> Dict[str, Any]:
+        """Evaluate each memory against its resolved policy. Archive candidates if not dry_run."""
+        actions: List[Dict[str, Any]] = []
+        excluded_pinned = 0
+        excluded_archived = 0
+        candidates_scanned = 0
+        by_rule: Dict[str, int] = {"ttl": 0, "confidence": 0}
+
+        now = datetime.now(timezone.utc)
+
+        for mem in self.metadata:
+            if not mem:
+                continue
+            if mem.get("archived"):
+                excluded_archived += 1
+                continue
+            if mem.get("pinned"):
+                excluded_pinned += 1
+                continue
+
+            candidates_scanned += 1
+            source = mem.get("source", "")
+            policy = self._profiles.resolve(source) if hasattr(self, '_profiles') and self._profiles else {}
+
+            # Compute age
+            anchor = mem.get("updated_at") or mem.get("created_at") or mem.get("timestamp")
+            age_days = 0
+            if anchor:
+                try:
+                    ts = datetime.fromisoformat(anchor.replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    age_days = (now - ts).days
+                except (ValueError, TypeError):
+                    pass
+
+            # Compute confidence with per-prefix half-life
+            half_life = policy.get("confidence_half_life_days") or 90.0
+            confidence = self.compute_confidence(anchor, half_life_days=half_life)
+
+            reasons: List[Dict[str, Any]] = []
+
+            # TTL check
+            ttl = policy.get("ttl_days")
+            if ttl is not None and age_days > ttl:
+                reasons.append({"rule": "ttl", "ttl_days": ttl, "age_days": age_days, "prefix": source})
+                by_rule["ttl"] += 1
+
+            # Confidence check
+            threshold = policy.get("confidence_threshold")
+            min_age = policy.get("min_age_days")
+            if threshold is not None and min_age is not None:
+                if confidence < threshold and age_days > min_age:
+                    reasons.append({
+                        "rule": "confidence", "threshold": threshold,
+                        "confidence": round(confidence, 4), "min_age_days": min_age, "prefix": source,
+                    })
+                    by_rule["confidence"] += 1
+
+            if not reasons:
+                continue
+
+            action_type = "would_archive" if dry_run else "archived"
+            actions.append({
+                "memory_id": mem["id"],
+                "source": source,
+                "age_days": age_days,
+                "confidence": round(confidence, 4),
+                "reasons": reasons,
+                "action": action_type,
+            })
+
+        # Execute if not dry_run — acquire locks and FULLY re-evaluate each candidate.
+        # The scan phase ran unlocked, so source, updated_at, pinned, archived may have changed.
+        # Inside the lock, recompute policy inputs from current meta state.
+        skipped_stale = 0
+        if not dry_run and actions:
+            candidate_ids = [a["memory_id"] for a in actions]
+            with self._entity_locks.acquire_many(["__all__"]):
+                with self._write_lock:
+                    archived_at = now.isoformat()
+                    final_actions = []
+                    for mem_id in candidate_ids:
+                        # Re-fetch current meta (may have changed since scan)
+                        try:
+                            meta = self._get_meta_by_id(mem_id)
+                        except (ValueError, KeyError, IndexError):
+                            skipped_stale += 1
+                            continue
+                        if meta.get("archived") or meta.get("pinned"):
+                            skipped_stale += 1
+                            continue
+
+                        # Recompute policy inputs from current state
+                        source = meta.get("source", "")
+                        policy = self._profiles.resolve(source) if hasattr(self, '_profiles') and self._profiles else {}
+                        anchor = meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
+                        age_days = 0
+                        if anchor:
+                            try:
+                                ts = datetime.fromisoformat(anchor.replace("Z", "+00:00"))
+                                if ts.tzinfo is None:
+                                    ts = ts.replace(tzinfo=timezone.utc)
+                                age_days = (now - ts).days
+                            except (ValueError, TypeError):
+                                pass
+                        half_life = policy.get("confidence_half_life_days") or 90.0
+                        confidence = self.compute_confidence(anchor, half_life_days=half_life)
+
+                        # Re-evaluate policy rules with fresh data
+                        reasons = []
+                        ttl = policy.get("ttl_days")
+                        if ttl is not None and age_days > ttl:
+                            reasons.append({"rule": "ttl", "ttl_days": ttl, "age_days": age_days, "prefix": source})
+                        threshold = policy.get("confidence_threshold")
+                        min_age = policy.get("min_age_days")
+                        if threshold is not None and min_age is not None:
+                            if confidence < threshold and age_days > min_age:
+                                reasons.append({"rule": "confidence", "threshold": threshold,
+                                                "confidence": round(confidence, 4), "min_age_days": min_age, "prefix": source})
+
+                        if not reasons:
+                            skipped_stale += 1
+                            continue
+
+                        # Archive with evidence from fresh evaluation
+                        primary_reason = reasons[0]
+                        evidence = {
+                            "_policy_archived_reason": primary_reason["rule"],
+                            "_policy_archived_policy": f"{primary_reason.get('prefix', '')} {primary_reason['rule']}",
+                            "_policy_archived_at": archived_at,
+                            "_policy_archived_confidence": round(confidence, 4),
+                            "_policy_archived_age_days": age_days,
+                        }
+                        meta["archived"] = True
+                        meta.update(evidence)
+                        self.qdrant_store.set_payload(mem_id, {"archived": True, **evidence})
+                        final_actions.append({
+                            "memory_id": mem_id, "source": source, "age_days": age_days,
+                            "confidence": round(confidence, 4), "reasons": reasons, "action": "archived",
+                        })
+                    self.save()
+                    # Replace scan-phase actions with lock-verified actions
+                    actions = final_actions
+
+        summary_key = "would_archive" if dry_run else "archived"
+        archived_count = len([a for a in actions if a["action"] in ("archived", "would_archive")])
+        # Recompute by_rule from final actions (scan-phase counts may include skipped candidates)
+        by_rule = {"ttl": 0, "confidence": 0}
+        for a in actions:
+            if a["action"] in ("archived", "would_archive"):
+                for r in a.get("reasons", []):
+                    rule = r.get("rule")
+                    if rule in by_rule:
+                        by_rule[rule] += 1
+        result = {
+            "dry_run": dry_run,
+            "actions": actions,
+            "summary": {
+                "candidates_scanned": candidates_scanned,
+                summary_key: archived_count,
+                "by_rule": by_rule,
+                "excluded_pinned": excluded_pinned,
+                "excluded_already_archived": excluded_archived,
+            },
+        }
+        if skipped_stale > 0:
+            result["summary"]["skipped_stale"] = skipped_stale
+        return result
 
     def upsert_memory(
         self,
@@ -1247,6 +1424,7 @@ class MemoryEngine:
         include_archived: bool = False,
         feedback_weight: float = 0.0,
         feedback_scores: Optional[Dict[int, int]] = None,
+        confidence_weight: float = 0.0,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -1299,12 +1477,18 @@ class MemoryEngine:
         if recency_half_life_days <= 0:
             recency_half_life_days = 30.0
 
-        # 4-signal weight scaling (vector + BM25 + recency + feedback = 1.0)
+        # 5-signal weight scaling (vector + BM25 + recency + feedback + confidence = 1.0)
         feedback_weight = max(0.0, min(1.0, feedback_weight))
-        total_non_feedback = 1.0 - feedback_weight
-        effective_vector_weight = vector_weight * total_non_feedback * (1.0 - recency_weight)
-        effective_bm25_weight = (1.0 - vector_weight) * total_non_feedback * (1.0 - recency_weight)
-        effective_recency_weight = recency_weight * total_non_feedback
+        confidence_weight = max(0.0, min(1.0, confidence_weight))
+        total_auxiliary = feedback_weight + confidence_weight
+        if total_auxiliary > 1.0:
+            feedback_weight = feedback_weight / total_auxiliary
+            confidence_weight = confidence_weight / total_auxiliary
+            total_auxiliary = 1.0
+        total_core = 1.0 - total_auxiliary
+        effective_vector_weight = vector_weight * total_core * (1.0 - recency_weight)
+        effective_bm25_weight = (1.0 - vector_weight) * total_core * (1.0 - recency_weight)
+        effective_recency_weight = recency_weight * total_core
 
         for rank, result in enumerate(vector_results):
             doc_id = result["id"]
@@ -1336,6 +1520,26 @@ class MemoryEngine:
             positive.sort(key=lambda x: x[1], reverse=True)
             for rank, (doc_id, _) in enumerate(positive):
                 rrf_scores[doc_id] += feedback_weight * (1.0 / (rank + rrf_k))
+
+        # Confidence as 5th RRF signal (rank by confidence score descending)
+        if confidence_weight > 0:
+            conf_scored = []
+            for doc_id in rrf_scores:
+                if self._id_exists(doc_id):
+                    meta = self._get_meta_by_id(doc_id)
+                    anchor = meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
+                    # Per-prefix half-life from profiles if available
+                    half_life = 90.0
+                    profiles = getattr(self, '_profiles', None)
+                    if profiles:
+                        resolved = profiles.resolve(meta.get("source", ""))
+                        if resolved.get("confidence_half_life_days") is not None:
+                            half_life = resolved["confidence_half_life_days"]
+                    conf = self.compute_confidence(anchor, half_life_days=half_life)
+                    conf_scored.append((doc_id, conf))
+            conf_scored.sort(key=lambda x: x[1], reverse=True)
+            for rank, (doc_id, _) in enumerate(conf_scored):
+                rrf_scores[doc_id] += confidence_weight * (1.0 / (rank + rrf_k))
 
         sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
@@ -1399,6 +1603,7 @@ class MemoryEngine:
         include_archived: bool = False,
         feedback_weight: float = 0.0,
         feedback_scores: Optional[Dict[int, int]] = None,
+        confidence_weight: float = 0.0,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -1419,6 +1624,7 @@ class MemoryEngine:
                         "bm25": round(1.0 - vector_weight, 4),
                         "recency": recency_weight,
                         "feedback": round(feedback_weight, 4),
+                        "confidence": round(confidence_weight, 4),
                     },
                     "rrf_k": 60,
                 },
@@ -1509,12 +1715,18 @@ class MemoryEngine:
         if recency_half_life_days <= 0:
             recency_half_life_days = 30.0
 
-        # 4-signal weight scaling (vector + BM25 + recency + feedback = 1.0)
+        # 5-signal weight scaling (vector + BM25 + recency + feedback + confidence = 1.0)
         feedback_weight = max(0.0, min(1.0, feedback_weight))
-        total_non_feedback = 1.0 - feedback_weight
-        effective_vector_weight = vector_weight * total_non_feedback * (1.0 - recency_weight)
-        effective_bm25_weight = (1.0 - vector_weight) * total_non_feedback * (1.0 - recency_weight)
-        effective_recency_weight = recency_weight * total_non_feedback
+        confidence_weight = max(0.0, min(1.0, confidence_weight))
+        total_auxiliary = feedback_weight + confidence_weight
+        if total_auxiliary > 1.0:
+            feedback_weight = feedback_weight / total_auxiliary
+            confidence_weight = confidence_weight / total_auxiliary
+            total_auxiliary = 1.0
+        total_core = 1.0 - total_auxiliary
+        effective_vector_weight = vector_weight * total_core * (1.0 - recency_weight)
+        effective_bm25_weight = (1.0 - vector_weight) * total_core * (1.0 - recency_weight)
+        effective_recency_weight = recency_weight * total_core
 
         for rank, result in enumerate(vector_results):
             doc_id = result["id"]
@@ -1545,6 +1757,26 @@ class MemoryEngine:
             for rank, (doc_id, _) in enumerate(positive):
                 rrf_scores[doc_id] += feedback_weight * (1.0 / (rank + rrf_k))
 
+        # Confidence as 5th RRF signal (rank by confidence score descending)
+        if confidence_weight > 0:
+            conf_scored = []
+            for doc_id in rrf_scores:
+                if self._id_exists(doc_id):
+                    meta = self._get_meta_by_id(doc_id)
+                    anchor = meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
+                    # Per-prefix half-life from profiles if available
+                    half_life = 90.0
+                    profiles = getattr(self, '_profiles', None)
+                    if profiles:
+                        resolved = profiles.resolve(meta.get("source", ""))
+                        if resolved.get("confidence_half_life_days") is not None:
+                            half_life = resolved["confidence_half_life_days"]
+                    conf = self.compute_confidence(anchor, half_life_days=half_life)
+                    conf_scored.append((doc_id, conf))
+            conf_scored.sort(key=lambda x: x[1], reverse=True)
+            for rank, (doc_id, _) in enumerate(conf_scored):
+                rrf_scores[doc_id] += confidence_weight * (1.0 / (rank + rrf_k))
+
         sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
         results = []
@@ -1571,6 +1803,7 @@ class MemoryEngine:
                     "bm25": round(1.0 - vector_weight, 4),
                     "recency": round(recency_weight, 4),
                     "feedback": round(feedback_weight, 4),
+                    "confidence": round(confidence_weight, 4),
                 },
                 "rrf_k": rrf_k,
             },
@@ -1790,7 +2023,7 @@ class MemoryEngine:
             "since": since,
             "until": until,
             "count": len(filtered),
-            "version": "3.2.1",
+            "version": "3.4.0",
         }
         lines: List[str] = [json.dumps(header, separators=(",", ":"))]
 

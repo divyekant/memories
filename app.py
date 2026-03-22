@@ -1068,6 +1068,7 @@ async def lifespan(app: FastAPI):
             f"Unknown EMBED_PROVIDER={_embed_provider!r}. Valid values: openai, onnx"
         )
     memory = MemoryEngine(data_dir=DATA_DIR)
+    memory._profiles = extraction_profiles
     logger.info(
         "Loaded %d memories (%s model, %d dims)",
         len(memory.metadata),
@@ -1118,7 +1119,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Memories API",
-    version="3.2.1",
+    version="3.4.0",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
 )
@@ -1269,6 +1270,12 @@ class SearchRequest(BaseModel):
         le=1.0,
         description="Weight for feedback-based ranking signal (0=disabled)",
     )
+    confidence_weight: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description="Weight for confidence-based ranking (0=disabled)",
+    )
     source: str = Field("", max_length=500, description="Caller source for usage tracking")
     include_archived: bool = Field(default=False, description="Include archived memories in search results")
 
@@ -1399,7 +1406,7 @@ async def health(request: Request):
 
     Unauthenticated callers get minimal response; authenticated callers get full stats.
     """
-    base = {"status": "ok", "service": "memories", "version": "3.2.1"}
+    base = {"status": "ok", "service": "memories", "version": "3.4.0"}
     # Only include detailed stats for authenticated callers
     if not API_KEY or hmac.compare_digest(
         request.headers.get("X-API-Key", "").encode(), API_KEY.encode()
@@ -1864,6 +1871,21 @@ async def prune(request: Request, dry_run: bool = Query(True)):
     }
 
 
+@app.post("/maintenance/enforce-policies")
+async def enforce_policies(
+    request: Request,
+    dry_run: bool = Query(True),
+):
+    """Enforce lifecycle policies (TTL + confidence archival). Dry-run by default."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    result = memory.enforce_policies(dry_run=dry_run)
+    if not dry_run:
+        for a in result.get("actions", []):
+            _audit(request, "memory.policy_archived", resource_id=str(a["memory_id"]), source=a["source"])
+    return result
+
+
 # -- Search -------------------------------------------------------------------
 
 @app.post("/search")
@@ -1889,6 +1911,7 @@ async def search(request_body: SearchRequest, request: Request):
                 include_archived=request_body.include_archived,
                 feedback_weight=request_body.feedback_weight,
                 feedback_scores=fb_scores,
+                confidence_weight=request_body.confidence_weight,
             )
         else:
             results = memory.search(
@@ -1939,6 +1962,7 @@ async def search_explain(request_body: SearchRequest, request: Request):
             include_archived=request_body.include_archived,
             feedback_weight=request_body.feedback_weight,
             feedback_scores=fb_scores,
+            confidence_weight=request_body.confidence_weight,
         )
         # Apply auth filtering to results and track how many were removed
         raw_results = explain_result["results"]
@@ -1968,6 +1992,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     source_prefix=item.source_prefix,
                     recency_weight=item.recency_weight,
                     recency_half_life_days=item.recency_half_life_days,
+                    confidence_weight=item.confidence_weight,
                 )
             else:
                 results = memory.search(

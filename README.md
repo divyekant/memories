@@ -4,6 +4,16 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
+**Key capabilities (v3.4.0):**
+- **Hybrid search** — BM25 + vector + recency + feedback + confidence (5-signal RRF fusion)
+- **Automatic extraction** — LLM-powered AUDN (Add/Update/Delete/Noop) with dry-run and per-fact approval
+- **Operator workbench** — create, edit, merge, bulk actions, extraction trigger, lifecycle panel, conflict resolution
+- **Feedback-weighted ranking** — search learns from useful/not_useful signals
+- **Lifecycle policies** — per-prefix TTL and confidence-based auto-archive with operator-visible evidence
+- **Quality benchmarks** — LongMemEval eval harness with regression tracking per release
+- **Full audit trail** — every mutation tracked, lifecycle timeline in UI, evidence strength badges
+- **Self-hosted** — your data, your infrastructure, no cloud dependency
+
 Start here:
 - [Getting Started (10-15 min)](GETTING_STARTED.md)
 - [LLM-assisted setup guide](integrations/QUICKSTART-LLM.md)
@@ -39,8 +49,13 @@ The service runs at **http://localhost:8900**. API docs at http://localhost:8900
 The built-in UI at `/ui` provides:
 - **Dashboard** — memory stats, extraction metrics, server info
 - **Memories** — browse, search, filter, and manage memories with list+detail or grid view
+  - Create, inline edit, pin/archive with undo, bulk actions (archive/delete/retag/re-source/merge)
+  - Extraction trigger with dry-run preview and per-fact approve/reject
+  - Tabbed detail panel: Overview (edit) | Lifecycle (origin, confidence, audit timeline, feedback history) | Links
+  - Conflict resolution modal (Keep A/B/Merge/Defer with soft archive)
 - **Extractions** — extraction job stats and token usage
 - **API Keys** — configure authentication
+- **Health** — conflicts, problem queries (negative feedback), stale memories (retrieved but never useful), evidence strength badges
 - **Settings** — provider config, server info, theme toggle (dark/light/system), export and maintenance
 
 No build step — vanilla JS + CSS served directly from `webui/`.
@@ -191,22 +206,16 @@ cd memories/mcp-server
 npm install
 ```
 
-2. Add to `~/.claude/settings.json`:
+2. Register the MCP server with Claude Code (user scope — available in every project):
 
-```json
-{
-  "mcpServers": {
-    "memories": {
-      "command": "node",
-      "args": ["/path/to/memories/mcp-server/index.js"],
-      "env": {
-        "MEMORIES_URL": "http://localhost:8900",
-        "MEMORIES_API_KEY": "your-api-key-here"
-      }
-    }
-  }
-}
+```bash
+claude mcp add -s user \
+  -e MEMORIES_URL=http://localhost:8900 \
+  -e MEMORIES_API_KEY=your-api-key-here \
+  -- memories node /path/to/memories/mcp-server/index.js
 ```
+
+This writes to `~/.claude.json`. **Do not** add MCP servers to `~/.claude/settings.json` or `~/.claude/.mcp.json` — Claude Code CLI does not read MCP config from those files (Claude Desktop uses separate config, see below).
 
 3. Restart Claude Code. The tools are now available in every project.
 
@@ -226,13 +235,20 @@ The skill teaches the assistant three responsibilities: *when* to search (proact
 - "Check if this pattern is already in memory before adding it"
 - "Show me all memories from the bug-fixes source"
 
-For a **single project only**, create `.mcp.json` in the project root instead of editing `settings.json`.
+For a **single project only**, use project scope instead:
+
+```bash
+claude mcp add -s project \
+  -e MEMORIES_URL=http://localhost:8900 \
+  -e MEMORIES_API_KEY=your-api-key-here \
+  -- memories node /path/to/memories/mcp-server/index.js
+```
 
 ---
 
 ### Claude Desktop (Chat / Cowork)
 
-Same MCP server, different config file.
+Same MCP server, different config file. Claude Desktop reads MCP config from its own config file — **not** from `~/.claude.json` (which is Claude Code CLI only).
 
 **Setup:**
 

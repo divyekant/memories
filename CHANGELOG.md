@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.4.0] - 2026-03-23
+
+### Added
+- **R3 Wave 4: Lifecycle Policies** — TTL retention, auto-archive with proof, confidence ranking (#52)
+  - Per-prefix retention policies: `ttl_days` on extraction profiles (e.g., `wip/` expires after 30 days)
+  - Confidence-based auto-archive: `confidence_threshold` + `min_age_days` (archive when confidence decays below threshold)
+  - `POST /maintenance/enforce-policies` endpoint (admin only, dry_run=true default)
+  - Policy evidence stored in protected `_policy_*` metadata namespace with full audit trail
+  - Per-prefix `confidence_half_life_days` separate from extraction half-life (90 vs 30 default)
+  - Confidence as 5th RRF signal in hybrid search (`confidence_weight` param)
+  - 5-signal weight scaling with combined auxiliary weight guard
+  - MCP `memory_search` gets `confidence_weight` param
+
 ## [3.3.0] - 2026-03-23
 
 ### Added
