@@ -1458,11 +1458,17 @@ registerPage("memories", async (container) => {
   // -- Action color mapping for audit events --
   const auditActionColors = {
     "memory.created": "success",
+    "add": "success",
     "memory.updated": "info",
     "memory.linked": "info",
     "memory.pinned": "primary",
+    "memory.unpinned": "info",
     "memory.archived": "warning",
+    "memory.unarchived": "info",
+    "memory.merged": "info",
     "conflict.detected": "error",
+    "delete": "error",
+    "extract": "success",
   };
 
   async function updateDetailPanel() {
@@ -1575,7 +1581,7 @@ registerPage("memories", async (container) => {
         sourceContainer
       )
     );
-    const category = (mem.metadata && mem.metadata.category) || "detail";
+    const category = mem.category || (mem.metadata && mem.metadata.category) || "detail";
     const categoryContainer = h("div", { className: "meta-value" });
     editableField(categoryContainer, {
       value: category,
@@ -1730,15 +1736,16 @@ registerPage("memories", async (container) => {
 
   // Detect how a memory entered the system
   function detectOriginMethod(mem) {
+    // Fields may be at the top level (flat API response) or nested under metadata
     const meta = mem.metadata || {};
-    if (meta.extraction_job_id || meta.extract_source) {
+    if (mem.extraction_job_id || mem.extract_source || meta.extraction_job_id || meta.extract_source) {
       return { icon: "\u2728", label: "Extraction" };
     }
     // Check for supersedes links (merge result)
-    if (meta.supersedes || meta.merged_from) {
+    if (mem.supersedes || mem.merged_from || meta.supersedes || meta.merged_from) {
       return { icon: "\uD83D\uDD00", label: "Merge" };
     }
-    if (meta.imported || meta.import_source) {
+    if (mem.imported || mem.import_source || meta.imported || meta.import_source) {
       return { icon: "\uD83D\uDCE5", label: "Import" };
     }
     return { icon: "\u270D\uFE0F", label: "Manual add" };
