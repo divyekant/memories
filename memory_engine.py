@@ -1103,13 +1103,29 @@ class MemoryEngine:
                 "action": action_type,
             })
 
-        # Execute if not dry_run — acquire locks to protect shared state
+        # Execute if not dry_run — acquire locks and re-verify each candidate
+        # The scan phase ran unlocked, so state may have changed (delete, pin, archive).
+        # Inside the lock, re-check each candidate before mutating.
+        skipped_stale = 0
         if not dry_run and actions:
             with self._entity_locks.acquire_many(["__all__"]):
                 with self._write_lock:
                     archived_at = now.isoformat()
+                    valid_actions = []
                     for a in actions:
                         mem_id = a["memory_id"]
+                        # Re-verify: memory still exists, not deleted/pinned/archived since scan
+                        try:
+                            meta = self._get_meta_by_id(mem_id)
+                        except (ValueError, KeyError, IndexError):
+                            a["action"] = "skipped_deleted"
+                            skipped_stale += 1
+                            continue
+                        if meta.get("archived") or meta.get("pinned"):
+                            a["action"] = "skipped_stale"
+                            skipped_stale += 1
+                            continue
+
                         primary_reason = a["reasons"][0]  # TTL takes precedence
                         evidence = {
                             "_policy_archived_reason": primary_reason["rule"],
@@ -1118,26 +1134,29 @@ class MemoryEngine:
                             "_policy_archived_confidence": a["confidence"],
                             "_policy_archived_age_days": a["age_days"],
                         }
-                        # Direct meta update (bypasses _policy_ protection since we're the policy engine)
-                        meta = self._get_meta_by_id(mem_id)
                         meta["archived"] = True
                         meta.update(evidence)
-                        # Set archived in Qdrant payload
                         self.qdrant_store.set_payload(mem_id, {"archived": True, **evidence})
+                        a["action"] = "archived"
+                        valid_actions.append(a)
                     self.save()
 
         summary_key = "would_archive" if dry_run else "archived"
-        return {
+        archived_count = len([a for a in actions if a["action"] in ("archived", "would_archive")])
+        result = {
             "dry_run": dry_run,
             "actions": actions,
             "summary": {
                 "candidates_scanned": candidates_scanned,
-                summary_key: len(actions),
+                summary_key: archived_count,
                 "by_rule": by_rule,
                 "excluded_pinned": excluded_pinned,
                 "excluded_already_archived": excluded_archived,
             },
         }
+        if skipped_stale > 0:
+            result["summary"]["skipped_stale"] = skipped_stale
+        return result
 
     def upsert_memory(
         self,
