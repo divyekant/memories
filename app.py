@@ -1068,6 +1068,7 @@ async def lifespan(app: FastAPI):
             f"Unknown EMBED_PROVIDER={_embed_provider!r}. Valid values: openai, onnx"
         )
     memory = MemoryEngine(data_dir=DATA_DIR)
+    memory._profiles = extraction_profiles
     logger.info(
         "Loaded %d memories (%s model, %d dims)",
         len(memory.metadata),
@@ -1868,6 +1869,21 @@ async def prune(request: Request, dry_run: bool = Query(True)):
         "pruned": pruned,
         "dry_run": dry_run,
     }
+
+
+@app.post("/maintenance/enforce-policies")
+async def enforce_policies(
+    request: Request,
+    dry_run: bool = Query(True),
+):
+    """Enforce lifecycle policies (TTL + confidence archival). Dry-run by default."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    result = memory.enforce_policies(dry_run=dry_run)
+    if not dry_run:
+        for a in result.get("actions", []):
+            _audit(request, "memory.policy_archived", resource_id=str(a["memory_id"]), source=a["source"])
+    return result
 
 
 # -- Search -------------------------------------------------------------------

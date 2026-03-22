@@ -193,3 +193,64 @@ def test_enforce_ttl_takes_precedence_over_confidence(engine, profiles):
     action = next(a for a in result["actions"] if a["memory_id"] == mem_id)
     assert action["reasons"][0]["rule"] == "ttl"
     assert len(action["reasons"]) == 2  # both reasons reported
+
+
+# -- Task 5: POST /maintenance/enforce-policies endpoint --
+
+import importlib
+import os
+import tempfile
+
+from starlette.testclient import TestClient
+
+
+class TestEnforcePoliciesEndpoint:
+    @pytest.fixture
+    def client(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {
+                "API_KEY": "admin-key",
+                "EXTRACT_PROVIDER": "",
+                "DATA_DIR": tmpdir,
+            }
+            with patch.dict(os.environ, env):
+                import app as app_module
+                importlib.reload(app_module)
+
+                mock_engine = MagicMock()
+                mock_engine.enforce_policies.return_value = {
+                    "dry_run": True,
+                    "actions": [],
+                    "summary": {
+                        "candidates_scanned": 0,
+                        "would_archive": 0,
+                        "by_rule": {"ttl": 0, "confidence": 0},
+                        "excluded_pinned": 0,
+                        "excluded_already_archived": 0,
+                    },
+                }
+                app_module.memory = mock_engine
+
+                yield TestClient(app_module.app), app_module, mock_engine
+
+    def test_enforce_policies_endpoint_dry_run(self, client):
+        """POST /maintenance/enforce-policies should default to dry_run=true."""
+        tc, mod, mock_engine = client
+        resp = tc.post(
+            "/maintenance/enforce-policies",
+            headers={"X-API-Key": "admin-key"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["dry_run"] is True
+        mock_engine.enforce_policies.assert_called_once_with(dry_run=True)
+
+    def test_enforce_policies_requires_admin(self, client):
+        """enforce-policies should reject unauthenticated requests."""
+        tc, mod, mock_engine = client
+        resp = tc.post(
+            "/maintenance/enforce-policies",
+            headers={"X-API-Key": "wrong-key"},
+        )
+        # Wrong key returns 401 (auth middleware rejects before admin check)
+        assert resp.status_code in (401, 403)
