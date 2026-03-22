@@ -47,6 +47,9 @@ htmlcov/
 # Eval results (generated, may contain raw LLM outputs)
 eval/results/
 
+# LongMemEval datasets (downloaded on demand)
+eval/scenarios/longmemeval/*.jsonl
+
 # Local git worktrees
 .worktrees/
 
