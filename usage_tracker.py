@@ -59,6 +59,9 @@ class NullTracker:
     def log_search_feedback(self, memory_id: int, query: str = "", signal: str = "", search_id: str = "") -> None:
         pass
 
+    def get_feedback_scores(self, memory_ids: list[int]) -> dict[int, int]:
+        return {}
+
     def get_search_quality(self, period: str = "7d", memory_ids: list | None = None) -> Dict[str, Any]:
         return {"enabled": False}
 
@@ -128,6 +131,7 @@ class UsageTracker:
                 search_id TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_feedback_ts ON search_feedback(ts);
+            CREATE INDEX IF NOT EXISTS idx_feedback_memory ON search_feedback(memory_id);
             CREATE TABLE IF NOT EXISTS extraction_outcomes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -251,6 +255,25 @@ class UsageTracker:
             conn.commit()
         except Exception:
             logger.debug("Failed to log search feedback", exc_info=True)
+
+    def get_feedback_scores(self, memory_ids: list[int]) -> dict[int, int]:
+        """Batch fetch net feedback score (useful - not_useful) for given memory IDs."""
+        if not memory_ids:
+            return {}
+        conn = self._connect()
+        try:
+            placeholders = ",".join("?" * len(memory_ids))
+            rows = conn.execute(
+                f"SELECT memory_id, "
+                f"SUM(CASE WHEN signal='useful' THEN 1 ELSE 0 END) - "
+                f"SUM(CASE WHEN signal='not_useful' THEN 1 ELSE 0 END) as net "
+                f"FROM search_feedback WHERE memory_id IN ({placeholders}) "
+                f"GROUP BY memory_id",
+                memory_ids,
+            ).fetchall()
+            return {row[0]: row[1] for row in rows}
+        finally:
+            conn.close()
 
     def get_search_quality(self, period: str = "7d", memory_ids: list | None = None) -> Dict[str, Any]:
         period_filter = PERIOD_SQL.get(period, PERIOD_SQL["7d"])
