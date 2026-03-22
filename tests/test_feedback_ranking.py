@@ -23,3 +23,15 @@ def test_get_feedback_scores_returns_net_scores(tracker):
 def test_get_feedback_scores_empty_ids(tracker):
     """Empty ID list returns empty dict."""
     assert tracker.get_feedback_scores([]) == {}
+
+
+def test_hybrid_search_with_feedback_scores(tracker):
+    """hybrid_search should accept feedback_weight and feedback_scores params."""
+    # This test verifies the parameter exists — integration tested via API
+    # For now, just verify the method signature accepts the params
+    import inspect
+    from memory_engine import MemoryEngine
+    sig = inspect.signature(MemoryEngine.hybrid_search)
+    param_names = list(sig.parameters.keys())
+    assert "feedback_weight" in param_names
+    assert "feedback_scores" in param_names

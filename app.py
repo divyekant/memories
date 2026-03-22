@@ -1262,6 +1262,12 @@ class SearchRequest(BaseModel):
         le=365.0,
         description="Half-life in days for recency decay (default 30).",
     )
+    feedback_weight: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description="Weight for feedback-based ranking signal (0=disabled)",
+    )
     source: str = Field("", max_length=500, description="Caller source for usage tracking")
     include_archived: bool = Field(default=False, description="Include archived memories in search results")
 
@@ -1810,6 +1816,11 @@ async def search(request_body: SearchRequest, request: Request):
     auth = _get_auth(request)
     logger.info("Search: q=%r k=%d hybrid=%s", request_body.query[:80], request_body.k, request_body.hybrid)
     try:
+        fb_scores = None
+        if request_body.feedback_weight > 0:
+            fb_scores = usage_tracker.get_feedback_scores(
+                [m["id"] for m in getattr(memory, "metadata", [])]
+            )
         if request_body.hybrid:
             results = memory.hybrid_search(
                 query=request_body.query,
@@ -1820,6 +1831,8 @@ async def search(request_body: SearchRequest, request: Request):
                 recency_weight=request_body.recency_weight,
                 recency_half_life_days=request_body.recency_half_life_days,
                 include_archived=request_body.include_archived,
+                feedback_weight=request_body.feedback_weight,
+                feedback_scores=fb_scores,
             )
         else:
             results = memory.search(
@@ -1854,6 +1867,11 @@ async def search_explain(request_body: SearchRequest, request: Request):
     _require_admin(auth)
     logger.info("Search explain: q=%r k=%d", request_body.query[:80], request_body.k)
     try:
+        fb_scores = None
+        if request_body.feedback_weight > 0:
+            fb_scores = usage_tracker.get_feedback_scores(
+                [m["id"] for m in getattr(memory, "metadata", [])]
+            )
         explain_result = memory.hybrid_search_explain(
             query=request_body.query,
             k=request_body.k,
@@ -1863,6 +1881,8 @@ async def search_explain(request_body: SearchRequest, request: Request):
             recency_weight=request_body.recency_weight,
             recency_half_life_days=request_body.recency_half_life_days,
             include_archived=request_body.include_archived,
+            feedback_weight=request_body.feedback_weight,
+            feedback_scores=fb_scores,
         )
         # Apply auth filtering to results and track how many were removed
         raw_results = explain_result["results"]

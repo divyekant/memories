@@ -1245,6 +1245,8 @@ class MemoryEngine:
         recency_weight: float = 0.0,
         recency_half_life_days: float = 30.0,
         include_archived: bool = False,
+        feedback_weight: float = 0.0,
+        feedback_scores: Optional[Dict[int, int]] = None,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -1297,9 +1299,12 @@ class MemoryEngine:
         if recency_half_life_days <= 0:
             recency_half_life_days = 30.0
 
-        # Scale vector/bm25 weights to leave room for recency when active
-        effective_vector_weight = vector_weight * (1.0 - recency_weight)
-        effective_bm25_weight = (1.0 - vector_weight) * (1.0 - recency_weight)
+        # 4-signal weight scaling (vector + BM25 + recency + feedback = 1.0)
+        feedback_weight = max(0.0, min(1.0, feedback_weight))
+        total_non_feedback = 1.0 - feedback_weight
+        effective_vector_weight = vector_weight * total_non_feedback * (1.0 - recency_weight)
+        effective_bm25_weight = (1.0 - vector_weight) * total_non_feedback * (1.0 - recency_weight)
+        effective_recency_weight = recency_weight * total_non_feedback
 
         for rank, result in enumerate(vector_results):
             doc_id = result["id"]
@@ -1322,7 +1327,15 @@ class MemoryEngine:
             # Sort by recency score descending to assign ranks
             recency_scored.sort(key=lambda x: x[1], reverse=True)
             for rank, (doc_id, _) in enumerate(recency_scored):
-                rrf_scores[doc_id] += recency_weight * (1.0 / (rank + rrf_k))
+                rrf_scores[doc_id] += effective_recency_weight * (1.0 / (rank + rrf_k))
+
+        # Feedback as 4th RRF signal (only positive net scores boost)
+        if feedback_weight > 0 and feedback_scores:
+            positive = [(doc_id, score) for doc_id, score in feedback_scores.items()
+                        if score > 0 and doc_id in rrf_scores]
+            positive.sort(key=lambda x: x[1], reverse=True)
+            for rank, (doc_id, _) in enumerate(positive):
+                rrf_scores[doc_id] += feedback_weight * (1.0 / (rank + rrf_k))
 
         sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
@@ -1384,6 +1397,8 @@ class MemoryEngine:
         recency_weight: float = 0.0,
         recency_half_life_days: float = 30.0,
         include_archived: bool = False,
+        feedback_weight: float = 0.0,
+        feedback_scores: Optional[Dict[int, int]] = None,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -1403,6 +1418,7 @@ class MemoryEngine:
                         "vector": vector_weight,
                         "bm25": round(1.0 - vector_weight, 4),
                         "recency": recency_weight,
+                        "feedback": round(feedback_weight, 4),
                     },
                     "rrf_k": 60,
                 },
@@ -1493,8 +1509,12 @@ class MemoryEngine:
         if recency_half_life_days <= 0:
             recency_half_life_days = 30.0
 
-        effective_vector_weight = vector_weight * (1.0 - recency_weight)
-        effective_bm25_weight = (1.0 - vector_weight) * (1.0 - recency_weight)
+        # 4-signal weight scaling (vector + BM25 + recency + feedback = 1.0)
+        feedback_weight = max(0.0, min(1.0, feedback_weight))
+        total_non_feedback = 1.0 - feedback_weight
+        effective_vector_weight = vector_weight * total_non_feedback * (1.0 - recency_weight)
+        effective_bm25_weight = (1.0 - vector_weight) * total_non_feedback * (1.0 - recency_weight)
+        effective_recency_weight = recency_weight * total_non_feedback
 
         for rank, result in enumerate(vector_results):
             doc_id = result["id"]
@@ -1515,7 +1535,15 @@ class MemoryEngine:
                     recency_scored.append((doc_id, rs))
             recency_scored.sort(key=lambda x: x[1], reverse=True)
             for rank, (doc_id, _) in enumerate(recency_scored):
-                rrf_scores[doc_id] += recency_weight * (1.0 / (rank + rrf_k))
+                rrf_scores[doc_id] += effective_recency_weight * (1.0 / (rank + rrf_k))
+
+        # Feedback as 4th RRF signal (only positive net scores boost)
+        if feedback_weight > 0 and feedback_scores:
+            positive = [(doc_id, score) for doc_id, score in feedback_scores.items()
+                        if score > 0 and doc_id in rrf_scores]
+            positive.sort(key=lambda x: x[1], reverse=True)
+            for rank, (doc_id, _) in enumerate(positive):
+                rrf_scores[doc_id] += feedback_weight * (1.0 / (rank + rrf_k))
 
         sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
@@ -1542,6 +1570,7 @@ class MemoryEngine:
                     "vector": round(vector_weight, 4),
                     "bm25": round(1.0 - vector_weight, 4),
                     "recency": round(recency_weight, 4),
+                    "feedback": round(feedback_weight, 4),
                 },
                 "rrf_k": rrf_k,
             },
