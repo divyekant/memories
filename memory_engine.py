@@ -906,7 +906,14 @@ class MemoryEngine:
     def _enrich_with_confidence(self, mem: Dict[str, Any]) -> Dict[str, Any]:
         """Add computed confidence to a memory dict."""
         anchor = mem.get("updated_at") or mem.get("created_at") or mem.get("timestamp")
-        mem["confidence"] = round(self.compute_confidence(anchor), 4)
+        # Resolve per-prefix half-life
+        half_life = 90.0  # default
+        if hasattr(self, '_profiles') and self._profiles:
+            source = mem.get("source", "")
+            resolved = self._profiles.resolve(source)
+            if resolved.get("confidence_half_life_days") is not None:
+                half_life = resolved["confidence_half_life_days"]
+        mem["confidence"] = round(self.compute_confidence(anchor, half_life_days=half_life), 4)
         return mem
 
     def get_memory(self, memory_id: int) -> Dict[str, Any]:

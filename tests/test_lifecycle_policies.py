@@ -89,3 +89,23 @@ def test_policy_metadata_protected_from_patch(engine):
     engine.update_memory(mem_id, metadata_patch={"_policy_archived_reason": "hacked"})
     updated = engine.get_memory(mem_id)
     assert updated.get("_policy_archived_reason") == "ttl"  # unchanged
+
+
+# -- Task 3: Per-prefix confidence half-life --
+
+
+def test_per_prefix_confidence_half_life(engine, profiles):
+    """Confidence should use per-prefix half-life when configured."""
+    profiles.put("fast-decay/", {"confidence_half_life_days": 30})
+    # Add a memory 60 days old to fast-decay prefix
+    mem_id = engine.add_memories(texts=["old memory"], sources=["fast-decay/test"])[0]
+    # Manually set created_at to 60 days ago
+    old_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=60)).isoformat()
+    meta = engine._get_meta_by_id(mem_id)
+    meta["created_at"] = old_date
+    meta["updated_at"] = old_date
+    engine.save()
+
+    mem = engine.get_memory(mem_id)
+    # With 30-day half-life and 60 days old: confidence = 0.5^(60/30) = 0.25
+    assert 0.20 <= mem["confidence"] <= 0.30
