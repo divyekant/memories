@@ -982,7 +982,7 @@ class MemoryEngine:
                 if metadata_patch:
                     _reserved = {"id", "text", "source", "timestamp", "created_at", "updated_at", "entity_key"}
                     for key, value in metadata_patch.items():
-                        if key in _reserved:
+                        if key in _reserved or key.startswith("_policy_"):
                             continue
                         meta[key] = value
                     updated_fields.append("metadata")
@@ -1247,6 +1247,7 @@ class MemoryEngine:
         include_archived: bool = False,
         feedback_weight: float = 0.0,
         feedback_scores: Optional[Dict[int, int]] = None,
+        confidence_weight: float = 0.0,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -1299,12 +1300,14 @@ class MemoryEngine:
         if recency_half_life_days <= 0:
             recency_half_life_days = 30.0
 
-        # 4-signal weight scaling (vector + BM25 + recency + feedback = 1.0)
+        # 5-signal weight scaling (vector + BM25 + recency + feedback + confidence = 1.0)
         feedback_weight = max(0.0, min(1.0, feedback_weight))
-        total_non_feedback = 1.0 - feedback_weight
-        effective_vector_weight = vector_weight * total_non_feedback * (1.0 - recency_weight)
-        effective_bm25_weight = (1.0 - vector_weight) * total_non_feedback * (1.0 - recency_weight)
-        effective_recency_weight = recency_weight * total_non_feedback
+        confidence_weight = max(0.0, min(1.0, confidence_weight))
+        total_auxiliary = min(feedback_weight + confidence_weight, 1.0)
+        total_core = 1.0 - total_auxiliary
+        effective_vector_weight = vector_weight * total_core * (1.0 - recency_weight)
+        effective_bm25_weight = (1.0 - vector_weight) * total_core * (1.0 - recency_weight)
+        effective_recency_weight = recency_weight * total_core
 
         for rank, result in enumerate(vector_results):
             doc_id = result["id"]
@@ -1336,6 +1339,26 @@ class MemoryEngine:
             positive.sort(key=lambda x: x[1], reverse=True)
             for rank, (doc_id, _) in enumerate(positive):
                 rrf_scores[doc_id] += feedback_weight * (1.0 / (rank + rrf_k))
+
+        # Confidence as 5th RRF signal (rank by confidence score descending)
+        if confidence_weight > 0:
+            conf_scored = []
+            for doc_id in rrf_scores:
+                if self._id_exists(doc_id):
+                    meta = self._get_meta_by_id(doc_id)
+                    anchor = meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
+                    # Per-prefix half-life from profiles if available
+                    half_life = 90.0
+                    profiles = getattr(self, '_profiles', None)
+                    if profiles:
+                        resolved = profiles.resolve(meta.get("source", ""))
+                        if resolved.get("confidence_half_life_days") is not None:
+                            half_life = resolved["confidence_half_life_days"]
+                    conf = self.compute_confidence(anchor, half_life_days=half_life)
+                    conf_scored.append((doc_id, conf))
+            conf_scored.sort(key=lambda x: x[1], reverse=True)
+            for rank, (doc_id, _) in enumerate(conf_scored):
+                rrf_scores[doc_id] += confidence_weight * (1.0 / (rank + rrf_k))
 
         sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
@@ -1399,6 +1422,7 @@ class MemoryEngine:
         include_archived: bool = False,
         feedback_weight: float = 0.0,
         feedback_scores: Optional[Dict[int, int]] = None,
+        confidence_weight: float = 0.0,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -1419,6 +1443,7 @@ class MemoryEngine:
                         "bm25": round(1.0 - vector_weight, 4),
                         "recency": recency_weight,
                         "feedback": round(feedback_weight, 4),
+                        "confidence": round(confidence_weight, 4),
                     },
                     "rrf_k": 60,
                 },
@@ -1509,12 +1534,14 @@ class MemoryEngine:
         if recency_half_life_days <= 0:
             recency_half_life_days = 30.0
 
-        # 4-signal weight scaling (vector + BM25 + recency + feedback = 1.0)
+        # 5-signal weight scaling (vector + BM25 + recency + feedback + confidence = 1.0)
         feedback_weight = max(0.0, min(1.0, feedback_weight))
-        total_non_feedback = 1.0 - feedback_weight
-        effective_vector_weight = vector_weight * total_non_feedback * (1.0 - recency_weight)
-        effective_bm25_weight = (1.0 - vector_weight) * total_non_feedback * (1.0 - recency_weight)
-        effective_recency_weight = recency_weight * total_non_feedback
+        confidence_weight = max(0.0, min(1.0, confidence_weight))
+        total_auxiliary = min(feedback_weight + confidence_weight, 1.0)
+        total_core = 1.0 - total_auxiliary
+        effective_vector_weight = vector_weight * total_core * (1.0 - recency_weight)
+        effective_bm25_weight = (1.0 - vector_weight) * total_core * (1.0 - recency_weight)
+        effective_recency_weight = recency_weight * total_core
 
         for rank, result in enumerate(vector_results):
             doc_id = result["id"]
@@ -1545,6 +1572,26 @@ class MemoryEngine:
             for rank, (doc_id, _) in enumerate(positive):
                 rrf_scores[doc_id] += feedback_weight * (1.0 / (rank + rrf_k))
 
+        # Confidence as 5th RRF signal (rank by confidence score descending)
+        if confidence_weight > 0:
+            conf_scored = []
+            for doc_id in rrf_scores:
+                if self._id_exists(doc_id):
+                    meta = self._get_meta_by_id(doc_id)
+                    anchor = meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
+                    # Per-prefix half-life from profiles if available
+                    half_life = 90.0
+                    profiles = getattr(self, '_profiles', None)
+                    if profiles:
+                        resolved = profiles.resolve(meta.get("source", ""))
+                        if resolved.get("confidence_half_life_days") is not None:
+                            half_life = resolved["confidence_half_life_days"]
+                    conf = self.compute_confidence(anchor, half_life_days=half_life)
+                    conf_scored.append((doc_id, conf))
+            conf_scored.sort(key=lambda x: x[1], reverse=True)
+            for rank, (doc_id, _) in enumerate(conf_scored):
+                rrf_scores[doc_id] += confidence_weight * (1.0 / (rank + rrf_k))
+
         sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
         results = []
@@ -1571,6 +1618,7 @@ class MemoryEngine:
                     "bm25": round(1.0 - vector_weight, 4),
                     "recency": round(recency_weight, 4),
                     "feedback": round(feedback_weight, 4),
+                    "confidence": round(confidence_weight, 4),
                 },
                 "rrf_k": rrf_k,
             },
