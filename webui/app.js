@@ -2,7 +2,7 @@
    Memories Web UI v2 — App Module
    ========================================================================== */
 
-import { editableField, actionBadge, approvalToggle, bulkSelectMode, memoryCard, timelineEvent, comparisonPanel } from "./components.js";
+import { editableField, actionBadge, approvalToggle, bulkSelectMode, timelineEvent, comparisonPanel } from "./components.js";
 import { h, formatNumber, timeAgo, escHtml, confidenceColor, confidenceBar, linkTypeColor } from "./utils.js";
 export { h, formatNumber, timeAgo, escHtml, confidenceColor, confidenceBar, linkTypeColor };
 
@@ -931,7 +931,7 @@ registerPage("memories", async (container) => {
               body: JSON.stringify({
                 messages: text,
                 source: source,
-                context: selectedMode === "standard" ? "stop" : selectedMode === "aggressive" ? "session_end" : "pre_compact",
+                context: selectedMode === "standard" ? "stop" : selectedMode === "aggressive" ? "pre_compact" : "stop",
                 dry_run: dryRun,
               }),
             });
