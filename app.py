@@ -908,6 +908,36 @@ async def _periodic_embedder_reload() -> None:
             logger.debug("Periodic auto reload error", exc_info=True)
 
 
+def _run_scheduled_consolidation():
+    """Run consolidation synchronously (called from threadpool)."""
+    from consolidator import find_clusters, consolidate_cluster
+    clusters = find_clusters(memory)
+    for cluster in clusters:
+        consolidate_cluster(extract_provider, memory, cluster, dry_run=False)
+    return len(clusters)
+
+
+def _run_scheduled_pruning():
+    """Run pruning synchronously (called from threadpool)."""
+    from consolidator import find_prune_candidates
+    all_mems = [m for m in memory.metadata if m]
+    all_ids = [m["id"] for m in all_mems]
+    unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
+    candidates = find_prune_candidates(all_mems, unretrieved)
+    deleted = 0
+    skipped = 0
+    for c in candidates:
+        try:
+            memory.delete_memory(c["id"])
+            deleted += 1
+        except Exception:
+            skipped += 1
+            logger.debug("Pruning: memory %s already deleted (concurrent remove), skipping", c["id"])
+    if skipped:
+        logger.info("Pruning: %d deleted, %d skipped (concurrent deletes)", deleted, skipped)
+    return deleted
+
+
 async def _maintenance_scheduler():
     """Run consolidation daily and pruning weekly."""
     _last_consolidation_date = None
@@ -920,10 +950,8 @@ async def _maintenance_scheduler():
             _last_consolidation_date = today
             try:
                 logger.info("Running scheduled consolidation")
-                from consolidator import find_clusters, consolidate_cluster
-                clusters = find_clusters(memory)
-                for cluster in clusters:
-                    consolidate_cluster(extract_provider, memory, cluster, dry_run=False)
+                n = await run_in_threadpool(_run_scheduled_consolidation)
+                logger.info("Scheduled consolidation complete: %d clusters merged", n)
             except Exception:
                 logger.exception("Scheduled consolidation failed")
         # Pruning: Sunday at 4 AM UTC (once per week)
@@ -931,14 +959,8 @@ async def _maintenance_scheduler():
             _last_prune_date = today
             try:
                 logger.info("Running scheduled pruning")
-                from consolidator import find_prune_candidates
-                all_mems = [m for m in memory.metadata if m]
-                all_ids = [m["id"] for m in all_mems]
-                unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
-                candidates = find_prune_candidates(all_mems, unretrieved)
-                for c in candidates:
-                    memory.delete_memory(c["id"])
-                logger.info("Pruned %d stale memories", len(candidates))
+                n = await run_in_threadpool(_run_scheduled_pruning)
+                logger.info("Pruned %d stale memories", n)
             except Exception:
                 logger.exception("Scheduled pruning failed")
         await asyncio.sleep(300)  # Check every 5 minutes
