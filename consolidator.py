@@ -37,6 +37,7 @@ def find_clusters(
     source_prefix: str = "",
     similarity_threshold: float = 0.75,
     min_cluster_size: int = 3,
+    max_candidates: int = 500,
 ) -> List[List[Dict]]:
     """Group memories by semantic similarity into clusters.
 
@@ -49,6 +50,8 @@ def find_clusters(
         source_prefix: Only consider memories whose source starts with this.
         similarity_threshold: Minimum similarity to join a cluster.
         min_cluster_size: Minimum number of members for a cluster to be returned.
+        max_candidates: Maximum number of memories to scan (0 = unlimited).
+            Prevents O(n) query storms on large collections.
 
     Returns:
         List of clusters, where each cluster is a list of memory dicts.
@@ -65,8 +68,19 @@ def find_clusters(
     if not candidates:
         return []
 
+    # Cap candidates to avoid O(n) query storms on large collections
+    if max_candidates > 0 and len(candidates) > max_candidates:
+        logger.info(
+            "Consolidation: capping %d candidates to %d (max_candidates)",
+            len(candidates), max_candidates,
+        )
+        candidates = candidates[:max_candidates]
+
+    logger.info("Consolidation: scanning %d candidates for clusters", len(candidates))
+
     clustered_ids: set = set()
     clusters: List[List[Dict]] = []
+    searched = 0
 
     for mem in candidates:
         mem_id = mem["id"]
@@ -78,6 +92,7 @@ def find_clusters(
         if source_prefix:
             search_kwargs["source_prefix"] = source_prefix
         similar = engine.hybrid_search(**search_kwargs)
+        searched += 1
 
         # Build cluster: start with the seed memory
         cluster = [mem]
@@ -99,6 +114,12 @@ def find_clusters(
             clusters.append(cluster)
             clustered_ids.update(cluster_ids)
 
+        # Log progress every 100 searches
+        if searched % 100 == 0:
+            logger.info("Consolidation progress: %d/%d searched, %d clusters found",
+                        searched, len(candidates), len(clusters))
+
+    logger.info("Consolidation complete: %d searched, %d clusters found", searched, len(clusters))
     return clusters
 
 
