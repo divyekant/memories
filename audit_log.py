@@ -48,6 +48,7 @@ class AuditLog:
             CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
             CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
             CREATE INDEX IF NOT EXISTS idx_audit_key ON audit_log(key_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_resource_id ON audit_log(resource_id);
         """)
         conn.close()
         logger.info("Audit log initialized: %s", db_path)
@@ -87,6 +88,7 @@ class AuditLog:
         self,
         action: Optional[str] = None,
         key_id: Optional[str] = None,
+        resource_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -101,6 +103,9 @@ class AuditLog:
             if key_id:
                 clauses.append("key_id = ?")
                 params.append(key_id)
+            if resource_id:
+                clauses.append("resource_id = ?")
+                params.append(resource_id)
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             rows = conn.execute(
                 f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",

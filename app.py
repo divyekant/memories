@@ -1520,13 +1520,14 @@ async def get_audit_log(
     request: Request,
     action: Optional[str] = None,
     key_id: Optional[str] = None,
+    resource_id: Optional[str] = None,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """Query the audit trail. Admin only."""
     auth = _get_auth(request)
     _require_admin(auth)
-    entries = audit_log.query(action=action, key_id=key_id, limit=limit, offset=offset)
+    entries = audit_log.query(action=action, key_id=key_id, resource_id=resource_id, limit=limit, offset=offset)
     return {"entries": entries, "count": len(entries), "total": audit_log.count(action=action, key_id=key_id)}
 
 
