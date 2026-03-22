@@ -447,7 +447,11 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
     assert "## Memory Playbook" not in memory_text
 
     prefixes = [call["body"].get("source_prefix", "") for call in calls]
-    assert prefixes == ["claude-code/memories", "learning/memories", "wip/memories"]
+    # 4th call is the dedicated deferred-work surfacing search
+    assert prefixes == ["claude-code/memories", "learning/memories", "wip/memories", "wip/memories"]
+
+    # Deferred work section should appear when wip results exist
+    assert "Deferred Work" in ctx
 
 
 def test_memory_recall_replaces_existing_synced_block_without_duplication(tmp_path: Path) -> None:
@@ -521,7 +525,8 @@ def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp
 
     assert result.returncode == 0
     prefixes = [call["body"].get("source_prefix", "") for call in calls]
-    assert prefixes == ["codex/memories", "learning/memories", "wip/memories"]
+    # 4th call is the dedicated deferred-work surfacing search
+    assert prefixes == ["codex/memories", "learning/memories", "wip/memories", "wip/memories"]
 
 
 def test_memory_extract_uses_codex_source_when_installed_under_codex(tmp_path: Path) -> None:

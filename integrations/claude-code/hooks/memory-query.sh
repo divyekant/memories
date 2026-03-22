@@ -143,12 +143,12 @@ PROMPT_LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
 # File context extraction — grep recent transcript for Read/Edit/Write tool calls
 FILE_CONTEXT=""
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-  ACTIVE_FILES=$(tail -20 "$TRANSCRIPT_PATH" 2>/dev/null | grep -oE '(Read|Edit|Write) /[^ "]+' | awk '{print $2}' | xargs -I{} basename {} 2>/dev/null | sort -u | head -5 | tr '\n' ', ' | sed 's/,$//')
+  ACTIVE_FILES=$(tail -20 "$TRANSCRIPT_PATH" 2>/dev/null | { grep -oE '(Read|Edit|Write) /[^ "]+' || true; } | awk '{print $2}' | xargs -I{} basename {} 2>/dev/null | sort -u | head -5 | tr '\n' ', ' | sed 's/,$//')
   [ -n "$ACTIVE_FILES" ] && FILE_CONTEXT="Files: $ACTIVE_FILES"
 fi
 
 # Key term extraction — pull identifiers from the prompt
-KEY_TERMS=$(echo "$PROMPT" | grep -oE '[A-Z][a-z]+([A-Z][a-z]+)+|[a-z]+_[a-z_]+|[A-Z_]{3,}' 2>/dev/null | sort -u | head -10 | tr '\n' ', ' | sed 's/,$//')
+KEY_TERMS=$(echo "$PROMPT" | { grep -oE '[A-Z][a-z]+([A-Z][a-z]+)+|[a-z]+_[a-z_]+|[A-Z_]{3,}' 2>/dev/null || true; } | sort -u | head -10 | tr '\n' ', ' | sed 's/,$//')
 [ -n "$KEY_TERMS" ] && KEY_TERMS="Terms: $KEY_TERMS"
 
 # Intent-based prefix biasing
