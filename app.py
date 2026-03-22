@@ -1118,7 +1118,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Memories API",
-    version="3.2.0",
+    version="3.2.1",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
 )
@@ -1399,7 +1399,7 @@ async def health(request: Request):
 
     Unauthenticated callers get minimal response; authenticated callers get full stats.
     """
-    base = {"status": "ok", "service": "memories", "version": "3.2.0"}
+    base = {"status": "ok", "service": "memories", "version": "3.2.1"}
     # Only include detailed stats for authenticated callers
     if not API_KEY or hmac.compare_digest(
         request.headers.get("X-API-Key", "").encode(), API_KEY.encode()
@@ -1837,7 +1837,7 @@ async def consolidate(
         )
         results.append(r)
     if not dry_run:
-        _audit(request, "memory.consolidated", resource_id=str(len(results)), source="maintenance")
+        _audit(request, "memory.consolidated", resource_id="", source=f"maintenance:count={len(results)}")
     return {"clusters_found": len(clusters), "results": results, "dry_run": dry_run}
 
 
@@ -1856,7 +1856,7 @@ async def prune(request: Request, dry_run: bool = Query(True)):
         for c in candidates:
             memory.delete_memory(c["id"])
             pruned += 1
-        _audit(request, "memory.pruned", resource_id=str(pruned), source="maintenance")
+        _audit(request, "memory.pruned", resource_id="", source=f"maintenance:count={pruned}")
     return {
         "candidates": len(candidates),
         "pruned": pruned,
@@ -2529,7 +2529,7 @@ async def build_index(request_body: BuildIndexRequest, request: Request):
 
         result = memory.rebuild_from_files(sources)
         logger.info("Index rebuilt: %d files, %d memories", result["files_processed"], result["memories_added"])
-        _audit(request, "index.rebuilt", resource_id=str(result.get("memories_added", 0)), source="maintenance")
+        _audit(request, "index.rebuilt", resource_id="", source=f"maintenance:count={result.get('memories_added', 0)}")
         return {"success": True, **result, "message": "Index rebuilt successfully"}
     except Exception as e:
         logger.exception("Index build failed")
@@ -2549,7 +2549,7 @@ async def deduplicate(request_body: DeduplicateRequest, request: Request):
             threshold=request_body.threshold, dry_run=request_body.dry_run
         )
         if not request_body.dry_run:
-            _audit(request, "memory.deduplicated", resource_id=str(len(result.get("removed", []))), source="maintenance")
+            _audit(request, "memory.deduplicated", resource_id="", source=f"maintenance:count={len(result.get('removed', []))}")
         return result
     except Exception as e:
         logger.exception("Deduplication failed")

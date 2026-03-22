@@ -183,7 +183,8 @@ class TestPruneAudit:
         assert resp.status_code == 200
         entries = mod.audit_log.query(action="memory.pruned")
         assert len(entries) == 1
-        assert entries[0]["resource_id"] == "1"
+        assert entries[0]["resource_id"] == ""
+        assert "count=1" in entries[0]["source_prefix"]
 
 
 class TestIndexBuildAudit:
@@ -202,7 +203,8 @@ class TestIndexBuildAudit:
         assert resp.status_code == 200
         entries = mod.audit_log.query(action="index.rebuilt")
         assert len(entries) == 1
-        assert entries[0]["resource_id"] == "10"
+        assert entries[0]["resource_id"] == ""
+        assert "count=10" in entries[0]["source_prefix"]
 
 
 class TestDeduplicateAudit:
@@ -236,7 +238,8 @@ class TestDeduplicateAudit:
         assert resp.status_code == 200
         entries = mod.audit_log.query(action="memory.deduplicated")
         assert len(entries) == 1
-        assert entries[0]["resource_id"] == "2"
+        assert entries[0]["resource_id"] == ""
+        assert "count=2" in entries[0]["source_prefix"]
 
 
 class TestExtractionOriginMetadata:
