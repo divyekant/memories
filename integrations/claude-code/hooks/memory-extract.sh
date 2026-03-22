@@ -79,6 +79,12 @@ fi
 # Cap at MSG_CAP chars (one pair is plenty for the Stop hook)
 MESSAGES="${MESSAGES:0:$MSG_CAP}"
 
+# Signal keyword pre-filter — skip extraction if no signals detected
+SIGNAL_KEYWORDS="${MEMORIES_SIGNAL_KEYWORDS:-decide|decision|chose|bug|fix|remember|architecture|convention|pattern|learning|mistake}"
+if [ -n "$SIGNAL_KEYWORDS" ] && [ -n "$MESSAGES" ] && ! echo "$MESSAGES" | grep -qiE "$SIGNAL_KEYWORDS"; then
+  exit 0
+fi
+
 _log_info "Extracting from $PROJECT (${#MESSAGES} chars, source=$SOURCE)"
 
 curl -sf -X POST "$MEMORIES_URL/memory/extract" \
