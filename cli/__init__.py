@@ -46,3 +46,4 @@ from cli.commands import auth  # noqa: E402, F401
 from cli.commands import config_cmd  # noqa: E402, F401
 from cli.commands import export_import  # noqa: E402, F401
 from cli.commands import links  # noqa: E402, F401
+from cli.commands import eval_cmd  # noqa: E402, F401
