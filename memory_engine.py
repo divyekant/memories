@@ -1103,26 +1103,28 @@ class MemoryEngine:
                 "action": action_type,
             })
 
-        # Execute if not dry_run
+        # Execute if not dry_run — acquire locks to protect shared state
         if not dry_run and actions:
-            archived_at = now.isoformat()
-            for a in actions:
-                mem_id = a["memory_id"]
-                primary_reason = a["reasons"][0]  # TTL takes precedence
-                evidence = {
-                    "_policy_archived_reason": primary_reason["rule"],
-                    "_policy_archived_policy": f"{primary_reason.get('prefix', '')} {primary_reason['rule']}",
-                    "_policy_archived_at": archived_at,
-                    "_policy_archived_confidence": a["confidence"],
-                    "_policy_archived_age_days": a["age_days"],
-                }
-                # Direct meta update (bypasses _policy_ protection since we're the policy engine)
-                meta = self._get_meta_by_id(mem_id)
-                meta["archived"] = True
-                meta.update(evidence)
-                # Set archived in Qdrant payload
-                self.qdrant_store.set_payload(mem_id, {"archived": True, **evidence})
-            self.save()
+            with self._entity_locks.acquire_many(["__all__"]):
+                with self._write_lock:
+                    archived_at = now.isoformat()
+                    for a in actions:
+                        mem_id = a["memory_id"]
+                        primary_reason = a["reasons"][0]  # TTL takes precedence
+                        evidence = {
+                            "_policy_archived_reason": primary_reason["rule"],
+                            "_policy_archived_policy": f"{primary_reason.get('prefix', '')} {primary_reason['rule']}",
+                            "_policy_archived_at": archived_at,
+                            "_policy_archived_confidence": a["confidence"],
+                            "_policy_archived_age_days": a["age_days"],
+                        }
+                        # Direct meta update (bypasses _policy_ protection since we're the policy engine)
+                        meta = self._get_meta_by_id(mem_id)
+                        meta["archived"] = True
+                        meta.update(evidence)
+                        # Set archived in Qdrant payload
+                        self.qdrant_store.set_payload(mem_id, {"archived": True, **evidence})
+                    self.save()
 
         summary_key = "would_archive" if dry_run else "archived"
         return {
@@ -1416,7 +1418,11 @@ class MemoryEngine:
         # 5-signal weight scaling (vector + BM25 + recency + feedback + confidence = 1.0)
         feedback_weight = max(0.0, min(1.0, feedback_weight))
         confidence_weight = max(0.0, min(1.0, confidence_weight))
-        total_auxiliary = min(feedback_weight + confidence_weight, 1.0)
+        total_auxiliary = feedback_weight + confidence_weight
+        if total_auxiliary > 1.0:
+            feedback_weight = feedback_weight / total_auxiliary
+            confidence_weight = confidence_weight / total_auxiliary
+            total_auxiliary = 1.0
         total_core = 1.0 - total_auxiliary
         effective_vector_weight = vector_weight * total_core * (1.0 - recency_weight)
         effective_bm25_weight = (1.0 - vector_weight) * total_core * (1.0 - recency_weight)
@@ -1650,7 +1656,11 @@ class MemoryEngine:
         # 5-signal weight scaling (vector + BM25 + recency + feedback + confidence = 1.0)
         feedback_weight = max(0.0, min(1.0, feedback_weight))
         confidence_weight = max(0.0, min(1.0, confidence_weight))
-        total_auxiliary = min(feedback_weight + confidence_weight, 1.0)
+        total_auxiliary = feedback_weight + confidence_weight
+        if total_auxiliary > 1.0:
+            feedback_weight = feedback_weight / total_auxiliary
+            confidence_weight = confidence_weight / total_auxiliary
+            total_auxiliary = 1.0
         total_core = 1.0 - total_auxiliary
         effective_vector_weight = vector_weight * total_core * (1.0 - recency_weight)
         effective_bm25_weight = (1.0 - vector_weight) * total_core * (1.0 - recency_weight)
@@ -1951,7 +1961,7 @@ class MemoryEngine:
             "since": since,
             "until": until,
             "count": len(filtered),
-            "version": "3.2.1",
+            "version": "3.4.0",
         }
         lines: List[str] = [json.dumps(header, separators=(",", ":"))]
 

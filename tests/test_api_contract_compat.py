@@ -53,7 +53,7 @@ def test_health_unauthenticated_returns_minimal(client):
     response = test_client.get("/health")
     assert response.status_code == 200
     body = response.json()
-    assert body == {"status": "ok", "service": "memories", "version": "3.2.1"}
+    assert body == {"status": "ok", "service": "memories", "version": "3.4.0"}
 
 
 def test_search_contract_shape(client):

@@ -29,10 +29,19 @@ def test_weight_scaling_sums_to_one():
 
 
 def test_combined_weight_guard():
-    """Combined auxiliary weights > 1.0 should be clamped."""
-    feedback_weight = 0.8
-    confidence_weight = 0.5
-    total_auxiliary = min(feedback_weight + confidence_weight, 1.0)
-    total_core = 1.0 - total_auxiliary
-    assert total_core == 0.0  # core signals fully displaced
-    assert total_auxiliary == 1.0  # clamped
+    """Combined auxiliary weights > 1.0 should be scaled down proportionally."""
+    fw, cw = 0.8, 0.5
+    total_aux = fw + cw
+    if total_aux > 1.0:
+        fw = fw / total_aux
+        cw = cw / total_aux
+        total_aux = 1.0
+    total_core = 1.0 - total_aux
+    # Now verify everything sums to 1.0
+    vector_weight = 0.7
+    recency_weight = 0.2
+    eff_v = vector_weight * total_core * (1.0 - recency_weight)
+    eff_b = (1.0 - vector_weight) * total_core * (1.0 - recency_weight)
+    eff_r = recency_weight * total_core
+    total = eff_v + eff_b + eff_r + fw + cw
+    assert abs(total - 1.0) < 0.0001
