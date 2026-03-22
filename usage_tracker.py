@@ -87,6 +87,14 @@ class NullTracker:
     def get_usage(self, period: str = "7d") -> Dict[str, Any]:
         return {"enabled": False}
 
+    def get_problem_queries(self, min_feedback: int = 2, min_negative_ratio: float = 0.5,
+                            limit: int = 20, memory_ids: list | None = None) -> list[dict]:
+        return []
+
+    def get_stale_memories(self, min_retrievals: int = 3, limit: int = 20,
+                           memory_ids: list | None = None) -> list[dict]:
+        return []
+
 
 class UsageTracker:
     """SQLite-backed usage tracker with WAL mode for non-blocking writes."""
@@ -639,5 +647,58 @@ class UsageTracker:
                     })
 
             return {"failures": failures}
+        finally:
+            conn.close()
+
+    def get_problem_queries(self, min_feedback: int = 2, min_negative_ratio: float = 0.5,
+                            limit: int = 20, memory_ids: list | None = None) -> list[dict]:
+        conn = self._connect()
+        try:
+            mem_filter = ""
+            params: list = []
+            if memory_ids is not None:
+                placeholders = ",".join("?" * len(memory_ids))
+                mem_filter = f"AND memory_id IN ({placeholders}) "
+                params.extend(memory_ids)
+            params.extend([min_feedback, min_negative_ratio, limit])
+            rows = conn.execute(
+                f"SELECT query, COUNT(*) as total, "
+                f"SUM(CASE WHEN signal='not_useful' THEN 1 ELSE 0 END) as not_useful "
+                f"FROM search_feedback WHERE query != '' {mem_filter}"
+                f"GROUP BY query "
+                f"HAVING not_useful >= ? AND CAST(not_useful AS FLOAT) / COUNT(*) >= ? "
+                f"ORDER BY not_useful DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [{"query": r[0], "total": r[1], "not_useful": r[2],
+                     "ratio": round(r[2] / r[1], 2) if r[1] > 0 else 0} for r in rows]
+        finally:
+            conn.close()
+
+    def get_stale_memories(self, min_retrievals: int = 3, limit: int = 20,
+                           memory_ids: list | None = None) -> list[dict]:
+        conn = self._connect()
+        try:
+            mem_filter = ""
+            params: list = []
+            if memory_ids is not None:
+                placeholders = ",".join("?" * len(memory_ids))
+                mem_filter = f"WHERE memory_id IN ({placeholders}) "
+                params.extend(memory_ids)
+            params.extend([min_retrievals, limit])
+            rows = conn.execute(
+                f"SELECT r.memory_id, r.retrievals, "
+                f"COALESCE(f.useful, 0) as useful, COALESCE(f.not_useful, 0) as not_useful "
+                f"FROM (SELECT memory_id, COUNT(*) as retrievals FROM retrieval_log "
+                f"      {mem_filter}GROUP BY memory_id) r "
+                f"LEFT JOIN (SELECT memory_id, "
+                f"  SUM(CASE WHEN signal='useful' THEN 1 ELSE 0 END) as useful, "
+                f"  SUM(CASE WHEN signal='not_useful' THEN 1 ELSE 0 END) as not_useful "
+                f"  FROM search_feedback GROUP BY memory_id) f ON r.memory_id = f.memory_id "
+                f"WHERE r.retrievals >= ? AND COALESCE(f.useful, 0) = 0 "
+                f"ORDER BY r.retrievals DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [{"memory_id": r[0], "retrievals": r[1], "useful": r[2], "not_useful": r[3]} for r in rows]
         finally:
             conn.close()

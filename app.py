@@ -1647,6 +1647,30 @@ async def quality_failures(
     return usage_tracker.get_failures(failure_type=type, limit=limit)
 
 
+@app.get("/metrics/problem-queries")
+async def problem_queries(
+    request: Request,
+    min_feedback: int = Query(2, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Queries with consistently negative feedback. Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    return {"queries": usage_tracker.get_problem_queries(min_feedback=min_feedback, limit=limit)}
+
+
+@app.get("/metrics/stale-memories")
+async def stale_memories_endpoint(
+    request: Request,
+    min_retrievals: int = Query(3, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Frequently retrieved but never useful memories. Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    return {"memories": usage_tracker.get_stale_memories(min_retrievals=min_retrievals, limit=limit)}
+
+
 @app.get("/audit")
 async def get_audit_log(
     request: Request,

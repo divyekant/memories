@@ -2268,7 +2268,20 @@ registerPage("memories", async (container) => {
   // If navigated here with a pending search query, run it
   const globalSearch = document.getElementById("globalSearch");
   const pendingQuery = globalSearch?.value?.trim();
-  if (pendingQuery) {
+
+  // Check URL hash for ?q= parameter (e.g. from health page replay links)
+  const hashQuery = (() => {
+    const hash = window.location.hash || "";
+    const qIdx = hash.indexOf("?q=");
+    if (qIdx === -1) return "";
+    const raw = hash.slice(qIdx + 3);
+    try { return decodeURIComponent(raw); } catch { return raw; }
+  })();
+
+  if (hashQuery) {
+    if (globalSearch) globalSearch.value = hashQuery;
+    await searchMemories(hashQuery);
+  } else if (pendingQuery) {
     await searchMemories(pendingQuery);
   } else {
     await loadMemories();
@@ -3150,12 +3163,16 @@ registerPage("health", async (container) => {
     let extractionQuality = null;
     let searchQuality = null;
     let failures = null; // null = not loaded (auth failed), [] = loaded empty
+    let problemQueries = null; // null = not loaded (auth failed)
+    let staleMemories = null; // null = not loaded (auth failed)
 
     const results = await Promise.allSettled([
       api("/memory/conflicts"),
       api(`/metrics/extraction-quality?period=${period}`),
       api(`/metrics/search-quality?period=${period}`),
       api("/metrics/failures?type=extraction&limit=100"),
+      api("/metrics/problem-queries"),
+      api("/metrics/stale-memories"),
     ]);
 
     if (results[0].status === "fulfilled") {
@@ -3167,6 +3184,14 @@ registerPage("health", async (container) => {
     if (results[3].status === "fulfilled") {
       const d = results[3].value;
       failures = d.failures || [];
+    }
+    if (results[4].status === "fulfilled") {
+      const d = results[4].value;
+      problemQueries = d.queries || [];
+    }
+    if (results[5].status === "fulfilled") {
+      const d = results[5].value;
+      staleMemories = d.memories || [];
     }
 
     // Stat cards
@@ -3285,6 +3310,94 @@ registerPage("health", async (container) => {
             `Showing 3 of ${conflicts.length} conflicts`)
         );
       }
+    }
+
+    // Problem Queries section
+    const problemTitle = h("div", { className: "section-title mt-24" }, "Problem Queries");
+    container.appendChild(problemTitle);
+
+    if (problemQueries === null) {
+      container.appendChild(
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)", padding: "12px 0" } }, "Admin access required")
+      );
+    } else if (problemQueries.length === 0) {
+      container.appendChild(
+        h("div", { className: "empty-state", style: { padding: "40px 20px" } },
+          h("div", { className: "empty-state-icon color-success" }, "\u2713"),
+          h("div", { className: "empty-state-title" }, "No problem queries"),
+          h("div", { className: "empty-state-text" }, "All queries are performing well.")
+        )
+      );
+    } else {
+      problemQueries.forEach((pq) => {
+        const row = h("div", { className: "problem-query-row" },
+          h("div", { className: "problem-query-text" }, pq.query),
+          h("span", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)", whiteSpace: "nowrap" } },
+            `${pq.not_useful}/${pq.total} negative (${Math.round(pq.ratio * 100)}%)`),
+          h("a", {
+            className: "replay-link",
+            href: `#/memories?q=${encodeURIComponent(pq.query)}`,
+            onclick: (e) => {
+              e.preventDefault();
+              window.location.hash = `#/memories?q=${encodeURIComponent(pq.query)}`;
+            },
+          }, "Replay")
+        );
+        container.appendChild(row);
+      });
+    }
+
+    // Stale Memories section
+    const staleTitle = h("div", { className: "section-title mt-24" }, "Stale Memories");
+    container.appendChild(staleTitle);
+
+    if (staleMemories === null) {
+      container.appendChild(
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)", padding: "12px 0" } }, "Admin access required")
+      );
+    } else if (staleMemories.length === 0) {
+      container.appendChild(
+        h("div", { className: "empty-state", style: { padding: "40px 20px" } },
+          h("div", { className: "empty-state-icon color-success" }, "\u2713"),
+          h("div", { className: "empty-state-title" }, "No stale memories"),
+          h("div", { className: "empty-state-text" }, "All frequently retrieved memories have positive feedback.")
+        )
+      );
+    } else {
+      staleMemories.forEach((sm) => {
+        const archiveBtn = h("button", { className: "btn btn-sm" }, "Archive");
+        archiveBtn.addEventListener("click", async () => {
+          archiveBtn.disabled = true;
+          archiveBtn.textContent = "Archiving...";
+          try {
+            await api(`/memory/${sm.memory_id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ archived: true }),
+            });
+            invalidateCache();
+            showToast(`Memory #${sm.memory_id} archived`, "success");
+            loadHealthPage();
+          } catch (err) {
+            archiveBtn.disabled = false;
+            archiveBtn.textContent = "Archive";
+            showToast(err.message, "error");
+          }
+        });
+
+        const viewBtn = h("button", { className: "btn btn-sm" }, "View");
+        viewBtn.addEventListener("click", () => {
+          window.location.hash = `#/memories?q=${encodeURIComponent(`id:${sm.memory_id}`)}`;
+        });
+
+        const row = h("div", { className: "stale-memory-row" },
+          h("span", { style: { fontSize: "0.8125rem", fontWeight: "600", color: "var(--color-text)" } }, `#${sm.memory_id}`),
+          h("span", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)", flex: "1" } },
+            `${sm.retrievals} retrievals, 0 useful`),
+          archiveBtn,
+          viewBtn
+        );
+        container.appendChild(row);
+      });
     }
 
     // Quality metrics grid
