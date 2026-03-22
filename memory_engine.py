@@ -1915,7 +1915,8 @@ class MemoryEngine:
             return
         texts = [r["text"] for r in parsed]
         sources = [r["source"] for r in parsed]
-        self.add_memories(texts=texts, sources=sources, deduplicate=False)
+        metadata_list = [{"imported": True, "import_source": r["source"]} for r in parsed]
+        self.add_memories(texts=texts, sources=sources, metadata_list=metadata_list, deduplicate=False)
         result["imported"] = len(texts)
 
     def _import_smart(
@@ -1934,6 +1935,7 @@ class MemoryEngine:
 
         novel_texts: List[str] = []
         novel_sources: List[str] = []
+        novel_meta: List[Dict[str, Any]] = []
 
         for rec in parsed:
             text = rec["text"]
@@ -1944,6 +1946,7 @@ class MemoryEngine:
             if not self.metadata:
                 novel_texts.append(text)
                 novel_sources.append(source)
+                novel_meta.append({"imported": True, "import_source": source})
                 continue
 
             hits = self.search(text, k=1)
@@ -1951,6 +1954,7 @@ class MemoryEngine:
             if not hits:
                 novel_texts.append(text)
                 novel_sources.append(source)
+                novel_meta.append({"imported": True, "import_source": source})
                 continue
 
             best = hits[0]
@@ -1963,6 +1967,7 @@ class MemoryEngine:
                 # Clearly novel — add
                 novel_texts.append(text)
                 novel_sources.append(source)
+                novel_meta.append({"imported": True, "import_source": source})
             else:
                 # Borderline (0.80 <= sim < 0.95) — timestamp resolution
                 existing_created = best.get("created_at", "")
@@ -1973,6 +1978,7 @@ class MemoryEngine:
                         self.delete_memory(match_id)
                     novel_texts.append(text)
                     novel_sources.append(source)
+                    novel_meta.append({"imported": True, "import_source": source})
                     result["updated"] += 1
                 else:
                     # Existing is newer or same — skip
@@ -1981,7 +1987,8 @@ class MemoryEngine:
         # Batch-add all novel records at once
         if novel_texts:
             self.add_memories(
-                texts=novel_texts, sources=novel_sources, deduplicate=False,
+                texts=novel_texts, sources=novel_sources,
+                metadata_list=novel_meta, deduplicate=False,
             )
             result["imported"] = len(novel_texts)
 

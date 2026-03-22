@@ -237,3 +237,138 @@ class TestDeduplicateAudit:
         entries = mod.audit_log.query(action="memory.deduplicated")
         assert len(entries) == 1
         assert entries[0]["resource_id"] == "2"
+
+
+class TestExtractionOriginMetadata:
+    """Extracted memories should carry extraction_job_id and extract_source."""
+
+    def test_extraction_sets_origin_metadata(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [100]
+
+        actions = [{"action": "ADD", "fact_index": 0}]
+        facts = [{"text": "User prefers dark mode", "category": "preference"}]
+
+        result = execute_actions(
+            mock_engine, actions, facts,
+            source="claude-code/myproject",
+            job_id="abc123",
+        )
+        assert result["stored_count"] == 1
+        call_kwargs = mock_engine.add_memories.call_args
+        meta = call_kwargs.kwargs.get("metadata_list", [{}])[0]
+        assert meta["extraction_job_id"] == "abc123"
+        assert meta["extract_source"] == "claude-code/myproject"
+        assert meta["category"] == "preference"
+
+    def test_extraction_update_sets_origin_metadata(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [101]
+        mock_engine.get_memory.return_value = {"id": 42, "source": "test", "text": "old"}
+
+        actions = [{"action": "UPDATE", "fact_index": 0, "old_id": 42, "new_text": "updated"}]
+        facts = [{"text": "original", "category": "decision"}]
+
+        result = execute_actions(
+            mock_engine, actions, facts,
+            source="claude-code/proj",
+            job_id="def456",
+        )
+        assert result["updated_count"] == 1
+        call_kwargs = mock_engine.add_memories.call_args
+        meta = call_kwargs.kwargs.get("metadata_list", [{}])[0]
+        assert meta["extraction_job_id"] == "def456"
+        assert meta["extract_source"] == "claude-code/proj"
+
+    def test_extraction_conflict_sets_origin_metadata(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [102]
+
+        actions = [{"action": "CONFLICT", "fact_index": 0, "old_id": 10}]
+        facts = [{"text": "Conflicting fact", "category": "detail"}]
+
+        result = execute_actions(
+            mock_engine, actions, facts,
+            source="test/src",
+            job_id="ghi789",
+        )
+        assert result["stored_count"] == 1
+        call_kwargs = mock_engine.add_memories.call_args
+        meta = call_kwargs.kwargs.get("metadata_list", [{}])[0]
+        assert meta["extraction_job_id"] == "ghi789"
+        assert meta["extract_source"] == "test/src"
+
+    def test_extraction_without_job_id_omits_origin(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [100]
+
+        actions = [{"action": "ADD", "fact_index": 0}]
+        facts = [{"text": "Manual fact", "category": "detail"}]
+
+        execute_actions(mock_engine, actions, facts, source="test/proj")
+        call_kwargs = mock_engine.add_memories.call_args
+        meta = call_kwargs.kwargs.get("metadata_list", [{}])[0]
+        assert "extraction_job_id" not in meta
+        assert "extract_source" not in meta
+
+
+class TestPinAuditEvent:
+    """Pinning a memory should emit memory.pinned audit event."""
+
+    def test_pin_emits_audit_event(self, app_with_keys):
+        client, mock_engine, _, mod = app_with_keys
+        mock_engine.update_memory.return_value = {"id": 1, "pinned": True}
+        resp = client.patch(
+            "/memory/1",
+            json={"pinned": True},
+            headers={"X-API-Key": "admin-key"},
+        )
+        assert resp.status_code == 200
+        entries = mod.audit_log.query(action="memory.pinned")
+        assert len(entries) >= 1
+        assert entries[0]["resource_id"] == "1"
+
+    def test_unpin_emits_audit_event(self, app_with_keys):
+        client, mock_engine, _, mod = app_with_keys
+        mock_engine.update_memory.return_value = {"id": 1, "pinned": False}
+        resp = client.patch(
+            "/memory/1",
+            json={"pinned": False},
+            headers={"X-API-Key": "admin-key"},
+        )
+        assert resp.status_code == 200
+        entries = mod.audit_log.query(action="memory.unpinned")
+        assert len(entries) >= 1
+        assert entries[0]["resource_id"] == "1"
+
+
+class TestLinkAuditEvent:
+    """Linking memories should emit memory.linked audit event."""
+
+    def test_link_emits_audit_event(self, app_with_keys):
+        client, mock_engine, _, mod = app_with_keys
+        mock_engine.get_memory.side_effect = lambda mid: {
+            1: {"id": 1, "text": "fact one", "source": "claude-code/test"},
+            2: {"id": 2, "text": "fact two", "source": "claude-code/test"},
+        }.get(mid, {"id": mid, "text": "", "source": "claude-code/test"})
+        mock_engine.add_link.return_value = {
+            "from_id": 1, "to_id": 2, "type": "related_to",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+        resp = client.post(
+            "/memory/1/link",
+            json={"to_id": 2, "type": "related_to"},
+            headers={"X-API-Key": "admin-key"},
+        )
+        assert resp.status_code == 200
+        entries = mod.audit_log.query(action="memory.linked")
+        assert len(entries) >= 1
+        assert entries[0]["resource_id"] == "1"

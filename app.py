@@ -65,6 +65,7 @@ except Exception as e:
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/workspace")
 API_KEY = os.getenv("API_KEY", "")  # Empty = no auth (local-only)
+AUTH_RATE_LIMIT = int(os.getenv("AUTH_RATE_LIMIT", "500"))
 key_store: KeyStore = None  # type: ignore  — initialized in lifespan
 PORT = int(os.getenv("PORT", "8000"))
 BASE_DIR = Path(__file__).resolve().parent
@@ -237,11 +238,11 @@ async def verify_api_key(request: Request):
         request.state.auth = AuthContext.unrestricted()
         return  # Allow unauthenticated health checks + UI shell/static files
 
-    # Rate limit failed auth attempts (10 per minute per IP)
+    # Rate limit failed auth attempts (configurable per minute per IP)
     ip = request.client.host if request.client else "unknown"
     now = time.time()
     _auth_failures[ip] = [t for t in _auth_failures[ip] if now - t < 60]
-    if len(_auth_failures[ip]) >= 10:
+    if len(_auth_failures[ip]) >= AUTH_RATE_LIMIT:
         raise HTTPException(status_code=429, detail="Too many failed authentication attempts")
 
     raw_key = request.headers.get("X-API-Key", "")
@@ -3109,6 +3110,7 @@ async def add_memory_link(memory_id: int, request_body: AddLinkRequest, request:
             to_id=request_body.to_id,
             link_type=request_body.type,
         )
+        _audit(request, "memory.linked", resource_id=str(memory_id), source=str(request_body.to_id))
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

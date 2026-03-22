@@ -10,6 +10,7 @@ Usage:
 import json
 import logging
 import os
+import uuid
 from typing import Optional, List
 
 from auth_context import source_matches_prefixes
@@ -421,11 +422,13 @@ def execute_actions(
     facts: list[dict],
     source: str,
     allowed_prefixes: Optional[List[str]] = None,
+    job_id: Optional[str] = None,
 ) -> dict:
     """Execute AUDN decisions against the memory engine.
 
     Args:
         facts: list of {"category": str, "text": str} dicts
+        job_id: extraction job identifier for provenance tracking
     """
     stored_count = 0
     updated_count = 0
@@ -444,6 +447,9 @@ def execute_actions(
                 if not source_matches_prefixes(source, allowed_prefixes):
                     raise PermissionError(f"source not authorized for add: {source}")
                 fact_meta = {"category": fact.get("category", "detail")} if isinstance(fact, dict) else {}
+                if job_id:
+                    fact_meta["extraction_job_id"] = job_id
+                    fact_meta["extract_source"] = source
                 added_ids = engine.add_memories(
                     texts=[fact_text],
                     sources=[source],
@@ -472,6 +478,9 @@ def execute_actions(
                 if old_id is not None:
                     engine.delete_memory(old_id)
                 fact_meta = {"category": fact.get("category", "detail"), "supersedes": old_id} if isinstance(fact, dict) else {"supersedes": old_id}
+                if job_id:
+                    fact_meta["extraction_job_id"] = job_id
+                    fact_meta["extract_source"] = source
                 added_ids = engine.add_memories(
                     texts=[new_text],
                     sources=[source],
@@ -504,6 +513,9 @@ def execute_actions(
                 if not source_matches_prefixes(source, allowed_prefixes):
                     raise PermissionError(f"source not authorized for add: {source}")
                 fact_meta = {"category": fact.get("category", "detail")} if isinstance(fact, dict) else {}
+                if job_id:
+                    fact_meta["extraction_job_id"] = job_id
+                    fact_meta["extract_source"] = source
                 if old_id is not None:
                     fact_meta["conflicts_with"] = old_id
                 added_ids = engine.add_memories(
@@ -565,6 +577,8 @@ def run_extraction(
     if provider is None:
         return {"error": "extraction_disabled"}
 
+    job_id = uuid.uuid4().hex[:12]
+
     # Apply profile settings
     if profile:
         max_facts = profile.get("max_facts", 30)
@@ -590,8 +604,9 @@ def run_extraction(
         )
         facts = [{"text": a.get("text", ""), "category": a.get("category", "detail")}
                  for a in actions]
-        result = execute_actions(engine, actions, facts, source, allowed_prefixes)
+        result = execute_actions(engine, actions, facts, source, allowed_prefixes, job_id=job_id)
         result["tokens"] = {"single_call": usage}
+        result["job_id"] = job_id
         return result
 
     # Temporarily override module-level constants for extract_facts
@@ -671,9 +686,11 @@ def run_extraction(
         facts,
         source,
         allowed_prefixes=allowed_prefixes,
+        job_id=job_id,
     )
     result["extracted_count"] = len(facts)
     result["tokens"] = {"extract": extract_tokens, "audn": audn_tokens}
+    result["job_id"] = job_id
 
     # Step 5: Build debug trace when requested
     if debug:
