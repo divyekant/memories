@@ -1117,7 +1117,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Memories API",
-    version="3.0.0",
+    version="3.2.0",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
 )
@@ -1398,7 +1398,7 @@ async def health(request: Request):
 
     Unauthenticated callers get minimal response; authenticated callers get full stats.
     """
-    base = {"status": "ok", "service": "memories", "version": "3.0.0"}
+    base = {"status": "ok", "service": "memories", "version": "3.2.0"}
     # Only include detailed stats for authenticated callers
     if not API_KEY or hmac.compare_digest(
         request.headers.get("X-API-Key", "").encode(), API_KEY.encode()
@@ -1835,6 +1835,8 @@ async def consolidate(
             consolidate_cluster, extract_provider, memory, cluster, dry_run=dry_run,
         )
         results.append(r)
+    if not dry_run:
+        _audit(request, "memory.consolidated", resource_id=str(len(results)), source="maintenance")
     return {"clusters_found": len(clusters), "results": results, "dry_run": dry_run}
 
 
@@ -1853,6 +1855,7 @@ async def prune(request: Request, dry_run: bool = Query(True)):
         for c in candidates:
             memory.delete_memory(c["id"])
             pruned += 1
+        _audit(request, "memory.pruned", resource_id=str(pruned), source="maintenance")
     return {
         "candidates": len(candidates),
         "pruned": pruned,
@@ -2085,6 +2088,8 @@ async def list_conflicts(request: Request):
 async def delete_memory(memory_id: int, request: Request):
     """Delete a single memory by ID"""
     auth = _get_auth(request)
+    if auth.role == "read-only":
+        raise HTTPException(status_code=403, detail="Read-only keys cannot delete memories")
     logger.info("Delete memory: id=%d", memory_id)
     try:
         existing = memory.get_memory(memory_id)
@@ -2093,7 +2098,7 @@ async def delete_memory(memory_id: int, request: Request):
         delete_source = existing.get("source", "")
         result = memory.delete_memory(memory_id)
         usage_tracker.log_api_event("delete")
-        _audit(request, "delete", resource_id=str(memory_id), source=delete_source)
+        _audit(request, "memory.deleted", resource_id=str(memory_id), source=delete_source)
         return {"success": True, **result}
     except HTTPException:
         raise
@@ -2385,16 +2390,17 @@ async def upsert_memory_batch(request_body: UpsertBatchRequest, request: Request
 
 
 @app.post("/memory/is-novel")
-async def is_novel(request: IsNovelRequest):
+async def is_novel(request_body: IsNovelRequest, request: Request):
     """Check if text is novel (not too similar to existing)"""
+    _get_auth(request)
     try:
         is_new, similar = memory.is_novel(
-            text=request.text, threshold=request.threshold
+            text=request_body.text, threshold=request_body.threshold
         )
         usage_tracker.log_api_event("is_novel")
         return {
             "is_novel": is_new,
-            "threshold": request.threshold,
+            "threshold": request_body.threshold,
             "most_similar": similar,
         }
     except Exception as e:
@@ -2522,6 +2528,7 @@ async def build_index(request_body: BuildIndexRequest, request: Request):
 
         result = memory.rebuild_from_files(sources)
         logger.info("Index rebuilt: %d files, %d memories", result["files_processed"], result["memories_added"])
+        _audit(request, "index.rebuilt", resource_id=str(result.get("memories_added", 0)), source="maintenance")
         return {"success": True, **result, "message": "Index rebuilt successfully"}
     except Exception as e:
         logger.exception("Index build failed")
@@ -2540,6 +2547,8 @@ async def deduplicate(request_body: DeduplicateRequest, request: Request):
         result = memory.deduplicate(
             threshold=request_body.threshold, dry_run=request_body.dry_run
         )
+        if not request_body.dry_run:
+            _audit(request, "memory.deduplicated", resource_id=str(len(result.get("removed", []))), source="maintenance")
         return result
     except Exception as e:
         logger.exception("Deduplication failed")

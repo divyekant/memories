@@ -1790,7 +1790,7 @@ class MemoryEngine:
             "since": since,
             "until": until,
             "count": len(filtered),
-            "version": "3.0.0",
+            "version": "3.2.0",
         }
         lines: List[str] = [json.dumps(header, separators=(",", ":"))]
 

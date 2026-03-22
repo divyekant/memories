@@ -350,7 +350,7 @@ class TestAuditDeleteSource:
         )
         assert resp.status_code == 200
 
-        entries = mod.audit_log.query(action="delete")
+        entries = mod.audit_log.query(action="memory.deleted")
         assert len(entries) >= 1
         assert entries[0]["source_prefix"] == "claude-code/myapp"
 
