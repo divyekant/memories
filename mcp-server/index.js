@@ -48,10 +48,12 @@ server.tool(
     k: z.number().int().min(1).max(50).default(5).describe("Number of results to return"),
     hybrid: z.boolean().default(true).describe("Use hybrid BM25+vector search (recommended)"),
     threshold: z.number().min(0).max(1).optional().describe("Minimum similarity score (0-1)"),
+    feedback_weight: z.number().min(0).max(1).default(0.1).describe("Weight for feedback-based ranking (0=disabled, default 0.1)"),
   },
-  async ({ query, k = 5, hybrid = true, threshold }) => {
+  async ({ query, k = 5, hybrid = true, threshold, feedback_weight }) => {
     const body = { query, k, hybrid };
     if (threshold !== undefined) body.threshold = threshold;
+    if (feedback_weight !== undefined) body.feedback_weight = feedback_weight;
 
     const data = await memoriesRequest("/search", {
       method: "POST",
