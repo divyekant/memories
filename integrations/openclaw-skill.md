@@ -1,7 +1,7 @@
 ---
 name: memories
 version: 2.2.0
-description: Memories-based semantic memory with hybrid BM25+vector search. Three responsibilities — proactive recall, hybrid write (extract for lifecycle, add for simple facts), and maintain (updates, deletes, cleanup via AUDN). Includes OpenClaw QMD bridge for unified memory_search integration.
+description: Use when recalling past decisions, project history, preferences, or learnings; storing new facts or insights; searching what was previously discussed or built. Provides persistent semantic memory across sessions via the Memories service.
 metadata:
   clawdbot:
     emoji: "🧠"
@@ -30,7 +30,18 @@ Local semantic memory using Memories vector search + BM25 hybrid retrieval (Dock
 
 - Docker service running: `docker ps | grep memories`
 - If not running: `cd /path/to/memories && docker compose up -d memories`
-- `MEMORIES_API_KEY` env var must be set (loaded from shell profile)
+
+### Making API key available to OpenClaw
+
+OpenClaw agents run inside the gateway process and do not automatically inherit shell env vars
+from `~/.config/memories/env` or your shell profile. Add Memories credentials to the gateway
+config so `$MEMORIES_API_KEY` and `$MEMORIES_URL` are available in skill exec calls:
+
+```bash
+openclaw config patch '{"env": {"vars": {"MEMORIES_URL": "http://localhost:8900", "MEMORIES_API_KEY": "your-key"}}}'
+```
+
+Or edit `~/.openclaw/openclaw.json` directly under `env.vars`, then restart the gateway.
 
 ---
 
@@ -77,29 +88,36 @@ set -euo pipefail
 
 MEMORIES_API="${MEMORIES_API:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
+MEMORIES_ENV_FILE="${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
 AGENT_ID="${OPENCLAW_AGENT_ID:-jack}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
 EXPORT_DIR="$STATE_DIR/agents/$AGENT_ID/qmd/memories-export"
 COLLECTION="memories-$AGENT_ID"
 
+if [[ -f "$MEMORIES_ENV_FILE" ]]; then
+  set -a
+  source "$MEMORIES_ENV_FILE"
+  set +a
+fi
+
 export XDG_CONFIG_HOME="$STATE_DIR/agents/$AGENT_ID/qmd/xdg-config"
 export XDG_CACHE_HOME="$STATE_DIR/agents/$AGENT_ID/qmd/xdg-cache"
 
 # Auth header (optional — only needed if MEMORIES_API_KEY is set)
-AUTH_HEADER=""
+CURL_HEADERS=()
 if [[ -n "$MEMORIES_API_KEY" ]]; then
-  AUTH_HEADER="-H \"X-API-Key: $MEMORIES_API_KEY\""
+  CURL_HEADERS+=(-H "X-API-Key: $MEMORIES_API_KEY")
 fi
 
 # Check API is up
-if ! curl -sf "$MEMORIES_API/health" >/dev/null 2>&1; then
+if ! curl -sf "${CURL_HEADERS[@]}" "$MEMORIES_API/health" >/dev/null 2>&1; then
   echo "❌ Memories API not responding at $MEMORIES_API"
   exit 1
 fi
 
 mkdir -p "$EXPORT_DIR"
 
-TOTAL=$(curl -sf "$MEMORIES_API/health" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_memories',0))")
+TOTAL=$(curl -sf "${CURL_HEADERS[@]}" "$MEMORIES_API/health" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_memories',0))")
 echo "📦 Exporting $TOTAL memories from Memories..."
 
 # Export all memories and write as grouped markdown files
@@ -685,6 +703,26 @@ memory_extract_memories "conversation text" "openclaw/my-project" "session_end"
 #   "duplicates_skipped": 0
 # }
 ```
+
+## Automatic Lifecycle (OpenClaw)
+
+OpenClaw has no hook system, so the agent must call the memory helpers explicitly.
+
+**At the start of any non-trivial task:**
+```bash
+memory_recall_memories "<topic or project name>"
+```
+
+**After completing significant work (decision made, bug fixed, feature built):**
+```bash
+memory_extract_memories "<summary of what happened>" "openclaw/<project>" "stop"
+```
+
+**During heartbeats or maintenance cycles:**
+- Search for stale, contradicted, or deferred memories that need cleanup
+- Sync the QMD bridge with `bash ~/your-workspace/scripts/sync-memories-to-qmd.sh`
+
+Add these reminders to `HEARTBEAT.md` if you want them enforced on every heartbeat cycle.
 
 ## Memory Discipline — Three Responsibilities
 

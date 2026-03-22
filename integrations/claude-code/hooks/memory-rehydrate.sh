@@ -20,6 +20,7 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
+  _default_source_prefixes() { echo 'claude-code/{project},learning/{project},wip/{project}'; }
 fi
 
 INPUT=$(cat)
@@ -40,7 +41,7 @@ MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 QUERY="${SUMMARY:0:500}"
 
 # Build source prefixes
-PREFIXES="${MEMORIES_SOURCE_PREFIXES:-claude-code/{project},learning/{project},wip/{project}}"
+PREFIXES="${MEMORIES_SOURCE_PREFIXES:-$(_default_source_prefixes)}"
 
 # Search with the compact summary as query
 RESULTS=""

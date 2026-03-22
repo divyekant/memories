@@ -11,6 +11,7 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
+  _default_extract_source() { echo 'claude-code/{project}'; }
 fi
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
@@ -35,7 +36,7 @@ PROJECT=$(basename "${CWD:-unknown}")
 [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ] || [ -z "$PROJECT" ] && exit 0
 
 # Build extraction source
-_DEFAULT_SRC="claude-code/{project}"
+_DEFAULT_SRC="$(_default_extract_source)"
 SOURCE="${MEMORIES_EXTRACT_SOURCE:-$_DEFAULT_SRC}"
 SOURCE="${SOURCE//\{project\}/$PROJECT}"
 
