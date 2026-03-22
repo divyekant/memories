@@ -1178,6 +1178,14 @@ class MemoryEngine:
 
         summary_key = "would_archive" if dry_run else "archived"
         archived_count = len([a for a in actions if a["action"] in ("archived", "would_archive")])
+        # Recompute by_rule from final actions (scan-phase counts may include skipped candidates)
+        by_rule = {"ttl": 0, "confidence": 0}
+        for a in actions:
+            if a["action"] in ("archived", "would_archive"):
+                for r in a.get("reasons", []):
+                    rule = r.get("rule")
+                    if rule in by_rule:
+                        by_rule[rule] += 1
         result = {
             "dry_run": dry_run,
             "actions": actions,
