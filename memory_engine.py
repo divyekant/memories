@@ -1886,12 +1886,16 @@ class MemoryEngine:
             if source_remap and source.startswith(source_remap[0]):
                 source = source_remap[1] + source[len(source_remap[0]):]
 
-            parsed.append({
+            entry: Dict[str, Any] = {
                 "text": record["text"],
                 "source": source,
                 "created_at": record.get("created_at", ""),
                 "updated_at": record.get("updated_at", ""),
-            })
+            }
+            custom = record.get("custom_fields")
+            if custom and isinstance(custom, dict):
+                entry["custom_fields"] = custom
+            parsed.append(entry)
 
         # --- dispatch by strategy ---
         if strategy == "add":
@@ -1915,7 +1919,10 @@ class MemoryEngine:
             return
         texts = [r["text"] for r in parsed]
         sources = [r["source"] for r in parsed]
-        metadata_list = [{"imported": True, "import_source": r["source"]} for r in parsed]
+        metadata_list = [
+            {"imported": True, "import_source": r["source"], **r.get("custom_fields", {})}
+            for r in parsed
+        ]
         self.add_memories(texts=texts, sources=sources, metadata_list=metadata_list, deduplicate=False)
         result["imported"] = len(texts)
 
@@ -1941,12 +1948,14 @@ class MemoryEngine:
             text = rec["text"]
             source = rec["source"]
             import_created = rec.get("created_at", "")
+            custom = rec.get("custom_fields", {})
+            rec_meta = {"imported": True, "import_source": source, **custom}
 
             # Empty engine — everything is novel
             if not self.metadata:
                 novel_texts.append(text)
                 novel_sources.append(source)
-                novel_meta.append({"imported": True, "import_source": source})
+                novel_meta.append(rec_meta)
                 continue
 
             hits = self.search(text, k=1)
@@ -1954,7 +1963,7 @@ class MemoryEngine:
             if not hits:
                 novel_texts.append(text)
                 novel_sources.append(source)
-                novel_meta.append({"imported": True, "import_source": source})
+                novel_meta.append(rec_meta)
                 continue
 
             best = hits[0]
@@ -1967,7 +1976,7 @@ class MemoryEngine:
                 # Clearly novel — add
                 novel_texts.append(text)
                 novel_sources.append(source)
-                novel_meta.append({"imported": True, "import_source": source})
+                novel_meta.append(rec_meta)
             else:
                 # Borderline (0.80 <= sim < 0.95) — timestamp resolution
                 existing_created = best.get("created_at", "")
@@ -1978,7 +1987,7 @@ class MemoryEngine:
                         self.delete_memory(match_id)
                     novel_texts.append(text)
                     novel_sources.append(source)
-                    novel_meta.append({"imported": True, "import_source": source})
+                    novel_meta.append(rec_meta)
                     result["updated"] += 1
                 else:
                     # Existing is newer or same — skip

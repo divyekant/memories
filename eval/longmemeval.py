@@ -69,11 +69,14 @@ class LongMemEvalRunner:
         return items
 
     def seed_memories(self, conversations: list[dict], source_prefix: str = "eval/longmemeval"):
-        """Extract memories from conversation histories."""
+        """Extract memories from conversation histories, scoped per session."""
         self.client.clear_by_prefix(source_prefix)
-        for conv in conversations:
+        self._session_map = {}
+        for i, conv in enumerate(conversations):
+            session_source = f"{source_prefix}/session_{i}"
             messages = self._format_conversation(conv)
-            self.client.extract(messages=messages, source=source_prefix, context="stop")
+            self.client.extract(messages=messages, source=session_source, context="stop")
+            self._session_map[conv.get("id", i)] = session_source
 
     def _format_conversation(self, conv: dict) -> str:
         """Format a conversation dict into the text format extract expects."""
@@ -85,12 +88,23 @@ class LongMemEvalRunner:
             lines.append(f"{role}: {text}")
         return "\n\n".join(lines)
 
-    def run_questions(self, questions: list[dict], k: int = 5) -> list[dict]:
-        """For each question: search memories, build context, generate answer."""
+    def run_questions(self, questions: list[dict], k: int = 5, source_prefix: str = "eval/longmemeval") -> list[dict]:
+        """For each question: search memories, build context, generate answer.
+
+        Uses session-scoped search when a question's conversation/session
+        can be mapped via ``_session_map``.  Falls back to the full
+        *source_prefix* when no mapping exists.
+        """
+        session_map = getattr(self, "_session_map", {})
         results = []
         for q in questions:
             query = q.get("question", "")
-            search_results = self.client.search(query=query, k=k, hybrid=True)
+            # Resolve session source: try conversation_id, session_id, then id
+            conv_ref = q.get("conversation_id", q.get("session_id", q.get("id")))
+            search_prefix = session_map.get(conv_ref, source_prefix)
+            search_results = self.client.search(
+                query=query, k=k, hybrid=True, source_prefix=search_prefix,
+            )
             context = "\n".join(r.get("text", "") for r in search_results)
             results.append({
                 "question_id": q.get("id", ""),

@@ -91,6 +91,9 @@ class TestImportExportRoundTrip:
         custom = json.loads(lines[1]).get("custom_fields", {})
         assert custom.get("priority") == "high"
         assert custom.get("category") == "ops"
+        # Verify custom fields survived the import (not just the export)
+        assert mem.get("priority") == "high"
+        assert mem.get("category") == "ops"
 
 
 class TestSmartImportDedup:
