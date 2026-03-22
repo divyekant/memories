@@ -44,6 +44,37 @@ class MemoriesClient:
         except (httpx.HTTPError, Exception):
             return False
 
+    def search(self, query: str, k: int = 5, hybrid: bool = True, feedback_weight: float = 0.0) -> list[dict]:
+        """POST /search — returns results list."""
+        resp = self._client.post(
+            "/search",
+            json={"query": query, "k": k, "hybrid": hybrid, "feedback_weight": feedback_weight},
+        )
+        resp.raise_for_status()
+        return resp.json().get("results", [])
+
+    def extract(self, messages: str, source: str, context: str = "stop", dry_run: bool = False) -> dict:
+        """POST /memory/extract — submits extraction job, polls until complete."""
+        import time
+
+        resp = self._client.post(
+            "/memory/extract",
+            json={"messages": messages, "source": source, "context": context, "dry_run": dry_run},
+        )
+        resp.raise_for_status()
+        job_id = resp.json().get("job_id")
+        if not job_id:
+            return resp.json()
+        # Poll until complete (max 30s)
+        for _ in range(30):
+            time.sleep(1)
+            poll = self._client.get(f"/memory/extract/{job_id}")
+            poll.raise_for_status()
+            data = poll.json()
+            if data.get("status") in ("completed", "failed"):
+                return data
+        return {"status": "timeout", "job_id": job_id}
+
     def get_stats(self) -> dict:
         """GET /stats. Returns parsed JSON dict."""
         resp = self._client.get("/stats")
