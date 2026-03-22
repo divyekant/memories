@@ -62,6 +62,12 @@ class NullTracker:
     def get_feedback_scores(self, memory_ids: list[int]) -> dict[int, int]:
         return {}
 
+    def get_feedback_history(self, memory_id: int, limit: int = 50) -> list[dict]:
+        return []
+
+    def delete_feedback(self, feedback_id: int) -> bool:
+        return False
+
     def get_search_quality(self, period: str = "7d", memory_ids: list | None = None) -> Dict[str, Any]:
         return {"enabled": False}
 
@@ -272,6 +278,27 @@ class UsageTracker:
                 memory_ids,
             ).fetchall()
             return {row[0]: row[1] for row in rows}
+        finally:
+            conn.close()
+
+    def get_feedback_history(self, memory_id: int, limit: int = 50) -> list[dict]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, ts, memory_id, query, signal, search_id "
+                "FROM search_feedback WHERE memory_id = ? ORDER BY ts DESC LIMIT ?",
+                (memory_id, limit),
+            ).fetchall()
+            return [dict(zip(["id", "ts", "memory_id", "query", "signal", "search_id"], r)) for r in rows]
+        finally:
+            conn.close()
+
+    def delete_feedback(self, feedback_id: int) -> bool:
+        conn = self._connect()
+        try:
+            cursor = conn.execute("DELETE FROM search_feedback WHERE id = ?", (feedback_id,))
+            conn.commit()
+            return cursor.rowcount > 0
         finally:
             conn.close()
 

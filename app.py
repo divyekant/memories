@@ -1562,6 +1562,33 @@ async def search_feedback(request_body: SearchFeedbackRequest, request: Request)
     return {"status": "recorded"}
 
 
+@app.get("/search/feedback/history")
+async def feedback_history(
+    request: Request,
+    memory_id: int = Query(..., description="Memory ID"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    auth = _get_auth(request)
+    try:
+        mem = memory.get_memory(memory_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Memory {memory_id} not found")
+    if auth.prefixes is not None and not auth.can_read(mem.get("source", "")):
+        raise HTTPException(status_code=403, detail="Memory outside your scope")
+    entries = usage_tracker.get_feedback_history(memory_id, limit)
+    return {"entries": entries, "count": len(entries)}
+
+
+@app.delete("/search/feedback/{feedback_id}")
+async def retract_feedback(feedback_id: int, request: Request):
+    auth = _get_auth(request)
+    deleted = usage_tracker.delete_feedback(feedback_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Feedback {feedback_id} not found")
+    _audit(request, "feedback.retracted", resource_id=str(feedback_id))
+    return {"status": "retracted", "id": feedback_id}
+
+
 @app.get("/metrics/search-quality")
 async def search_quality_metrics(
     request: Request,
