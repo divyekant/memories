@@ -1754,8 +1754,8 @@ body,
 }
 
 /* -- Editable Field ---------------------------------------------------- */
-.editable-field { cursor: pointer; border-bottom: 1px dashed var(--color-text-faint); }
-.editable-field:hover { border-bottom-color: var(--color-primary); }
+.editable-field { cursor: text; }
+.editable-field:hover { color: var(--color-primary); }
 .editable-textarea { width: 100%; min-height: 80px; resize: vertical; background: var(--color-bg-surface); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; padding: 8px; font: inherit; }
 .editable-input { width: 100%; background: var(--color-bg-surface); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; padding: 6px 8px; font: inherit; }
 .editable-select { background: var(--color-bg-surface); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; padding: 6px 8px; font: inherit; }

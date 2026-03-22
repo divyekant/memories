@@ -4,7 +4,7 @@
 
 import {
   h, escHtml, timeAgo, confidenceColor, confidenceBar, linkTypeColor,
-} from "./app.js";
+} from "./utils.js";
 
 // -- editableField ---------------------------------------------------------
 // Click-to-edit field. type: "text" → textarea, "input" → input, "select" → dropdown
@@ -20,6 +20,15 @@ export function editableField(container, { value, type = "input", options, onSav
     if (type === "text") {
       input = h("textarea", { className: "editable-textarea", value: value || "" });
       input.textContent = value || "";
+      // Auto-size to content height
+      requestAnimationFrame(() => {
+        input.style.height = "auto";
+        input.style.height = Math.max(120, input.scrollHeight + 4) + "px";
+      });
+      input.addEventListener("input", () => {
+        input.style.height = "auto";
+        input.style.height = input.scrollHeight + 4 + "px";
+      });
     } else if (type === "select") {
       input = h("select", { className: "editable-select" },
         ...(options || []).map(opt =>
