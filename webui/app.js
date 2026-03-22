@@ -1468,7 +1468,16 @@ registerPage("memories", async (container) => {
     "memory.merged": "info",
     "conflict.detected": "error",
     "delete": "error",
-    "extract": "success",
+    "memory.deleted": "error",
+    "extract": "primary",
+    "snapshot.created": "info",
+    "feedback.retracted": "warning",
+    "memory.missed": "warning",
+    "extraction.profile_updated": "info",
+    "memory.consolidated": "info",
+    "memory.pruned": "warning",
+    "memory.deduplicated": "info",
+    "index.rebuilt": "info",
   };
 
   async function updateDetailPanel() {
@@ -3368,7 +3377,7 @@ registerPage("health", async (container) => {
               e.preventDefault();
               window.location.hash = `#/memories?q=${encodeURIComponent(pq.query)}`;
             },
-          }, "Replay")
+          }, "Re-search")
         );
         container.appendChild(row);
       });
@@ -3387,7 +3396,7 @@ registerPage("health", async (container) => {
         h("div", { className: "empty-state", style: { padding: "40px 20px" } },
           h("div", { className: "empty-state-icon color-success" }, "\u2713"),
           h("div", { className: "empty-state-title" }, "No stale memories"),
-          h("div", { className: "empty-state-text" }, "All frequently retrieved memories have positive feedback.")
+          h("div", { className: "empty-state-text" }, "All frequently retrieved memories have positive feedback or no feedback yet.")
         )
       );
     } else {
@@ -3419,7 +3428,7 @@ registerPage("health", async (container) => {
         const row = h("div", { className: "stale-memory-row" },
           h("span", { style: { fontSize: "0.8125rem", fontWeight: "600", color: "var(--color-text)" } }, `#${sm.memory_id}`),
           h("span", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)", flex: "1" } },
-            `${sm.retrievals} retrievals, 0 useful`),
+            `${sm.retrievals} retrievals \u00b7 0 useful \u00b7 ${sm.not_useful} not useful`),
           archiveBtn,
           viewBtn
         );
