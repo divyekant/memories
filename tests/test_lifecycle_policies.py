@@ -109,3 +109,87 @@ def test_per_prefix_confidence_half_life(engine, profiles):
     mem = engine.get_memory(mem_id)
     # With 30-day half-life and 60 days old: confidence = 0.5^(60/30) = 0.25
     assert 0.20 <= mem["confidence"] <= 0.30
+
+
+# -- Task 4: enforce_policies engine method --
+
+
+def _set_age(engine, mem_id, days):
+    old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).isoformat()
+    meta = engine._get_meta_by_id(mem_id)
+    meta["created_at"] = old
+    meta["updated_at"] = old
+    engine.save()
+
+
+def test_enforce_ttl_dry_run(engine, profiles):
+    """TTL policy should identify expired memories in dry-run."""
+    profiles.put("wip/", {"ttl_days": 30})
+    # Add old memory
+    mem_id = engine.add_memories(texts=["old wip"], sources=["wip/test"])[0]
+    _set_age(engine, mem_id, days=45)
+
+    result = engine.enforce_policies(dry_run=True)
+    assert result["summary"]["would_archive"] >= 1
+    assert any(a["memory_id"] == mem_id and a["action"] == "would_archive" for a in result["actions"])
+
+
+def test_enforce_ttl_execute(engine, profiles):
+    """TTL policy should archive expired memories when dry_run=False."""
+    profiles.put("wip/", {"ttl_days": 30})
+    mem_id = engine.add_memories(texts=["old wip"], sources=["wip/test"])[0]
+    _set_age(engine, mem_id, days=45)
+
+    result = engine.enforce_policies(dry_run=False)
+    assert result["summary"]["archived"] >= 1
+    mem = engine.get_memory(mem_id)
+    assert mem.get("archived") is True
+    assert mem.get("_policy_archived_reason") == "ttl"
+
+
+def test_enforce_confidence_threshold(engine, profiles):
+    """Low-confidence memories should be archived with evidence."""
+    profiles.put("claude-code/", {"confidence_threshold": 0.1, "min_age_days": 90})
+    mem_id = engine.add_memories(texts=["ancient"], sources=["claude-code/test"])[0]
+    _set_age(engine, mem_id, days=365)  # very old, confidence near 0
+
+    result = engine.enforce_policies(dry_run=False)
+    assert any(a["memory_id"] == mem_id for a in result["actions"])
+    mem = engine.get_memory(mem_id)
+    assert mem.get("_policy_archived_reason") == "confidence"
+    assert "_policy_archived_confidence" in mem
+
+
+def test_enforce_excludes_pinned(engine, profiles):
+    """Pinned memories should never be archived by policy."""
+    profiles.put("wip/", {"ttl_days": 30})
+    mem_id = engine.add_memories(texts=["pinned wip"], sources=["wip/test"])[0]
+    engine.update_memory(mem_id, pinned=True)
+    _set_age(engine, mem_id, days=45)
+
+    result = engine.enforce_policies(dry_run=True)
+    assert not any(a["memory_id"] == mem_id for a in result["actions"])
+    assert result["summary"]["excluded_pinned"] >= 1
+
+
+def test_enforce_excludes_already_archived(engine, profiles):
+    """Already archived memories should be skipped."""
+    profiles.put("wip/", {"ttl_days": 30})
+    mem_id = engine.add_memories(texts=["archived wip"], sources=["wip/test"])[0]
+    engine.update_memory(mem_id, archived=True)
+    _set_age(engine, mem_id, days=45)
+
+    result = engine.enforce_policies(dry_run=True)
+    assert not any(a["memory_id"] == mem_id for a in result["actions"])
+
+
+def test_enforce_ttl_takes_precedence_over_confidence(engine, profiles):
+    """When both TTL and confidence match, TTL is the primary reason."""
+    profiles.put("wip/", {"ttl_days": 30, "confidence_threshold": 0.8, "min_age_days": 7})
+    mem_id = engine.add_memories(texts=["both match"], sources=["wip/test"])[0]
+    _set_age(engine, mem_id, days=45)  # confidence ~0.71, below 0.8 threshold
+
+    result = engine.enforce_policies(dry_run=True)
+    action = next(a for a in result["actions"] if a["memory_id"] == mem_id)
+    assert action["reasons"][0]["rule"] == "ttl"
+    assert len(action["reasons"]) == 2  # both reasons reported

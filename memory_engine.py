@@ -1031,6 +1031,112 @@ class MemoryEngine:
         event_bus.emit("memory.updated", {"id": memory_id, "updated_fields": updated_fields, "source": mem_source})
         return {"id": memory_id, "updated_fields": updated_fields}
 
+    def enforce_policies(self, dry_run: bool = True) -> Dict[str, Any]:
+        """Evaluate each memory against its resolved policy. Archive candidates if not dry_run."""
+        actions: List[Dict[str, Any]] = []
+        excluded_pinned = 0
+        excluded_archived = 0
+        candidates_scanned = 0
+        by_rule: Dict[str, int] = {"ttl": 0, "confidence": 0}
+
+        now = datetime.now(timezone.utc)
+
+        for mem in self.metadata:
+            if not mem:
+                continue
+            if mem.get("archived"):
+                excluded_archived += 1
+                continue
+            if mem.get("pinned"):
+                excluded_pinned += 1
+                continue
+
+            candidates_scanned += 1
+            source = mem.get("source", "")
+            policy = self._profiles.resolve(source) if hasattr(self, '_profiles') and self._profiles else {}
+
+            # Compute age
+            anchor = mem.get("updated_at") or mem.get("created_at") or mem.get("timestamp")
+            age_days = 0
+            if anchor:
+                try:
+                    ts = datetime.fromisoformat(anchor.replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    age_days = (now - ts).days
+                except (ValueError, TypeError):
+                    pass
+
+            # Compute confidence with per-prefix half-life
+            half_life = policy.get("confidence_half_life_days") or 90.0
+            confidence = self.compute_confidence(anchor, half_life_days=half_life)
+
+            reasons: List[Dict[str, Any]] = []
+
+            # TTL check
+            ttl = policy.get("ttl_days")
+            if ttl is not None and age_days > ttl:
+                reasons.append({"rule": "ttl", "ttl_days": ttl, "age_days": age_days, "prefix": source})
+                by_rule["ttl"] += 1
+
+            # Confidence check
+            threshold = policy.get("confidence_threshold")
+            min_age = policy.get("min_age_days")
+            if threshold is not None and min_age is not None:
+                if confidence < threshold and age_days > min_age:
+                    reasons.append({
+                        "rule": "confidence", "threshold": threshold,
+                        "confidence": round(confidence, 4), "min_age_days": min_age, "prefix": source,
+                    })
+                    by_rule["confidence"] += 1
+
+            if not reasons:
+                continue
+
+            action_type = "would_archive" if dry_run else "archived"
+            actions.append({
+                "memory_id": mem["id"],
+                "source": source,
+                "age_days": age_days,
+                "confidence": round(confidence, 4),
+                "reasons": reasons,
+                "action": action_type,
+            })
+
+        # Execute if not dry_run
+        if not dry_run and actions:
+            archived_at = now.isoformat()
+            for a in actions:
+                mem_id = a["memory_id"]
+                primary_reason = a["reasons"][0]  # TTL takes precedence
+                evidence = {
+                    "_policy_archived_reason": primary_reason["rule"],
+                    "_policy_archived_policy": f"{primary_reason.get('prefix', '')} {primary_reason['rule']}",
+                    "_policy_archived_at": archived_at,
+                    "_policy_archived_confidence": a["confidence"],
+                    "_policy_archived_age_days": a["age_days"],
+                }
+                # Direct meta update (bypasses _policy_ protection since we're the policy engine)
+                meta = self._get_meta_by_id(mem_id)
+                meta["archived"] = True
+                meta.update(evidence)
+                # Set archived in Qdrant payload
+                self.qdrant_store.set_payload(mem_id, {"archived": True, **evidence})
+            self.save()
+
+        summary_key = "would_archive" if dry_run else "archived"
+        return {
+            "dry_run": dry_run,
+            "actions": actions,
+            "summary": {
+                "candidates_scanned": candidates_scanned,
+                summary_key: len(actions),
+                "by_rule": by_rule,
+                "excluded_pinned": excluded_pinned,
+                "excluded_already_archived": excluded_archived,
+            },
+        }
+
     def upsert_memory(
         self,
         text: str,
