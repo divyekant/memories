@@ -1619,14 +1619,15 @@ async def get_audit_log(
     request: Request,
     action: Optional[str] = None,
     key_id: Optional[str] = None,
+    resource_id: Optional[str] = None,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """Query the audit trail. Admin only."""
     auth = _get_auth(request)
     _require_admin(auth)
-    entries = audit_log.query(action=action, key_id=key_id, limit=limit, offset=offset)
-    return {"entries": entries, "count": len(entries), "total": audit_log.count(action=action, key_id=key_id)}
+    entries = audit_log.query(action=action, key_id=key_id, resource_id=resource_id, limit=limit, offset=offset)
+    return {"entries": entries, "count": len(entries), "total": audit_log.count(action=action, key_id=key_id, resource_id=resource_id)}
 
 
 @app.post("/audit/purge")
@@ -1935,7 +1936,7 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
         )
         usage_tracker.log_api_event("add", request_body.source)
         result_id = ids[0] if ids else None
-        _audit(request, "add", resource_id=str(result_id or ""), source=request_body.source)
+        _audit(request, "memory.created", resource_id=str(result_id or ""), source=request_body.source)
         return {
             "success": True,
             "id": result_id,
@@ -1988,6 +1989,10 @@ async def list_conflicts(request: Request):
     for m in metadata:
         cw = m.get("conflicts_with")
         if cw is None:
+            continue
+        if m.get("archived"):
+            continue
+        if m.get("deferred"):
             continue
         if auth.prefixes is not None and not auth.can_read(m.get("source", "")):
             continue
@@ -2233,6 +2238,8 @@ async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request
             pinned=request_body.pinned,
             archived=request_body.archived,
         )
+        if request_body.text is not None or request_body.source is not None or request_body.metadata_patch:
+            _audit(request, "memory.updated", resource_id=str(memory_id))
         if request_body.pinned is not None:
             action = "memory.pinned" if request_body.pinned else "memory.unpinned"
             _audit(request, action, resource_id=str(memory_id))

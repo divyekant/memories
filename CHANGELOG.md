@@ -1,5 +1,31 @@
 # Changelog
 
+## [3.1.0] - 2026-03-22
+
+### Added
+- **R1 B1: Safety Foundations** — pre-delete Qdrant snapshots, pin/protect memories, soft archive (reversible), memory merge with supersedes links, CLI links command (#43)
+- **R1 B2: Extraction Engine** — extraction profiles per source prefix, user-definable extraction rules (always/never remember), single-call extraction mode, dry-run with selective commit, missed memory capture flow (#44)
+- **R1 B3: UI Write-Path** — 8 features adding write capabilities to operator workbench (#48):
+  - Create memory from UI (+ Create button, source/category modal, empty state CTA)
+  - Inline edit (click-to-edit text/source/category, pin toggle, archive with undo toast)
+  - Enhanced link modal (source + text + confidence display, bidirectional links)
+  - Merge memories (side-by-side comparison, editable merged result, archive originals)
+  - Bulk actions (multi-select mode with archive/delete/retag/re-source/merge toolbar)
+  - Extraction trigger (paste text, dry-run preview, per-fact approve/reject, commit approved)
+  - Lifecycle panel (tabbed detail: Overview|Lifecycle|Links, origin block, audit timeline)
+  - Conflict resolution modal (Keep A/B/Merge/Defer with soft archive — no permanent deletion)
+- 7 reusable UI components in `webui/components.js` (editableField, actionBadge, approvalToggle, bulkSelectMode, memoryCard, timelineEvent, comparisonPanel)
+- Shared utilities extracted to `webui/utils.js` (breaks circular ES module imports)
+- `resource_id` filter on `GET /audit` endpoint with SQLite index
+- Dockerfile: added missing `extraction_profiles.py` COPY
+
+### Fixed
+- Extraction mode mapping in UI (aggressive correctly maps to pre_compact prompt)
+- Active memory card no longer shows gold left border in browse mode
+- Button sizing in memories page toolbar (btn-sm)
+- Editable fields use text cursor instead of dashed underline
+- Textarea auto-sizes to content height on inline edit
+
 ## [3.0.0] - 2026-03-18
 
 ### Added

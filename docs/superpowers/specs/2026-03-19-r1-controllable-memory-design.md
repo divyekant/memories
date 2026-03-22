@@ -278,7 +278,7 @@ All changes to existing `webui/app.js`, `webui/styles.css`. No new pages.
 - Click-to-edit on source and category (dashed underline indicates editable)
 - Save sends `PATCH /memory/{id}`
 - Pin toggle badge next to ID — clicks `PATCH /memory/{id}` with `{pinned: true/false}`
-- Archive button in actions row — patches `{archived: true}`, shows toast with "Undo" (re-patches to `false`)
+- Archive button in actions row — patches `{archived: true}`, shows action toast with "Undo" button (re-patches to `false`). Requires extending `showToast()` to accept optional `action: {label, onClick}` param alongside the existing string+type signature.
 
 ### Item 8: Link Memories
 
@@ -327,7 +327,7 @@ Engine method: `MemoryEngine.merge_memories(ids, merged_text, source)` — added
 - NOOP facts shown dimmed at 50% opacity
 - "Approve All" / "Reject All" shortcuts
 - Summary bar: "3 approved · 1 rejected · 1 skipped"
-- "Commit N Memories" re-submits only approved facts with `dry_run: false`
+- "Commit N Memories" submits approved facts to `POST /memory/extract/commit` (not a re-run of extract — avoids re-running LLM which could produce different results)
 
 ### Item 14: Lifecycle Panel
 
@@ -347,6 +347,7 @@ Engine method: `MemoryEngine.merge_memories(ids, merged_text, source)` — added
 **History timeline:**
 - Vertical timeline with color-coded dots
 - Events from audit log (`GET /audit?memory_id={id}`)
+- **Backend pre-task:** Add `resource_id` filter param to `GET /audit` endpoint and `audit_log.query()`. Add SQLite index on `resource_id` column for performance.
 - Event types: created (green), updated (blue), linked (blue), pinned (gold), reinforced (green), conflict detected (red)
 - Each row: action description + timestamp + actor
 
@@ -364,7 +365,7 @@ Engine method: `MemoryEngine.merge_memories(ids, merged_text, source)` — added
    - **Keep B** — archives A (recommendation shown if one has higher confidence + is newer)
    - **Merge** — opens merge modal pre-filled with both texts
    - **Defer** — adds `deferred: true` metadata, hides from conflict queue
-4. All resolutions use soft archive — nothing permanently deleted
+4. All resolutions use soft archive — nothing permanently deleted. **Migration:** existing Keep A / Keep B handlers currently use `DELETE` — must be migrated to `PATCH {archived: true}`
 5. Resolution logged to audit trail
 
 ---
@@ -516,6 +517,20 @@ R1 adds these audit event types (emit via existing `_audit()` calls):
 | `tests/test_extraction_dry_run.py` | B2 | Dry-run + commit flow tests |
 | `tests/test_missed_memory.py` | B2 | Missed memory endpoint tests |
 | `tests/test_web_ui_write.py` | B3 | UI function existence + behavioral tests |
+
+## B3 Architectural Decision: Component Extraction
+
+**Decision (2026-03-22):** Extract the 7 new reusable components into `webui/components.js` rather than adding them to `app.js`. ES modules already supported (`index.html` loads with `type="module"`, `app.js` uses `export`).
+
+- `components.js` exports: `editableField`, `actionBadge`, `approvalToggle`, `bulkSelectMode`, `memoryCard`, `timelineEvent`, `comparisonPanel`
+- `app.js` imports from `./components.js` and uses them in page render functions
+- Existing page code in `app.js` stays untouched
+- `components.js` imports shared utilities from `app.js` (`h`, `confidenceColor`, `confidenceBar`, `linkTypeColor`, `escHtml`, `timeAgo`). Note: this creates a circular import — safe because all shared utilities are `export function` declarations (hoisted). Do NOT import non-function values (state, caches) into `components.js`.
+- `memoryCard` replaces the list view card rendering only; grid view keeps its existing separate layout
+
+**Build order:** Components → #6 Create → #7 Inline Edit → #8 Links → #10 Bulk → #9 Merge → #11 Extract → #14 Lifecycle → #15 Conflicts
+
+---
 
 ## What Is Explicitly Out of Scope
 

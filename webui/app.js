@@ -2,6 +2,10 @@
    Memories Web UI v2 — App Module
    ========================================================================== */
 
+import { editableField, actionBadge, approvalToggle, bulkSelectMode, timelineEvent, comparisonPanel } from "./components.js";
+import { h, formatNumber, timeAgo, escHtml, confidenceColor, confidenceBar, linkTypeColor } from "./utils.js";
+export { h, formatNumber, timeAgo, escHtml, confidenceColor, confidenceBar, linkTypeColor };
+
 // -- Config & State --------------------------------------------------------
 
 const API_KEY_STORAGE = "memories-api-key";
@@ -168,131 +172,6 @@ function initTheme() {
   });
 }
 
-// -- DOM Helpers -----------------------------------------------------------
-
-/**
- * Create a DOM element with attributes and children.
- * @param {string} tag - HTML tag name
- * @param {Object|null} attrs - Attributes, className, event handlers (on...)
- * @param {...(string|Node)} children - Text or child nodes
- * @returns {HTMLElement}
- */
-export function h(tag, attrs, ...children) {
-  const el = document.createElement(tag);
-  if (attrs) {
-    for (const [key, val] of Object.entries(attrs)) {
-      if (key === "className") {
-        el.className = val;
-      } else if (key === "style" && typeof val === "object") {
-        Object.assign(el.style, val);
-      } else if (key.startsWith("on") && typeof val === "function") {
-        el.addEventListener(key.slice(2).toLowerCase(), val);
-      } else if (key === "htmlFor") {
-        el.setAttribute("for", val);
-      } else if (key === "dataset" && typeof val === "object") {
-        for (const [dk, dv] of Object.entries(val)) {
-          el.dataset[dk] = dv;
-        }
-      } else {
-        el.setAttribute(key, val);
-      }
-    }
-  }
-  for (const child of children) {
-    if (child == null) continue;
-    if (typeof child === "string" || typeof child === "number") {
-      el.appendChild(document.createTextNode(String(child)));
-    } else if (child instanceof Node) {
-      el.appendChild(child);
-    }
-  }
-  return el;
-}
-
-/**
- * Format large numbers compactly: 1234 -> "1.2K", 1500000 -> "1.5M"
- */
-export function formatNumber(n) {
-  if (n == null) return "0";
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, "") + "K";
-  return String(n);
-}
-
-/**
- * Human-friendly relative time: "5m ago", "2h ago", "3d ago"
- */
-export function timeAgo(dateStr) {
-  if (!dateStr) return "";
-  const now = Date.now();
-  const then = new Date(dateStr).getTime();
-  const diff = Math.max(0, now - then);
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo ago`;
-  const years = Math.floor(months / 12);
-  return `${years}y ago`;
-}
-
-/**
- * Escape a string for safe insertion as innerHTML.
- */
-export function escHtml(str) {
-  const d = document.createElement("div");
-  d.textContent = str;
-  return d.innerHTML;
-}
-
-// -- Confidence & Link Helpers ---------------------------------------------
-
-/**
- * Return the semantic color class suffix for a confidence/similarity value (0-1).
- * >0.7 = success (green), 0.4-0.7 = warning (yellow), <0.4 = error (red)
- */
-export function confidenceColor(value) {
-  if (value > 0.7) return "success";
-  if (value >= 0.4) return "warning";
-  return "error";
-}
-
-/**
- * Build a confidence bar DOM element.
- * @param {number} value - Confidence value 0-1
- * @param {"sm"|"md"} size - Bar size
- * @returns {HTMLElement}
- */
-export function confidenceBar(value, size = "sm") {
-  const color = confidenceColor(value);
-  const pct = Math.round(value * 100);
-  return h("span", { className: "confidence-bar" },
-    h("span", { className: `confidence-bar-track confidence-bar-track--${size}` },
-      h("span", { className: `confidence-bar-fill bg-${color}`, style: { width: `${pct}%` } })
-    ),
-    h("span", { className: `confidence-bar-label color-${color}` }, size === "sm" ? String(pct) : `${pct}%`)
-  );
-}
-
-/**
- * Return the CSS color variable for a link type.
- */
-export function linkTypeColor(type) {
-  const map = {
-    reinforces: "var(--color-primary)",
-    related_to: "var(--color-info)",
-    supersedes: "var(--color-warning)",
-    blocked_by: "var(--color-error)",
-    caused_by: "var(--color-text-muted)",
-  };
-  return map[type] || "var(--color-text-faint)";
-}
-
 // -- Router ----------------------------------------------------------------
 
 const pages = {};
@@ -364,21 +243,30 @@ function initRouter() {
  * Show a toast notification.
  * @param {string} message - Toast text
  * @param {"success"|"error"|"warning"|"info"} [type="info"] - Toast type
+ * @param {{ label: string, onClick: Function }|null} [action=null] - Optional action button
  */
-export function showToast(message, type = "info") {
+export function showToast(message, type = "info", action = null) {
   const container = document.getElementById("toastContainer");
   if (!container) return;
 
-  const toast = h("div", { className: `toast toast-${type}` }, message);
+  const children = [message];
+  if (action && action.label && action.onClick) {
+    children.push(h("button", {
+      className: "toast-action-btn",
+      onclick: (e) => { e.stopPropagation(); action.onClick(); toast.remove(); },
+    }, action.label));
+  }
+
+  const toast = h("div", { className: `toast toast-${type}` }, ...children);
   container.appendChild(toast);
 
-  // Auto-dismiss after 4 seconds
+  // Longer dismiss time (8s) when action is present, normal (4s) without
   setTimeout(() => {
     toast.classList.add("toast-exit");
     toast.addEventListener("animationend", () => {
       toast.remove();
     });
-  }, 4000);
+  }, action ? 8000 : 4000);
 }
 
 // -- Modal Helper ----------------------------------------------------------
@@ -615,7 +503,259 @@ registerPage("dashboard", async (container) => {
 // ==========================================================================
 
 registerPage("memories", async (container) => {
-  const memState = { offset: 0, limit: 20, source: "", total: 0, selected: null, view: "list", searchQuery: "", searchResults: null, sourcePrefixes: [] };
+  const memState = { offset: 0, limit: 20, source: "", total: 0, selected: null, view: "list", searchQuery: "", searchResults: null, sourcePrefixes: [], bulkMode: false, bulkSelect: null };
+
+  // -- Bulk action handlers --
+  function exitBulkMode() {
+    memState.bulkMode = false;
+    if (memState.bulkSelect) memState.bulkSelect.deselectAll();
+    memState.bulkSelect = null;
+    renderContent();
+    // Update toggle button state
+    const toggleBtn = container.querySelector(".bulk-select-toggle");
+    if (toggleBtn) { toggleBtn.classList.remove("active"); toggleBtn.textContent = "Select"; }
+  }
+
+  async function bulkArchive(ids) {
+    if (ids.length === 0) return;
+    try {
+      await api("/memory/archive-batch", { method: "POST", body: JSON.stringify({ ids }) });
+      invalidateCache();
+      showToast(`${ids.length} memories archived`, "success");
+      exitBulkMode();
+      await loadMemories();
+    } catch (err) { showToast(err.message, "error"); }
+  }
+
+  async function bulkDelete(ids) {
+    if (ids.length === 0) return;
+    showModal((content) => {
+      content.appendChild(h("h3", { style: { marginBottom: "16px" } }, "Confirm Bulk Delete"));
+      content.appendChild(h("p", null, `Are you sure you want to delete ${ids.length} memories? This action creates an automatic snapshot first but cannot be easily undone.`));
+      const btnRow = h("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end", marginTop: "16px" } });
+      btnRow.appendChild(h("button", { className: "btn", onclick: hideModal }, "Cancel"));
+      const confirmBtn = h("button", {
+        className: "btn btn-danger",
+        onclick: async () => {
+          confirmBtn.disabled = true;
+          confirmBtn.textContent = "Deleting...";
+          try {
+            await api("/memory/delete-batch", { method: "POST", body: JSON.stringify({ ids }) });
+            invalidateCache();
+            hideModal();
+            showToast(`${ids.length} memories deleted`, "success");
+            exitBulkMode();
+            memState.selected = null;
+            await loadMemories();
+          } catch (err) {
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = "Delete";
+            showToast(err.message, "error");
+          }
+        },
+      }, "Delete");
+      btnRow.appendChild(confirmBtn);
+      content.appendChild(btnRow);
+    });
+  }
+
+  function bulkRetag(ids) {
+    if (ids.length === 0) return;
+    showModal((content) => {
+      content.appendChild(h("h3", { style: { marginBottom: "16px" } }, "Retag Memories"));
+      content.appendChild(h("p", null, `Update category for ${ids.length} selected memories.`));
+      content.appendChild(h("label", { className: "modal-label" }, "Category"));
+      const categorySelect = h("select", { className: "editable-select", style: { marginBottom: "16px", width: "100%" } });
+      ["detail", "decision", "learning"].forEach((cat) => {
+        categorySelect.appendChild(h("option", { value: cat }, cat));
+      });
+      content.appendChild(categorySelect);
+      const btnRow = h("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end" } });
+      btnRow.appendChild(h("button", { className: "btn", onclick: hideModal }, "Cancel"));
+      const applyBtn = h("button", {
+        className: "btn btn-primary",
+        onclick: async () => {
+          applyBtn.disabled = true;
+          applyBtn.textContent = "Updating...";
+          try {
+            const category = categorySelect.value;
+            await Promise.all(ids.map(id =>
+              api(`/memory/${id}`, { method: "PATCH", body: JSON.stringify({ metadata_patch: { category } }) })
+            ));
+            invalidateCache();
+            hideModal();
+            showToast(`${ids.length} memories retagged to "${categorySelect.value}"`, "success");
+            exitBulkMode();
+            await loadMemories();
+          } catch (err) {
+            applyBtn.disabled = false;
+            applyBtn.textContent = "Apply";
+            showToast(err.message, "error");
+          }
+        },
+      }, "Apply");
+      btnRow.appendChild(applyBtn);
+      content.appendChild(btnRow);
+    });
+  }
+
+  function bulkResource(ids) {
+    if (ids.length === 0) return;
+    showModal((content) => {
+      content.appendChild(h("h3", { style: { marginBottom: "16px" } }, "Re-source Memories"));
+      content.appendChild(h("p", null, `Update source for ${ids.length} selected memories.`));
+      content.appendChild(h("label", { className: "modal-label" }, "Source"));
+      const sourceInput = h("input", {
+        type: "text",
+        className: "editable-input",
+        placeholder: "e.g. project/context",
+        style: { marginBottom: "16px" },
+      });
+      content.appendChild(sourceInput);
+      const btnRow = h("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end" } });
+      btnRow.appendChild(h("button", { className: "btn", onclick: hideModal }, "Cancel"));
+      const applyBtn = h("button", {
+        className: "btn btn-primary",
+        onclick: async () => {
+          const newSource = sourceInput.value.trim();
+          if (!newSource) { showToast("Source is required", "warning"); return; }
+          applyBtn.disabled = true;
+          applyBtn.textContent = "Updating...";
+          try {
+            await Promise.all(ids.map(id =>
+              api(`/memory/${id}`, { method: "PATCH", body: JSON.stringify({ source: newSource }) })
+            ));
+            invalidateCache();
+            hideModal();
+            showToast(`${ids.length} memories re-sourced to "${newSource}"`, "success");
+            exitBulkMode();
+            await loadMemories();
+          } catch (err) {
+            applyBtn.disabled = false;
+            applyBtn.textContent = "Apply";
+            showToast(err.message, "error");
+          }
+        },
+      }, "Apply");
+      btnRow.appendChild(applyBtn);
+      content.appendChild(btnRow);
+    });
+  }
+
+  function bulkMerge(ids) {
+    if (ids.length < 2) { showToast("Select at least 2 memories to merge", "warning"); return; }
+    showMergeModal(ids);
+  }
+
+  async function showMergeModal(selectedIds) {
+    let memories;
+    try {
+      const resp = await api("/memory/get-batch", {
+        method: "POST",
+        body: JSON.stringify({ ids: selectedIds }),
+      });
+      memories = resp.memories || [];
+    } catch (err) {
+      showToast("Failed to load memories: " + err.message, "error");
+      return;
+    }
+    if (memories.length < 2) { showToast("Could not load selected memories", "warning"); return; }
+
+    showModal((content) => {
+      content.appendChild(h("h3", { style: { marginBottom: "16px" } }, "Merge Memories"));
+
+      // Show source memories with comparisonPanel
+      if (memories.length === 2) {
+        content.appendChild(comparisonPanel({
+          memA: memories[0],
+          memB: memories[1],
+          labelA: `#${memories[0].id} (will be archived)`,
+          labelB: `#${memories[1].id} (will be archived)`,
+          colorA: "error",
+          colorB: "error",
+        }));
+      } else {
+        // 3+ memories: show pairs stacked vertically
+        for (let i = 0; i < memories.length; i += 2) {
+          if (i + 1 < memories.length) {
+            content.appendChild(comparisonPanel({
+              memA: memories[i],
+              memB: memories[i + 1],
+              labelA: `#${memories[i].id} (will be archived)`,
+              labelB: `#${memories[i + 1].id} (will be archived)`,
+              colorA: "error",
+              colorB: "error",
+            }));
+          } else {
+            // Odd memory out — show as single panel
+            content.appendChild(comparisonPanel({
+              memA: memories[i],
+              memB: { text: "", source: "" },
+              labelA: `#${memories[i].id} (will be archived)`,
+              labelB: "",
+              colorA: "error",
+              colorB: "error",
+            }));
+          }
+        }
+      }
+
+      // Merged result textarea
+      content.appendChild(h("label", { className: "modal-label", style: { marginTop: "16px", display: "block" } }, "Merged Text"));
+      const mergedTextArea = h("textarea", {
+        className: "editable-textarea",
+        style: { minHeight: "120px", marginBottom: "12px" },
+        value: memories.map((m) => m.text || "").join("\n\n"),
+      });
+      // Set value via property since h() sets attribute
+      mergedTextArea.value = memories.map((m) => m.text || "").join("\n\n");
+      content.appendChild(mergedTextArea);
+
+      // Source input
+      content.appendChild(h("label", { className: "modal-label" }, "Source"));
+      const sourceInput = h("input", {
+        type: "text",
+        className: "editable-input",
+        value: memories[0].source || "",
+        style: { marginBottom: "16px" },
+      });
+      sourceInput.value = memories[0].source || "";
+      content.appendChild(sourceInput);
+
+      // Buttons
+      const btnRow = h("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end" } });
+      const cancelBtn = h("button", { className: "btn", onClick: hideModal }, "Cancel");
+      const mergeBtn = h("button", {
+        className: "btn btn-primary",
+        onClick: async () => {
+          const mergedText = mergedTextArea.value.trim();
+          const source = sourceInput.value.trim();
+          if (!mergedText) { showToast("Merged text is required", "warning"); return; }
+          if (!source) { showToast("Source is required", "warning"); return; }
+          mergeBtn.disabled = true;
+          mergeBtn.textContent = "Merging...";
+          try {
+            const result = await api("/memory/merge", {
+              method: "POST",
+              body: JSON.stringify({ ids: selectedIds, merged_text: mergedText, source }),
+            });
+            invalidateCache();
+            hideModal();
+            showToast(`Merged into #${result.id}, archived ${result.archived.length} originals`, "success");
+            exitBulkMode();
+            await loadMemories();
+          } catch (err) {
+            mergeBtn.disabled = false;
+            mergeBtn.textContent = "Merge & Archive Originals";
+            showToast(err.message, "error");
+          }
+        },
+      }, "Merge & Archive Originals");
+      btnRow.appendChild(cancelBtn);
+      btnRow.appendChild(mergeBtn);
+      content.appendChild(btnRow);
+    });
+  }
 
   // -- Delete handler --
   async function deleteMemory(id) {
@@ -630,6 +770,329 @@ registerPage("memories", async (container) => {
     } catch (err) {
       showToast(err.message, "error");
     }
+  }
+
+  // -- Create memory modal --
+  function showCreateMemoryModal() {
+    showModal((content) => {
+      content.appendChild(h("h3", { style: { marginBottom: "16px" } }, "Create Memory"));
+
+      // Text
+      content.appendChild(h("label", { className: "modal-label" }, "Memory Text"));
+      const textArea = h("textarea", {
+        className: "editable-textarea",
+        placeholder: "What do you want to remember?",
+        style: { minHeight: "120px", marginBottom: "12px" },
+      });
+      content.appendChild(textArea);
+
+      // Source
+      content.appendChild(h("label", { className: "modal-label" }, "Source"));
+      const lastSource = localStorage.getItem("memories-last-source") || "";
+      const sourceInput = h("input", {
+        type: "text",
+        className: "editable-input",
+        placeholder: "e.g. project/context",
+        value: lastSource,
+        style: { marginBottom: "12px" },
+      });
+      content.appendChild(sourceInput);
+
+      // Category
+      content.appendChild(h("label", { className: "modal-label" }, "Category"));
+      const categorySelect = h("select", {
+        className: "editable-select",
+        style: { marginBottom: "16px", width: "100%" },
+      });
+      ["detail", "decision", "learning"].forEach((cat) => {
+        const opt = h("option", { value: cat }, cat);
+        if (cat === "detail") opt.selected = true;
+        categorySelect.appendChild(opt);
+      });
+      content.appendChild(categorySelect);
+
+      // Buttons
+      const btnRow = h("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end" } });
+      const cancelBtn = h("button", { className: "btn", onClick: hideModal }, "Cancel");
+      const createBtn = h("button", {
+        className: "btn btn-primary",
+        onClick: async () => {
+          const text = textArea.value.trim();
+          const source = sourceInput.value.trim();
+          if (!text) { showToast("Memory text is required", "warning"); return; }
+          if (!source) { showToast("Source is required", "warning"); return; }
+          createBtn.disabled = true;
+          createBtn.textContent = "Creating...";
+          try {
+            await api("/memory/add", {
+              method: "POST",
+              body: JSON.stringify({ text, source, metadata: { category: categorySelect.value } }),
+            });
+            localStorage.setItem("memories-last-source", source);
+            invalidateCache();
+            hideModal();
+            showToast("Memory created", "success");
+            memState.offset = 0;
+            await loadMemories();
+          } catch (err) {
+            createBtn.disabled = false;
+            createBtn.textContent = "Create";
+            showToast(err.message, "error");
+          }
+        },
+      }, "Create");
+      btnRow.appendChild(cancelBtn);
+      btnRow.appendChild(createBtn);
+      content.appendChild(btnRow);
+    });
+  }
+
+  // -- Extraction modal --
+  function showExtractionModal() {
+    showModal((content) => {
+      content.appendChild(h("h3", { style: { marginBottom: "16px" } }, "Extract Memories"));
+
+      // Phase 1 — Input form
+      const form = h("div", { className: "extract-form" });
+
+      // Textarea for conversation text
+      form.appendChild(h("label", { className: "modal-label" }, "Conversation Text"));
+      const textArea = h("textarea", {
+        className: "editable-textarea",
+        placeholder: "Paste conversation text...",
+        style: { minHeight: "160px", marginBottom: "12px" },
+      });
+      form.appendChild(textArea);
+
+      // Source
+      form.appendChild(h("label", { className: "modal-label" }, "Source"));
+      const lastSource = localStorage.getItem("memories-last-source") || "";
+      const sourceInput = h("input", {
+        type: "text",
+        className: "editable-input",
+        placeholder: "e.g. project/context",
+        value: lastSource,
+        style: { marginBottom: "12px" },
+      });
+      form.appendChild(sourceInput);
+
+      // Mode toggle
+      form.appendChild(h("label", { className: "modal-label" }, "Mode"));
+      const modeToggle = h("div", { className: "extract-mode-toggle", style: { marginBottom: "12px" } });
+      let selectedMode = "standard";
+      const modes = ["conservative", "standard", "aggressive"];
+      const modeButtons = modes.map((mode) => {
+        const btn = h("button", {
+          className: `btn btn-sm${mode === selectedMode ? " active" : ""}`,
+          onClick: () => {
+            selectedMode = mode;
+            modeButtons.forEach((b, i) => {
+              b.classList.toggle("active", modes[i] === mode);
+            });
+          },
+        }, mode);
+        modeToggle.appendChild(btn);
+        return btn;
+      });
+      form.appendChild(modeToggle);
+
+      // Dry-run checkbox
+      const dryRunRow = h("div", { style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" } });
+      const dryRunCheckbox = h("input", { type: "checkbox", id: "extractDryRun", checked: true });
+      dryRunCheckbox.checked = true;
+      const dryRunLabel = h("label", { htmlFor: "extractDryRun", style: { fontSize: "0.84rem", color: "var(--color-text-muted)", cursor: "pointer" } }, "Preview before saving");
+      dryRunRow.appendChild(dryRunCheckbox);
+      dryRunRow.appendChild(dryRunLabel);
+      form.appendChild(dryRunRow);
+
+      // Submit button
+      const btnRow = h("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end" } });
+      btnRow.appendChild(h("button", { className: "btn", onClick: hideModal }, "Cancel"));
+      const extractBtn = h("button", {
+        className: "btn btn-primary",
+        onClick: async () => {
+          const text = textArea.value.trim();
+          const source = sourceInput.value.trim();
+          if (!text) { showToast("Conversation text is required", "warning"); return; }
+          if (!source) { showToast("Source is required", "warning"); return; }
+
+          localStorage.setItem("memories-last-source", source);
+          const dryRun = dryRunCheckbox.checked;
+
+          // Phase 2 — Submit and poll
+          extractBtn.disabled = true;
+          extractBtn.textContent = "Extracting...";
+          form.querySelectorAll("textarea, input, button, select").forEach((el) => { el.disabled = true; });
+          extractBtn.disabled = true;
+
+          try {
+            const resp = await api("/memory/extract", {
+              method: "POST",
+              body: JSON.stringify({
+                messages: text,
+                source: source,
+                context: selectedMode === "standard" ? "stop" : selectedMode === "aggressive" ? "pre_compact" : "stop",
+                dry_run: dryRun,
+              }),
+            });
+
+            const jobId = resp.job_id;
+            if (!jobId) throw new Error("No job ID returned");
+
+            // Poll for completion
+            const pollStart = Date.now();
+            const POLL_TIMEOUT = 30000;
+            const POLL_INTERVAL = 1000;
+
+            async function pollJob() {
+              if (Date.now() - pollStart > POLL_TIMEOUT) {
+                throw new Error("Extraction timed out after 30s");
+              }
+              const job = await api(`/memory/extract/${jobId}`);
+              if (job.status === "completed") return job;
+              if (job.status === "failed") throw new Error(job.error || "Extraction failed");
+              await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+              return pollJob();
+            }
+
+            const job = await pollJob();
+
+            if (!dryRun) {
+              // Skip Phase 3 — show summary toast directly
+              const result = job.result || {};
+              const stored = result.stored_count || 0;
+              const updated = result.updated_count || 0;
+              showToast(`Extracted: ${stored} stored, ${updated} updated`, "success");
+              invalidateCache();
+              hideModal();
+              memState.offset = 0;
+              await loadMemories();
+              return;
+            }
+
+            // Phase 3 — Show results with approval
+            const result = job.result || {};
+            const actions = result.actions || [];
+            content.innerHTML = "";
+            content.appendChild(h("h3", { style: { marginBottom: "16px" } }, "Extraction Results"));
+
+            if (actions.length === 0) {
+              content.appendChild(h("p", { className: "text-muted" }, "No facts extracted."));
+              content.appendChild(h("div", { style: { display: "flex", justifyContent: "flex-end", marginTop: "16px" } },
+                h("button", { className: "btn", onClick: hideModal }, "Close")
+              ));
+              return;
+            }
+
+            // Track approval states: "approved" | "rejected" | "skipped"
+            const approvalStates = actions.map((a) => a.action === "NOOP" ? "skipped" : "approved");
+
+            function renderResults() {
+              const resultsContainer = content.querySelector(".extract-results");
+              if (resultsContainer) resultsContainer.remove();
+              const summaryBar = content.querySelector(".extract-summary");
+              if (summaryBar) summaryBar.remove();
+              const commitRow = content.querySelector(".extract-commit-row");
+              if (commitRow) commitRow.remove();
+              const shortcutRow = content.querySelector(".extract-shortcuts");
+              if (shortcutRow) shortcutRow.remove();
+
+              // Shortcut buttons
+              const shortcuts = h("div", { className: "extract-shortcuts", style: { display: "flex", gap: "8px", marginBottom: "12px" } });
+              shortcuts.appendChild(h("button", {
+                className: "btn btn-sm",
+                onClick: () => {
+                  approvalStates.forEach((_, i) => { if (actions[i].action !== "NOOP") approvalStates[i] = "approved"; });
+                  renderResults();
+                },
+              }, "Approve All"));
+              shortcuts.appendChild(h("button", {
+                className: "btn btn-sm",
+                onClick: () => {
+                  approvalStates.forEach((_, i) => { approvalStates[i] = "rejected"; });
+                  renderResults();
+                },
+              }, "Reject All"));
+              content.appendChild(shortcuts);
+
+              // Results list
+              const resultsList = h("div", { className: "extract-results" });
+              actions.forEach((action, i) => {
+                const isNoop = action.action === "NOOP";
+                const row = h("div", { className: `extract-fact${isNoop ? " extract-fact--noop" : ""}` });
+                row.appendChild(actionBadge(action.action));
+                const factText = action.fact?.text || action.text || "";
+                row.appendChild(h("span", { className: "extract-fact-text", style: { flex: "1", fontSize: "0.84rem" } }, factText));
+                row.appendChild(approvalToggle({
+                  state: approvalStates[i],
+                  onChange: (next) => {
+                    approvalStates[i] = next;
+                    renderResults();
+                  },
+                }));
+                resultsList.appendChild(row);
+              });
+              content.appendChild(resultsList);
+
+              // Summary bar
+              const approved = approvalStates.filter((s) => s === "approved").length;
+              const rejected = approvalStates.filter((s) => s === "rejected").length;
+              const skipped = approvalStates.filter((s) => s === "skipped").length;
+              const summary = h("div", { className: "extract-summary" },
+                h("span", null, `${approved} approved`),
+                h("span", null, `${rejected} rejected`),
+                h("span", null, `${skipped} skipped`)
+              );
+              content.appendChild(summary);
+
+              // Commit button row
+              const cRow = h("div", { className: "extract-commit-row", style: { display: "flex", gap: "8px", justifyContent: "flex-end", marginTop: "12px" } });
+              cRow.appendChild(h("button", { className: "btn", onClick: hideModal }, "Cancel"));
+              const commitBtn = h("button", {
+                className: "btn btn-primary",
+                disabled: approved === 0,
+                onClick: async () => {
+                  commitBtn.disabled = true;
+                  commitBtn.textContent = "Committing...";
+                  try {
+                    const commitActions = actions.map((a, i) => ({
+                      ...a,
+                      approved: approvalStates[i] === "approved",
+                    }));
+                    await api("/memory/extract/commit", {
+                      method: "POST",
+                      body: JSON.stringify({ actions: commitActions, source }),
+                    });
+                    invalidateCache();
+                    hideModal();
+                    showToast(`${approved} memories committed`, "success");
+                    memState.offset = 0;
+                    await loadMemories();
+                  } catch (err) {
+                    commitBtn.disabled = false;
+                    commitBtn.textContent = `Commit ${approved} Memories`;
+                    showToast(err.message, "error");
+                  }
+                },
+              }, `Commit ${approved} Memories`);
+              cRow.appendChild(commitBtn);
+              content.appendChild(cRow);
+            }
+
+            renderResults();
+          } catch (err) {
+            extractBtn.disabled = false;
+            extractBtn.textContent = "Extract";
+            form.querySelectorAll("textarea, input, button, select").forEach((el) => { el.disabled = false; });
+            showToast(err.message, "error");
+          }
+        },
+      }, "Extract");
+      btnRow.appendChild(extractBtn);
+      form.appendChild(btnRow);
+
+      content.appendChild(form);
+    });
   }
 
   // -- Build page skeleton --
@@ -670,8 +1133,37 @@ registerPage("memories", async (container) => {
     viewToggle.appendChild(listBtn);
     viewToggle.appendChild(gridBtn);
 
+    const extractBtn = h("button", {
+      className: "btn btn-sm",
+      onClick: showExtractionModal,
+    }, "Extract");
+
+    const createBtn = h("button", {
+      className: "create-memory-btn btn btn-sm btn-primary",
+      onClick: showCreateMemoryModal,
+    }, "+ Create");
+
+    const selectToggleBtn = h("button", {
+      className: `bulk-select-toggle btn btn-sm${memState.bulkMode ? " active" : ""}`,
+      onClick: () => {
+        memState.bulkMode = !memState.bulkMode;
+        if (!memState.bulkMode) {
+          memState.bulkSelect = null;
+          selectToggleBtn.classList.remove("active");
+          selectToggleBtn.textContent = "Select";
+        } else {
+          selectToggleBtn.classList.add("active");
+          selectToggleBtn.textContent = "Cancel";
+        }
+        renderContent();
+      },
+    }, memState.bulkMode ? "Cancel" : "Select");
+
     filterBar.appendChild(sourceSelect);
     filterBar.appendChild(viewToggle);
+    filterBar.appendChild(selectToggleBtn);
+    filterBar.appendChild(extractBtn);
+    filterBar.appendChild(createBtn);
     container.appendChild(filterBar);
 
     // Content container
@@ -697,15 +1189,36 @@ registerPage("memories", async (container) => {
     const memories = memState.searchResults || memState.memories || [];
 
     if (memories.length === 0) {
-      contentDiv.appendChild(
-        h("div", { className: "empty-state" },
-          h("div", { className: "empty-state-icon" }, "\u25C6"),
-          h("div", { className: "empty-state-title" }, memState.searchQuery ? "No search results" : "No memories found"),
-          h("div", { className: "empty-state-text" }, memState.searchQuery ? "Try a different search query." : "Memories will appear here once added.")
-        )
+      const emptyEl = h("div", { className: "empty-state" },
+        h("div", { className: "empty-state-icon" }, "\u25C6"),
+        h("div", { className: "empty-state-title" }, memState.searchQuery ? "No search results" : "No memories found"),
+        h("div", { className: "empty-state-text" }, memState.searchQuery ? "Try a different search query." : "Memories will appear here once added.")
       );
+      if (!memState.searchQuery) {
+        const ctaBtn = h("button", {
+          className: "btn btn-primary",
+          onClick: showCreateMemoryModal,
+        }, "Create your first memory");
+        emptyEl.appendChild(ctaBtn);
+      }
+      contentDiv.appendChild(emptyEl);
       renderPagination();
       return;
+    }
+
+    // Initialize bulk select mode if active
+    if (memState.bulkMode) {
+      memState.bulkSelect = bulkSelectMode({
+        items: memories,
+        actions: [
+          { label: "Archive", style: "btn-warning", onClick: bulkArchive },
+          { label: "Delete", style: "btn-danger", onClick: bulkDelete },
+          { label: "Retag", style: "", onClick: bulkRetag },
+          { label: "Re-source", style: "", onClick: bulkResource },
+          { label: "Merge", style: "btn-primary", onClick: bulkMerge },
+        ],
+      });
+      memState.bulkSelect.renderBar(contentDiv);
     }
 
     if (memState.view === "grid") {
@@ -730,9 +1243,26 @@ registerPage("memories", async (container) => {
     }
     memories.forEach((mem) => {
       const isActive = memState.selected && memState.selected.id === mem.id;
+      const isBulkSelected = memState.bulkMode && memState.bulkSelect && memState.bulkSelect.isSelected(mem.id);
       const item = document.createElement("div");
-      item.className = `memory-item${isActive ? " active" : ""}`;
+      item.className = `memory-item${isActive ? " active" : ""}${isBulkSelected ? " selected" : ""}`;
       item.dataset.memId = mem.id;
+
+      // Bulk mode checkbox
+      if (memState.bulkMode) {
+        const checkbox = h("input", {
+          type: "checkbox",
+          checked: isBulkSelected,
+          className: "bulk-checkbox",
+          onclick: (e) => {
+            e.stopPropagation();
+            memState.bulkSelect.toggle(mem.id);
+            item.classList.toggle("selected", memState.bulkSelect.isSelected(mem.id));
+            checkbox.checked = memState.bulkSelect.isSelected(mem.id);
+          },
+        });
+        item.appendChild(checkbox);
+      }
 
       // No extra border styling for search results — keep cards visually consistent
 
@@ -880,11 +1410,18 @@ registerPage("memories", async (container) => {
       }
 
       item.addEventListener("click", () => {
-        memState.selected = mem;
-        listPanel.querySelectorAll(".memory-item").forEach((el) => {
-          el.classList.toggle("active", el.dataset.memId === String(mem.id));
-        });
-        updateDetailPanel();
+        if (memState.bulkMode && memState.bulkSelect) {
+          memState.bulkSelect.toggle(mem.id);
+          item.classList.toggle("selected", memState.bulkSelect.isSelected(mem.id));
+          const cb = item.querySelector(".bulk-checkbox");
+          if (cb) cb.checked = memState.bulkSelect.isSelected(mem.id);
+        } else {
+          memState.selected = mem;
+          listPanel.querySelectorAll(".memory-item").forEach((el) => {
+            el.classList.toggle("active", el.dataset.memId === String(mem.id));
+          });
+          updateDetailPanel();
+        }
       });
       listPanel.appendChild(item);
     });
@@ -899,7 +1436,41 @@ registerPage("memories", async (container) => {
     updateDetailPanel();
   }
 
+  // -- Helper: PATCH a memory field and refresh --
+  async function patchMemoryField(memId, patch) {
+    try {
+      await api(`/memory/${memId}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      invalidateCache();
+      // Refresh selected memory data
+      const updated = await api(`/memory/${memId}`);
+      memState.selected = updated;
+      updateDetailPanel();
+      showToast("Memory updated", "success");
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  }
+
   // -- Update detail panel with v3 enhancements --
+  // -- Action color mapping for audit events --
+  const auditActionColors = {
+    "memory.created": "success",
+    "add": "success",
+    "memory.updated": "info",
+    "memory.linked": "info",
+    "memory.pinned": "primary",
+    "memory.unpinned": "info",
+    "memory.archived": "warning",
+    "memory.unarchived": "info",
+    "memory.merged": "info",
+    "conflict.detected": "error",
+    "delete": "error",
+    "extract": "success",
+  };
+
   async function updateDetailPanel() {
     const detailPanel = document.getElementById("memoryDetailPanel");
     if (!detailPanel) return;
@@ -926,7 +1497,6 @@ registerPage("memories", async (container) => {
     const headerRight = h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
       h("span", { className: "memory-item-id", style: { fontSize: "0.78rem" } }, `#${mem.id}`)
     );
-    // Add confidence bar if available
     if (mem.confidence != null) {
       headerRight.appendChild(confidenceBar(mem.confidence, "md"));
     }
@@ -934,8 +1504,62 @@ registerPage("memories", async (container) => {
     header.appendChild(headerRight);
     detailPanel.appendChild(header);
 
-    // Text
-    detailPanel.appendChild(h("div", { className: "detail-text" }, mem.text || ""));
+    // Tab bar
+    const tabs = h("div", { className: "detail-tabs" });
+    const tabContent = h("div", { className: "detail-tab-content" });
+    let activeTab = "overview";
+
+    const tabDefs = [
+      { key: "overview", label: "Overview" },
+      { key: "lifecycle", label: "Lifecycle" },
+      { key: "links", label: "Links" },
+    ];
+
+    function renderTabs() {
+      tabs.innerHTML = "";
+      tabDefs.forEach(({ key, label }) => {
+        const btn = h("button", {
+          className: `detail-tab${activeTab === key ? " active" : ""}`,
+        }, label);
+        btn.addEventListener("click", () => {
+          if (activeTab === key) return;
+          activeTab = key;
+          renderTabs();
+          renderTabContent();
+        });
+        tabs.appendChild(btn);
+      });
+    }
+
+    function renderTabContent() {
+      tabContent.innerHTML = "";
+      if (activeTab === "overview") {
+        renderOverviewTab(mem, tabContent);
+      } else if (activeTab === "lifecycle") {
+        renderLifecycleTab(mem, tabContent);
+      } else if (activeTab === "links") {
+        const linksSection = h("div", { className: "linked-memories-section" });
+        tabContent.appendChild(linksSection);
+        loadLinks(mem.id, linksSection);
+      }
+    }
+
+    renderTabs();
+    detailPanel.appendChild(tabs);
+    detailPanel.appendChild(tabContent);
+    renderTabContent();
+  }
+
+  // -- Overview tab (existing detail content) --
+  function renderOverviewTab(mem, container) {
+    // Text — inline editable
+    const textContainer = h("div", { className: "detail-text" });
+    editableField(textContainer, {
+      value: mem.text || "",
+      type: "text",
+      onSave: (newVal) => patchMemoryField(mem.id, { text: newVal }),
+    });
+    container.appendChild(textContainer);
 
     // Meta row
     const meta = h("div", { className: "detail-meta" });
@@ -945,10 +1569,30 @@ registerPage("memories", async (container) => {
         h("div", { className: "meta-value font-mono" }, String(mem.id))
       )
     );
+    const sourceContainer = h("div", { className: "meta-value" });
+    editableField(sourceContainer, {
+      value: mem.source || "",
+      type: "input",
+      onSave: (newVal) => patchMemoryField(mem.id, { source: newVal }),
+    });
     meta.appendChild(
       h("div", { className: "meta-item" },
         h("div", { className: "meta-label" }, "Source"),
-        h("div", { className: "meta-value" }, mem.source || "N/A")
+        sourceContainer
+      )
+    );
+    const category = mem.category || (mem.metadata && mem.metadata.category) || "detail";
+    const categoryContainer = h("div", { className: "meta-value" });
+    editableField(categoryContainer, {
+      value: category,
+      type: "select",
+      options: ["decision", "learning", "detail"],
+      onSave: (newVal) => patchMemoryField(mem.id, { metadata_patch: { category: newVal } }),
+    });
+    meta.appendChild(
+      h("div", { className: "meta-item" },
+        h("div", { className: "meta-label" }, "Category"),
+        categoryContainer
       )
     );
     meta.appendChild(
@@ -957,31 +1601,154 @@ registerPage("memories", async (container) => {
         h("div", { className: "meta-value" }, mem.created_at ? timeAgo(mem.created_at) : "N/A")
       )
     );
-    detailPanel.appendChild(meta);
+    container.appendChild(meta);
 
     // Decay status
     if (mem.confidence != null && mem.confidence < 1.0) {
-      detailPanel.appendChild(
+      container.appendChild(
         h("div", { className: "decay-status" }, `Decaying \u00B7 confidence ${Math.round(mem.confidence * 100)}%`)
       );
     }
 
-    // Conflict badge (check asynchronously)
+    // Conflict badge
     const conflictArea = h("div");
-    detailPanel.appendChild(conflictArea);
+    container.appendChild(conflictArea);
     loadConflictBadge(mem.id, conflictArea);
-
-    // Linked memories section
-    const linksSection = h("div", { className: "linked-memories-section" });
-    detailPanel.appendChild(linksSection);
-    loadLinks(mem.id, linksSection);
 
     // Action buttons
     const actions = h("div", { className: "detail-actions", style: { marginTop: "12px" } });
+    const isPinned = !!mem.pinned;
+    const pinBtn = h("button", {
+      className: `btn btn-sm${isPinned ? " btn-primary" : ""}`,
+      title: isPinned ? "Unpin memory" : "Pin memory",
+    }, isPinned ? "\uD83D\uDCCC Pinned" : "\uD83D\uDCCC Pin");
+    pinBtn.addEventListener("click", () => patchMemoryField(mem.id, { pinned: !isPinned }));
+    actions.appendChild(pinBtn);
+
+    const archiveBtn = h("button", { className: "btn btn-sm btn-warning" }, mem.archived ? "Unarchive" : "Archive");
+    archiveBtn.addEventListener("click", async () => {
+      const wasArchived = !!mem.archived;
+      try {
+        await api(`/memory/${mem.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ archived: !wasArchived }),
+        });
+        invalidateCache();
+        const updated = await api(`/memory/${mem.id}`);
+        memState.selected = updated;
+        updateDetailPanel();
+        showToast(
+          wasArchived ? "Memory unarchived" : "Memory archived",
+          "success",
+          {
+            label: "Undo",
+            onClick: async () => {
+              await api(`/memory/${mem.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({ archived: wasArchived }),
+              });
+              invalidateCache();
+              const reverted = await api(`/memory/${mem.id}`);
+              memState.selected = reverted;
+              updateDetailPanel();
+            },
+          }
+        );
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+    actions.appendChild(archiveBtn);
+
     const deleteBtn = h("button", { className: "btn btn-danger btn-sm" }, "Delete");
     deleteBtn.addEventListener("click", () => deleteMemory(mem.id));
     actions.appendChild(deleteBtn);
-    detailPanel.appendChild(actions);
+    container.appendChild(actions);
+  }
+
+  // -- Lifecycle tab --
+  async function renderLifecycleTab(mem, container) {
+    // Origin block
+    const originMethod = detectOriginMethod(mem);
+    const originBlock = h("div", { className: "lifecycle-origin" },
+      h("span", { style: { fontSize: "1.2rem" } }, originMethod.icon),
+      h("div", null,
+        h("div", { style: { fontWeight: "600", fontSize: "0.875rem" } }, originMethod.label),
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)" } },
+          mem.created_at ? timeAgo(mem.created_at) : "Unknown"
+        )
+      )
+    );
+    container.appendChild(originBlock);
+
+    // Confidence section
+    if (mem.confidence != null) {
+      const confSection = h("div", { className: "lifecycle-section" },
+        h("div", { className: "lifecycle-section-title" }, "Confidence"),
+        h("div", { style: { display: "flex", alignItems: "center", gap: "12px" } },
+          confidenceBar(mem.confidence, "md"),
+          h("span", { style: { fontSize: "0.875rem", fontWeight: "600" } },
+            `${Math.round(mem.confidence * 100)}%`
+          )
+        )
+      );
+      container.appendChild(confSection);
+    }
+
+    // History timeline
+    const timelineSection = h("div", { className: "lifecycle-section" },
+      h("div", { className: "lifecycle-section-title" }, "History")
+    );
+    const timelineContainer = h("div", { className: "lifecycle-timeline" });
+    timelineSection.appendChild(timelineContainer);
+    container.appendChild(timelineSection);
+
+    try {
+      const data = await api(`/audit?resource_id=${mem.id}&limit=20`);
+      const entries = data.entries || data || [];
+      if (!Array.isArray(entries) || entries.length === 0) {
+        timelineContainer.appendChild(
+          h("div", { style: { fontSize: "0.8125rem", color: "var(--color-text-faint)" } },
+            "No history available"
+          )
+        );
+        return;
+      }
+      entries.forEach((entry) => {
+        const action = entry.action || "";
+        const color = auditActionColors[action] || "info";
+        const title = action.replace(/\./g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+        const detail = entry.source_prefix
+          ? `by ${entry.source_prefix}`
+          : (entry.key_name ? `via ${entry.key_name}` : null);
+        timelineContainer.appendChild(
+          timelineEvent({ color, title, detail, timestamp: entry.ts })
+        );
+      });
+    } catch {
+      timelineContainer.appendChild(
+        h("div", { style: { fontSize: "0.8125rem", color: "var(--color-text-faint)" } },
+          "No history available"
+        )
+      );
+    }
+  }
+
+  // Detect how a memory entered the system
+  function detectOriginMethod(mem) {
+    // Fields may be at the top level (flat API response) or nested under metadata
+    const meta = mem.metadata || {};
+    if (mem.extraction_job_id || mem.extract_source || meta.extraction_job_id || meta.extract_source) {
+      return { icon: "\u2728", label: "Extraction" };
+    }
+    // Check for supersedes links (merge result)
+    if (mem.supersedes || mem.merged_from || meta.supersedes || meta.merged_from) {
+      return { icon: "\uD83D\uDD00", label: "Merge" };
+    }
+    if (mem.imported || mem.import_source || meta.imported || meta.import_source) {
+      return { icon: "\uD83D\uDCE5", label: "Import" };
+    }
+    return { icon: "\u270D\uFE0F", label: "Manual add" };
   }
 
   // -- Load linked memories for detail panel (collapsible, fetches target text) --
@@ -1014,41 +1781,59 @@ registerPage("memories", async (container) => {
         return;
       }
 
-      // Fetch target memory text for each link
+      // Fetch target memory details for each link
       const targetIds = links.map((link) => link.direction === "outgoing" ? link.to_id : link.from_id);
-      const targetTexts = {};
+      const targetMems = {};
       await Promise.allSettled(
         targetIds.map(async (tid) => {
           try {
-            const mem = await api(`/memory/${tid}`);
-            targetTexts[tid] = (mem.text || "").slice(0, 80);
-          } catch { targetTexts[tid] = null; }
+            targetMems[tid] = await api(`/memory/${tid}`);
+          } catch { targetMems[tid] = null; }
         })
       );
 
-      links.forEach((link) => {
-        const targetId = link.direction === "outgoing" ? link.to_id : link.from_id;
-        const ltype = link.link_type || link.type || "related_to";
-        const displayText = targetTexts[targetId] || `Memory #${targetId}`;
-        const item = h("div", { className: "linked-memory-item" },
-          h("div", null,
-            h("span", { className: "linked-memory-type", style: { color: linkTypeColor(ltype) } }, ltype),
-            h("div", { className: "linked-memory-text" }, displayText)
-          ),
-          h("button", {
-            className: "linked-memory-remove",
-            onClick: async () => {
-              try {
-                await api(`/memory/${memoryId}/link/${targetId}?type=${encodeURIComponent(ltype)}`, { method: "DELETE" });
-                invalidateCache(`/memory/${memoryId}/links`);
-                showToast("Link removed", "success");
-                loadLinks(memoryId, container);
-              } catch (err) { showToast(err.message, "error"); }
-            },
-          }, "\u00D7")
+      // Group links by direction
+      const outgoing = links.filter((l) => l.direction === "outgoing");
+      const incoming = links.filter((l) => l.direction === "incoming");
+
+      const renderLinkGroup = (groupLinks, dirLabel, arrow) => {
+        if (groupLinks.length === 0) return;
+        linksList.appendChild(
+          h("div", {
+            style: { fontSize: "0.65rem", color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", margin: "8px 0 4px 0" },
+          }, dirLabel)
         );
-        linksList.appendChild(item);
-      });
+        groupLinks.forEach((link) => {
+          const targetId = link.direction === "outgoing" ? link.to_id : link.from_id;
+          const ltype = link.link_type || link.type || "related_to";
+          const targetMem = targetMems[targetId];
+          const displayText = targetMem ? (targetMem.text || "").slice(0, 80) : `Memory #${targetId}`;
+          const item = h("div", { className: "linked-memory-item" },
+            h("div", { style: { flex: "1" } },
+              h("div", { style: { display: "flex", alignItems: "center", gap: "4px" } },
+                h("span", { style: { fontSize: "0.75rem", opacity: "0.6" } }, arrow),
+                h("span", { className: "linked-memory-type", style: { color: linkTypeColor(ltype) } }, ltype)
+              ),
+              h("div", { className: "linked-memory-text" }, displayText)
+            ),
+            h("button", {
+              className: "linked-memory-remove",
+              onClick: async () => {
+                try {
+                  await api(`/memory/${memoryId}/link/${targetId}?type=${encodeURIComponent(ltype)}`, { method: "DELETE" });
+                  invalidateCache(`/memory/${memoryId}/links`);
+                  showToast("Link removed", "success");
+                  loadLinks(memoryId, container);
+                } catch (err) { showToast(err.message, "error"); }
+              },
+            }, "\u00D7")
+          );
+          linksList.appendChild(item);
+        });
+      };
+
+      renderLinkGroup(outgoing, "Outgoing", "\u2192");
+      renderLinkGroup(incoming, "Incoming", "\u2190");
     } catch (err) {
       linksList.appendChild(
         h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "Failed to load links")
@@ -1088,18 +1873,33 @@ registerPage("memories", async (container) => {
           const data = await api("/search", { method: "POST", body: JSON.stringify({ query, k: 10, hybrid: true }) });
           resultsDiv.innerHTML = "";
           (data.results || []).forEach((r) => {
+            const rowContent = h("div", { style: { display: "flex", flexDirection: "column", gap: "2px", flex: "1" } });
+            // Source label (small, gold)
+            if (r.source) {
+              rowContent.appendChild(
+                h("span", { className: "memory-item-source", style: { fontSize: "0.7rem" } }, r.source)
+              );
+            }
+            // Text preview (truncated)
+            rowContent.appendChild(
+              h("div", { style: { fontSize: "0.75rem", color: "var(--color-text)" } }, (r.text || "").slice(0, 100))
+            );
+            const rowInner = h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+              rowContent
+            );
+            // Confidence bar if available
+            if (r.confidence != null) {
+              rowInner.appendChild(confidenceBar(r.confidence, "sm"));
+            }
             const row = h("div", {
-              style: { padding: "8px", cursor: "pointer", borderRadius: "4px", marginBottom: "4px", background: "var(--color-bg-surface)", fontSize: "0.75rem" },
+              style: { padding: "8px", cursor: "pointer", borderRadius: "4px", marginBottom: "4px", background: "var(--color-bg-surface)" },
               onClick: () => {
                 selectedTargetId = r.id;
-                resultsDiv.querySelectorAll("div").forEach((d) => d.style.outline = "none");
+                resultsDiv.querySelectorAll(".link-search-result").forEach((d) => d.style.outline = "none");
                 row.style.outline = "1px solid var(--color-primary)";
               },
-            },
-              h("span", { style: { color: "var(--color-primary)" } }, r.source || ""),
-              " ",
-              (r.text || "").slice(0, 80)
-            );
+              className: "link-search-result",
+            }, rowInner);
             resultsDiv.appendChild(row);
           });
         } catch (err) { showToast(err.message, "error"); }
@@ -1157,15 +1957,42 @@ registerPage("memories", async (container) => {
         scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.rrf_score * 100).toFixed(1)))}%</span>`;
       }
 
+      const isBulkSelected = memState.bulkMode && memState.bulkSelect && memState.bulkSelect.isSelected(mem.id);
       const card = document.createElement("div");
-      card.className = "memory-card";
-      card.innerHTML = `
+      card.className = `memory-card${isBulkSelected ? " selected" : ""}`;
+
+      if (memState.bulkMode) {
+        const checkbox = h("input", {
+          type: "checkbox",
+          checked: isBulkSelected,
+          className: "bulk-checkbox",
+          onclick: (e) => {
+            e.stopPropagation();
+            memState.bulkSelect.toggle(mem.id);
+            card.classList.toggle("selected", memState.bulkSelect.isSelected(mem.id));
+            checkbox.checked = memState.bulkSelect.isSelected(mem.id);
+          },
+        });
+        card.appendChild(checkbox);
+      }
+
+      card.insertAdjacentHTML("beforeend", `
         <div class="memory-item-header">
           <span class="memory-item-source">${escHtml(mem.source || "")}</span>
           <span class="memory-item-id">#${escHtml(String(mem.id))}${scoreHtml}</span>
         </div>
         <div class="memory-item-text mt-8">${truncText}</div>
-      `;
+      `);
+
+      if (memState.bulkMode) {
+        card.addEventListener("click", () => {
+          memState.bulkSelect.toggle(mem.id);
+          card.classList.toggle("selected", memState.bulkSelect.isSelected(mem.id));
+          const cb = card.querySelector(".bulk-checkbox");
+          if (cb) cb.checked = memState.bulkSelect.isSelected(mem.id);
+        });
+      }
+
       grid.appendChild(card);
     });
     contentDiv.appendChild(grid);
@@ -2396,69 +3223,9 @@ registerPage("health", async (container) => {
         card.appendChild(pair);
 
         const actions = h("div", { className: "conflict-actions" });
-
-        const keepABtn = h("button", { className: "conflict-action-btn" }, "Keep A");
-        keepABtn.addEventListener("click", async () => {
-          if (!confirm("Delete Memory B and keep Memory A?")) return;
-          try {
-            const deleteId = conflict.conflicting_memory?.id || conflict.conflicts_with;
-            if (deleteId) {
-              await api(`/memory/${deleteId}`, { method: "DELETE" });
-              // Clear surviving memory's conflicts_with metadata
-              await api(`/memory/${conflict.id}`, {
-                method: "PATCH",
-                body: JSON.stringify({ metadata_patch: { conflicts_with: null } }),
-              });
-              invalidateCache();
-              showToast("Conflict resolved — kept Memory A", "success");
-              loadHealthPage();
-            }
-          } catch (err) { showToast(err.message, "error"); }
-        });
-
-        const keepBBtn = h("button", { className: "conflict-action-btn" }, "Keep B");
-        keepBBtn.addEventListener("click", async () => {
-          if (!confirm("Delete Memory A and keep Memory B?")) return;
-          try {
-            const deleteId = conflict.id;
-            const survivorId = conflict.conflicting_memory?.id || conflict.conflicts_with;
-            if (deleteId) {
-              await api(`/memory/${deleteId}`, { method: "DELETE" });
-              // Clear surviving memory's conflicts_with metadata if it exists
-              if (survivorId) {
-                try {
-                  await api(`/memory/${survivorId}`, {
-                    method: "PATCH",
-                    body: JSON.stringify({ metadata_patch: { conflicts_with: null } }),
-                  });
-                } catch { /* survivor may not have conflicts_with set */ }
-              }
-              invalidateCache();
-              showToast("Conflict resolved — kept Memory B", "success");
-              loadHealthPage();
-            }
-          } catch (err) { showToast(err.message, "error"); }
-        });
-
-        const dismissBtn = h("button", { className: "conflict-dismiss-btn" }, "Dismiss");
-        dismissBtn.addEventListener("click", async () => {
-          try {
-            const memId = conflict.memory_id || conflict.id;
-            if (memId) {
-              await api(`/memory/${memId}`, {
-                method: "PATCH",
-                body: JSON.stringify({ metadata_patch: { conflicts_with: null } }),
-              });
-              invalidateCache();
-              showToast("Conflict dismissed", "success");
-              loadHealthPage();
-            }
-          } catch (err) { showToast(err.message, "error"); }
-        });
-
-        actions.appendChild(keepABtn);
-        actions.appendChild(keepBBtn);
-        actions.appendChild(dismissBtn);
+        const resolveBtn = h("button", { className: "conflict-action-btn" }, "Resolve");
+        resolveBtn.addEventListener("click", () => showConflictModal(conflict));
+        actions.appendChild(resolveBtn);
         card.appendChild(actions);
         container.appendChild(card);
       });
@@ -2530,6 +3297,208 @@ registerPage("health", async (container) => {
     qualityGrid.appendChild(searchPanel);
 
     container.appendChild(qualityGrid);
+  }
+
+  // -- Conflict Resolution Modal --
+  function showConflictModal(conflict) {
+    const memA = conflict;
+    const memB = conflict.conflicting_memory || { id: conflict.conflicts_with, text: "", source: "" };
+    const idA = conflict.id;
+    const idB = memB.id || conflict.conflicts_with;
+
+    showModal((content) => {
+      content.appendChild(h("h3", { style: { marginBottom: "16px" } }, "Resolve Conflict"));
+
+      // Side-by-side comparison
+      content.appendChild(comparisonPanel({
+        memA,
+        memB,
+        labelA: `Memory #${idA}`,
+        labelB: `Memory #${idB}`,
+        colorA: "error",
+        colorB: "error",
+      }));
+
+      // Resolution options
+      const optionsLabel = h("div", { style: { marginTop: "16px", marginBottom: "8px", fontSize: "0.8125rem", fontWeight: "600", color: "var(--color-text-secondary)" } }, "Choose resolution:");
+      content.appendChild(optionsLabel);
+
+      const btnRow = h("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "16px" } });
+
+      // Keep A — archive B
+      const keepABtn = h("button", { className: "btn" }, "Keep A");
+      keepABtn.addEventListener("click", async () => {
+        keepABtn.disabled = true;
+        keepABtn.textContent = "Resolving...";
+        try {
+          if (idB) {
+            await api(`/memory/${idB}`, {
+              method: "PATCH",
+              body: JSON.stringify({ archived: true }),
+            });
+          }
+          await api(`/memory/${idA}`, {
+            method: "PATCH",
+            body: JSON.stringify({ metadata_patch: { conflicts_with: null } }),
+          });
+          invalidateCache();
+          hideModal();
+          showToast("Conflict resolved — kept Memory A, archived Memory B", "success");
+          loadHealthPage();
+        } catch (err) {
+          keepABtn.disabled = false;
+          keepABtn.textContent = "Keep A";
+          showToast(err.message, "error");
+        }
+      });
+
+      // Keep B — archive A
+      const keepBBtn = h("button", { className: "btn" }, "Keep B");
+      keepBBtn.addEventListener("click", async () => {
+        keepBBtn.disabled = true;
+        keepBBtn.textContent = "Resolving...";
+        try {
+          await api(`/memory/${idA}`, {
+            method: "PATCH",
+            body: JSON.stringify({ archived: true }),
+          });
+          if (idB) {
+            try {
+              await api(`/memory/${idB}`, {
+                method: "PATCH",
+                body: JSON.stringify({ metadata_patch: { conflicts_with: null } }),
+              });
+            } catch { /* survivor may not have conflicts_with set */ }
+          }
+          invalidateCache();
+          hideModal();
+          showToast("Conflict resolved — kept Memory B, archived Memory A", "success");
+          loadHealthPage();
+        } catch (err) {
+          keepBBtn.disabled = false;
+          keepBBtn.textContent = "Keep B";
+          showToast(err.message, "error");
+        }
+      });
+
+      // Merge — redirect to merge modal
+      const mergeBtn = h("button", { className: "btn" }, "Merge");
+      mergeBtn.addEventListener("click", async () => {
+        hideModal();
+        // Fetch full memories and show merge modal inline
+        try {
+          const mergeIds = [idA, idB].filter(Boolean);
+          let memories;
+          try {
+            const resp = await api("/memory/get-batch", {
+              method: "POST",
+              body: JSON.stringify({ ids: mergeIds }),
+            });
+            memories = resp.memories || [];
+          } catch (err) {
+            showToast("Failed to load memories: " + err.message, "error");
+            return;
+          }
+          if (memories.length < 2) { showToast("Could not load selected memories", "warning"); return; }
+
+          showModal((mergeContent) => {
+            mergeContent.appendChild(h("h3", { style: { marginBottom: "16px" } }, "Merge Memories"));
+            mergeContent.appendChild(comparisonPanel({
+              memA: memories[0],
+              memB: memories[1],
+              labelA: `#${memories[0].id} (will be archived)`,
+              labelB: `#${memories[1].id} (will be archived)`,
+              colorA: "error",
+              colorB: "error",
+            }));
+
+            mergeContent.appendChild(h("label", { className: "modal-label", style: { marginTop: "16px", display: "block" } }, "Merged Text"));
+            const mergedTextArea = h("textarea", {
+              className: "editable-textarea",
+              style: { minHeight: "120px", marginBottom: "12px" },
+            });
+            mergedTextArea.value = memories.map((m) => m.text || "").join("\n\n");
+            mergeContent.appendChild(mergedTextArea);
+
+            mergeContent.appendChild(h("label", { className: "modal-label" }, "Source"));
+            const sourceInput = h("input", {
+              type: "text",
+              className: "editable-input",
+              style: { marginBottom: "16px" },
+            });
+            sourceInput.value = memories[0].source || "";
+            mergeContent.appendChild(sourceInput);
+
+            const mergeBtnRow = h("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end" } });
+            const cancelBtn = h("button", { className: "btn", onClick: hideModal }, "Cancel");
+            const confirmMergeBtn = h("button", { className: "btn btn-primary" }, "Merge & Archive Originals");
+            confirmMergeBtn.addEventListener("click", async () => {
+              const mergedText = mergedTextArea.value.trim();
+              const source = sourceInput.value.trim();
+              if (!mergedText) { showToast("Merged text is required", "warning"); return; }
+              if (!source) { showToast("Source is required", "warning"); return; }
+              confirmMergeBtn.disabled = true;
+              confirmMergeBtn.textContent = "Merging...";
+              try {
+                const result = await api("/memory/merge", {
+                  method: "POST",
+                  body: JSON.stringify({ ids: mergeIds, merged_text: mergedText, source }),
+                });
+                invalidateCache();
+                hideModal();
+                showToast(`Merged into #${result.id}, archived ${result.archived.length} originals`, "success");
+                loadHealthPage();
+              } catch (err) {
+                confirmMergeBtn.disabled = false;
+                confirmMergeBtn.textContent = "Merge & Archive Originals";
+                showToast(err.message, "error");
+              }
+            });
+            mergeBtnRow.appendChild(cancelBtn);
+            mergeBtnRow.appendChild(confirmMergeBtn);
+            mergeContent.appendChild(mergeBtnRow);
+          });
+        } catch (err) { showToast(err.message, "error"); }
+      });
+
+      // Defer — mark both as deferred
+      const deferBtn = h("button", { className: "btn" }, "Defer");
+      deferBtn.addEventListener("click", async () => {
+        deferBtn.disabled = true;
+        deferBtn.textContent = "Deferring...";
+        try {
+          await api(`/memory/${idA}`, {
+            method: "PATCH",
+            body: JSON.stringify({ metadata_patch: { deferred: true } }),
+          });
+          if (idB) {
+            await api(`/memory/${idB}`, {
+              method: "PATCH",
+              body: JSON.stringify({ metadata_patch: { deferred: true } }),
+            });
+          }
+          invalidateCache();
+          hideModal();
+          showToast("Conflict deferred — hidden from queue", "success");
+          loadHealthPage();
+        } catch (err) {
+          deferBtn.disabled = false;
+          deferBtn.textContent = "Defer";
+          showToast(err.message, "error");
+        }
+      });
+
+      btnRow.appendChild(keepABtn);
+      btnRow.appendChild(keepBBtn);
+      btnRow.appendChild(mergeBtn);
+      btnRow.appendChild(deferBtn);
+      content.appendChild(btnRow);
+
+      // Cancel button
+      const cancelRow = h("div", { style: { display: "flex", justifyContent: "flex-end" } });
+      cancelRow.appendChild(h("button", { className: "btn", onClick: hideModal }, "Cancel"));
+      content.appendChild(cancelRow);
+    });
   }
 
   await loadHealthPage();

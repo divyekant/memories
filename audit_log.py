@@ -20,7 +20,7 @@ class NullAuditLog:
     def query(self, **kwargs) -> List[Dict[str, Any]]:
         return []
 
-    def count(self, action=None, key_id=None, **kwargs) -> int:
+    def count(self, action=None, key_id=None, resource_id=None, **kwargs) -> int:
         return 0
 
     def purge(self, retention_days: int = 90) -> int:
@@ -48,6 +48,7 @@ class AuditLog:
             CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
             CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
             CREATE INDEX IF NOT EXISTS idx_audit_key ON audit_log(key_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_resource_id ON audit_log(resource_id);
         """)
         conn.close()
         logger.info("Audit log initialized: %s", db_path)
@@ -87,6 +88,7 @@ class AuditLog:
         self,
         action: Optional[str] = None,
         key_id: Optional[str] = None,
+        resource_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -101,6 +103,9 @@ class AuditLog:
             if key_id:
                 clauses.append("key_id = ?")
                 params.append(key_id)
+            if resource_id:
+                clauses.append("resource_id = ?")
+                params.append(resource_id)
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             rows = conn.execute(
                 f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
@@ -110,7 +115,7 @@ class AuditLog:
         finally:
             conn.close()
 
-    def count(self, action: Optional[str] = None, key_id: Optional[str] = None) -> int:
+    def count(self, action: Optional[str] = None, key_id: Optional[str] = None, resource_id: Optional[str] = None) -> int:
         conn = self._connect()
         try:
             clauses: list = []
@@ -121,6 +126,9 @@ class AuditLog:
             if key_id:
                 clauses.append("key_id = ?")
                 params.append(key_id)
+            if resource_id:
+                clauses.append("resource_id = ?")
+                params.append(resource_id)
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             row = conn.execute(f"SELECT COUNT(*) FROM audit_log {where}", params).fetchone()
             return row[0]

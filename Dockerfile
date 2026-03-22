@@ -64,6 +64,7 @@ COPY memories_auth.py .
 COPY __main__.py .
 COPY llm_provider.py .
 COPY llm_extract.py .
+COPY extraction_profiles.py .
 COPY usage_tracker.py .
 COPY consolidator.py .
 COPY key_store.py .

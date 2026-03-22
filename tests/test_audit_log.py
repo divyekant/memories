@@ -73,6 +73,16 @@ class TestAuditLog:
         entries = audit.query(limit=100)
         assert all(e["action"] != "old_action" for e in entries)
 
+    def test_query_filter_by_resource_id(self, audit):
+        """query() should filter by resource_id when provided."""
+        audit.log(action="memory.created", resource_id="42")
+        audit.log(action="memory.updated", resource_id="42")
+        audit.log(action="memory.created", resource_id="99")
+
+        results = audit.query(resource_id="42")
+        assert len(results) == 2
+        assert all(r["resource_id"] == "42" for r in results)
+
     def test_count(self, audit):
         audit.log(action="search", key_id="k1")
         audit.log(action="add", key_id="k2")
@@ -130,6 +140,17 @@ class TestAuditEndpoint:
         mod.audit_log.log(action="add", key_id="k1")
         resp = tc.get("/audit?action=search", headers={"X-API-Key": "admin-key"})
         assert len(resp.json()["entries"]) == 1
+
+    def test_audit_filter_by_resource_id(self, client):
+        tc, mod = client
+        mod.audit_log.log(action="memory.created", resource_id="42")
+        mod.audit_log.log(action="memory.updated", resource_id="42")
+        mod.audit_log.log(action="memory.created", resource_id="99")
+        resp = tc.get("/audit?resource_id=42", headers={"X-API-Key": "admin-key"})
+        assert resp.status_code == 200
+        entries = resp.json()["entries"]
+        assert len(entries) == 2
+        assert all(e["resource_id"] == "42" for e in entries)
 
     def test_audit_requires_admin(self, client):
         tc, mod = client
