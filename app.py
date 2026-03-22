@@ -924,9 +924,18 @@ def _run_scheduled_pruning():
     all_ids = [m["id"] for m in all_mems]
     unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
     candidates = find_prune_candidates(all_mems, unretrieved)
+    deleted = 0
+    skipped = 0
     for c in candidates:
-        memory.delete_memory(c["id"])
-    return len(candidates)
+        try:
+            memory.delete_memory(c["id"])
+            deleted += 1
+        except Exception:
+            skipped += 1
+            logger.debug("Pruning: memory %s already deleted (concurrent remove), skipping", c["id"])
+    if skipped:
+        logger.info("Pruning: %d deleted, %d skipped (concurrent deletes)", deleted, skipped)
+    return deleted
 
 
 async def _maintenance_scheduler():

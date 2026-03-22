@@ -6,6 +6,7 @@ stale unused memories for cleanup.
 
 import json
 import logging
+import random
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -74,7 +75,7 @@ def find_clusters(
             "Consolidation: capping %d candidates to %d (max_candidates)",
             len(candidates), max_candidates,
         )
-        candidates = candidates[:max_candidates]
+        candidates = random.sample(candidates, max_candidates)
 
     logger.info("Consolidation: scanning %d candidates for clusters", len(candidates))
 
