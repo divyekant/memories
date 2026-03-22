@@ -1269,6 +1269,12 @@ class SearchRequest(BaseModel):
         le=1.0,
         description="Weight for feedback-based ranking signal (0=disabled)",
     )
+    confidence_weight: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description="Weight for confidence-based ranking (0=disabled)",
+    )
     source: str = Field("", max_length=500, description="Caller source for usage tracking")
     include_archived: bool = Field(default=False, description="Include archived memories in search results")
 
@@ -1889,6 +1895,7 @@ async def search(request_body: SearchRequest, request: Request):
                 include_archived=request_body.include_archived,
                 feedback_weight=request_body.feedback_weight,
                 feedback_scores=fb_scores,
+                confidence_weight=request_body.confidence_weight,
             )
         else:
             results = memory.search(
@@ -1939,6 +1946,7 @@ async def search_explain(request_body: SearchRequest, request: Request):
             include_archived=request_body.include_archived,
             feedback_weight=request_body.feedback_weight,
             feedback_scores=fb_scores,
+            confidence_weight=request_body.confidence_weight,
         )
         # Apply auth filtering to results and track how many were removed
         raw_results = explain_result["results"]
@@ -1968,6 +1976,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     source_prefix=item.source_prefix,
                     recency_weight=item.recency_weight,
                     recency_half_life_days=item.recency_half_life_days,
+                    confidence_weight=item.confidence_weight,
                 )
             else:
                 results = memory.search(
