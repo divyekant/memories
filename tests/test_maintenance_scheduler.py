@@ -4,8 +4,9 @@ import asyncio
 import inspect
 import logging
 import random
+import sys
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 
 class TestMaintenanceSchedulerUsesThreadpool:
@@ -411,3 +412,74 @@ class TestMaintenanceObservability:
             warn_logs = [str(c) for c in mock_logger.warning.call_args_list]
             assert any("RSS" in msg for msg in warn_logs), \
                 "Should warn when RSS grows significantly during maintenance"
+
+
+class TestGetRssMb:
+    """Verify _get_rss_mb returns current RSS, not high-water mark."""
+
+    def test_returns_positive_number(self):
+        """_get_rss_mb should return a positive number on any platform."""
+        import app as app_module
+
+        result = app_module._get_rss_mb()
+        assert result > 0, "_get_rss_mb should return positive RSS on macOS/Linux"
+
+    def test_prefers_proc_self_status_on_linux(self):
+        """On Linux, should read /proc/self/status VmRSS for current RSS."""
+        import app as app_module
+
+        proc_content = (
+            "Name:\tpython\n"
+            "VmPeak:\t  512000 kB\n"
+            "VmRSS:\t  256000 kB\n"
+            "VmSize:\t  400000 kB\n"
+        )
+        m = mock_open(read_data=proc_content)
+        with patch("builtins.open", m):
+            result = app_module._get_rss_mb()
+        # 256000 kB = 250 MB
+        assert result == 250.0, f"Expected 250.0 MB, got {result}"
+
+    def test_falls_back_to_resource_on_macos(self):
+        """When /proc/self/status is unavailable, fall back to resource module."""
+        import app as app_module
+
+        with patch("builtins.open", side_effect=OSError("no /proc on macOS")):
+            result = app_module._get_rss_mb()
+        # Should still return a positive number via resource fallback
+        assert result > 0, "Should fall back to resource module when /proc unavailable"
+
+    def test_macos_divides_ru_maxrss_by_1048576(self):
+        """On macOS, ru_maxrss is in bytes; must divide by 1024*1024."""
+        import app as app_module
+
+        mock_usage = MagicMock()
+        mock_usage.ru_maxrss = 200 * 1024 * 1024  # 200 MB in bytes
+
+        with patch("builtins.open", side_effect=OSError("no /proc")), \
+             patch("resource.getrusage", return_value=mock_usage), \
+             patch.object(sys, "platform", "darwin"):
+            result = app_module._get_rss_mb()
+        assert result == 200.0, f"Expected 200.0 MB on macOS, got {result}"
+
+    def test_linux_divides_ru_maxrss_by_1024(self):
+        """On Linux (without /proc), ru_maxrss is in kB; must divide by 1024."""
+        import app as app_module
+
+        mock_usage = MagicMock()
+        mock_usage.ru_maxrss = 200 * 1024  # 200 MB in kB
+
+        with patch("builtins.open", side_effect=OSError("no /proc")), \
+             patch("resource.getrusage", return_value=mock_usage), \
+             patch.object(sys, "platform", "linux"):
+            result = app_module._get_rss_mb()
+        assert result == 200.0, f"Expected 200.0 MB on Linux fallback, got {result}"
+
+    def test_returns_zero_when_all_methods_fail(self):
+        """If both /proc and resource fail, should return 0."""
+        import app as app_module
+
+        with patch("builtins.open", side_effect=OSError("no /proc")), \
+             patch("resource.getrusage", side_effect=Exception("no resource")):
+            result = app_module._get_rss_mb()
+        assert result == 0, f"Expected 0 when all methods fail, got {result}"

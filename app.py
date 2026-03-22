@@ -915,8 +915,22 @@ _MAINTENANCE_RSS_DELTA_WARN_MB = 100
 def _get_rss_mb():
     """Return current process RSS in MB."""
     try:
+        # Linux/Docker: read current RSS from /proc (not high-water mark)
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024  # VmRSS is in kB
+    except (OSError, IOError):
+        pass
+    try:
+        # macOS: ru_maxrss is in bytes; Linux: ru_maxrss is in kB
         import resource
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)
+        import sys
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if sys.platform == "darwin":
+            return rss / (1024 * 1024)  # bytes -> MB
+        else:
+            return rss / 1024  # kB -> MB
     except Exception:
         return 0
 
