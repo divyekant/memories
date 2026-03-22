@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.3.0] - 2026-03-23
+
+### Added
+- **R3 Wave 3: Quality Proof** — LongMemEval benchmark, signal filter, recovery validation (#51)
+  - LongMemEval adapter: 500-question benchmark with configurable LLM judge (Anthropic/OpenAI/Ollama)
+  - CLI: `memories eval longmemeval` with regression delta tracking per release
+  - Signal keyword pre-filter on extraction hooks — skips LLM calls when conversation has no decision/bug/architecture keywords
+  - Snapshot round-trip validation test (create → mutate → restore → verify)
+  - Import/export round-trip validation test (export → clear → import → verify, plus smart dedup)
+  - 21 signal filter pattern tests, 7 import/export tests, 4 snapshot tests
+  - Extended `MemoriesClient` with `search()` and `extract()` for eval framework
+
 ## [3.2.1] - 2026-03-23
 
 ### Fixed
