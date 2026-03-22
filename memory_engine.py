@@ -1103,43 +1103,78 @@ class MemoryEngine:
                 "action": action_type,
             })
 
-        # Execute if not dry_run — acquire locks and re-verify each candidate
-        # The scan phase ran unlocked, so state may have changed (delete, pin, archive).
-        # Inside the lock, re-check each candidate before mutating.
+        # Execute if not dry_run — acquire locks and FULLY re-evaluate each candidate.
+        # The scan phase ran unlocked, so source, updated_at, pinned, archived may have changed.
+        # Inside the lock, recompute policy inputs from current meta state.
         skipped_stale = 0
         if not dry_run and actions:
+            candidate_ids = [a["memory_id"] for a in actions]
             with self._entity_locks.acquire_many(["__all__"]):
                 with self._write_lock:
                     archived_at = now.isoformat()
-                    valid_actions = []
-                    for a in actions:
-                        mem_id = a["memory_id"]
-                        # Re-verify: memory still exists, not deleted/pinned/archived since scan
+                    final_actions = []
+                    for mem_id in candidate_ids:
+                        # Re-fetch current meta (may have changed since scan)
                         try:
                             meta = self._get_meta_by_id(mem_id)
                         except (ValueError, KeyError, IndexError):
-                            a["action"] = "skipped_deleted"
                             skipped_stale += 1
                             continue
                         if meta.get("archived") or meta.get("pinned"):
-                            a["action"] = "skipped_stale"
                             skipped_stale += 1
                             continue
 
-                        primary_reason = a["reasons"][0]  # TTL takes precedence
+                        # Recompute policy inputs from current state
+                        source = meta.get("source", "")
+                        policy = self._profiles.resolve(source) if hasattr(self, '_profiles') and self._profiles else {}
+                        anchor = meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
+                        age_days = 0
+                        if anchor:
+                            try:
+                                ts = datetime.fromisoformat(anchor.replace("Z", "+00:00"))
+                                if ts.tzinfo is None:
+                                    ts = ts.replace(tzinfo=timezone.utc)
+                                age_days = (now - ts).days
+                            except (ValueError, TypeError):
+                                pass
+                        half_life = policy.get("confidence_half_life_days") or 90.0
+                        confidence = self.compute_confidence(anchor, half_life_days=half_life)
+
+                        # Re-evaluate policy rules with fresh data
+                        reasons = []
+                        ttl = policy.get("ttl_days")
+                        if ttl is not None and age_days > ttl:
+                            reasons.append({"rule": "ttl", "ttl_days": ttl, "age_days": age_days, "prefix": source})
+                        threshold = policy.get("confidence_threshold")
+                        min_age = policy.get("min_age_days")
+                        if threshold is not None and min_age is not None:
+                            if confidence < threshold and age_days > min_age:
+                                reasons.append({"rule": "confidence", "threshold": threshold,
+                                                "confidence": round(confidence, 4), "min_age_days": min_age, "prefix": source})
+
+                        if not reasons:
+                            skipped_stale += 1
+                            continue
+
+                        # Archive with evidence from fresh evaluation
+                        primary_reason = reasons[0]
                         evidence = {
                             "_policy_archived_reason": primary_reason["rule"],
                             "_policy_archived_policy": f"{primary_reason.get('prefix', '')} {primary_reason['rule']}",
                             "_policy_archived_at": archived_at,
-                            "_policy_archived_confidence": a["confidence"],
-                            "_policy_archived_age_days": a["age_days"],
+                            "_policy_archived_confidence": round(confidence, 4),
+                            "_policy_archived_age_days": age_days,
                         }
                         meta["archived"] = True
                         meta.update(evidence)
                         self.qdrant_store.set_payload(mem_id, {"archived": True, **evidence})
-                        a["action"] = "archived"
-                        valid_actions.append(a)
+                        final_actions.append({
+                            "memory_id": mem_id, "source": source, "age_days": age_days,
+                            "confidence": round(confidence, 4), "reasons": reasons, "action": "archived",
+                        })
                     self.save()
+                    # Replace scan-phase actions with lock-verified actions
+                    actions = final_actions
 
         summary_key = "would_archive" if dry_run else "archived"
         archived_count = len([a for a in actions if a["action"] in ("archived", "would_archive")])
