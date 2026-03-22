@@ -1668,6 +1668,7 @@ registerPage("memories", async (container) => {
 
   // -- Lifecycle tab --
   async function renderLifecycleTab(mem, container) {
+    container.innerHTML = "";
     // Origin block
     const originMethod = detectOriginMethod(mem);
     const originBlock = h("div", { className: "lifecycle-origin" },
@@ -1693,6 +1694,54 @@ registerPage("memories", async (container) => {
         )
       );
       container.appendChild(confSection);
+    }
+
+    // Feedback history section
+    const feedbackSection = h("div", { className: "lifecycle-section" },
+      h("div", { className: "lifecycle-section-title" }, "Feedback")
+    );
+    const feedbackContainer = h("div");
+    feedbackSection.appendChild(feedbackContainer);
+    container.appendChild(feedbackSection);
+
+    try {
+      const fbData = await api(`/search/feedback/history?memory_id=${mem.id}&limit=10`);
+      const fbEntries = fbData.entries || fbData || [];
+      if (Array.isArray(fbEntries) && fbEntries.length > 0) {
+        fbEntries.forEach((entry) => {
+          const badgeClass = entry.signal === "useful" ? "badge-success" : "badge-error";
+          const queryText = (entry.query || "").length > 60
+            ? entry.query.substring(0, 60) + "..."
+            : (entry.query || "");
+          const row = h("div", { className: "feedback-history-row" },
+            h("span", { className: `badge ${badgeClass}` }, entry.signal),
+            h("span", { className: "feedback-query", title: entry.query || "" }, queryText),
+            h("span", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)", whiteSpace: "nowrap" } },
+              entry.ts ? timeAgo(entry.ts) : ""
+            ),
+            h("button", {
+              className: "btn btn-sm",
+              style: { fontSize: "0.7rem", padding: "2px 8px" },
+              onClick: async () => {
+                try {
+                  await api(`/search/feedback/${entry.id}`, { method: "DELETE" });
+                  showToast("Feedback retracted", "success");
+                  renderLifecycleTab(mem, container);
+                } catch (err) { showToast(err.message, "error"); }
+              },
+            }, "Retract")
+          );
+          feedbackContainer.appendChild(row);
+        });
+      } else {
+        feedbackContainer.appendChild(
+          h("div", { style: { fontSize: "0.8125rem", color: "var(--color-text-faint)" } }, "No feedback yet")
+        );
+      }
+    } catch {
+      feedbackContainer.appendChild(
+        h("div", { style: { fontSize: "0.8125rem", color: "var(--color-text-faint)" } }, "No feedback yet")
+      );
     }
 
     // History timeline
@@ -2219,7 +2268,47 @@ registerPage("memories", async (container) => {
   // If navigated here with a pending search query, run it
   const globalSearch = document.getElementById("globalSearch");
   const pendingQuery = globalSearch?.value?.trim();
-  if (pendingQuery) {
+
+  // Check URL hash for ?q= parameter (e.g. from health page replay links)
+  const hashQuery = (() => {
+    const hash = window.location.hash || "";
+    const qIdx = hash.indexOf("?q=");
+    if (qIdx === -1) return "";
+    const raw = hash.slice(qIdx + 3);
+    try { return decodeURIComponent(raw); } catch { return raw; }
+  })();
+
+  // Check URL hash for ?select=<id> parameter (e.g. from health page stale memory View)
+  const selectId = (() => {
+    const hash = window.location.hash || "";
+    const match = hash.match(/[?&]select=(\d+)/);
+    return match ? parseInt(match[1], 10) : null;
+  })();
+
+  if (selectId) {
+    // Load the memory by ID and select it directly
+    await loadMemories();
+    try {
+      const mem = await api(`/memory/${selectId}`);
+      if (mem) {
+        memState.selected = mem;
+        renderContent();
+        // Scroll to and highlight the memory in the list
+        requestAnimationFrame(() => {
+          const item = document.querySelector(`.memory-item[data-mem-id="${selectId}"]`);
+          if (item) {
+            item.classList.add("active");
+            item.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        });
+      }
+    } catch {
+      showToast(`Memory #${selectId} not found`, "error");
+    }
+  } else if (hashQuery) {
+    if (globalSearch) globalSearch.value = hashQuery;
+    await searchMemories(hashQuery);
+  } else if (pendingQuery) {
     await searchMemories(pendingQuery);
   } else {
     await loadMemories();
@@ -3101,12 +3190,16 @@ registerPage("health", async (container) => {
     let extractionQuality = null;
     let searchQuality = null;
     let failures = null; // null = not loaded (auth failed), [] = loaded empty
+    let problemQueries = null; // null = not loaded (auth failed)
+    let staleMemories = null; // null = not loaded (auth failed)
 
     const results = await Promise.allSettled([
       api("/memory/conflicts"),
       api(`/metrics/extraction-quality?period=${period}`),
       api(`/metrics/search-quality?period=${period}`),
       api("/metrics/failures?type=extraction&limit=100"),
+      api("/metrics/problem-queries"),
+      api("/metrics/stale-memories"),
     ]);
 
     if (results[0].status === "fulfilled") {
@@ -3118,6 +3211,14 @@ registerPage("health", async (container) => {
     if (results[3].status === "fulfilled") {
       const d = results[3].value;
       failures = d.failures || [];
+    }
+    if (results[4].status === "fulfilled") {
+      const d = results[4].value;
+      problemQueries = d.queries || [];
+    }
+    if (results[5].status === "fulfilled") {
+      const d = results[5].value;
+      staleMemories = d.memories || [];
     }
 
     // Stat cards
@@ -3236,6 +3337,94 @@ registerPage("health", async (container) => {
             `Showing 3 of ${conflicts.length} conflicts`)
         );
       }
+    }
+
+    // Problem Queries section
+    const problemTitle = h("div", { className: "section-title mt-24" }, "Problem Queries");
+    container.appendChild(problemTitle);
+
+    if (problemQueries === null) {
+      container.appendChild(
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)", padding: "12px 0" } }, "Admin access required")
+      );
+    } else if (problemQueries.length === 0) {
+      container.appendChild(
+        h("div", { className: "empty-state", style: { padding: "40px 20px" } },
+          h("div", { className: "empty-state-icon color-success" }, "\u2713"),
+          h("div", { className: "empty-state-title" }, "No problem queries"),
+          h("div", { className: "empty-state-text" }, "All queries are performing well.")
+        )
+      );
+    } else {
+      problemQueries.forEach((pq) => {
+        const row = h("div", { className: "problem-query-row" },
+          h("div", { className: "problem-query-text" }, pq.query),
+          h("span", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)", whiteSpace: "nowrap" } },
+            `${pq.not_useful}/${pq.total} negative (${Math.round(pq.ratio * 100)}%)`),
+          h("a", {
+            className: "replay-link",
+            href: `#/memories?q=${encodeURIComponent(pq.query)}`,
+            onclick: (e) => {
+              e.preventDefault();
+              window.location.hash = `#/memories?q=${encodeURIComponent(pq.query)}`;
+            },
+          }, "Replay")
+        );
+        container.appendChild(row);
+      });
+    }
+
+    // Stale Memories section
+    const staleTitle = h("div", { className: "section-title mt-24" }, "Stale Memories");
+    container.appendChild(staleTitle);
+
+    if (staleMemories === null) {
+      container.appendChild(
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)", padding: "12px 0" } }, "Admin access required")
+      );
+    } else if (staleMemories.length === 0) {
+      container.appendChild(
+        h("div", { className: "empty-state", style: { padding: "40px 20px" } },
+          h("div", { className: "empty-state-icon color-success" }, "\u2713"),
+          h("div", { className: "empty-state-title" }, "No stale memories"),
+          h("div", { className: "empty-state-text" }, "All frequently retrieved memories have positive feedback.")
+        )
+      );
+    } else {
+      staleMemories.forEach((sm) => {
+        const archiveBtn = h("button", { className: "btn btn-sm" }, "Archive");
+        archiveBtn.addEventListener("click", async () => {
+          archiveBtn.disabled = true;
+          archiveBtn.textContent = "Archiving...";
+          try {
+            await api(`/memory/${sm.memory_id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ archived: true }),
+            });
+            invalidateCache();
+            showToast(`Memory #${sm.memory_id} archived`, "success");
+            loadHealthPage();
+          } catch (err) {
+            archiveBtn.disabled = false;
+            archiveBtn.textContent = "Archive";
+            showToast(err.message, "error");
+          }
+        });
+
+        const viewBtn = h("button", { className: "btn btn-sm" }, "View");
+        viewBtn.addEventListener("click", () => {
+          window.location.hash = `#/memories?select=${sm.memory_id}`;
+        });
+
+        const row = h("div", { className: "stale-memory-row" },
+          h("span", { style: { fontSize: "0.8125rem", fontWeight: "600", color: "var(--color-text)" } }, `#${sm.memory_id}`),
+          h("span", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)", flex: "1" } },
+            `${sm.retrievals} retrievals, 0 useful`),
+          archiveBtn,
+          viewBtn
+        );
+        container.appendChild(row);
+      });
     }
 
     // Quality metrics grid

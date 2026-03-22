@@ -48,10 +48,12 @@ server.tool(
     k: z.number().int().min(1).max(50).default(5).describe("Number of results to return"),
     hybrid: z.boolean().default(true).describe("Use hybrid BM25+vector search (recommended)"),
     threshold: z.number().min(0).max(1).optional().describe("Minimum similarity score (0-1)"),
+    feedback_weight: z.number().min(0).max(1).default(0.1).describe("Weight for feedback-based ranking (0=disabled, default 0.1)"),
   },
-  async ({ query, k = 5, hybrid = true, threshold }) => {
+  async ({ query, k = 5, hybrid = true, threshold, feedback_weight }) => {
     const body = { query, k, hybrid };
     if (threshold !== undefined) body.threshold = threshold;
+    if (feedback_weight !== undefined) body.feedback_weight = feedback_weight;
 
     const data = await memoriesRequest("/search", {
       method: "POST",
@@ -398,6 +400,33 @@ server.tool(
         type: "text",
         text: `Memory stored (id: ${data.id}) from ${data.source}. Missed count: ${data.missed_count}`,
       }],
+    };
+  }
+);
+
+server.tool(
+  "memory_deferred",
+  "List deferred/WIP memories for a project. Surfaces incomplete threads from wip/{project} source prefix.",
+  {
+    project: z.string().min(1).describe("Project name to search wip/ prefix for"),
+    k: z.number().int().min(1).max(20).default(5).describe("Number of results"),
+  },
+  async ({ project, k = 5 }) => {
+    const data = await memoriesRequest("/search", {
+      method: "POST",
+      body: JSON.stringify({
+        query: "deferred incomplete blocked todo revisit wip",
+        k,
+        hybrid: true,
+        source_prefix: `wip/${project}`,
+      }),
+    });
+    if (data.count === 0) {
+      return { content: [{ type: "text", text: `No deferred work found for project "${project}"` }] };
+    }
+    const lines = data.results.map((r, i) => `[${i + 1}] ${r.source}\n${r.text}`);
+    return {
+      content: [{ type: "text", text: `${data.count} deferred item(s) for "${project}":\n\n${lines.join("\n\n---\n\n")}` }],
     };
   }
 );

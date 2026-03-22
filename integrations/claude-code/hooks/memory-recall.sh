@@ -167,6 +167,16 @@ CONTEXT_RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
 
 _log_info "Recalled $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0) memories for $PROJECT"
 
+# Dedicated deferred-work surfacing
+WIP_QUERY="deferred incomplete blocked todo revisit wip"
+WIP_RESULTS=$(search_memories "$WIP_QUERY" "wip/$PROJECT" 5 0.3)
+WIP_COUNT=$(echo "$WIP_RESULTS" | jq -r '.count // 0')
+DEFERRED_SECTION=""
+if [ "$WIP_COUNT" -gt 0 ] && [ "$WIP_COUNT" != "null" ]; then
+  DEFERRED_ITEMS=$(echo "$WIP_RESULTS" | jq -r '.results[:5][] | "- [\(.source)] \(.text[0:150])"')
+  DEFERRED_SECTION="\n## Deferred Work\n$DEFERRED_ITEMS\n"
+fi
+
 PLAYBOOK=$(cat <<EOF
 ## Memory Playbook
 
@@ -229,12 +239,13 @@ if [ -n "$MEMORY_RESULTS" ] && [ "$MEMORY_RESULTS" != "null" ]; then
 fi
 
 # --- Output context for Claude Code ---
-jq -n --arg memories "$CONTEXT_RESULTS" --arg playbook "$PLAYBOOK" --arg health_warning "$HEALTH_WARNING" '{
+jq -n --arg memories "$CONTEXT_RESULTS" --arg playbook "$PLAYBOOK" --arg health_warning "$HEALTH_WARNING" --arg deferred "$DEFERRED_SECTION" '{
   hookSpecificOutput: {
     hookEventName: "SessionStart",
     additionalContext: (
       (if ($health_warning | length) > 0 then $health_warning + "\n\n" else "" end) +
       (if ($memories | length) > 0 then "## Relevant Memories\n\n" + $memories + "\n\n" else "" end) +
+      (if ($deferred | length) > 0 then $deferred + "\n" else "" end) +
       $playbook
     )
   }

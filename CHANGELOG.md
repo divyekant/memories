@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.2.0] - 2026-03-22
+
+### Added
+- **R2: Retrieval Confidence** — feedback-weighted search ranking, smart queries, operator views (#49)
+  - Feedback as 4th RRF signal in hybrid search (`feedback_weight` param)
+  - Feedback history endpoint with retraction (`GET /search/feedback/history`, `DELETE /search/feedback/{id}`)
+  - Feedback section in lifecycle tab with retract buttons
+  - Smarter query construction: file context, key term extraction, intent-based prefix biasing
+  - Proactive deferred-work surfacing at session start (`wip/{project}` prefix)
+  - `memory_deferred` MCP tool for querying WIP items
+  - Problem queries view on Health page (admin only)
+  - Stale memories view on Health page (admin only)
+  - Search URL parameter support (`#/memories?q=...`) for replay navigation
+  - SQLite index on `search_feedback(memory_id)` for efficient feedback lookups
+
 ## [3.1.0] - 2026-03-22
 
 ### Added

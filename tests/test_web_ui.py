@@ -352,6 +352,12 @@ def test_conflict_resolve_button(client):
     assert "showConflictModal" in js
 
 
+def test_feedback_section_in_lifecycle(client):
+    resp = client.get("/ui/static/app.js")
+    js = resp.text
+    assert "feedback/history" in js
+
+
 def test_conflict_defer_patches_metadata(client):
     """Defer option should PATCH both memories with deferred: true."""
     resp = client.get("/ui/static/app.js")

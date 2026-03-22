@@ -1262,6 +1262,12 @@ class SearchRequest(BaseModel):
         le=365.0,
         description="Half-life in days for recency decay (default 30).",
     )
+    feedback_weight: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description="Weight for feedback-based ranking signal (0=disabled)",
+    )
     source: str = Field("", max_length=500, description="Caller source for usage tracking")
     include_archived: bool = Field(default=False, description="Include archived memories in search results")
 
@@ -1556,6 +1562,34 @@ async def search_feedback(request_body: SearchFeedbackRequest, request: Request)
     return {"status": "recorded"}
 
 
+@app.get("/search/feedback/history")
+async def feedback_history(
+    request: Request,
+    memory_id: int = Query(..., description="Memory ID"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    auth = _get_auth(request)
+    try:
+        mem = memory.get_memory(memory_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Memory {memory_id} not found")
+    if auth.prefixes is not None and not auth.can_read(mem.get("source", "")):
+        raise HTTPException(status_code=403, detail="Memory outside your scope")
+    entries = usage_tracker.get_feedback_history(memory_id, limit)
+    return {"entries": entries, "count": len(entries)}
+
+
+@app.delete("/search/feedback/{feedback_id}")
+async def retract_feedback(feedback_id: int, request: Request):
+    auth = _get_auth(request)
+    _require_admin(auth)
+    deleted = usage_tracker.delete_feedback(feedback_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Feedback {feedback_id} not found")
+    _audit(request, "feedback.retracted", resource_id=str(feedback_id))
+    return {"status": "retracted", "id": feedback_id}
+
+
 @app.get("/metrics/search-quality")
 async def search_quality_metrics(
     request: Request,
@@ -1612,6 +1646,30 @@ async def quality_failures(
     auth = _get_auth(request)
     _require_admin(auth)
     return usage_tracker.get_failures(failure_type=type, limit=limit)
+
+
+@app.get("/metrics/problem-queries")
+async def problem_queries(
+    request: Request,
+    min_feedback: int = Query(2, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Queries with consistently negative feedback. Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    return {"queries": usage_tracker.get_problem_queries(min_feedback=min_feedback, limit=limit)}
+
+
+@app.get("/metrics/stale-memories")
+async def stale_memories_endpoint(
+    request: Request,
+    min_retrievals: int = Query(3, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Frequently retrieved but never useful memories. Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    return {"memories": usage_tracker.get_stale_memories(min_retrievals=min_retrievals, limit=limit)}
 
 
 @app.get("/audit")
@@ -1810,6 +1868,11 @@ async def search(request_body: SearchRequest, request: Request):
     auth = _get_auth(request)
     logger.info("Search: q=%r k=%d hybrid=%s", request_body.query[:80], request_body.k, request_body.hybrid)
     try:
+        fb_scores = None
+        if request_body.feedback_weight > 0:
+            fb_scores = usage_tracker.get_feedback_scores(
+                [m["id"] for m in getattr(memory, "metadata", [])]
+            )
         if request_body.hybrid:
             results = memory.hybrid_search(
                 query=request_body.query,
@@ -1820,6 +1883,8 @@ async def search(request_body: SearchRequest, request: Request):
                 recency_weight=request_body.recency_weight,
                 recency_half_life_days=request_body.recency_half_life_days,
                 include_archived=request_body.include_archived,
+                feedback_weight=request_body.feedback_weight,
+                feedback_scores=fb_scores,
             )
         else:
             results = memory.search(
@@ -1854,6 +1919,11 @@ async def search_explain(request_body: SearchRequest, request: Request):
     _require_admin(auth)
     logger.info("Search explain: q=%r k=%d", request_body.query[:80], request_body.k)
     try:
+        fb_scores = None
+        if request_body.feedback_weight > 0:
+            fb_scores = usage_tracker.get_feedback_scores(
+                [m["id"] for m in getattr(memory, "metadata", [])]
+            )
         explain_result = memory.hybrid_search_explain(
             query=request_body.query,
             k=request_body.k,
@@ -1863,6 +1933,8 @@ async def search_explain(request_body: SearchRequest, request: Request):
             recency_weight=request_body.recency_weight,
             recency_half_life_days=request_body.recency_half_life_days,
             include_archived=request_body.include_archived,
+            feedback_weight=request_body.feedback_weight,
+            feedback_scores=fb_scores,
         )
         # Apply auth filtering to results and track how many were removed
         raw_results = explain_result["results"]
