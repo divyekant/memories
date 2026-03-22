@@ -363,3 +363,12 @@ def test_conflict_defer_patches_metadata(client):
     resp = client.get("/ui/static/app.js")
     js = resp.text
     assert "deferred" in js
+
+
+def test_audit_action_colors_complete(client):
+    """All backend audit actions should have UI color mappings."""
+    resp = client.get("/ui/static/app.js")
+    js = resp.text
+    for action in ["memory.deleted", "extract", "snapshot.created", "feedback.retracted",
+                    "memory.missed", "memory.consolidated", "memory.pruned"]:
+        assert action in js, f"Missing audit action color: {action}"

@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.2.1] - 2026-03-23
+
+### Fixed
+- **R3 Wave 1: Trust Hardening** — 23 trust gaps closed (#50)
+  - Auth check added to `/memory/is-novel`, fail-fast for read-only keys on delete
+  - Audit trails added for consolidate, prune, index build, deduplicate operations
+  - Audit action `delete` renamed to `memory.deleted` (namespace consistency)
+  - 9 missing audit actions added to UI lifecycle timeline color map
+  - Stale memories label now shows both useful and not_useful counts
+  - "Replay" renamed to "Re-search" for honest navigation semantics
+  - Version strings synchronized to 3.2.x across all surfaces
+
 ## [3.2.0] - 2026-03-22
 
 ### Added
