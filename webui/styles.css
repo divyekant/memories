@@ -1845,3 +1845,5 @@ body,
 .lifecycle-section { margin-bottom: 16px; }
 .lifecycle-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; color: var(--color-text-muted); margin-bottom: 8px; }
 .lifecycle-timeline { padding: 8px 0; }
+.feedback-history-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.feedback-query { font-size: 0.75rem; color: var(--color-text-muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

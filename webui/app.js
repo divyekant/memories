@@ -1668,6 +1668,7 @@ registerPage("memories", async (container) => {
 
   // -- Lifecycle tab --
   async function renderLifecycleTab(mem, container) {
+    container.innerHTML = "";
     // Origin block
     const originMethod = detectOriginMethod(mem);
     const originBlock = h("div", { className: "lifecycle-origin" },
@@ -1693,6 +1694,54 @@ registerPage("memories", async (container) => {
         )
       );
       container.appendChild(confSection);
+    }
+
+    // Feedback history section
+    const feedbackSection = h("div", { className: "lifecycle-section" },
+      h("div", { className: "lifecycle-section-title" }, "Feedback")
+    );
+    const feedbackContainer = h("div");
+    feedbackSection.appendChild(feedbackContainer);
+    container.appendChild(feedbackSection);
+
+    try {
+      const fbData = await api(`/search/feedback/history?memory_id=${mem.id}&limit=10`);
+      const fbEntries = fbData.entries || fbData || [];
+      if (Array.isArray(fbEntries) && fbEntries.length > 0) {
+        fbEntries.forEach((entry) => {
+          const badgeClass = entry.signal === "useful" ? "badge-success" : "badge-error";
+          const queryText = (entry.query || "").length > 60
+            ? entry.query.substring(0, 60) + "..."
+            : (entry.query || "");
+          const row = h("div", { className: "feedback-history-row" },
+            h("span", { className: `badge ${badgeClass}` }, entry.signal),
+            h("span", { className: "feedback-query", title: entry.query || "" }, queryText),
+            h("span", { style: { fontSize: "0.75rem", color: "var(--color-text-muted)", whiteSpace: "nowrap" } },
+              entry.ts ? timeAgo(entry.ts) : ""
+            ),
+            h("button", {
+              className: "btn btn-sm",
+              style: { fontSize: "0.7rem", padding: "2px 8px" },
+              onClick: async () => {
+                try {
+                  await api(`/search/feedback/${entry.id}`, { method: "DELETE" });
+                  showToast("Feedback retracted", "success");
+                  renderLifecycleTab(mem, container);
+                } catch (err) { showToast(err.message, "error"); }
+              },
+            }, "Retract")
+          );
+          feedbackContainer.appendChild(row);
+        });
+      } else {
+        feedbackContainer.appendChild(
+          h("div", { style: { fontSize: "0.8125rem", color: "var(--color-text-faint)" } }, "No feedback yet")
+        );
+      }
+    } catch {
+      feedbackContainer.appendChild(
+        h("div", { style: { fontSize: "0.8125rem", color: "var(--color-text-faint)" } }, "No feedback yet")
+      );
     }
 
     // History timeline
