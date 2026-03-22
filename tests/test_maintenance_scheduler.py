@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import logging
 import random
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
@@ -297,3 +298,116 @@ class TestPruningToleratesConcurrentDeletes:
 
             # Only 2 out of 3 succeeded
             assert result == 2
+
+
+class TestMaintenanceObservability:
+    """Verify maintenance helpers log elapsed time and RSS for debugging."""
+
+    def test_consolidation_logs_elapsed_and_rss(self):
+        """_run_scheduled_consolidation must log start RSS and elapsed time."""
+        import app as app_module
+
+        with patch("consolidator.find_clusters", return_value=[]) as mock_find, \
+             patch.object(app_module, "memory") as mock_memory, \
+             patch.object(app_module, "extract_provider") as mock_provider:
+            mock_memory.metadata = []
+
+            with patch("app.logger") as mock_logger:
+                app_module._run_scheduled_consolidation()
+
+                all_logs = [str(c) for c in mock_logger.info.call_args_list]
+                assert any("RSS" in msg for msg in all_logs), \
+                    "Should log RSS at start or end of consolidation"
+                assert any("elapsed" in msg.lower() or "s elapsed" in msg.lower()
+                           or "took" in msg.lower() for msg in all_logs), \
+                    "Should log elapsed time"
+
+    def test_pruning_logs_elapsed_and_rss(self):
+        """_run_scheduled_pruning must log start RSS and elapsed time."""
+        import app as app_module
+
+        with patch("consolidator.find_prune_candidates", return_value=[]) as mock_prune, \
+             patch.object(app_module, "memory") as mock_memory, \
+             patch.object(app_module, "usage_tracker") as mock_tracker:
+            mock_memory.metadata = [{"id": 1, "text": "t", "source": "s"}]
+            mock_tracker.get_unretrieved_memory_ids.return_value = []
+
+            with patch("app.logger") as mock_logger:
+                app_module._run_scheduled_pruning()
+
+                all_logs = [str(c) for c in mock_logger.info.call_args_list]
+                assert any("RSS" in msg for msg in all_logs), \
+                    "Should log RSS at start or end of pruning"
+
+    def test_slow_consolidation_emits_warning(self):
+        """Consolidation exceeding threshold should log a warning."""
+        import app as app_module
+
+        def slow_find(*args, **kwargs):
+            return []
+
+        with patch("consolidator.find_clusters", side_effect=slow_find), \
+             patch.object(app_module, "memory") as mock_memory, \
+             patch.object(app_module, "extract_provider") as mock_provider, \
+             patch("app.time") as mock_time, \
+             patch("app.logger") as mock_logger:
+            mock_memory.metadata = []
+            # Simulate 45 seconds elapsed
+            mock_time.monotonic.side_effect = [0.0, 45.0]
+            mock_time.time = __import__("time").time
+
+            app_module._run_scheduled_consolidation()
+
+            warn_logs = [str(c) for c in mock_logger.warning.call_args_list]
+            assert any("slow" in msg.lower() or "elapsed" in msg.lower()
+                       for msg in warn_logs), \
+                "Should emit warning when consolidation takes >30s"
+
+    def test_fast_consolidation_no_warning(self):
+        """Fast consolidation should NOT emit a warning."""
+        import app as app_module
+
+        with patch("consolidator.find_clusters", return_value=[]), \
+             patch.object(app_module, "memory") as mock_memory, \
+             patch.object(app_module, "extract_provider") as mock_provider, \
+             patch("app.time") as mock_time, \
+             patch("app.logger") as mock_logger:
+            mock_memory.metadata = []
+            # Simulate 2 seconds elapsed
+            mock_time.monotonic.side_effect = [0.0, 2.0]
+            mock_time.time = __import__("time").time
+
+            app_module._run_scheduled_consolidation()
+
+            warn_logs = [str(c) for c in mock_logger.warning.call_args_list]
+            assert not any("slow" in msg.lower() or "elapsed" in msg.lower()
+                           for msg in warn_logs), \
+                "Should NOT warn when consolidation is fast"
+
+    def test_high_rss_delta_emits_warning(self):
+        """Large RSS growth during maintenance should log a warning."""
+        import app as app_module
+
+        rss_call_count = [0]
+
+        def fake_get_rss():
+            rss_call_count[0] += 1
+            if rss_call_count[0] == 1:
+                return 400  # start: 400 MB
+            return 520  # end: 520 MB (+120 MB)
+
+        with patch("consolidator.find_clusters", return_value=[]), \
+             patch.object(app_module, "memory") as mock_memory, \
+             patch.object(app_module, "extract_provider") as mock_provider, \
+             patch("app.time") as mock_time, \
+             patch("app._get_rss_mb", side_effect=fake_get_rss), \
+             patch("app.logger") as mock_logger:
+            mock_memory.metadata = []
+            mock_time.monotonic.side_effect = [0.0, 5.0]
+            mock_time.time = __import__("time").time
+
+            app_module._run_scheduled_consolidation()
+
+            warn_logs = [str(c) for c in mock_logger.warning.call_args_list]
+            assert any("RSS" in msg for msg in warn_logs), \
+                "Should warn when RSS grows significantly during maintenance"
