@@ -330,6 +330,26 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 2. Add `MEMORIES_URL` / `MEMORIES_API_KEY` to the OpenClaw gateway config (`openclaw config patch ...`) so skill exec calls can authenticate
 3. The skill instructs the agent to call `memory_recall_memories` at task start, `memory_extract_memories` after significant work, and the QMD sync script from heartbeat/maintenance flows
 
+### Capturing context on compaction
+
+OpenClaw supports `compaction.memoryFlush`, which lets you run a prompt before the gateway compacts context. You can use that to write a markdown summary and send the same summary to Memories:
+
+```bash
+openclaw config patch '{
+  "agents": {
+    "defaults": {
+      "compaction": {
+        "memoryFlush": {
+          "prompt": "Session nearing compaction. Do ALL of the following:\n1. Write key context to memory/YYYY-MM-DD.md.\n2. Extract to Memories: curl -s -X POST $MEMORIES_URL/memory/extract -H '\''Content-Type: application/json'\'' -H '\''X-API-Key: $MEMORIES_API_KEY'\'' -d '\''{\"messages\":\"<session summary>\",\"source\":\"openclaw/jack\",\"context\":\"pre_compact\"}'\''\n3. Reply NO_REPLY."
+        }
+      }
+    }
+  }
+}'
+```
+
+This makes compaction events populate Memories automatically instead of relying only on manual extraction.
+
 ---
 
 ## How Integrations Work

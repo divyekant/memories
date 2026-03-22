@@ -310,6 +310,7 @@ function memory_search_memories() {
     local k="${2:-5}"
     local threshold="${3:-0.0}"
     local hybrid="${4:-true}"
+    local api="${MEMORIES_URL:-http://localhost:8900}"
 
     local payload
     payload=$(jq -n \
@@ -319,7 +320,7 @@ function memory_search_memories() {
         --argjson h "$hybrid" \
         '{query: $q, k: $k, threshold: $t, hybrid: $h}')
 
-    curl -s -X POST http://localhost:8900/search \
+    curl -s -X POST "$api/search" \
         -H "Content-Type: application/json" \
         -H "X-API-Key: $MEMORIES_API_KEY" \
         -d "$payload" \
@@ -624,20 +625,56 @@ Call this at the start of any task to load relevant project memories:
 ```bash
 function memory_recall_memories() {
     local project="${1:-$(basename "$PWD")}"
-    local k="${2:-8}"
+    local api="${MEMORIES_URL:-http://localhost:8900}"
+    local scoped_threshold="${2:-0.35}"
+    local fallback_threshold="${3:-0.50}"
 
-    local payload
-    payload=$(jq -n \
-        --arg q "project $project conventions decisions patterns" \
-        --argjson k "$k" \
-        '{query: $q, k: $k, hybrid: true}')
+    run_search() {
+        local query="$1"
+        local prefix="${2:-}"
+        local k="$3"
+        local threshold="$4"
+
+        local payload
+        if [[ -n "$prefix" ]]; then
+            payload=$(jq -n \
+                --arg q "$query" \
+                --arg p "$prefix" \
+                --argjson k "$k" \
+                --argjson t "$threshold" \
+                '{query: $q, source_prefix: $p, k: $k, hybrid: true, threshold: $t}')
+        else
+            payload=$(jq -n \
+                --arg q "$query" \
+                --argjson k "$k" \
+                --argjson t "$threshold" \
+                '{query: $q, k: $k, hybrid: true, threshold: $t}')
+        fi
+
+        curl -s -X POST "$api/search" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $MEMORIES_API_KEY" \
+            -d "$payload"
+    }
+
+    local merged
+    merged=$(
+        {
+            run_search "project $project architecture decisions conventions" "openclaw/$project" 4 "$scoped_threshold"
+            run_search "project $project fixes gotchas learnings workarounds" "learning/$project" 3 "$scoped_threshold"
+            run_search "project $project deferred work blockers open threads" "wip/$project" 2 "$scoped_threshold"
+        } | jq -sr '[.[].results[]?] | unique_by(.id) | sort_by(-(.similarity // .rrf_score // 0)) | .[0:8]'
+    )
 
     local results
-    results=$(curl -s -X POST http://localhost:8900/search \
-        -H "Content-Type: application/json" \
-        -H "X-API-Key: $MEMORIES_API_KEY" \
-        -d "$payload" \
-    | jq -r '[.results[] | select(.similarity > 0.3)] | .[0:8] | map("- \(.text)") | join("\n")')
+    results=$(printf '%s' "$merged" | jq -r 'map("- [\(.source)] \(.text)") | join("\n")')
+
+    if [[ -z "$results" || "$results" == "null" ]]; then
+        results=$(
+            run_search "project $project conventions decisions patterns" "" 6 "$fallback_threshold" \
+            | jq -r '[.results[]?] | .[0:8] | map("- [\(.source)] \(.text)") | join("\n")'
+        )
+    fi
 
     if [[ -n "$results" && "$results" != "null" ]]; then
         echo "## Relevant Memories"
@@ -674,6 +711,7 @@ function memory_extract_memories() {
     local messages="$1"
     local source="${2:-openclaw/$(basename "$PWD")}"
     local context="${3:-stop}"
+    local api="${MEMORIES_URL:-http://localhost:8900}"
 
     local payload
     payload=$(jq -n \
@@ -682,7 +720,7 @@ function memory_extract_memories() {
         --arg c "$context" \
         '{messages: $m, source: $s, context: $c}')
 
-    curl -s -X POST http://localhost:8900/memory/extract \
+    curl -s -X POST "$api/memory/extract" \
         -H "Content-Type: application/json" \
         -H "X-API-Key: $MEMORIES_API_KEY" \
         -d "$payload" \
@@ -703,6 +741,57 @@ memory_extract_memories "conversation text" "openclaw/my-project" "session_end"
 #   "duplicates_skipped": 0
 # }
 ```
+
+## OpenClaw Smart Recall Protocol
+
+### When to recall proactively
+
+- Any question about past decisions, project history, or architecture
+- Starting work on a project you have touched before
+- When the user says `remember`, `last time`, `we decided`, or `what was`
+- Before making a significant technical decision
+
+### How to recall
+
+Use a multi-prefix strategy instead of one generic search:
+
+- `openclaw/{project}` for architecture, decisions, and conventions
+- `learning/{project}` for fixes, gotchas, and workarounds
+- `wip/{project}` for deferred work, blockers, and open threads
+
+The built-in `memory_recall_memories` helper already does this merge + dedup flow. If you need
+manual control, use these tuned searches directly:
+
+```bash
+PROJECT="my-project"
+
+# Decisions + architecture
+curl -s -X POST "$MEMORIES_URL/search" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
+  -d "{\"query\":\"project $PROJECT architecture decisions conventions\",\"source_prefix\":\"openclaw/$PROJECT\",\"k\":4,\"hybrid\":true,\"threshold\":0.35}"
+
+# Learnings + fixes
+curl -s -X POST "$MEMORIES_URL/search" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
+  -d "{\"query\":\"project $PROJECT fixes gotchas learnings workarounds\",\"source_prefix\":\"learning/$PROJECT\",\"k\":3,\"hybrid\":true,\"threshold\":0.35}"
+
+# Deferred work + blockers
+curl -s -X POST "$MEMORIES_URL/search" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $MEMORIES_API_KEY" \
+  -d "{\"query\":\"project $PROJECT deferred work blockers open threads\",\"source_prefix\":\"wip/$PROJECT\",\"k\":2,\"hybrid\":true,\"threshold\":0.35}"
+```
+
+If all scoped searches return empty, fall back to a broader global search around `0.5`.
+
+### Memory Playbook
+
+- Surface deferred or blocked work explicitly before the rest of the context
+- Carry boundary conditions forward, especially `until`, `unless`, and `because`
+- Do not ask the user to reconfirm a remembered decision before acting on it
+- For short follow-up prompts, include recent conversation context in the search query
 
 ## Automatic Lifecycle (OpenClaw)
 
