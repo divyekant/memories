@@ -358,6 +358,8 @@ For scoped API keys, set `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE
 
 Codex uses `~/.codex/settings.json` for lifecycle hooks and `~/.codex/config.toml` for MCP + developer instructions.
 
+**Multi-backend:** Codex uses the same hook scripts as Claude Code, so [multi-backend routing](#multi-backend-routing-optional) works automatically when configured.
+
 **Usage** (Codex will discover the tools automatically):
 
 - "Search memory for how we handle error logging"
@@ -401,6 +403,8 @@ npm install
 3. Restart Cursor.
 
 Cursor also supports the full hook lifecycle via its "Third-party skills" feature. Run `./integrations/claude-code/install.sh --cursor` to install hooks alongside the MCP config.
+
+**Multi-backend:** Cursor uses the same hook scripts as Claude Code, so [multi-backend routing](#multi-backend-routing-optional) works automatically when configured.
 
 ---
 
@@ -622,6 +626,8 @@ memory_restore "backup_name"
 
 All functions use `jq` for safe JSON construction and read auth from `$MEMORIES_API_KEY` in the gateway environment (no hardcoded secrets).
 
+**Multi-backend:** Not yet supported for OpenClaw. OpenClaw uses skill-based extraction (not hooks), so multi-backend routing does not apply. This is planned for a future release.
+
 ---
 
 ## Remote Access
@@ -659,6 +665,45 @@ ingress:
 ```
 
 Now every client — Claude Code on your laptop, Cursor, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
+
+---
+
+## Multi-Backend Routing (Optional)
+
+A single agent session can talk to **multiple Memories instances** simultaneously. This is useful when you want to:
+
+- **Dev + Prod**: search both local dev and remote production, extract to dev only
+- **Personal + Shared**: search both personal and team memories, route decisions to shared
+
+Multi-backend is configured via YAML files and is fully backward compatible — no config file means single-backend behavior from environment variables, exactly as before.
+
+**Config locations:**
+- Global: `~/.config/memories/backends.yaml`
+- Per-project: `.memories/backends.yaml` (should be gitignored)
+
+**Three tiers:**
+1. **Scenario-based** — pick a preset (`dev+prod`, `personal+shared`, `single`) and routing is automatic
+2. **Scenario + overrides** — start from a scenario, then customize routing rules
+3. **DIY** — define backends and routing rules from scratch
+
+**Quick example (dev + prod):**
+
+```yaml
+scenario: dev+prod
+backends:
+  dev:
+    url: http://localhost:8900
+    api_key: ${MEMORIES_DEV_KEY}
+  prod:
+    url: https://memory.yourdomain.com
+    api_key: ${MEMORIES_PROD_KEY}
+```
+
+Config supports env var interpolation (`${VAR_NAME}`) for API keys and URLs.
+
+Multi-backend works automatically with **Claude Code**, **Codex**, and **Cursor** because they all use the same hook scripts. **OpenClaw** does not yet support multi-backend (it uses skill-based extraction, not hooks).
+
+For full setup instructions, config format, and verification steps, see the [Multi-Backend Setup](integrations/QUICKSTART-LLM.md#multi-backend-setup-optional) section in the LLM quickstart guide.
 
 ---
 

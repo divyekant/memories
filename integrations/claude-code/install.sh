@@ -561,6 +561,87 @@ fi
 echo ""
 echo -e "[4/4] Writing configuration files..."
 
+# Optional: Multi-backend setup
+if [ "$hooks_target_count" -gt 0 ]; then
+  echo ""
+  echo -e "${BLUE}Multi-backend routing (optional):${NC}"
+  echo "  Route a single session to multiple Memories instances (e.g., dev+prod, personal+shared)."
+  echo "  This is fully backward compatible — skip to keep single-backend behavior."
+  echo ""
+  read -r -p "  Set up multi-backend? [y/N] " MULTI_BACKEND_CHOICE
+
+  if [[ "$MULTI_BACKEND_CHOICE" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo "  Choose a scenario:"
+    echo "    1. Dev + Prod (search both, extract to dev)"
+    echo "    2. Personal + Shared (search both, decisions to shared)"
+    echo "    3. Skip"
+    echo ""
+    read -r -p "  > " SCENARIO_CHOICE
+
+    case "$SCENARIO_CHOICE" in
+      1)
+        SCENARIO="dev+prod"
+        echo ""
+        read -r -p "  Dev backend URL [http://localhost:8900]: " DEV_URL
+        DEV_URL="${DEV_URL:-http://localhost:8900}"
+        read -r -p "  Dev API key (or env var like \${MEMORIES_DEV_KEY}): " DEV_KEY
+        read -r -p "  Prod backend URL: " PROD_URL
+        if [ -z "$PROD_URL" ]; then
+          echo -e "  ${RED}[FAIL]${NC} Prod URL is required for dev+prod scenario"
+        else
+          read -r -p "  Prod API key (or env var like \${MEMORIES_PROD_KEY}): " PROD_KEY
+          BACKENDS_YAML="$HOME/.config/memories/backends.yaml"
+          mkdir -p "$(dirname "$BACKENDS_YAML")"
+          cat > "$BACKENDS_YAML" <<MBEOF
+scenario: $SCENARIO
+backends:
+  dev:
+    url: $DEV_URL
+    api_key: $DEV_KEY
+  prod:
+    url: $PROD_URL
+    api_key: $PROD_KEY
+MBEOF
+          echo -e "  ${GREEN}[OK]${NC} Wrote multi-backend config: $BACKENDS_YAML"
+        fi
+        ;;
+      2)
+        SCENARIO="personal+shared"
+        echo ""
+        read -r -p "  Personal backend URL [http://localhost:8900]: " PERSONAL_URL
+        PERSONAL_URL="${PERSONAL_URL:-http://localhost:8900}"
+        read -r -p "  Personal API key (or env var like \${MEMORIES_PERSONAL_KEY}): " PERSONAL_KEY
+        read -r -p "  Shared backend URL: " SHARED_URL
+        if [ -z "$SHARED_URL" ]; then
+          echo -e "  ${RED}[FAIL]${NC} Shared URL is required for personal+shared scenario"
+        else
+          read -r -p "  Shared API key (or env var like \${MEMORIES_SHARED_KEY}): " SHARED_KEY
+          BACKENDS_YAML="$HOME/.config/memories/backends.yaml"
+          mkdir -p "$(dirname "$BACKENDS_YAML")"
+          cat > "$BACKENDS_YAML" <<MBEOF
+scenario: $SCENARIO
+backends:
+  personal:
+    url: $PERSONAL_URL
+    api_key: $PERSONAL_KEY
+  shared:
+    url: $SHARED_URL
+    api_key: $SHARED_KEY
+MBEOF
+          echo -e "  ${GREEN}[OK]${NC} Wrote multi-backend config: $BACKENDS_YAML"
+        fi
+        ;;
+      3|"")
+        echo -e "  ${YELLOW}[SKIP]${NC} Multi-backend not configured"
+        ;;
+      *)
+        echo -e "  ${YELLOW}[SKIP]${NC} Invalid choice, skipping multi-backend"
+        ;;
+    esac
+  fi
+fi
+
 # ~/.config/memories/env — loaded by hook scripts at runtime
 MEMORIES_ENV_DIR="$HOME/.config/memories"
 MEMORIES_ENV_FILE="$MEMORIES_ENV_DIR/env"
