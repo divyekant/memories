@@ -358,6 +358,8 @@ For scoped API keys, set `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE
 
 Codex uses `~/.codex/settings.json` for lifecycle hooks and `~/.codex/config.toml` for MCP + developer instructions.
 
+**Multi-backend:** Codex uses the same hook scripts as Claude Code, so [multi-backend routing](#multi-backend-routing-optional) works automatically when configured.
+
 **Usage** (Codex will discover the tools automatically):
 
 - "Search memory for how we handle error logging"
@@ -401,6 +403,8 @@ npm install
 3. Restart Cursor.
 
 Cursor also supports the full hook lifecycle via its "Third-party skills" feature. Run `./integrations/claude-code/install.sh --cursor` to install hooks alongside the MCP config.
+
+**Multi-backend:** Cursor uses the same hook scripts as Claude Code, so [multi-backend routing](#multi-backend-routing-optional) works automatically when configured.
 
 ---
 
@@ -622,6 +626,8 @@ memory_restore "backup_name"
 
 All functions use `jq` for safe JSON construction and read auth from `$MEMORIES_API_KEY` in the gateway environment (no hardcoded secrets).
 
+**Multi-backend:** Not yet supported for OpenClaw. OpenClaw uses skill-based extraction (not hooks), so multi-backend routing does not apply. This is planned for a future release.
+
 ---
 
 ## Remote Access
@@ -659,6 +665,46 @@ ingress:
 ```
 
 Now every client — Claude Code on your laptop, Cursor, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
+
+---
+
+## Multi-Backend Routing (Optional)
+
+A single agent session can talk to **multiple Memories instances** simultaneously. This is useful when you want to:
+
+- **Dev + Prod**: search both local dev and remote production, extract to dev only
+- **Personal + Shared**: search both personal and team memories, route decisions to shared
+
+Multi-backend is configured via YAML files and is fully backward compatible — no config file means single-backend behavior from environment variables, exactly as before.
+
+**Config locations:**
+- Global: `~/.config/memories/backends.yaml`
+- Per-project: `.memories/backends.yaml` (should be gitignored)
+
+**Three tiers:**
+1. **Scenario-based** — pick a preset (`dev+prod`, `personal+shared`, `single`) and routing is automatic
+2. **Scenario + overrides** — start from a scenario, then customize routing rules
+3. **DIY** — define backends and routing rules from scratch
+
+**Quick example (dev + prod):**
+
+```yaml
+backends:
+  dev:
+    url: http://localhost:8900
+    api_key: ${MEMORIES_DEV_KEY}
+    scenario: dev
+  prod:
+    url: https://memory.yourdomain.com
+    api_key: ${MEMORIES_PROD_KEY}
+    scenario: prod
+```
+
+Config supports env var interpolation (`${VAR_NAME}`) for API keys and URLs.
+
+Multi-backend works automatically with **Claude Code**, **Codex**, and **Cursor** because they all use the same hook scripts. **OpenClaw** does not yet support multi-backend (it uses skill-based extraction, not hooks).
+
+For full setup instructions, config format, and verification steps, see the [Multi-Backend Setup](integrations/QUICKSTART-LLM.md#multi-backend-setup-optional) section in the LLM quickstart guide.
 
 ---
 
@@ -1343,6 +1389,12 @@ memories/
 Memories includes a built-in eval harness that measures how much Memories improves AI assistant performance. It runs controlled A/B tests: each scenario executes via Claude Code (`claude -p`) both with and without Memories, then scores the outputs against deterministic rubrics.
 
 ```bash
+# Start the isolated eval stack in OrbStack/Docker
+docker compose -f docker-compose.eval.yml up -d --build
+
+# Verify the eval instance is healthy (separate from the main service on :8900)
+curl http://localhost:8901/health
+
 # Run all scenarios (via wrapper script)
 ./eval/run.sh
 
@@ -1355,6 +1407,8 @@ python -m eval --category coding
 # Run a single scenario
 python -m eval --scenario coding-001 -v
 ```
+
+The eval defaults target `http://localhost:8901`, which is the isolated instance from [`docker-compose.eval.yml`](/Users/dk/projects/memories/docker-compose.eval.yml). Override with `MEMORIES_URL=http://host:port` if you want to point the harness somewhere else.
 
 ### Results
 

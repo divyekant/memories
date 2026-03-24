@@ -75,8 +75,15 @@ _parse_backends_yaml() {
       if [ -n "$env_var" ]; then
         resolved_key="${!env_var:-$api_key}"
       fi
+      # Resolve ${VAR} references in url
+      local resolved_url="$url"
+      local url_env_var
+      url_env_var=$(printf '%s' "$url" | sed -n 's/.*\${\([A-Za-z_][A-Za-z0-9_]*\)}.*/\1/p')
+      if [ -n "$url_env_var" ]; then
+        resolved_url="${!url_env_var:-$url}"
+      fi
       backends_json=$(printf '%s' "$backends_json" | jq -c --arg n "$current_name" \
-        --arg u "$url" --arg k "$resolved_key" --arg s "$scenario" \
+        --arg u "$resolved_url" --arg k "$resolved_key" --arg s "$scenario" \
         '. + [{name: $n, url: $u, api_key: $k, scenario: $s}]')
     fi
     url="" api_key="" scenario="" current_name=""
@@ -191,11 +198,9 @@ try {
   const yaml = require('js-yaml');
   const fs = require('fs');
   const data = yaml.load(fs.readFileSync('${config_file}', 'utf8'));
+  const interp = (v) => { const m = (v||'').match(/\\\$\{(\w+)\}/); return m ? (process.env[m[1]] || v) : v; };
   const backends = Object.entries(data.backends || {}).map(([name, cfg]) => {
-    let apiKey = cfg.api_key || '';
-    const m = apiKey.match(/\\\$\{(\w+)\}/);
-    if (m) apiKey = process.env[m[1]] || apiKey;
-    return { name, url: cfg.url || '', api_key: apiKey, scenario: cfg.scenario || '' };
+    return { name, url: interp(cfg.url || ''), api_key: interp(cfg.api_key || ''), scenario: cfg.scenario || '' };
   });
   console.log(JSON.stringify({ backends, routing: data.routing || {} }));
 } catch(e) {

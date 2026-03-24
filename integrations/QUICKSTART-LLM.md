@@ -352,6 +352,90 @@ This makes compaction events populate Memories automatically instead of relying 
 
 ---
 
+## Multi-Backend Setup (Optional)
+
+Multi-backend lets a single agent session talk to **multiple Memories instances** at once. This is entirely optional — if you skip it, everything works with a single backend from your existing env vars.
+
+### When you'd want this
+
+- **Dev + Prod**: search both your local dev instance and a remote production instance; extract new memories to dev only
+- **Personal + Shared**: search both personal and team memories; route architecture decisions to the shared store
+
+### Config file format
+
+Create `~/.config/memories/backends.yaml` (global) or `.memories/backends.yaml` (per-project, should be gitignored):
+
+```yaml
+# Scenario: dev + prod
+# Searches both backends, extracts to dev only
+backends:
+  dev:
+    url: http://localhost:8900
+    api_key: ${MEMORIES_DEV_KEY}
+    scenario: dev
+  prod:
+    url: https://memory.yourdomain.com
+    api_key: ${MEMORIES_PROD_KEY}
+    scenario: prod
+```
+
+```yaml
+# Scenario: personal + shared
+# Searches both, routes decisions to shared
+backends:
+  personal:
+    url: http://localhost:8900
+    api_key: ${MEMORIES_PERSONAL_KEY}
+    scenario: personal
+  shared:
+    url: https://team-memory.yourdomain.com
+    api_key: ${MEMORIES_SHARED_KEY}
+    scenario: shared
+```
+
+```yaml
+# Scenario: single instance (explicit, same as no config)
+backends:
+  default:
+    url: http://localhost:8900
+    api_key: ${MEMORIES_API_KEY}
+    scenario: single
+```
+
+### Env var interpolation
+
+API keys and URLs support `${VAR_NAME}` interpolation. Set the actual values in your shell environment or in `~/.config/memories/env`:
+
+```bash
+# In ~/.config/memories/env (or export in your shell profile)
+MEMORIES_DEV_KEY="dev-key-here"
+MEMORIES_PROD_KEY="prod-key-here"
+```
+
+### How to verify it works
+
+After creating the config file, start a new session in your AI assistant. The hook scripts will detect `backends.yaml` and route accordingly. Check the hook log for routing info:
+
+```bash
+# Check that backends were loaded
+grep -i "backend" ~/.config/memories/hook.log | tail -5
+
+# Verify search hits both backends
+curl -s http://localhost:8900/health   # dev
+curl -s https://memory.yourdomain.com/health   # prod
+```
+
+### Client compatibility
+
+| Client | Multi-backend supported? | Notes |
+|--------|--------------------------|-------|
+| Claude Code | Yes | Uses hook scripts that read `backends.yaml` |
+| Codex | Yes | Same hook scripts as Claude Code |
+| Cursor | Yes | Same hook scripts via Third-party skills |
+| OpenClaw | Not yet | Uses skill-based extraction, not hooks |
+
+---
+
 ## How Integrations Work
 
 ### Claude Code

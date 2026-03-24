@@ -84,6 +84,12 @@ The installer writes:
 For guided LLM setup, use:
 - [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md)
 
+### Advanced: Multi-backend routing
+
+If you need to search or extract across multiple Memories instances (e.g., local dev + remote prod, or personal + shared team memories), you can configure multi-backend routing via `~/.config/memories/backends.yaml`. This is optional and fully backward compatible — without it, hooks use a single backend from env vars.
+
+The installer offers an interactive multi-backend setup step, or see the [Multi-Backend Setup](integrations/QUICKSTART-LLM.md#multi-backend-setup-optional) guide for manual configuration. Works with Claude Code, Codex, and Cursor. OpenClaw is not yet supported.
+
 ## 5) Explore the hook system
 
 The installer configures 10 hooks for Claude Code:

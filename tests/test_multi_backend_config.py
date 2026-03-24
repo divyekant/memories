@@ -60,6 +60,19 @@ class TestConfigLoader:
         data = json.loads(stdout)
         assert data[0]["api_key"] == "resolved-key"
 
+    def test_url_env_var_interpolation(self):
+        """URL with ${VAR} should be resolved from environment."""
+        config = yaml.dump({
+            "backends": {
+                "prod": {"url": "${PROD_MEMORIES_URL}", "api_key": "key1"},
+            }
+        })
+        env = {"PROD_MEMORIES_URL": "https://resolved.example.com"}
+        stdout, _, rc = _run_lib_function("_load_backends", env=env, config_content=config)
+        assert rc == 0
+        data = json.loads(stdout)
+        assert data[0]["url"] == "https://resolved.example.com"
+
 
 class TestRoutingResolution:
     def test_dev_prod_search_routing(self):
