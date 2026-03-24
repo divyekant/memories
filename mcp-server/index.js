@@ -18,11 +18,16 @@ import yaml from "js-yaml";
 
 function loadBackends() {
   // Resolution: MEMORIES_BACKENDS_FILE -> project -> global -> env fallback
-  const configPaths = [
-    process.env.MEMORIES_BACKENDS_FILE,
-    path.join(process.cwd(), ".memories", "backends.yaml"),
-    path.join(process.env.HOME || "", ".config", "memories", "backends.yaml"),
-  ].filter(Boolean);
+  // If MEMORIES_BACKENDS_FILE is explicitly set (even to a nonexistent path),
+  // skip project/global config resolution — this allows callers (like the eval
+  // harness) to force single-backend mode by setting the env var.
+  const explicitFile = process.env.MEMORIES_BACKENDS_FILE;
+  const configPaths = explicitFile
+    ? [explicitFile]  // Only check the explicit path, skip project/global
+    : [
+        path.join(process.cwd(), ".memories", "backends.yaml"),
+        path.join(process.env.HOME || "", ".config", "memories", "backends.yaml"),
+      ];
 
   for (const p of configPaths) {
     if (fs.existsSync(p)) {

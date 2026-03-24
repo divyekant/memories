@@ -421,8 +421,14 @@ class LongMemEvalRunner:
         delta = {}
         if previous and os.path.exists(previous):
             prev = LongMemEvalResult.from_json(previous)
+            if prev.eval_mode != eval_mode:
+                logger.warning(
+                    "Comparing %s mode results against %s mode baseline — delta may be meaningless",
+                    eval_mode, prev.eval_mode,
+                )
             delta = {
                 "vs_version": prev.version,
+                "vs_eval_mode": prev.eval_mode,
                 "overall": round(overall - prev.overall, 4),
                 "categories": {
                     cat: round(categories.get(cat, 0) - prev.categories.get(cat, 0), 4)
