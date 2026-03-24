@@ -19,14 +19,20 @@ def eval_group():
 @click.option("--judge-model", default=None, help="Override judge model")
 @click.option("--output", default=None, help="Output file path for results JSON")
 @click.option("--compare", default=None, help="Previous results file for regression delta")
+@click.option("--questions", default=0, type=int, help="Limit to N questions (0=all)")
 @click.option("--k", default=5, help="Number of search results per question")
 @click.option("--url", default="http://localhost:8900", help="Memories service URL")
 @click.option("--api-key", default="", help="API key")
-def longmemeval(judge_provider, judge_model, output, compare, k, url, api_key):
+def longmemeval(judge_provider, judge_model, output, compare, questions, k, url, api_key):
     """Run LongMemEval benchmark against the Memories engine."""
     import os
     from eval.memories_client import MemoriesClient
     from eval.longmemeval import LongMemEvalRunner
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
 
     api_key = api_key or os.getenv("MEMORIES_API_KEY", "")
     url = os.getenv("MEMORIES_URL", url)
@@ -37,16 +43,32 @@ def longmemeval(judge_provider, judge_model, output, compare, k, url, api_key):
     click.echo("Loading LongMemEval dataset...")
     dataset = runner.load_dataset()
     click.echo(f"Loaded {len(dataset)} questions")
+    if questions > 0:
+        dataset = dataset[:questions]
+        click.echo(f"Running subset: {questions} questions")
 
-    click.echo("Seeding memories from conversations...")
-    conversations = [q for q in dataset if q.get("turns") or q.get("messages")]
-    runner.seed_memories(conversations)
+    click.echo("Initializing judge...")
+    runner.init_judge()
+    if runner._judge is None:
+        raise click.ClickException(
+            "Judge initialization failed. Set ANTHROPIC_API_KEY or another supported judge provider."
+        )
 
     click.echo(f"Running {len(dataset)} questions (k={k})...")
-    results = runner.run_questions(dataset, k=k)
-
-    click.echo("Judging answers...")
-    scored = runner.judge_answers(results)
+    scored = []
+    source_prefix = "eval/longmemeval"
+    for i, question in enumerate(dataset, start=1):
+        qid = question.get("question_id", i)
+        qtype = question.get("question_type", "unknown")
+        click.echo(f"[{i}/{len(dataset)}] {qid} ({qtype})")
+        try:
+            seeded = runner.seed_question(question, source_prefix=source_prefix)
+            click.echo(f"  Seeded {seeded} memory chunks")
+            result = runner.run_question(question, k=k, source_prefix=source_prefix)
+            score, reasoning = runner._judge_single(result)
+            scored.append({**result, "score": score, "reasoning": reasoning})
+        finally:
+            runner.clear_question(question, source_prefix=source_prefix)
 
     # Get version from pyproject.toml
     version = "unknown"

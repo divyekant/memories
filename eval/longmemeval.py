@@ -2,7 +2,6 @@
 
 import json
 import os
-import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,15 +28,19 @@ class LongMemEvalResult:
 
 
 LONGMEMEVAL_CATEGORIES = [
-    "information_extraction",
-    "multi_session_reasoning",
-    "knowledge_update",
-    "temporal_reasoning",
-    "abstaining",
+    "multi-session",
+    "temporal-reasoning",
+    "knowledge-update",
+    "single-session-user",
+    "single-session-assistant",
+    "single-session-preference",
 ]
 
 
 class LongMemEvalRunner:
+    DEFAULT_MAX_MEMORY_CHARS = 3000
+    DEFAULT_CONTEXT_RESULTS = 2
+
     def __init__(self, client, judge_provider="anthropic", judge_model=None):
         self.client = client
         self.judge_provider = judge_provider
@@ -77,65 +80,176 @@ class LongMemEvalRunner:
                     items.append(json.loads(line))
         return items
 
-    def seed_memories(self, conversations: list[dict], source_prefix: str = "eval/longmemeval"):
-        """Extract memories from conversation histories, scoped per session."""
+    @staticmethod
+    def _question_id(question: dict) -> str:
+        return str(question.get("question_id") or question.get("id") or "")
+
+    @staticmethod
+    def _question_category(question: dict) -> str:
+        return (
+            question.get("question_type")
+            or question.get("category")
+            or question.get("type")
+            or "unknown"
+        )
+
+    def _question_prefix(self, question: dict, source_prefix: str) -> str:
+        qid = self._question_id(question)
+        return f"{source_prefix}/q{qid}" if qid else source_prefix
+
+    @staticmethod
+    def _split_text(prefix: str, text: str, max_chars: int) -> list[str]:
+        """Split oversized turn text into bounded chunks."""
+        available = max(1, max_chars - len(prefix))
+        remaining = text.strip()
+        chunks: list[str] = []
+        while remaining:
+            if len(remaining) <= available:
+                chunks.append(prefix + remaining)
+                break
+            split_at = remaining.rfind(" ", 0, available + 1)
+            if split_at <= 0:
+                split_at = available
+            piece = remaining[:split_at].rstrip()
+            chunks.append(prefix + piece)
+            remaining = remaining[split_at:].lstrip()
+        return chunks
+
+    def _render_turn_chunks(self, turn: dict, max_chars: int) -> list[str]:
+        """Render one conversational turn into one or more bounded strings."""
+        role = turn.get("role", "user")
+        text = str(turn.get("content", turn.get("text", ""))).strip()
+        if not text:
+            return []
+        prefix = f"{role}: "
+        rendered = prefix + text
+        if len(rendered) <= max_chars:
+            return [rendered]
+        return self._split_text(prefix, text, max_chars)
+
+    def _chunk_session(self, session: list[dict], max_chars: int) -> list[str]:
+        """Chunk a session on turn boundaries while respecting the API size limit."""
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+
+        for turn in session:
+            for rendered in self._render_turn_chunks(turn, max_chars=max_chars):
+                candidate_len = len(rendered) if not current else current_len + 2 + len(rendered)
+                if current and candidate_len > max_chars:
+                    chunks.append("\n\n".join(current))
+                    current = [rendered]
+                    current_len = len(rendered)
+                else:
+                    current.append(rendered)
+                    current_len = candidate_len
+
+        if current:
+            chunks.append("\n\n".join(current))
+        return chunks
+
+    def seed_memories(
+        self,
+        conversations: list[dict],
+        source_prefix: str = "eval/longmemeval",
+        max_chars: int = DEFAULT_MAX_MEMORY_CHARS,
+    ):
+        """Store conversation chunks directly, scoped per session."""
         self.client.clear_by_prefix(source_prefix)
-        self._session_map = {}
+        memories = []
         for i, conv in enumerate(conversations):
             session_source = f"{source_prefix}/session_{i}"
-            messages = self._format_conversation(conv)
-            self.client.extract(messages=messages, source=session_source, context="stop")
-            self._session_map[conv.get("id", i)] = session_source
+            turns = conv.get("turns", conv.get("messages", []))
+            for chunk_index, chunk in enumerate(self._chunk_session(turns, max_chars=max_chars)):
+                memories.append(
+                    {
+                        "text": chunk,
+                        "source": f"{session_source}/c{chunk_index}",
+                        "metadata": {
+                            "conversation_id": conv.get("id", i),
+                            "chunk_index": chunk_index,
+                        },
+                    }
+                )
+        if memories:
+            self.client.add_batch(memories, deduplicate=False)
+        return len(memories)
 
-    def _format_conversation(self, conv: dict) -> str:
-        """Format a conversation dict into the text format extract expects."""
-        turns = conv.get("turns", conv.get("messages", []))
-        lines = []
-        for turn in turns:
-            role = turn.get("role", "user")
-            text = turn.get("content", turn.get("text", ""))
-            lines.append(f"{role}: {text}")
-        return "\n\n".join(lines)
+    def seed_question(
+        self,
+        question: dict,
+        source_prefix: str = "eval/longmemeval",
+        max_chars: int = DEFAULT_MAX_MEMORY_CHARS,
+    ) -> int:
+        """Seed a single LongMemEval question's haystack sessions as direct memories."""
+        question_prefix = self._question_prefix(question, source_prefix)
+        qid = self._question_id(question)
+        qtype = self._question_category(question)
+        self.client.clear_by_prefix(question_prefix)
+
+        memories = []
+        for session_index, session in enumerate(question.get("haystack_sessions", [])):
+            for chunk_index, chunk in enumerate(self._chunk_session(session, max_chars=max_chars)):
+                if not chunk.strip():
+                    continue
+                memories.append(
+                    {
+                        "text": chunk,
+                        "source": f"{question_prefix}/s{session_index}/c{chunk_index}",
+                        "metadata": {
+                            "question_id": qid,
+                            "question_type": qtype,
+                            "session_index": session_index,
+                            "chunk_index": chunk_index,
+                        },
+                    }
+                )
+
+        if not memories:
+            return 0
+        ids = self.client.add_batch(memories, deduplicate=False)
+        return len(ids)
+
+    def clear_question(self, question: dict, source_prefix: str = "eval/longmemeval") -> int:
+        """Delete a question's scoped memories from the eval store."""
+        return self.client.clear_by_prefix(self._question_prefix(question, source_prefix))
+
+    def run_question(self, question: dict, k: int = 5, source_prefix: str = "eval/longmemeval") -> dict:
+        """Run retrieval for a single LongMemEval question against its scoped haystack."""
+        query = str(question.get("question", ""))
+        search_results = self.client.search(
+            query=query,
+            k=k,
+            hybrid=True,
+            source_prefix=self._question_prefix(question, source_prefix),
+        )
+        context = "\n".join(
+            r.get("text", "") for r in search_results[: self.DEFAULT_CONTEXT_RESULTS]
+        )
+        return {
+            "question_id": self._question_id(question),
+            "category": self._question_category(question),
+            "question": query,
+            "expected": str(question.get("answer", "")),
+            "context": context,
+            "search_results": search_results,
+        }
 
     def run_questions(self, questions: list[dict], k: int = 5, source_prefix: str = "eval/longmemeval") -> list[dict]:
-        """For each question: search memories, build context, generate answer.
-
-        Uses session-scoped search when a question's conversation/session
-        can be mapped via ``_session_map``.  Falls back to the full
-        *source_prefix* when no mapping exists.
-        """
-        session_map = getattr(self, "_session_map", {})
-        results = []
-        for q in questions:
-            query = q.get("question", "")
-            # Resolve session source: try conversation_id, session_id, then id
-            conv_ref = q.get("conversation_id", q.get("session_id", q.get("id")))
-            search_prefix = session_map.get(conv_ref, source_prefix)
-            search_results = self.client.search(
-                query=query, k=k, hybrid=True, source_prefix=search_prefix,
-            )
-            context = "\n".join(r.get("text", "") for r in search_results)
-            results.append({
-                "question_id": q.get("id", ""),
-                "category": q.get("category", ""),
-                "question": query,
-                "expected": q.get("answer", ""),
-                "context": context,
-                "search_results": search_results,
-            })
-        return results
+        """Run retrieval for multiple LongMemEval questions."""
+        return [self.run_question(q, k=k, source_prefix=source_prefix) for q in questions]
 
     def judge_answers(self, results: list[dict]) -> list[dict]:
         """Score each answer using LLM judge."""
         if self._judge is None:
-            self._init_judge()
+            self.init_judge()
         scored = []
         for r in results:
             score, reasoning = self._judge_single(r)
             scored.append({**r, "score": score, "reasoning": reasoning})
         return scored
 
-    def _init_judge(self):
+    def init_judge(self):
         """Initialize LLM judge provider via environment-based factory."""
         from llm_provider import get_provider
         # get_provider reads EXTRACT_PROVIDER / EXTRACT_MODEL from env;
@@ -158,12 +272,50 @@ class LongMemEvalRunner:
             else:
                 os.environ.pop("EXTRACT_MODEL", None)
 
+    @staticmethod
+    def _parse_judge_response(text: str) -> tuple[float, str]:
+        """Parse judge output, tolerating code fences and trailing prose."""
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            cleaned = "\n".join(lines[1:]) if len(lines) > 1 else ""
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+
+        decoder = json.JSONDecoder()
+        candidates = [cleaned]
+
+        json_start = cleaned.find("{")
+        if json_start >= 0:
+            candidates.append(cleaned[json_start:])
+
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                data, _ = decoder.raw_decode(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return float(data.get("score", 0.0)), str(data.get("reasoning", ""))
+
+        from eval.judge import _parse_response
+
+        return _parse_response(cleaned)
+
     def _judge_single(self, result: dict) -> tuple[float, str]:
         """Score a single question-answer pair."""
         system = (
-            "You are evaluating whether an AI assistant correctly answered a question "
-            "based on its memory of past conversations. Score 0.0-1.0.\n"
-            "Respond with JSON: {\"score\": <float>, \"reasoning\": \"<str>\"}"
+            "You are evaluating whether retrieved memory context is sufficient to answer "
+            "a question based on past conversations. Score 0.0-1.0 using this rubric:\n"
+            "- 1.0: the context clearly contains the facts needed to produce the expected answer.\n"
+            "- 0.5: the context is partially relevant or ambiguous.\n"
+            "- 0.0: the context does not contain the needed information or contradicts it.\n"
+            "If the expected answer appears verbatim or as an obvious paraphrase, score at least 0.95.\n"
+            "Do not heavily penalize extra unrelated text if the answer is still clearly present.\n"
+            "Return ONLY a raw JSON object with no markdown fences or extra text: "
+            "{\"score\": <float>, \"reasoning\": \"<str>\"}"
         )
         user = (
             f"Question: {result['question']}\n"
@@ -173,14 +325,7 @@ class LongMemEvalRunner:
         )
         try:
             resp = self._judge.complete(system=system, user=user)
-            # Strip markdown code fences if present
-            text = resp.text.strip()
-            if text.startswith("```"):
-                text = "\n".join(text.split("\n")[1:])  # remove opening fence
-                if text.endswith("```"):
-                    text = text[:-3].strip()
-            data = json.loads(text)
-            return data.get("score", 0.0), data.get("reasoning", "")
+            return self._parse_judge_response(resp.text)
         except Exception as e:
             return 0.0, f"Judge error: {e}"
 

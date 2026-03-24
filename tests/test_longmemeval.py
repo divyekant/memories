@@ -1,8 +1,7 @@
 """Tests for LongMemEval benchmark adapter and MemoriesClient extensions."""
 
 import pytest
-from unittest.mock import patch, MagicMock
-import json
+from unittest.mock import MagicMock
 
 
 def test_memories_client_has_search_method():
@@ -21,6 +20,14 @@ def test_memories_client_has_extract_method():
     assert callable(client.extract)
 
 
+def test_memories_client_has_add_batch_method():
+    """MemoriesClient should support batch add for benchmark seeding."""
+    from eval.memories_client import MemoriesClient
+    client = MemoriesClient(url="http://localhost:8900", api_key="test")
+    assert hasattr(client, "add_batch")
+    assert callable(client.add_batch)
+
+
 def test_longmemeval_runner_init():
     """LongMemEvalRunner should accept client and judge config."""
     from eval.longmemeval import LongMemEvalRunner
@@ -29,71 +36,148 @@ def test_longmemeval_runner_init():
     assert runner is not None
 
 
-def test_longmemeval_seed_memories_scoped_per_session():
-    """seed_memories should create per-session source prefixes and build _session_map."""
+def test_longmemeval_seed_question_uses_haystack_sessions_and_batch_add():
+    """LongMemEval seeding should store haystack sessions directly, not via extract."""
     from eval.longmemeval import LongMemEvalRunner
     client = MagicMock()
-    client.extract.return_value = {"status": "completed"}
+    client.add_batch.return_value = [1, 2]
     runner = LongMemEvalRunner(client=client)
 
-    conversations = [
-        {"id": "conv_a", "turns": [{"role": "user", "content": "hello"}]},
-        {"id": "conv_b", "turns": [{"role": "user", "content": "world"}]},
-    ]
-    runner.seed_memories(conversations, source_prefix="eval/test")
-
-    # Should clear the prefix once
-    client.clear_by_prefix.assert_called_once_with("eval/test")
-    # Should extract once per conversation with session-scoped source
-    assert client.extract.call_count == 2
-    sources = [call.kwargs.get("source", call.args[0] if call.args else None)
-               for call in client.extract.call_args_list]
-    # extract is called with keyword args
-    actual_sources = [call[1]["source"] for call in client.extract.call_args_list]
-    assert actual_sources == ["eval/test/session_0", "eval/test/session_1"]
-    # session_map should map conversation ids to session sources
-    assert runner._session_map == {
-        "conv_a": "eval/test/session_0",
-        "conv_b": "eval/test/session_1",
+    question = {
+        "question_id": "123",
+        "question_type": "single-session-user",
+        "haystack_sessions": [
+            [{"role": "user", "content": "hello"}],
+            [{"role": "assistant", "content": "world"}],
+        ],
     }
+    seeded_count = runner.seed_question(question, source_prefix="eval/test", max_chars=100)
+
+    client.clear_by_prefix.assert_called_once_with("eval/test/q123")
+    client.add_batch.assert_called_once()
+    memories = client.add_batch.call_args.args[0]
+    assert seeded_count == 2
+    assert [m["source"] for m in memories] == [
+        "eval/test/q123/s0/c0",
+        "eval/test/q123/s1/c0",
+    ]
+    assert memories[0]["metadata"]["question_id"] == "123"
+    assert memories[0]["metadata"]["question_type"] == "single-session-user"
+    assert client.add_batch.call_args.kwargs["deduplicate"] is False
 
 
-def test_longmemeval_run_questions_uses_session_scope():
-    """run_questions should search within the correct session prefix."""
+def test_longmemeval_seed_question_chunks_large_sessions():
+    """Large sessions should be split on turn boundaries to stay under the API size cap."""
     from eval.longmemeval import LongMemEvalRunner
     client = MagicMock()
-    client.search.return_value = [{"text": "found"}]
+    client.add_batch.return_value = [1, 2]
     runner = LongMemEvalRunner(client=client)
-    runner._session_map = {"conv_a": "eval/test/session_0"}
 
-    questions = [
-        {"id": "q1", "conversation_id": "conv_a", "question": "what?", "answer": "yes", "category": "info"},
+    question = {
+        "question_id": "chunky",
+        "haystack_sessions": [[
+            {"role": "user", "content": "a" * 70},
+            {"role": "assistant", "content": "b" * 70},
+        ]],
+    }
+    runner.seed_question(question, source_prefix="eval/test", max_chars=100)
+
+    memories = client.add_batch.call_args.args[0]
+    assert len(memories) == 2
+    assert all(len(m["text"]) <= 100 for m in memories)
+    assert [m["source"] for m in memories] == [
+        "eval/test/qchunky/s0/c0",
+        "eval/test/qchunky/s0/c1",
     ]
-    results = runner.run_questions(questions, k=3, source_prefix="eval/test")
-
-    # search should be called with the session-scoped source_prefix
-    client.search.assert_called_once_with(
-        query="what?", k=3, hybrid=True, source_prefix="eval/test/session_0",
-    )
-    assert results[0]["question"] == "what?"
 
 
-def test_longmemeval_run_questions_fallback_to_full_prefix():
-    """run_questions falls back to full source_prefix when no session mapping exists."""
+def test_longmemeval_clear_question_uses_question_scope():
+    """Per-question cleanup should delete only that question's scoped memories."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.clear_by_prefix.return_value = 7
+    runner = LongMemEvalRunner(client=client)
+
+    deleted = runner.clear_question({"question_id": "abc"}, source_prefix="eval/test")
+
+    assert deleted == 7
+    client.clear_by_prefix.assert_called_once_with("eval/test/qabc")
+
+
+def test_longmemeval_run_question_uses_question_scope_and_dataset_fields():
+    """Question execution should search within the question prefix and preserve dataset field names."""
     from eval.longmemeval import LongMemEvalRunner
     client = MagicMock()
-    client.search.return_value = []
-    runner = LongMemEvalRunner(client=client)
-    runner._session_map = {}
-
-    questions = [
-        {"id": "q1", "question": "unknown session?", "answer": "n/a", "category": "info"},
+    client.search.return_value = [
+        {"text": "Business Administration"},
+        {"text": "Supporting context"},
+        {"text": "Irrelevant tail"},
     ]
-    results = runner.run_questions(questions, k=5, source_prefix="eval/test")
+    runner = LongMemEvalRunner(client=client)
+
+    question = {
+        "question_id": "e47becba",
+        "question_type": "single-session-user",
+        "question": "What major did I mention?",
+        "answer": "Business Administration",
+    }
+    result = runner.run_question(question, k=3, source_prefix="eval/test")
 
     client.search.assert_called_once_with(
-        query="unknown session?", k=5, hybrid=True, source_prefix="eval/test",
+        query="What major did I mention?",
+        k=3,
+        hybrid=True,
+        source_prefix="eval/test/qe47becba",
     )
+    assert result["question_id"] == "e47becba"
+    assert result["category"] == "single-session-user"
+    assert result["expected"] == "Business Administration"
+    assert result["context"] == "Business Administration\nSupporting context"
+
+
+def test_longmemeval_run_question_stringifies_numeric_answers():
+    """Numeric expected answers should be normalized to strings for reporting and judging."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.search.return_value = [{"text": "You own 3 bikes."}]
+    runner = LongMemEvalRunner(client=client)
+
+    result = runner.run_question(
+        {
+            "question_id": "numeric",
+            "question": "How many bikes do I own?",
+            "answer": 3,
+        },
+        source_prefix="eval/test",
+    )
+
+    assert result["expected"] == "3"
+
+
+def test_longmemeval_parse_judge_response_handles_fenced_json():
+    """Judge parsing should tolerate fenced JSON responses."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    score, reasoning = LongMemEvalRunner._parse_judge_response(
+        '```json\n{"score": 0.95, "reasoning": "answer found"}\n```'
+    )
+
+    assert score == 0.95
+    assert reasoning == "answer found"
+
+
+def test_longmemeval_parse_judge_response_handles_trailing_text():
+    """Judge parsing should tolerate extra prose after the JSON object."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    score, reasoning = LongMemEvalRunner._parse_judge_response(
+        '{"score": 0.8, "reasoning": "mostly right"}\nAdditional commentary.'
+    )
+
+    assert score == 0.8
+    assert reasoning == "mostly right"
 
 
 def test_longmemeval_report_format():

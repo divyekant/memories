@@ -1408,7 +1408,7 @@ python -m eval --category coding
 python -m eval --scenario coding-001 -v
 ```
 
-The eval defaults target `http://localhost:8901`, which is the isolated instance from [`docker-compose.eval.yml`](/Users/dk/projects/memories/docker-compose.eval.yml). Override with `MEMORIES_URL=http://host:port` if you want to point the harness somewhere else.
+The eval defaults target `http://localhost:8901`, which is the isolated instance from [`docker-compose.eval.yml`](/Users/dk/projects/memories/docker-compose.eval.yml). `./eval/run.sh` intentionally ignores your normal `MEMORIES_URL` from `~/.config/memories/env` so it does not accidentally hit the main service. Override the wrapper with `EVAL_MEMORIES_URL=http://host:port ./eval/run.sh ...`, or use `MEMORIES_URL=http://host:port python -m eval ...` for direct Python runs.
 
 ### Results
 

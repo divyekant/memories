@@ -14,14 +14,11 @@ def client():
 
 
 class TestSeedMemories:
-    def test_seed_memories(self, client):
+    def test_seed_memories_uses_batch_add_for_multiple_items(self, client):
         mock_post = MagicMock()
         mock_post.return_value = MagicMock(
             status_code=200,
-            json=MagicMock(side_effect=[
-                {"success": True, "id": 1},
-                {"success": True, "id": 2},
-            ]),
+            json=MagicMock(return_value={"success": True, "ids": [1, 2]}),
         )
         with patch.object(client._client, "post", mock_post):
             ids = client.seed_memories([
@@ -30,15 +27,61 @@ class TestSeedMemories:
             ])
 
         assert ids == [1, 2]
+        mock_post.assert_called_once_with(
+            "/memory/add-batch",
+            json={
+                "memories": [
+                    {"text": "SQLite chosen over Postgres", "source": "eval/test-001"},
+                    {"text": "Auth uses JWT tokens", "source": "eval/test-001"},
+                ],
+                "deduplicate": False,
+            },
+        )
+
+    def test_seed_memories_uses_single_add_for_one_item(self, client):
+        mock_post = MagicMock()
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"success": True, "id": 1}),
+        )
+        with patch.object(client._client, "post", mock_post):
+            ids = client.seed_memories([
+                {"text": "SQLite chosen over Postgres", "source": "eval/test-001"},
+            ])
+
+        assert ids == [1]
+        mock_post.assert_called_once_with(
+            "/memory/add",
+            json={
+                "text": "SQLite chosen over Postgres",
+                "source": "eval/test-001",
+                "metadata": None,
+                "deduplicate": False,
+            },
+        )
+
+
+class TestAddBatch:
+    def test_add_batch_splits_large_payloads(self, client):
+        mock_post = MagicMock()
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=MagicMock(return_value={"ids": list(range(1000))})),
+            MagicMock(status_code=200, json=MagicMock(return_value={"ids": [1000, 1001]})),
+        ]
+        memories = [
+            {"text": f"memory {i}", "source": "eval/test-001"}
+            for i in range(1002)
+        ]
+
+        with patch.object(client._client, "post", mock_post):
+            ids = client.add_batch(memories, deduplicate=False)
+
+        assert len(ids) == 1002
         assert mock_post.call_count == 2
-        mock_post.assert_any_call(
-            "/memory/add",
-            json={"text": "SQLite chosen over Postgres", "source": "eval/test-001", "deduplicate": False},
-        )
-        mock_post.assert_any_call(
-            "/memory/add",
-            json={"text": "Auth uses JWT tokens", "source": "eval/test-001", "deduplicate": False},
-        )
+        first_batch = mock_post.call_args_list[0].kwargs["json"]["memories"]
+        second_batch = mock_post.call_args_list[1].kwargs["json"]["memories"]
+        assert len(first_batch) == 1000
+        assert len(second_batch) == 2
 
 
 class TestClearByPrefix:
