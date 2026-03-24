@@ -121,10 +121,9 @@ def _process_question(
             runner.clear_question(q, source_prefix=prefix)
         except Exception as e:
             _log(f"  Cleanup failed: {e}")
-        # Return project dir to pool (even on failure — scrub auto-memory first)
         if project_queue is not None and project_dir:
             if cc_executor:
-                cc_executor._cleanup_auto_memory(project_dir)
+                cc_executor.reset_project(project_dir)
             project_queue.put(project_dir)
 
 
@@ -157,7 +156,6 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     # System mode setup
     cc_executor = None
     project_queue = None
-    project_dirs = []
     if mode == "system":
         from eval.cc_executor import CCExecutor
         mcp_server_path = os.environ.get(
@@ -171,12 +169,9 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
             mcp_server_path=mcp_server_path,
         )
         CCExecutor.cleanup_stale_auto_memory()
-        # Create reusable project dirs — one per worker, managed via thread-safe queue
         project_queue = queue.Queue()
         for i in range(workers):
-            proj = cc_executor.create_isolated_project(with_memories=True)
-            project_dirs.append(proj)
-            project_queue.put(proj)
+            project_queue.put(cc_executor.create_isolated_project(with_memories=True))
         _log(f"System eval mode: {workers} worker(s), MCP server at {mcp_server_path}")
 
     _log(f"Running in {mode} eval mode with {workers} worker(s)")
@@ -186,7 +181,6 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     total = len(dataset)
 
     if workers <= 1:
-        # Sequential — project queue ensures exclusive access even with 1 worker
         scores = []
         by_type = {}
         for i, q in enumerate(dataset):
@@ -195,7 +189,6 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
                 scores.append(result)
                 by_type.setdefault(result["type"], []).append(result["score"])
     else:
-        # Parallel — project queue ensures each worker gets exclusive project dir
         scores = [None] * total
         by_type = {}
         _log(f"Distributing {total} questions across {workers} workers...")
@@ -222,10 +215,12 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
         for s in scores:
             by_type.setdefault(s["type"], []).append(s["score"])
 
-    # Cleanup reusable project dirs
-    if cc_executor and project_dirs:
-        for proj in project_dirs:
-            cc_executor.cleanup_project(proj)
+    if cc_executor and project_queue:
+        while not project_queue.empty():
+            try:
+                cc_executor.cleanup_project(project_queue.get_nowait())
+            except queue.Empty:
+                break
 
     elapsed = time.time() - start_time
 

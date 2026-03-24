@@ -63,6 +63,15 @@ class CCExecutor:
         shutil.rmtree(project_dir, ignore_errors=True)
         self._cleanup_auto_memory(project_dir)
 
+    def reset_project(self, project_dir: str) -> None:
+        """Scrub Claude Code auto-memory for a reusable project dir.
+
+        Call between questions when reusing the same project dir across
+        multiple prompts. Removes per-project state without destroying
+        the project dir itself (preserves .mcp.json etc).
+        """
+        self._cleanup_auto_memory(project_dir)
+
     def _cleanup_auto_memory(self, project_dir: str) -> None:
         """Remove Claude Code auto-memory for a project dir.
 
