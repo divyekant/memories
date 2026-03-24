@@ -156,7 +156,6 @@ class LongMemEvalRunner:
     ):
         """Store conversation chunks directly, scoped per session."""
         self.client.clear_by_prefix(source_prefix)
-        self._session_map = {}
         memories = []
         for i, conv in enumerate(conversations):
             session_source = f"{source_prefix}/session_{i}"
@@ -172,20 +171,9 @@ class LongMemEvalRunner:
                         },
                     }
                 )
-            self._session_map[conv.get("id", i)] = session_source
         if memories:
             self.client.add_batch(memories, deduplicate=False)
         return len(memories)
-
-    def _format_conversation(self, conv: dict) -> str:
-        """Format a conversation dict into the text format extract expects."""
-        turns = conv.get("turns", conv.get("messages", []))
-        lines = []
-        for turn in turns:
-            role = turn.get("role", "user")
-            text = turn.get("content", turn.get("text", ""))
-            lines.append(f"{role}: {text}")
-        return "\n\n".join(lines)
 
     def seed_question(
         self,
@@ -254,14 +242,14 @@ class LongMemEvalRunner:
     def judge_answers(self, results: list[dict]) -> list[dict]:
         """Score each answer using LLM judge."""
         if self._judge is None:
-            self._init_judge()
+            self.init_judge()
         scored = []
         for r in results:
             score, reasoning = self._judge_single(r)
             scored.append({**r, "score": score, "reasoning": reasoning})
         return scored
 
-    def _init_judge(self):
+    def init_judge(self):
         """Initialize LLM judge provider via environment-based factory."""
         from llm_provider import get_provider
         # get_provider reads EXTRACT_PROVIDER / EXTRACT_MODEL from env;

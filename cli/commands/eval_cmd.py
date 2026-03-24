@@ -48,7 +48,7 @@ def longmemeval(judge_provider, judge_model, output, compare, questions, k, url,
         click.echo(f"Running subset: {questions} questions")
 
     click.echo("Initializing judge...")
-    runner._init_judge()
+    runner.init_judge()
     if runner._judge is None:
         raise click.ClickException(
             "Judge initialization failed. Set ANTHROPIC_API_KEY or another supported judge provider."

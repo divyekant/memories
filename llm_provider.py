@@ -37,6 +37,9 @@ DEFAULT_MODELS = {
     "openai": "gpt-4.1-nano",
     "ollama": "gemma3:4b",
 }
+# temperature=0 for deterministic extraction and judging.
+# This applies to all providers (Anthropic, OpenAI, ChatGPT-subscription, Ollama).
+# Intentional: production extraction benefits from deterministic output.
 DEFAULT_TEMPERATURE = 0.0
 
 

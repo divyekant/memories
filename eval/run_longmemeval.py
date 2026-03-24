@@ -40,7 +40,7 @@ def _load_local_env() -> None:
 def run_benchmark(max_questions: int = 0, output_path: str = ""):
     _load_local_env()
     url = os.environ.get("MEMORIES_URL", "http://localhost:8900")
-    api_key = os.environ.get("MEMORIES_API_KEY", "god-is-an-astronaut")
+    api_key = os.environ.get("MEMORIES_API_KEY", "")
 
     client = MemoriesClient(url=url, api_key=api_key)
     if not client.health_check():
@@ -58,7 +58,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = ""):
 
     # Initialize judge before the loop
     _log("Initializing LLM judge...")
-    runner._init_judge()
+    runner.init_judge()
     if runner._judge is None:
         _log("ERROR: Judge failed to initialize. Set EXTRACT_PROVIDER and ANTHROPIC_API_KEY.")
         sys.exit(1)
