@@ -14,6 +14,7 @@ logger = logging.getLogger("eval.longmemeval")
 @dataclass
 class LongMemEvalResult:
     version: str = ""
+    eval_mode: str = "tool"
     timestamp: str = ""
     judge: dict = field(default_factory=dict)
     overall: float = 0.0
@@ -27,7 +28,10 @@ class LongMemEvalResult:
     @classmethod
     def from_json(cls, path: str) -> "LongMemEvalResult":
         with open(path) as f:
-            return cls(**json.load(f))
+            data = json.load(f)
+        # Filter to known fields to handle forward-compat with extra keys
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 LONGMEMEVAL_CATEGORIES = [
@@ -404,7 +408,7 @@ class LongMemEvalRunner:
         except Exception as e:
             return 0.0, f"Judge error: {e}"
 
-    def report(self, scored: list[dict], version: str = "", previous: Optional[str] = None) -> LongMemEvalResult:
+    def report(self, scored: list[dict], version: str = "", previous: Optional[str] = None, eval_mode: str = "tool") -> LongMemEvalResult:
         """Aggregate scored results into a report with optional regression delta."""
         by_category = {}
         for s in scored:
@@ -428,6 +432,7 @@ class LongMemEvalRunner:
 
         return LongMemEvalResult(
             version=version,
+            eval_mode=eval_mode,
             timestamp=datetime.now(timezone.utc).isoformat(),
             judge={"provider": self.judge_provider, "model": self.judge_model or "default"},
             overall=round(overall, 4),

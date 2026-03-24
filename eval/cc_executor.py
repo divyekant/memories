@@ -43,6 +43,10 @@ class CCExecutor:
                         "env": {
                             "MEMORIES_URL": self.memories_url,
                             "MEMORIES_API_KEY": self.memories_api_key,
+                            # Force single-backend mode: point MEMORIES_BACKENDS_FILE
+                            # to a nonexistent path so the MCP server skips config file
+                            # resolution and falls back to MEMORIES_URL/MEMORIES_API_KEY.
+                            "MEMORIES_BACKENDS_FILE": "/dev/null/no-backends.yaml",
                         },
                     }
                 }

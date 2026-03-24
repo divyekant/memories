@@ -56,7 +56,24 @@ def longmemeval(judge_provider, judge_model, output, compare, questions, k, url,
             "Judge initialization failed. Set ANTHROPIC_API_KEY or another supported judge provider."
         )
 
-    click.echo(f"Running {len(dataset)} questions (k={k})...")
+    # Initialize CCExecutor for system mode
+    cc_executor = None
+    if mode == "system":
+        from eval.cc_executor import CCExecutor
+        mcp_server_path = os.getenv(
+            "EVAL_MCP_SERVER_PATH",
+            str(Path(__file__).parent.parent.parent / "mcp-server" / "index.js"),
+        )
+        cc_executor = CCExecutor(
+            timeout=120,
+            memories_url=url,
+            memories_api_key=api_key,
+            mcp_server_path=mcp_server_path,
+        )
+        CCExecutor.cleanup_stale_auto_memory()
+        click.echo(f"System eval mode: MCP server at {mcp_server_path}")
+
+    click.echo(f"Running {len(dataset)} questions (k={k}, mode={mode})...")
     scored = []
     source_prefix = "eval/longmemeval"
     for i, question in enumerate(dataset, start=1):
@@ -66,8 +83,14 @@ def longmemeval(judge_provider, judge_model, output, compare, questions, k, url,
         try:
             seeded = runner.seed_question(question, source_prefix=source_prefix)
             click.echo(f"  Seeded {seeded} memory chunks")
-            result = runner.run_question(question, k=k, source_prefix=source_prefix)
-            score, reasoning = runner._judge_single(result)
+            if mode == "system" and cc_executor:
+                result = runner.run_question_system(question, cc_executor=cc_executor, source_prefix=source_prefix)
+            else:
+                result = runner.run_question(question, k=k, source_prefix=source_prefix)
+            if not result.get("context"):
+                score, reasoning = 0.0, "No context retrieved"
+            else:
+                score, reasoning = runner._judge_single(result)
             scored.append({**result, "score": score, "reasoning": reasoning})
         finally:
             runner.clear_question(question, source_prefix=source_prefix)
@@ -81,7 +104,7 @@ def longmemeval(judge_provider, judge_model, output, compare, questions, k, url,
                 version = line.split('"')[1]
                 break
 
-    report = runner.report(scored, version=version, previous=compare)
+    report = runner.report(scored, version=version, previous=compare, eval_mode=mode)
 
     # Print summary
     click.echo(f"\nLongMemEval v{report.version} ({report.timestamp[:10]})")
