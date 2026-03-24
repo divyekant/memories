@@ -120,10 +120,10 @@ _parse_backends_yaml() {
       # Routing supports two YAML formats:
       #   Inline:  search: [alpha, beta]
       #   Block:   search:\n  - alpha\n  - beta
-      if printf '%s' "$line" | grep -qE '^  - '; then
-        # Block list item — append to current routing key
+      if printf '%s' "$line" | grep -qE '^ +- '; then
+        # Block list item — append to current routing key (2 or 4 space indent)
         local item
-        item=$(printf '%s' "$line" | sed 's/^  - *//;s/ *$//')
+        item=$(printf '%s' "$line" | sed 's/^ *- *//;s/ *$//')
         if [ -n "$item" ] && [ -n "$_routing_current_key" ]; then
           routing_json=$(printf '%s' "$routing_json" | jq -c --arg k "$_routing_current_key" --arg v "$item" \
             '.[$k] = ((.[$k] // []) + [$v])')

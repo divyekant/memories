@@ -48,19 +48,24 @@ class LongMemEvalRunner:
         """Load LongMemEval dataset. Download from HuggingFace if not cached."""
         cache_path = Path(cache_dir)
         cache_path.mkdir(parents=True, exist_ok=True)
-        data_file = cache_path / "longmemeval_s.jsonl"
+        data_file = cache_path / "longmemeval_s_cleaned.json"
         if not data_file.exists():
             self._download_dataset(data_file)
         return self._parse_dataset(data_file)
 
     def _download_dataset(self, dest: Path):
-        """Download LongMemEval_s from HuggingFace."""
+        """Download LongMemEval_s (cleaned) from HuggingFace."""
         import urllib.request
-        url = "https://huggingface.co/datasets/xiaowu0162/LongMemEval/resolve/main/longmemeval_s.jsonl"
+        url = "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json?download=true"
         urllib.request.urlretrieve(url, str(dest))
 
     def _parse_dataset(self, path: Path) -> list[dict]:
-        """Parse JSONL into list of question dicts."""
+        """Parse JSON array into list of question dicts."""
+        with open(path) as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        # Fallback for JSONL format
         items = []
         with open(path) as f:
             for line in f:
@@ -164,7 +169,13 @@ class LongMemEvalRunner:
         )
         try:
             resp = self._judge.complete(system=system, user=user)
-            data = json.loads(resp.text)
+            # Strip markdown code fences if present
+            text = resp.text.strip()
+            if text.startswith("```"):
+                text = "\n".join(text.split("\n")[1:])  # remove opening fence
+                if text.endswith("```"):
+                    text = text[:-3].strip()
+            data = json.loads(text)
             return data.get("score", 0.0), data.get("reasoning", "")
         except Exception as e:
             return 0.0, f"Judge error: {e}"

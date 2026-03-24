@@ -109,6 +109,36 @@ class TestRoutingResolution:
         data = json.loads(stdout)
         assert len(data) == 2
 
+    def test_diy_routing_block_style_yaml(self):
+        """Block-style YAML routing with 4-space indent should parse correctly."""
+        # Write raw YAML (not yaml.dump) to get block style with 4-space indent
+        config = """backends:
+  alpha:
+    url: http://alpha:8900
+    api_key: a
+  beta:
+    url: http://beta:8900
+    api_key: b
+routing:
+  search:
+    - alpha
+    - beta
+  extract:
+    - alpha
+"""
+        stdout, _, rc = _run_lib_function(
+            '_get_backends_for_op "extract"', config_content=config)
+        assert rc == 0
+        data = json.loads(stdout)
+        assert len(data) == 1
+        assert data[0]["name"] == "alpha"
+
+        stdout, _, rc = _run_lib_function(
+            '_get_backends_for_op "search"', config_content=config)
+        assert rc == 0
+        data = json.loads(stdout)
+        assert len(data) == 2
+
     def test_single_backend_passthrough(self):
         """Single backend should route everything to it."""
         config = yaml.dump({
