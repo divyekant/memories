@@ -204,50 +204,50 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     prefix = "eval/longmemeval"
     total = len(dataset)
 
-    if workers <= 1:
-        scores = []
-        by_type = {}
-        for i, q in enumerate(dataset):
-            result = _process_question(i, total, q, runner, mode, prefix, cc_executor, project_queue)
-            if result:
-                scores.append(result)
-                by_type.setdefault(result["type"], []).append(result["score"])
-    else:
-        scores = [None] * total
-        by_type = {}
-        _log(f"Distributing {total} questions across {workers} workers...")
+    try:
+        if workers <= 1:
+            scores = []
+            by_type = {}
+            for i, q in enumerate(dataset):
+                result = _process_question(i, total, q, runner, mode, prefix, cc_executor, project_queue)
+                if result:
+                    scores.append(result)
+                    by_type.setdefault(result["type"], []).append(result["score"])
+        else:
+            scores = [None] * total
+            by_type = {}
+            _log(f"Distributing {total} questions across {workers} workers...")
 
-        def _worker(idx, q):
-            return idx, _process_question(
-                idx, total, q, runner, mode, prefix, cc_executor, project_queue,
-                client_url=url, client_api_key=api_key,
-            )
+            def _worker(idx, q):
+                return idx, _process_question(
+                    idx, total, q, runner, mode, prefix, cc_executor, project_queue,
+                    client_url=url, client_api_key=api_key,
+                )
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(_worker, i, q): i
-                for i, q in enumerate(dataset)
-            }
-            for future in as_completed(futures):
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(_worker, i, q): i
+                    for i, q in enumerate(dataset)
+                }
+                for future in as_completed(futures):
+                    try:
+                        idx, result = future.result()
+                        scores[idx] = result
+                    except Exception as e:
+                        idx = futures[future]
+                        _log(f"  Worker error on question {idx}: {e}")
+                        scores[idx] = {"qid": idx, "type": "error", "score": 0.0, "reasoning": str(e)}
+
+            scores = [s for s in scores if s is not None]
+            for s in scores:
+                by_type.setdefault(s["type"], []).append(s["score"])
+    finally:
+        if cc_executor and project_queue:
+            while not project_queue.empty():
                 try:
-                    idx, result = future.result()
-                    scores[idx] = result
-                except Exception as e:
-                    idx = futures[future]
-                    _log(f"  Worker error on question {idx}: {e}")
-                    scores[idx] = {"qid": idx, "type": "error", "score": 0.0, "reasoning": str(e)}
-
-        # Filter None entries and build by_type
-        scores = [s for s in scores if s is not None]
-        for s in scores:
-            by_type.setdefault(s["type"], []).append(s["score"])
-
-    if cc_executor and project_queue:
-        while not project_queue.empty():
-            try:
-                cc_executor.cleanup_project(project_queue.get_nowait())
-            except queue.Empty:
-                break
+                    cc_executor.cleanup_project(project_queue.get_nowait())
+                except queue.Empty:
+                    break
 
     elapsed = time.time() - start_time
 
@@ -292,8 +292,9 @@ if __name__ == "__main__":
     parser.add_argument("--output", default=None, help="Output file (default: eval/results/longmemeval-v4.0.0-{mode}.json)")
     parser.add_argument("--mode", choices=["tool", "system"], default="tool",
                         help="Eval mode: 'tool' = raw API search (diagnostic), 'system' = agent + MCP tools (product score)")
-    parser.add_argument("--workers", type=int, default=1,
-                        help="Number of parallel workers (default: 1). Each worker processes questions independently.")
+    parser.add_argument("--workers", type=int, default=1, choices=range(1, 33),
+                        metavar="N",
+                        help="Number of parallel workers, 1-32 (default: 1).")
     args = parser.parse_args()
     output = args.output or f"eval/results/longmemeval-v4.0.0-{args.mode}.json"
     run_benchmark(max_questions=args.questions, output_path=output, mode=args.mode, workers=args.workers)
