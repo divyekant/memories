@@ -130,13 +130,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
 
             # Step 3: Judge — does the context contain the answer?
             try:
-                score, reasoning = runner._judge_single(
-                    {
-                        "question": question_result["question"],
-                        "expected": question_result["expected"],
-                        "context": question_result["context"],
-                    }
-                )
+                score, reasoning = runner._judge_single(question_result)
             except Exception as e:
                 _log(f"  Judge failed: {e}")
                 score, reasoning = 0.0, str(e)

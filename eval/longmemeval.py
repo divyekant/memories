@@ -1,11 +1,14 @@
 """LongMemEval benchmark adapter for Memories engine."""
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("eval.longmemeval")
 
 
 @dataclass
@@ -233,6 +236,7 @@ class LongMemEvalRunner:
             "expected": str(question.get("answer", "")),
             "context": context,
             "search_results": search_results,
+            "eval_mode": "tool",
         }
 
     def run_question_system(
@@ -246,9 +250,6 @@ class LongMemEvalRunner:
         Instead of raw API search, this boots a Claude Code session with the
         Memories MCP server and lets the agent search, reason, and answer.
         """
-        import logging
-        logger = logging.getLogger("eval.longmemeval")
-
         query = str(question.get("question", ""))
         expected = str(question.get("answer", ""))
         qid = self._question_id(question)
