@@ -10,25 +10,129 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import fs from "fs";
+import path from "path";
+import yaml from "js-yaml";
 
-const MEMORIES_URL = process.env.MEMORIES_URL || "http://localhost:8900";
-const API_KEY = process.env.MEMORIES_API_KEY || "";
+// -- Config Loading ----------------------------------------------------------
+
+function loadBackends() {
+  // Resolution: MEMORIES_BACKENDS_FILE -> project -> global -> env fallback
+  const configPaths = [
+    process.env.MEMORIES_BACKENDS_FILE,
+    path.join(process.cwd(), ".memories", "backends.yaml"),
+    path.join(process.env.HOME || "", ".config", "memories", "backends.yaml"),
+  ].filter(Boolean);
+
+  for (const p of configPaths) {
+    if (fs.existsSync(p)) {
+      const raw = yaml.load(fs.readFileSync(p, "utf8"));
+      const backends = Object.entries(raw.backends || {}).map(([name, cfg]) => {
+        let apiKey = cfg.api_key || "";
+        // Env var interpolation
+        const match = apiKey.match(/\$\{(\w+)\}/);
+        if (match) apiKey = process.env[match[1]] || apiKey;
+        return { name, url: cfg.url, apiKey, scenario: cfg.scenario || "" };
+      });
+      const routing = raw.routing || {};
+      return { backends, routing };
+    }
+  }
+
+  // Fallback to env vars
+  return {
+    backends: [{
+      name: "default",
+      url: process.env.MEMORIES_URL || "http://localhost:8900",
+      apiKey: process.env.MEMORIES_API_KEY || "",
+      scenario: "",
+    }],
+    routing: {},
+  };
+}
+
+const config = loadBackends();
+
+function getBackendsForOp(op) {
+  // Explicit routing first
+  if (config.routing[op]) {
+    const names = config.routing[op];
+    return config.backends.filter(b => names.includes(b.name));
+  }
+  // Single backend
+  if (config.backends.length === 1) return config.backends;
+  // Scenario-based
+  switch (op) {
+    case "search": return config.backends;
+    case "extract": return config.backends.filter(b => b.scenario === "dev" || b.scenario === "personal");
+    case "add": return config.backends;
+    case "feedback": return config.backends.filter(b => b.scenario === "dev" || b.scenario === "personal");
+    default: return [config.backends[0]];
+  }
+}
 
 // -- HTTP helper -------------------------------------------------------------
 
-async function memoriesRequest(path, options = {}) {
-  const url = `${MEMORIES_URL}${path}`;
-  const headers = { "Content-Type": "application/json" };
-  if (API_KEY) headers["X-API-Key"] = API_KEY;
+async function memoriesRequest(reqPath, options = {}, op = "search") {
+  const backends = getBackendsForOp(op);
 
-  const response = await fetch(url, { ...options, headers: { ...headers, ...options.headers } });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Memories API error ${response.status}: ${body}`);
+  if (backends.length === 1) {
+    // Single backend — direct call (backward compat)
+    const b = backends[0];
+    const url = `${b.url}${reqPath}`;
+    const headers = { "Content-Type": "application/json" };
+    if (b.apiKey) headers["X-API-Key"] = b.apiKey;
+    const response = await fetch(url, { ...options, headers: { ...headers, ...options.headers } });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Memories API error ${response.status}: ${body}`);
+    }
+    return response.json();
   }
 
-  return response.json();
+  // Multi-backend — parallel fan-out
+  const results = await Promise.allSettled(
+    backends.map(async (b) => {
+      const url = `${b.url}${reqPath}`;
+      const headers = { "Content-Type": "application/json" };
+      if (b.apiKey) headers["X-API-Key"] = b.apiKey;
+      const response = await fetch(url, { ...options, headers: { ...headers, ...options.headers } });
+      if (!response.ok) throw new Error(`${b.name}: HTTP ${response.status}`);
+      const data = await response.json();
+      return { backend: b.name, data };
+    })
+  );
+
+  // Collect successful results
+  const successes = results.filter(r => r.status === "fulfilled").map(r => r.value);
+  if (successes.length === 0) {
+    throw new Error("All backends failed");
+  }
+
+  // For non-search operations, return first success
+  if (op !== "search") return successes[0].data;
+
+  // For search: merge results
+  const allResults = [];
+  for (const s of successes) {
+    for (const r of (s.data.results || [])) {
+      allResults.push({ ...r, _backend: s.backend });
+    }
+  }
+
+  // Dedup by exact text match
+  const seen = new Set();
+  const deduped = allResults.filter(r => {
+    const key = r.text || "";
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // Sort by score
+  deduped.sort((a, b) => (b.similarity ?? b.rrf_score ?? 0) - (a.similarity ?? a.rrf_score ?? 0));
+
+  return { results: deduped, count: deduped.length };
 }
 
 // -- Server ------------------------------------------------------------------
@@ -60,7 +164,7 @@ server.tool(
     const data = await memoriesRequest("/search", {
       method: "POST",
       body: JSON.stringify(body),
-    });
+    }, "search");
 
     if (data.count === 0) {
       return { content: [{ type: "text", text: `No memories found for: "${query}"` }] };
@@ -93,7 +197,7 @@ server.tool(
     const data = await memoriesRequest("/memory/add", {
       method: "POST",
       body: JSON.stringify({ text, source, deduplicate }),
-    });
+    }, "add");
 
     return {
       content: [{
@@ -113,7 +217,7 @@ server.tool(
     id: z.number().int().min(0).describe("Memory ID to delete"),
   },
   async ({ id }) => {
-    const data = await memoriesRequest(`/memory/${id}`, { method: "DELETE" });
+    const data = await memoriesRequest(`/memory/${id}`, { method: "DELETE" }, "manage");
     return {
       content: [{
         type: "text",
@@ -131,12 +235,12 @@ server.tool(
   },
   async ({ ids }) => {
     // Auto-snapshot before bulk delete (no opt-out for agents)
-    await memoriesRequest("/snapshots", { method: "POST" });
+    await memoriesRequest("/snapshots", { method: "POST" }, "manage");
 
     const data = await memoriesRequest("/memory/delete-batch", {
       method: "POST",
       body: JSON.stringify({ ids }),
-    });
+    }, "manage");
     return {
       content: [{
         type: "text",
@@ -159,7 +263,7 @@ server.tool(
     let url = `/memories?offset=${offset}&limit=${limit}`;
     if (source) url += `&source=${encodeURIComponent(source)}`;
 
-    const data = await memoriesRequest(url);
+    const data = await memoriesRequest(url, {}, "manage");
 
     if (data.total === 0) {
       return { content: [{ type: "text", text: "No memories found." }] };
@@ -186,11 +290,11 @@ server.tool(
   },
   async ({ source }) => {
     // Auto-snapshot before bulk delete (no opt-out for agents)
-    await memoriesRequest("/snapshots", { method: "POST" });
+    await memoriesRequest("/snapshots", { method: "POST" }, "manage");
 
     const data = await memoriesRequest(`/memories?source=${encodeURIComponent(source)}`, {
       method: "DELETE",
-    });
+    }, "manage");
     return {
       content: [{
         type: "text",
@@ -210,7 +314,7 @@ server.tool(
     let url = "/memories/count";
     if (source) url += `?source=${encodeURIComponent(source)}`;
 
-    const data = await memoriesRequest(url);
+    const data = await memoriesRequest(url, {}, "manage");
     const label = source ? `memories with source prefix "${source}"` : "total memories";
     return {
       content: [{
@@ -226,7 +330,7 @@ server.tool(
   "Get statistics about the memory index — total count, model, last updated.",
   {},
   async () => {
-    const data = await memoriesRequest("/stats");
+    const data = await memoriesRequest("/stats", {}, "manage");
     return {
       content: [{
         type: "text",
@@ -254,7 +358,7 @@ server.tool(
     const data = await memoriesRequest("/memory/is-novel", {
       method: "POST",
       body: JSON.stringify({ text, threshold }),
-    });
+    }, "manage");
 
     if (data.is_novel) {
       return { content: [{ type: "text", text: "Novel — no similar memory exists. Safe to add." }] };
@@ -284,7 +388,7 @@ server.tool(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ memory_id, query, signal }),
-    });
+    }, "feedback");
     return {
       content: [{ type: "text", text: `Feedback recorded: memory ${memory_id} marked as ${signal}` }],
     };
@@ -296,7 +400,7 @@ server.tool(
   "List memories that conflict with each other. Conflicts are flagged during extraction when contradictory facts are detected. Use to review and resolve contradictions.",
   {},
   async () => {
-    const data = await memoriesRequest("/memory/conflicts");
+    const data = await memoriesRequest("/memory/conflicts", {}, "manage");
 
     if (!data.conflicts || data.conflicts.length === 0) {
       return { content: [{ type: "text", text: "No conflicts found." }] };
@@ -331,7 +435,7 @@ server.tool(
     const submitData = await memoriesRequest("/memory/extract", {
       method: "POST",
       body: JSON.stringify({ messages, source, context }),
-    });
+    }, "extract");
 
     const jobId = submitData.job_id;
 
@@ -343,7 +447,7 @@ server.tool(
 
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, delay));
-      jobState = await memoriesRequest(`/memory/extract/${jobId}`);
+      jobState = await memoriesRequest(`/memory/extract/${jobId}`, {}, "extract");
       if (jobState.status === "completed" || jobState.status === "failed") break;
       delay = Math.min(delay * 2, maxDelay);
     }
@@ -396,7 +500,7 @@ server.tool(
     const data = await memoriesRequest("/memory/missed", {
       method: "POST",
       body: JSON.stringify(body),
-    });
+    }, "add");
     return {
       content: [{
         type: "text",
@@ -422,7 +526,7 @@ server.tool(
         hybrid: true,
         source_prefix: `wip/${project}`,
       }),
-    });
+    }, "search");
     if (data.count === 0) {
       return { content: [{ type: "text", text: `No deferred work found for project "${project}"` }] };
     }
