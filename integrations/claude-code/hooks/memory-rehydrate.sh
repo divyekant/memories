@@ -47,12 +47,7 @@ PREFIXES="${MEMORIES_SOURCE_PREFIXES:-$(_default_source_prefixes)}"
 RESULTS=""
 for tpl in $(echo "$PREFIXES" | tr ',' ' '); do
   prefix="${tpl//\{project\}/$PROJECT}"
-  BATCH=$(curl -sf --max-time 4 \
-    -X POST "$MEMORIES_URL/search" \
-    -H "Content-Type: application/json" \
-    -H "X-API-Key: $MEMORIES_API_KEY" \
-    -d "$(jq -n --arg q "$QUERY" --arg p "$prefix" '{query: $q, source_prefix: $p, k: 3, hybrid: true, threshold: 0.35}')" \
-    2>/dev/null) || { _log_error "Search failed for prefix $prefix"; continue; }
+  BATCH=$(_search_memories_multi "$QUERY" "$prefix" 3 0.35) || { _log_error "Search failed for prefix $prefix"; continue; }
 
   BATCH_RESULTS=$(echo "$BATCH" | jq -r '.results // []')
   if [ -n "$RESULTS" ]; then

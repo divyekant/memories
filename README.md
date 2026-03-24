@@ -4,7 +4,7 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v3.4.0):**
+**Key capabilities (v4.0.0):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence (5-signal RRF fusion)
 - **Automatic extraction** — LLM-powered AUDN (Add/Update/Delete/Noop) with dry-run and per-fact approval
 - **Operator workbench** — create, edit, merge, bulk actions, extraction trigger, lifecycle panel, conflict resolution

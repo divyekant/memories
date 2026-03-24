@@ -61,43 +61,7 @@ HWEOF
 fi
 
 search_memories() {
-  local query="$1"
-  local prefix="${2:-}"
-  local limit="${3:-5}"
-  local threshold="${4:-0.4}"
-
-  local body
-  if [ -n "$prefix" ]; then
-    body=$(jq -nc \
-      --arg query "$query" \
-      --arg prefix "$prefix" \
-      --argjson k "$limit" \
-      --argjson threshold "$threshold" \
-      '{
-        query: $query,
-        source_prefix: $prefix,
-        k: $k,
-        hybrid: true,
-        threshold: $threshold
-      }')
-  else
-    body=$(jq -nc \
-      --arg query "$query" \
-      --argjson k "$limit" \
-      --argjson threshold "$threshold" \
-      '{
-        query: $query,
-        k: $k,
-        hybrid: true,
-        threshold: $threshold
-      }')
-  fi
-
-  curl -sf -X POST "$MEMORIES_URL/search" \
-    -H "Content-Type: application/json" \
-    -H "X-API-Key: $MEMORIES_API_KEY" \
-    -d "$body" \
-    2>/dev/null || { _log_error "Search failed for prefix=${prefix:-<none>}"; true; }
+  _search_memories_multi "$@"
 }
 
 query_for_prefix() {

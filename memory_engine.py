@@ -2023,7 +2023,7 @@ class MemoryEngine:
             "since": since,
             "until": until,
             "count": len(filtered),
-            "version": "3.4.0",
+            "version": "4.0.0",
         }
         lines: List[str] = [json.dumps(header, separators=(",", ":"))]
 
