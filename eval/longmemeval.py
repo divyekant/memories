@@ -235,6 +235,57 @@ class LongMemEvalRunner:
             "search_results": search_results,
         }
 
+    def run_question_system(
+        self,
+        question: dict,
+        cc_executor,
+        source_prefix: str = "eval/longmemeval",
+    ) -> dict:
+        """Run a question through Claude Code with MCP tools (system eval mode).
+
+        Instead of raw API search, this boots a Claude Code session with the
+        Memories MCP server and lets the agent search, reason, and answer.
+        """
+        import logging
+        logger = logging.getLogger("eval.longmemeval")
+
+        query = str(question.get("question", ""))
+        expected = str(question.get("answer", ""))
+        qid = self._question_id(question)
+        category = self._question_category(question)
+        q_prefix = self._question_prefix(question, source_prefix)
+
+        # Create isolated project with MCP tools enabled
+        project_dir = cc_executor.create_isolated_project(with_memories=True)
+
+        try:
+            # Prompt the agent — give it the question and let it use memory tools
+            prompt = (
+                f"You have access to memory_search and other memory tools via MCP. "
+                f"Use them to find relevant context, then answer the following question.\n\n"
+                f"IMPORTANT: Search within the source prefix '{q_prefix}' to find relevant memories. "
+                f"Try multiple search queries if your first attempt doesn't find the answer. "
+                f"Think about what keywords or phrases might be stored in memory.\n\n"
+                f"Question: {query}\n\n"
+                f"Provide a direct, concise answer based on what you find in memory. "
+                f"If you cannot find the answer, say so clearly."
+            )
+
+            agent_response = cc_executor.run_prompt(prompt, project_dir)
+            logger.debug("Agent response for Q%s: %s", qid, agent_response[:200])
+
+            return {
+                "question_id": qid,
+                "category": category,
+                "question": query,
+                "expected": expected,
+                "context": agent_response,  # The agent's full response IS the context for judging
+                "search_results": [],  # Not applicable in system mode
+                "eval_mode": "system",
+            }
+        finally:
+            cc_executor.cleanup_project(project_dir)
+
     def run_questions(self, questions: list[dict], k: int = 5, source_prefix: str = "eval/longmemeval") -> list[dict]:
         """Run retrieval for multiple LongMemEval questions."""
         return [self.run_question(q, k=k, source_prefix=source_prefix) for q in questions]
@@ -305,24 +356,47 @@ class LongMemEvalRunner:
         return _parse_response(cleaned)
 
     def _judge_single(self, result: dict) -> tuple[float, str]:
-        """Score a single question-answer pair."""
-        system = (
-            "You are evaluating whether retrieved memory context is sufficient to answer "
-            "a question based on past conversations. Score 0.0-1.0 using this rubric:\n"
-            "- 1.0: the context clearly contains the facts needed to produce the expected answer.\n"
-            "- 0.5: the context is partially relevant or ambiguous.\n"
-            "- 0.0: the context does not contain the needed information or contradicts it.\n"
-            "If the expected answer appears verbatim or as an obvious paraphrase, score at least 0.95.\n"
-            "Do not heavily penalize extra unrelated text if the answer is still clearly present.\n"
-            "Return ONLY a raw JSON object with no markdown fences or extra text: "
-            "{\"score\": <float>, \"reasoning\": \"<str>\"}"
-        )
-        user = (
-            f"Question: {result['question']}\n"
-            f"Expected answer: {result['expected']}\n"
-            f"Retrieved context: {result['context']}\n"
-            f"Score the retrieval quality: did the system find the right information?"
-        )
+        """Score a single question-answer pair.
+
+        In tool eval mode: judges whether retrieved context contains the answer.
+        In system eval mode: judges whether the agent's response answers correctly.
+        """
+        eval_mode = result.get("eval_mode", "tool")
+
+        if eval_mode == "system":
+            system = (
+                "You are evaluating whether an AI assistant correctly answered a question "
+                "based on its memory of past conversations. Score 0.0-1.0 using this rubric:\n"
+                "- 1.0: the assistant's response contains the correct answer.\n"
+                "- 0.5: the response is partially correct or ambiguous.\n"
+                "- 0.0: the response is wrong, says it doesn't know, or doesn't address the question.\n"
+                "If the expected answer appears in the response (verbatim or paraphrased), score at least 0.95.\n"
+                "Return ONLY a raw JSON object: {\"score\": <float>, \"reasoning\": \"<str>\"}"
+            )
+            user = (
+                f"Question: {result['question']}\n"
+                f"Expected answer: {result['expected']}\n"
+                f"Assistant's response: {result['context']}\n"
+                f"Did the assistant answer the question correctly?"
+            )
+        else:
+            system = (
+                "You are evaluating whether retrieved memory context is sufficient to answer "
+                "a question based on past conversations. Score 0.0-1.0 using this rubric:\n"
+                "- 1.0: the context clearly contains the facts needed to produce the expected answer.\n"
+                "- 0.5: the context is partially relevant or ambiguous.\n"
+                "- 0.0: the context does not contain the needed information or contradicts it.\n"
+                "If the expected answer appears verbatim or as an obvious paraphrase, score at least 0.95.\n"
+                "Do not heavily penalize extra unrelated text if the answer is still clearly present.\n"
+                "Return ONLY a raw JSON object with no markdown fences or extra text: "
+                "{\"score\": <float>, \"reasoning\": \"<str>\"}"
+            )
+            user = (
+                f"Question: {result['question']}\n"
+                f"Expected answer: {result['expected']}\n"
+                f"Retrieved context: {result['context']}\n"
+                f"Score the retrieval quality: did the system find the right information?"
+            )
         try:
             resp = self._judge.complete(system=system, user=user)
             return self._parse_judge_response(resp.text)

@@ -37,7 +37,7 @@ def _load_local_env() -> None:
     load_dotenv()
 
 
-def run_benchmark(max_questions: int = 0, output_path: str = ""):
+def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "tool"):
     _load_local_env()
     url = os.environ.get("MEMORIES_URL", "http://localhost:8900")
     api_key = os.environ.get("MEMORIES_API_KEY", "")
@@ -64,6 +64,25 @@ def run_benchmark(max_questions: int = 0, output_path: str = ""):
         sys.exit(1)
     _log(f"Judge ready: {type(runner._judge).__name__}")
 
+    # Initialize CCExecutor for system eval mode
+    cc_executor = None
+    if mode == "system":
+        from eval.cc_executor import CCExecutor
+        mcp_server_path = os.environ.get(
+            "EVAL_MCP_SERVER_PATH",
+            str(Path(__file__).parent.parent / "mcp-server" / "index.js"),
+        )
+        cc_executor = CCExecutor(
+            timeout=120,
+            memories_url=url,
+            memories_api_key=api_key,
+            mcp_server_path=mcp_server_path,
+        )
+        CCExecutor.cleanup_stale_auto_memory()
+        _log(f"System eval mode: CCExecutor with MCP server at {mcp_server_path}")
+
+    _log(f"Running in {mode} eval mode")
+
     prefix = "eval/longmemeval"
     scores = []
     by_type = {}
@@ -87,23 +106,27 @@ def run_benchmark(max_questions: int = 0, output_path: str = ""):
 
             _log(f"  Seeded {seeded} memory chunks")
 
-            # Step 2: Search for the answer
+            # Step 2: Get the answer (tool mode: raw search, system mode: agent reasoning)
             try:
-                question_result = runner.run_question(q, k=10, source_prefix=prefix)
-                results = question_result["search_results"]
+                if mode == "system" and cc_executor:
+                    question_result = runner.run_question_system(
+                        q, cc_executor=cc_executor, source_prefix=prefix
+                    )
+                    _log(f"  Agent responded: {len(question_result['context'])} chars")
+                else:
+                    question_result = runner.run_question(q, k=10, source_prefix=prefix)
+                    results = question_result["search_results"]
+                    _log(
+                        f"  Retrieved {len(results)} results, judge context(top-{runner.DEFAULT_CONTEXT_RESULTS}): {len(question_result['context'])} chars"
+                    )
             except Exception as e:
-                _log(f"  Search failed: {e}")
-                results = []
+                _log(f"  {'Agent' if mode == 'system' else 'Search'} failed: {e}")
                 question_result = {
                     "question": question,
                     "expected": expected,
                     "context": "",
+                    "eval_mode": mode,
                 }
-
-            context = question_result["context"]
-            _log(
-                f"  Retrieved {len(results)} results, judge context(top-{runner.DEFAULT_CONTEXT_RESULTS}): {len(context)} chars"
-            )
 
             # Step 3: Judge — does the context contain the answer?
             try:
@@ -162,5 +185,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run LongMemEval benchmark")
     parser.add_argument("--questions", type=int, default=0, help="Limit to N questions (0=all)")
     parser.add_argument("--output", default="eval/results/longmemeval-v4.0.0.json", help="Output file")
+    parser.add_argument("--mode", choices=["tool", "system"], default="tool",
+                        help="Eval mode: 'tool' = raw API search (diagnostic), 'system' = agent + MCP tools (product score)")
     args = parser.parse_args()
-    run_benchmark(max_questions=args.questions, output_path=args.output)
+    run_benchmark(max_questions=args.questions, output_path=args.output, mode=args.mode)
