@@ -56,7 +56,6 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
         dataset = dataset[:max_questions]
         _log(f"Running subset: {max_questions} questions")
 
-    # Initialize judge before the loop
     _log("Initializing LLM judge...")
     runner.init_judge()
     if runner._judge is None:
@@ -64,7 +63,6 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
         sys.exit(1)
     _log(f"Judge ready: {type(runner._judge).__name__}")
 
-    # Initialize CCExecutor for system eval mode
     cc_executor = None
     if mode == "system":
         from eval.cc_executor import CCExecutor
@@ -97,7 +95,6 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
         _log(f"\n[{i+1}/{total}] Q{qid} ({qtype}): {question[:60]}...")
 
         try:
-            # Step 1: Seed this question's sessions as direct memories
             try:
                 seeded = runner.seed_question(q, source_prefix=prefix)
             except Exception as e:
@@ -128,12 +125,14 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
                     "eval_mode": mode,
                 }
 
-            # Step 3: Judge — does the context contain the answer?
-            try:
-                score, reasoning = runner._judge_single(question_result)
-            except Exception as e:
-                _log(f"  Judge failed: {e}")
-                score, reasoning = 0.0, str(e)
+            if not question_result.get("context"):
+                score, reasoning = 0.0, "No context retrieved"
+            else:
+                try:
+                    score, reasoning = runner._judge_single(question_result)
+                except Exception as e:
+                    _log(f"  Judge failed: {e}")
+                    score, reasoning = 0.0, str(e)
 
             _log(f"  Score: {score:.2f} | Expected: {expected[:60]}")
             scores.append({"qid": qid, "type": qtype, "score": score, "reasoning": reasoning})
