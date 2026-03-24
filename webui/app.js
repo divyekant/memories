@@ -3792,3 +3792,12 @@ initTheme();
 syncKeyStatus();
 initMobileSidebar();
 initRouter();
+
+// Fetch and display version in sidebar
+(async () => {
+  try {
+    const data = await api("/health");
+    const el = document.getElementById("sidebarVersion");
+    if (el && data.version) el.textContent = `v${data.version}`;
+  } catch { /* silent */ }
+})();
