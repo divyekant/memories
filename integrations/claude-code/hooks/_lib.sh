@@ -335,11 +335,12 @@ _search_memories_multi() {
   done < <(echo "$backends" | jq -c '.[]')
   wait
 
-  # Merge results: sort by score first, then dedup (unique_by keeps the first
-  # occurrence, so sorting first ensures the highest-scoring result wins).
+  # Merge results: sort by score, dedup keeping highest-scoring duplicate,
+  # then re-sort to guarantee global score ordering after dedup.
   cat "$tmpdir"/result_*.jsonl 2>/dev/null | jq -s '
     sort_by(-(.similarity // .rrf_score // 0))
     | unique_by(.text)
+    | sort_by(-(.similarity // .rrf_score // 0))
   ' | jq -c '{results: ., count: length}'
 
   rm -rf "$tmpdir"

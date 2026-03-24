@@ -44,6 +44,14 @@ def run_benchmark(max_questions: int = 0, output_path: str = ""):
         dataset = dataset[:max_questions]
         print(f"Running subset: {max_questions} questions")
 
+    # Initialize judge before the loop
+    print("Initializing LLM judge...")
+    runner._init_judge()
+    if runner._judge is None:
+        print("ERROR: Judge failed to initialize. Set EXTRACT_PROVIDER and ANTHROPIC_API_KEY.")
+        sys.exit(1)
+    print(f"Judge ready: {type(runner._judge).__name__}")
+
     prefix = "eval/longmemeval"
     scores = []
     by_type = {}

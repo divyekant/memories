@@ -60,11 +60,15 @@ class LongMemEvalRunner:
         urllib.request.urlretrieve(url, str(dest))
 
     def _parse_dataset(self, path: Path) -> list[dict]:
-        """Parse JSON array into list of question dicts."""
-        with open(path) as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
+        """Parse JSON array or JSONL into list of question dicts."""
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+            return [data]  # single object
+        except json.JSONDecodeError:
+            pass
         # Fallback for JSONL format
         items = []
         with open(path) as f:
