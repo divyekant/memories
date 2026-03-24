@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.0.0] - 2026-03-23
+
+### Added
+- **R4: Multi-Backend Routing** — one agent session talks to multiple Memories instances (#53)
+  - Config at `~/.config/memories/backends.yaml` with 3 tiers: scenario-based, scenario + overrides, DIY
+  - Scenario routing: dev+prod (search both, extract to dev), personal+shared, single instance
+  - Env var interpolation for API keys in config (`${VAR_NAME}`)
+  - Parallel search fan-out with exact-text dedup and `_backend` provenance tags
+  - Refactored duplicated `search_memories()` into shared `_search_memories_multi()` in `_lib.sh`
+  - Multi-backend extract routing via `_extract_multi()` — all 7 hooks updated
+  - MCP server proxy routing with `Promise.allSettled()` fan-out, all 14 tools updated
+  - Node.js + js-yaml for YAML config parsing (no Python/PyYAML dependency)
+  - Full backward compatibility — no config file = env var mode = unchanged behavior
+
 ## [3.4.0] - 2026-03-23
 
 ### Added
