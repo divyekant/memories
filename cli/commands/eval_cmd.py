@@ -23,7 +23,9 @@ def eval_group():
 @click.option("--k", default=5, help="Number of search results per question")
 @click.option("--url", default="http://localhost:8900", help="Memories service URL")
 @click.option("--api-key", default="", help="API key")
-def longmemeval(judge_provider, judge_model, output, compare, questions, k, url, api_key):
+@click.option("--mode", type=click.Choice(["tool", "system"]), default="tool",
+              help="Eval mode: 'tool' = raw API search, 'system' = agent + MCP tools")
+def longmemeval(judge_provider, judge_model, output, compare, questions, k, url, api_key, mode):
     """Run LongMemEval benchmark against the Memories engine."""
     import os
     from eval.memories_client import MemoriesClient

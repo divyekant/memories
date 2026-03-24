@@ -158,6 +158,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     if output_path:
         result = {
             "version": "4.0.0",
+            "eval_mode": mode,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "questions_run": len(scores),
             "overall": round(overall, 4),
@@ -177,8 +178,9 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run LongMemEval benchmark")
     parser.add_argument("--questions", type=int, default=0, help="Limit to N questions (0=all)")
-    parser.add_argument("--output", default="eval/results/longmemeval-v4.0.0.json", help="Output file")
+    parser.add_argument("--output", default=None, help="Output file (default: eval/results/longmemeval-v4.0.0-{mode}.json)")
     parser.add_argument("--mode", choices=["tool", "system"], default="tool",
                         help="Eval mode: 'tool' = raw API search (diagnostic), 'system' = agent + MCP tools (product score)")
     args = parser.parse_args()
-    run_benchmark(max_questions=args.questions, output_path=args.output, mode=args.mode)
+    output = args.output or f"eval/results/longmemeval-v4.0.0-{args.mode}.json"
+    run_benchmark(max_questions=args.questions, output_path=output, mode=args.mode)
