@@ -18,11 +18,16 @@ import yaml from "js-yaml";
 
 function loadBackends() {
   // Resolution: MEMORIES_BACKENDS_FILE -> project -> global -> env fallback
-  const configPaths = [
-    process.env.MEMORIES_BACKENDS_FILE,
-    path.join(process.cwd(), ".memories", "backends.yaml"),
-    path.join(process.env.HOME || "", ".config", "memories", "backends.yaml"),
-  ].filter(Boolean);
+  // If MEMORIES_BACKENDS_FILE is explicitly set (even to a nonexistent path),
+  // skip project/global config resolution — this allows callers (like the eval
+  // harness) to force single-backend mode by setting the env var.
+  const explicitFile = process.env.MEMORIES_BACKENDS_FILE;
+  const configPaths = explicitFile
+    ? [explicitFile]  // Only check the explicit path, skip project/global
+    : [
+        path.join(process.cwd(), ".memories", "backends.yaml"),
+        path.join(process.env.HOME || "", ".config", "memories", "backends.yaml"),
+      ];
 
   for (const p of configPaths) {
     if (fs.existsSync(p)) {
@@ -149,12 +154,14 @@ server.tool(
     k: z.number().int().min(1).max(50).default(5).describe("Number of results to return"),
     hybrid: z.boolean().default(true).describe("Use hybrid BM25+vector search (recommended)"),
     threshold: z.number().min(0).max(1).optional().describe("Minimum similarity score (0-1)"),
+    source_prefix: z.string().optional().describe("Filter by source prefix (e.g. 'claude-code/myproject' or 'eval/longmemeval/q42')"),
     feedback_weight: z.number().min(0).max(1).default(0.1).describe("Weight for feedback-based ranking (0=disabled, default 0.1)"),
     confidence_weight: z.number().min(0).max(1).default(0).describe("Weight for confidence-based ranking (0=disabled)"),
   },
-  async ({ query, k = 5, hybrid = true, threshold, feedback_weight, confidence_weight }) => {
+  async ({ query, k = 5, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight }) => {
     const body = { query, k, hybrid };
     if (threshold !== undefined) body.threshold = threshold;
+    if (source_prefix) body.source_prefix = source_prefix;
     if (feedback_weight !== undefined) body.feedback_weight = feedback_weight;
     if (confidence_weight !== undefined && confidence_weight > 0) body.confidence_weight = confidence_weight;
 

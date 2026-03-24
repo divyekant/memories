@@ -37,7 +37,7 @@ def _load_local_env() -> None:
     load_dotenv()
 
 
-def run_benchmark(max_questions: int = 0, output_path: str = ""):
+def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "tool"):
     _load_local_env()
     url = os.environ.get("MEMORIES_URL", "http://localhost:8900")
     api_key = os.environ.get("MEMORIES_API_KEY", "")
@@ -56,13 +56,30 @@ def run_benchmark(max_questions: int = 0, output_path: str = ""):
         dataset = dataset[:max_questions]
         _log(f"Running subset: {max_questions} questions")
 
-    # Initialize judge before the loop
     _log("Initializing LLM judge...")
     runner.init_judge()
     if runner._judge is None:
         _log("ERROR: Judge failed to initialize. Set EXTRACT_PROVIDER and ANTHROPIC_API_KEY.")
         sys.exit(1)
     _log(f"Judge ready: {type(runner._judge).__name__}")
+
+    cc_executor = None
+    if mode == "system":
+        from eval.cc_executor import CCExecutor
+        mcp_server_path = os.environ.get(
+            "EVAL_MCP_SERVER_PATH",
+            str(Path(__file__).parent.parent / "mcp-server" / "index.js"),
+        )
+        cc_executor = CCExecutor(
+            timeout=120,
+            memories_url=url,
+            memories_api_key=api_key,
+            mcp_server_path=mcp_server_path,
+        )
+        CCExecutor.cleanup_stale_auto_memory()
+        _log(f"System eval mode: CCExecutor with MCP server at {mcp_server_path}")
+
+    _log(f"Running in {mode} eval mode")
 
     prefix = "eval/longmemeval"
     scores = []
@@ -78,7 +95,6 @@ def run_benchmark(max_questions: int = 0, output_path: str = ""):
         _log(f"\n[{i+1}/{total}] Q{qid} ({qtype}): {question[:60]}...")
 
         try:
-            # Step 1: Seed this question's sessions as direct memories
             try:
                 seeded = runner.seed_question(q, source_prefix=prefix)
             except Exception as e:
@@ -87,36 +103,36 @@ def run_benchmark(max_questions: int = 0, output_path: str = ""):
 
             _log(f"  Seeded {seeded} memory chunks")
 
-            # Step 2: Search for the answer
+            # Step 2: Get the answer (tool mode: raw search, system mode: agent reasoning)
             try:
-                question_result = runner.run_question(q, k=10, source_prefix=prefix)
-                results = question_result["search_results"]
+                if mode == "system" and cc_executor:
+                    question_result = runner.run_question_system(
+                        q, cc_executor=cc_executor, source_prefix=prefix
+                    )
+                    _log(f"  Agent responded: {len(question_result['context'])} chars")
+                else:
+                    question_result = runner.run_question(q, k=10, source_prefix=prefix)
+                    results = question_result["search_results"]
+                    _log(
+                        f"  Retrieved {len(results)} results, judge context(top-{runner.DEFAULT_CONTEXT_RESULTS}): {len(question_result['context'])} chars"
+                    )
             except Exception as e:
-                _log(f"  Search failed: {e}")
-                results = []
+                _log(f"  {'Agent' if mode == 'system' else 'Search'} failed: {e}")
                 question_result = {
                     "question": question,
                     "expected": expected,
                     "context": "",
+                    "eval_mode": mode,
                 }
 
-            context = question_result["context"]
-            _log(
-                f"  Retrieved {len(results)} results, judge context(top-{runner.DEFAULT_CONTEXT_RESULTS}): {len(context)} chars"
-            )
-
-            # Step 3: Judge — does the context contain the answer?
-            try:
-                score, reasoning = runner._judge_single(
-                    {
-                        "question": question_result["question"],
-                        "expected": question_result["expected"],
-                        "context": question_result["context"],
-                    }
-                )
-            except Exception as e:
-                _log(f"  Judge failed: {e}")
-                score, reasoning = 0.0, str(e)
+            if not question_result.get("context"):
+                score, reasoning = 0.0, "No context retrieved"
+            else:
+                try:
+                    score, reasoning = runner._judge_single(question_result)
+                except Exception as e:
+                    _log(f"  Judge failed: {e}")
+                    score, reasoning = 0.0, str(e)
 
             _log(f"  Score: {score:.2f} | Expected: {expected[:60]}")
             scores.append({"qid": qid, "type": qtype, "score": score, "reasoning": reasoning})
@@ -142,6 +158,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = ""):
     if output_path:
         result = {
             "version": "4.0.0",
+            "eval_mode": mode,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "questions_run": len(scores),
             "overall": round(overall, 4),
@@ -161,6 +178,9 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run LongMemEval benchmark")
     parser.add_argument("--questions", type=int, default=0, help="Limit to N questions (0=all)")
-    parser.add_argument("--output", default="eval/results/longmemeval-v4.0.0.json", help="Output file")
+    parser.add_argument("--output", default=None, help="Output file (default: eval/results/longmemeval-v4.0.0-{mode}.json)")
+    parser.add_argument("--mode", choices=["tool", "system"], default="tool",
+                        help="Eval mode: 'tool' = raw API search (diagnostic), 'system' = agent + MCP tools (product score)")
     args = parser.parse_args()
-    run_benchmark(max_questions=args.questions, output_path=args.output)
+    output = args.output or f"eval/results/longmemeval-v4.0.0-{args.mode}.json"
+    run_benchmark(max_questions=args.questions, output_path=output, mode=args.mode)
