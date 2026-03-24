@@ -27,6 +27,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from eval.longmemeval import LongMemEvalRunner
 from eval.memories_client import MemoriesClient
 
+# Thread-local storage for per-thread MemoriesClient instances.
+# httpx.Client is not thread-safe — each worker needs its own.
+_thread_local = threading.local()
+
 _print_lock = threading.Lock()
 
 
@@ -44,6 +48,13 @@ def _load_local_env() -> None:
     load_dotenv()
 
 
+def _get_thread_client(url: str, api_key: str) -> MemoriesClient:
+    """Get or create a per-thread MemoriesClient (httpx.Client is not thread-safe)."""
+    if not hasattr(_thread_local, "client"):
+        _thread_local.client = MemoriesClient(url=url, api_key=api_key)
+    return _thread_local.client
+
+
 def _process_question(
     idx: int,
     total: int,
@@ -53,12 +64,17 @@ def _process_question(
     prefix: str,
     cc_executor=None,
     project_queue: "queue.Queue | None" = None,
+    client_url: str = "",
+    client_api_key: str = "",
 ) -> dict:
     """Process a single question. Thread-safe — uses scoped prefix per question.
 
     For system mode: acquires a project dir from the queue exclusively,
     returns it when done (even on failure). No two questions share a
     project dir simultaneously.
+
+    For parallel mode: uses per-thread MemoriesClient via threading.local()
+    since httpx.Client is not thread-safe.
     """
     qid = q.get("question_id", idx)
     qtype = q.get("question_type", "unknown")
@@ -72,9 +88,17 @@ def _process_question(
     if project_queue is not None:
         project_dir = project_queue.get()
 
+    # Use per-thread client for parallel safety (httpx.Client is not thread-safe)
+    if client_url:
+        thread_client = _get_thread_client(client_url, client_api_key)
+        thread_runner = LongMemEvalRunner(client=thread_client, judge_provider=runner.judge_provider, judge_model=runner.judge_model)
+        thread_runner._judge = runner._judge  # Share the judge (LLM provider is thread-safe)
+    else:
+        thread_runner = runner
+
     try:
         try:
-            seeded = runner.seed_question(q, source_prefix=prefix)
+            seeded = thread_runner.seed_question(q, source_prefix=prefix)
         except Exception as e:
             _log(f"  Seeding failed: {e}")
             seeded = 0
@@ -83,7 +107,7 @@ def _process_question(
 
         try:
             if mode == "system" and cc_executor:
-                question_result = runner.run_question_system(
+                question_result = thread_runner.run_question_system(
                     q,
                     cc_executor=cc_executor,
                     source_prefix=prefix,
@@ -91,7 +115,7 @@ def _process_question(
                 )
                 _log(f"  Agent responded: {len(question_result['context'])} chars")
             else:
-                question_result = runner.run_question(q, k=10, source_prefix=prefix)
+                question_result = thread_runner.run_question(q, k=10, source_prefix=prefix)
                 results = question_result["search_results"]
                 _log(
                     f"  Retrieved {len(results)} results, judge context(top-{runner.DEFAULT_CONTEXT_RESULTS}): {len(question_result['context'])} chars"
@@ -109,7 +133,7 @@ def _process_question(
             score, reasoning = 0.0, "No context retrieved"
         else:
             try:
-                score, reasoning = runner._judge_single(question_result)
+                score, reasoning = thread_runner._judge_single(question_result)
             except Exception as e:
                 _log(f"  Judge failed: {e}")
                 score, reasoning = 0.0, str(e)
@@ -118,7 +142,7 @@ def _process_question(
         return {"qid": qid, "type": qtype, "score": score, "reasoning": reasoning}
     finally:
         try:
-            runner.clear_question(q, source_prefix=prefix)
+            thread_runner.clear_question(q, source_prefix=prefix)
         except Exception as e:
             _log(f"  Cleanup failed: {e}")
         if project_queue is not None and project_dir:
@@ -194,7 +218,10 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
         _log(f"Distributing {total} questions across {workers} workers...")
 
         def _worker(idx, q):
-            return idx, _process_question(idx, total, q, runner, mode, prefix, cc_executor, project_queue)
+            return idx, _process_question(
+                idx, total, q, runner, mode, prefix, cc_executor, project_queue,
+                client_url=url, client_api_key=api_key,
+            )
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
