@@ -291,3 +291,21 @@ This ensures the most relevant memories are always in Claude's context window, e
 - User explicitly says "remember this" — call `memory_add` immediately
 
 AUDN deduplicates across both paths. If a hook extracts a fact that `memory_add` already stored, AUDN issues a NOOP. If you manually extract something a hook will also extract, the duplicate is harmless.
+
+## Multi-Backend Routing
+
+This session may have multiple Memories backends configured via `~/.config/memories/backends.yaml`.
+Memory operations are routed automatically:
+
+- **Search** fans out to all search-enabled backends and merges results
+- **Extract** writes to dev/personal backends only (configurable)
+- **Add** writes to all writable backends
+- **Feedback** routes to dev/personal backends
+
+When search results include `_backend` tags, that shows which instance each memory came from.
+You don't need to route manually — the hooks and MCP server handle it transparently.
+
+### Source prefix conventions for multi-backend
+- `decision/{project}` — shared/team decisions (written to all backends)
+- `personal/{project}` — personal notes (stays on personal/dev backend only)
+- `claude-code/{project}`, `learning/{project}`, `wip/{project}` — standard prefixes, routed per config
