@@ -10,6 +10,9 @@ def _merge_results(results_by_backend):
         for r in results:
             all_results.append({**r, "_backend": backend})
 
+    # Sort by score FIRST so dedup (first-seen wins) keeps the highest-scoring result
+    all_results.sort(key=lambda x: x.get("similarity", x.get("rrf_score", 0)), reverse=True)
+
     # Dedup by exact text
     seen = set()
     deduped = []
@@ -19,8 +22,6 @@ def _merge_results(results_by_backend):
             seen.add(key)
             deduped.append(r)
 
-    # Sort by score
-    deduped.sort(key=lambda x: x.get("similarity", x.get("rrf_score", 0)), reverse=True)
     return deduped
 
 
@@ -40,7 +41,18 @@ class TestSearchMerge:
             "prod": [{"id": 99, "text": "same fact", "similarity": 0.85}],
         })
         assert len(results) == 1
-        assert results[0]["_backend"] == "local"  # first seen wins
+        assert results[0]["_backend"] == "local"  # highest score wins
+        assert results[0]["similarity"] == 0.9
+
+    def test_dedup_keeps_highest_score_not_first_seen(self):
+        """When a lower-scoring backend is listed first, dedup still keeps the higher score."""
+        results = _merge_results({
+            "prod": [{"id": 99, "text": "same fact", "similarity": 0.7}],
+            "local": [{"id": 1, "text": "same fact", "similarity": 0.95}],
+        })
+        assert len(results) == 1
+        assert results[0]["_backend"] == "local"  # highest score, not first backend
+        assert results[0]["similarity"] == 0.95
 
     def test_different_text_not_deduped(self):
         results = _merge_results({

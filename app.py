@@ -1119,7 +1119,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Memories API",
-    version="3.4.0",
+    version="4.0.0",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
 )
@@ -1406,7 +1406,7 @@ async def health(request: Request):
 
     Unauthenticated callers get minimal response; authenticated callers get full stats.
     """
-    base = {"status": "ok", "service": "memories", "version": "3.4.0"}
+    base = {"status": "ok", "service": "memories", "version": "4.0.0"}
     # Only include detailed stats for authenticated callers
     if not API_KEY or hmac.compare_digest(
         request.headers.get("X-API-Key", "").encode(), API_KEY.encode()

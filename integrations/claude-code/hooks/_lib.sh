@@ -58,6 +58,99 @@ _health_check() {
 
 _BACKENDS_CACHE=""
 
+# Pure-shell YAML parser for backends.yaml — handles the simple flat format only.
+# Supports: backends.<name>.url, backends.<name>.api_key, backends.<name>.scenario,
+# and routing.<op>: [name1, name2].
+_parse_backends_yaml() {
+  local file="$1"
+  local current_section="" current_name="" backends_json="[]" routing_json="{}"
+  local url="" api_key="" scenario="" _routing_current_key=""
+
+  _flush_backend() {
+    if [ -n "$current_name" ] && [ -n "$url" ]; then
+      # Resolve ${VAR} references in api_key
+      local resolved_key="$api_key"
+      local env_var
+      env_var=$(printf '%s' "$api_key" | sed -n 's/.*\${\([A-Za-z_][A-Za-z0-9_]*\)}.*/\1/p')
+      if [ -n "$env_var" ]; then
+        resolved_key="${!env_var:-$api_key}"
+      fi
+      backends_json=$(printf '%s' "$backends_json" | jq -c --arg n "$current_name" \
+        --arg u "$url" --arg k "$resolved_key" --arg s "$scenario" \
+        '. + [{name: $n, url: $u, api_key: $k, scenario: $s}]')
+    fi
+    url="" api_key="" scenario="" current_name=""
+  }
+
+  while IFS= read -r line; do
+    # Skip comments and blank lines
+    case "$line" in
+      '#'*|'') continue ;;
+    esac
+
+    # Top-level sections
+    if printf '%s' "$line" | grep -qE '^backends:'; then
+      current_section="backends"
+      continue
+    fi
+    if printf '%s' "$line" | grep -qE '^routing:'; then
+      current_section="routing"
+      continue
+    fi
+
+    if [ "$current_section" = "backends" ]; then
+      # Backend name line (2-space indent, no further indent)
+      if printf '%s' "$line" | grep -qE '^  [a-zA-Z_][a-zA-Z0-9_-]*:'; then
+        _flush_backend
+        current_name=$(printf '%s' "$line" | sed 's/^ *//;s/:.*//')
+      fi
+      # Properties (4-space indent)
+      if printf '%s' "$line" | grep -qE '^    url:'; then
+        url=$(printf '%s' "$line" | sed 's/^    url: *//;s/^ *//;s/ *$//')
+      fi
+      if printf '%s' "$line" | grep -qE '^    api_key:'; then
+        api_key=$(printf '%s' "$line" | sed 's/^    api_key: *//;s/^ *//;s/ *$//')
+      fi
+      if printf '%s' "$line" | grep -qE '^    scenario:'; then
+        scenario=$(printf '%s' "$line" | sed 's/^    scenario: *//;s/^ *//;s/ *$//')
+      fi
+    fi
+
+    if [ "$current_section" = "routing" ]; then
+      # Routing supports two YAML formats:
+      #   Inline:  search: [alpha, beta]
+      #   Block:   search:\n  - alpha\n  - beta
+      if printf '%s' "$line" | grep -qE '^  - '; then
+        # Block list item — append to current routing key
+        local item
+        item=$(printf '%s' "$line" | sed 's/^  - *//;s/ *$//')
+        if [ -n "$item" ] && [ -n "$_routing_current_key" ]; then
+          routing_json=$(printf '%s' "$routing_json" | jq -c --arg k "$_routing_current_key" --arg v "$item" \
+            '.[$k] = ((.[$k] // []) + [$v])')
+        fi
+      elif printf '%s' "$line" | grep -qE '^  [a-z_]+:'; then
+        local rkey rval
+        rkey=$(printf '%s' "$line" | sed 's/^ *//;s/:.*//')
+        rval=$(printf '%s' "$line" | sed 's/^[^:]*: *//;s/^ *//;s/ *$//')
+        _routing_current_key="$rkey"
+        if [ -n "$rval" ]; then
+          # Inline format: search: [alpha, beta]
+          rval=$(printf '%s' "$rval" | sed 's/\[//;s/\]//;s/,/ /g')
+          local rarray="[]"
+          for item in $rval; do
+            item=$(printf '%s' "$item" | sed 's/^ *//;s/ *$//')
+            [ -n "$item" ] && rarray=$(printf '%s' "$rarray" | jq -c --arg v "$item" '. + [$v]')
+          done
+          routing_json=$(printf '%s' "$routing_json" | jq -c --arg k "$rkey" --argjson v "$rarray" '. + {($k): $v}')
+        fi
+      fi
+    fi
+  done < "$file"
+  _flush_backend
+
+  jq -nc --argjson b "$backends_json" --argjson r "$routing_json" '{backends: $b, routing: $r}'
+}
+
 _load_backends() {
   # Return cached if already loaded
   if [ -n "$_BACKENDS_CACHE" ]; then
@@ -77,29 +170,45 @@ _load_backends() {
   fi
 
   if [ -n "$config_file" ] && [ -f "$config_file" ]; then
-    # Parse YAML → JSON using Node.js + js-yaml (guaranteed available — Claude Code requires Node,
-    # and js-yaml is installed in mcp-server/node_modules).
-    # Resolve mcp-server path relative to hooks directory.
-    local hooks_dir
-    hooks_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-    local mcp_modules="${hooks_dir}/../../../mcp-server/node_modules"
-    # Fallback: check common install locations
-    [ ! -d "$mcp_modules" ] && mcp_modules="${hooks_dir}/../../mcp-server/node_modules"
-    [ ! -d "$mcp_modules" ] && mcp_modules="$HOME/projects/memories/mcp-server/node_modules"
+    # Parse YAML → JSON.  Try Node.js + js-yaml first (best fidelity),
+    # fall back to a pure-shell parser for the simple backends.yaml format.
+    local raw=""
 
-    local raw
-    raw=$(node -e "
-const yaml = require('${mcp_modules}/js-yaml');
-const fs = require('fs');
-const data = yaml.load(fs.readFileSync('${config_file}', 'utf8'));
-const backends = Object.entries(data.backends || {}).map(([name, cfg]) => {
-  let apiKey = cfg.api_key || '';
-  const m = apiKey.match(/\\\$\{(\w+)\}/);
-  if (m) apiKey = process.env[m[1]] || apiKey;
-  return { name, url: cfg.url || '', api_key: apiKey, scenario: cfg.scenario || '' };
-});
-console.log(JSON.stringify({ backends, routing: data.routing || {} }));
-" 2>/dev/null)
+    if command -v node >/dev/null 2>&1; then
+      # Try to find js-yaml via multiple search paths.  Installed hooks live at
+      # ~/.claude/hooks/memory/ (not in the repo), so the relative path to
+      # mcp-server/node_modules won't resolve.  We search:
+      #   1. Plain require (works if cwd is inside the repo)
+      #   2. Relative to this script's directory (works in-repo)
+      #   3. Well-known global config location
+      local hooks_dir
+      hooks_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+      local search_paths="${hooks_dir}/../../../mcp-server/node_modules:${hooks_dir}/../../mcp-server/node_modules"
+      search_paths="${search_paths}:$HOME/.config/memories/mcp-server/node_modules"
+
+      raw=$(NODE_PATH="${search_paths}:${NODE_PATH:-}" node -e "
+try {
+  const yaml = require('js-yaml');
+  const fs = require('fs');
+  const data = yaml.load(fs.readFileSync('${config_file}', 'utf8'));
+  const backends = Object.entries(data.backends || {}).map(([name, cfg]) => {
+    let apiKey = cfg.api_key || '';
+    const m = apiKey.match(/\\\$\{(\w+)\}/);
+    if (m) apiKey = process.env[m[1]] || apiKey;
+    return { name, url: cfg.url || '', api_key: apiKey, scenario: cfg.scenario || '' };
+  });
+  console.log(JSON.stringify({ backends, routing: data.routing || {} }));
+} catch(e) {
+  process.exit(1);
+}
+" 2>/dev/null) || raw=""
+    fi
+
+    # Fallback: pure-shell parser for the simple flat YAML format
+    # (handles: backends.<name>.url, .api_key, .scenario; routing.<op>: [list])
+    if [ -z "$raw" ]; then
+      raw=$(_parse_backends_yaml "$config_file")
+    fi
     _BACKENDS_CACHE="$raw"
     # Output just the backends array for simple callers
     echo "$raw" | jq -c '.backends'
@@ -202,10 +311,12 @@ _search_memories_multi() {
   fi
 
   # Multi-backend: parallel fan-out with background subshells
+  # Use process substitution (< <(...)) so the while loop runs in the current
+  # shell and `wait` can actually collect the background jobs.
   local tmpdir
   tmpdir=$(mktemp -d)
   local i=0
-  echo "$backends" | jq -c '.[]' | while read -r backend; do
+  while read -r backend; do
     local url key name
     url=$(echo "$backend" | jq -r '.url')
     key=$(echo "$backend" | jq -r '.api_key')
@@ -221,13 +332,14 @@ _search_memories_multi() {
       fi
     ) &
     i=$((i + 1))
-  done
+  done < <(echo "$backends" | jq -c '.[]')
   wait
 
-  # Merge results: collect, dedup by exact text hash, sort by score
+  # Merge results: sort by score first, then dedup (unique_by keeps the first
+  # occurrence, so sorting first ensures the highest-scoring result wins).
   cat "$tmpdir"/result_*.jsonl 2>/dev/null | jq -s '
-    unique_by(.text)
-    | sort_by(-(.similarity // .rrf_score // 0))
+    sort_by(-(.similarity // .rrf_score // 0))
+    | unique_by(.text)
   ' | jq -c '{results: ., count: length}'
 
   rm -rf "$tmpdir"

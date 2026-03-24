@@ -120,6 +120,9 @@ async function memoriesRequest(reqPath, options = {}, op = "search") {
     }
   }
 
+  // Sort by score FIRST so dedup (first-seen wins) keeps the highest-scoring result
+  allResults.sort((a, b) => (b.similarity ?? b.rrf_score ?? 0) - (a.similarity ?? a.rrf_score ?? 0));
+
   // Dedup by exact text match
   const seen = new Set();
   const deduped = allResults.filter(r => {
@@ -129,9 +132,6 @@ async function memoriesRequest(reqPath, options = {}, op = "search") {
     return true;
   });
 
-  // Sort by score
-  deduped.sort((a, b) => (b.similarity ?? b.rrf_score ?? 0) - (a.similarity ?? a.rrf_score ?? 0));
-
   return { results: deduped, count: deduped.length };
 }
 
@@ -139,7 +139,7 @@ async function memoriesRequest(reqPath, options = {}, op = "search") {
 
 const server = new McpServer({
   name: "memories",
-  version: "3.4.0",
+  version: "4.0.0",
 });
 
 // -- Tools -------------------------------------------------------------------

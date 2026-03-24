@@ -22,7 +22,7 @@ class TestExportMemories:
         header = json.loads(lines[0])
         assert header["_header"] is True
         assert header["count"] == 0
-        assert header["version"] == "3.4.0"
+        assert header["version"] == "4.0.0"
         assert "exported_at" in header
 
     def test_export_all(self, engine):
