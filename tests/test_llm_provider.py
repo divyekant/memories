@@ -166,6 +166,23 @@ class TestAnthropicOAuth:
         assert state.access_token == "refreshed-token"
         # Transport reads state.access_token directly, so it will use the refreshed token
 
+    def test_anthropic_complete_sets_temperature_zero(self):
+        """Anthropic completions should be deterministic for evals and extraction."""
+        from llm_provider import AnthropicProvider
+
+        mock_anthropic = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='{"score": 1.0, "reasoning": "ok"}')]
+        mock_response.usage = MagicMock(input_tokens=10, output_tokens=5)
+        mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
+
+        with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
+            provider = AnthropicProvider(api_key="sk-ant-api03-fake")
+            provider.complete("sys", "usr")
+
+        call = mock_anthropic.Anthropic.return_value.messages.create.call_args
+        assert call.kwargs["temperature"] == 0.0
+
 
 class TestOllamaProvider:
     """Test OllamaProvider without network calls."""
@@ -253,6 +270,7 @@ class TestOllamaProvider:
                 request_obj = call_args[0][0]
                 body = json.loads(request_obj.data)
                 assert body.get("format") == "json"
+                assert body.get("options", {}).get("temperature") == 0.0
 
 
 class TestProviderInterface:
@@ -331,6 +349,8 @@ class TestChatGPTSubscriptionProvider:
             assert result.text == "test response"
             # Should have refreshed (init + expiry refresh = 2 calls)
             assert mock_refresh.call_count == 2
+            call = mock_openai.OpenAI.return_value.chat.completions.create.call_args
+            assert call.kwargs["temperature"] == 0.0
 
     def test_default_model(self):
         from llm_provider import ChatGPTSubscriptionProvider
@@ -370,3 +390,24 @@ class TestChatGPTSubscriptionProvider:
             assert hasattr(provider, "provider_name")
             assert hasattr(provider, "model")
             assert hasattr(provider, "supports_audn")
+
+
+class TestOpenAIProvider:
+    """Test direct OpenAI provider behavior."""
+
+    def test_complete_sets_temperature_zero(self):
+        from llm_provider import OpenAIProvider
+
+        mock_openai = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "test response"
+        mock_response.usage = MagicMock(prompt_tokens=12, completion_tokens=4)
+        mock_openai.OpenAI.return_value.chat.completions.create.return_value = mock_response
+
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            provider = OpenAIProvider(api_key="sk-test")
+            provider.complete("sys", "usr")
+
+        call = mock_openai.OpenAI.return_value.chat.completions.create.call_args
+        assert call.kwargs["temperature"] == 0.0

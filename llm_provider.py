@@ -37,6 +37,7 @@ DEFAULT_MODELS = {
     "openai": "gpt-4.1-nano",
     "ollama": "gemma3:4b",
 }
+DEFAULT_TEMPERATURE = 0.0
 
 
 class LLMProvider(ABC):
@@ -190,6 +191,7 @@ class AnthropicProvider(LLMProvider):
         response = self.client.messages.create(
             model=self.model,
             max_tokens=1024,
+            temperature=DEFAULT_TEMPERATURE,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -232,6 +234,7 @@ class OpenAIProvider(LLMProvider):
                 {"role": "user", "content": user},
             ],
             max_tokens=1024,
+            temperature=DEFAULT_TEMPERATURE,
         )
         usage = response.usage
         return CompletionResult(
@@ -309,6 +312,7 @@ class ChatGPTSubscriptionProvider(LLMProvider):
                 {"role": "user", "content": user},
             ],
             max_tokens=1024,
+            temperature=DEFAULT_TEMPERATURE,
         )
         usage = response.usage
         return CompletionResult(
@@ -347,6 +351,7 @@ class OllamaProvider(LLMProvider):
             "prompt": user,
             "stream": False,
             "format": "json",
+            "options": {"temperature": DEFAULT_TEMPERATURE},
         }).encode()
         req = urllib.request.Request(
             f"{self.base_url}/api/generate",

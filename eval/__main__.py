@@ -38,6 +38,7 @@ def main():
         config_data = yaml.safe_load(f)
 
     # Override with env vars
+    config_data["memories_url"] = os.getenv("MEMORIES_URL") or config_data.get("memories_url", "")
     config_data["memories_api_key"] = os.getenv("MEMORIES_API_KEY") or config_data.get("memories_api_key", "")
     mcp_server_path = os.getenv("EVAL_MCP_SERVER_PATH") or config_data.pop("mcp_server_path", "")
     config = EvalConfig(**config_data)

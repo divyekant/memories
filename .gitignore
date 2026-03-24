@@ -1,5 +1,6 @@
 # Data (contains sensitive info + binary index)
 data/
+data-eval/
 *.faiss
 
 # Python
@@ -48,6 +49,7 @@ htmlcov/
 eval/results/
 
 # LongMemEval datasets (downloaded on demand)
+eval/scenarios/longmemeval/*.json
 eval/scenarios/longmemeval/*.jsonl
 
 # Local git worktrees

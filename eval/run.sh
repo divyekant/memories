@@ -9,8 +9,11 @@ cd "$(dirname "$0")/.."
 [[ -f .env ]] && set -a && source .env && set +a
 [[ -f ~/.config/memories/env ]] && set -a && source ~/.config/memories/env && set +a
 
-# Map common env var names
+# Keep eval isolated from the user's default Memories target. Use
+# EVAL_MEMORIES_URL or MEMORIES_PORT to point the harness somewhere else.
+# MEMORIES_API_KEY still falls back to the normal service config.
 export MEMORIES_API_KEY="${MEMORIES_API_KEY:-${API_KEY:-}}"
+export MEMORIES_URL="${EVAL_MEMORIES_URL:-http://localhost:${MEMORIES_PORT:-8901}}"
 
 # Resolve MCP server path if not set
 if [[ -z "${EVAL_MCP_SERVER_PATH:-}" ]]; then
@@ -26,9 +29,9 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 # Check Memories service
-EVAL_PORT="${MEMORIES_PORT:-8901}"
-if ! curl -sf "http://localhost:${EVAL_PORT}/health" > /dev/null 2>&1; then
-  echo "Error: Memories service not reachable at http://localhost:${EVAL_PORT}" >&2
+EVAL_HEALTH_URL="${MEMORIES_URL%/}/health"
+if ! curl -sf "$EVAL_HEALTH_URL" > /dev/null 2>&1; then
+  echo "Error: Memories service not reachable at ${MEMORIES_URL}" >&2
   exit 1
 fi
 
@@ -39,7 +42,7 @@ if ! command -v claude > /dev/null 2>&1; then
 fi
 
 echo "=== Memories Efficacy Eval ==="
-echo "Memories: http://localhost:${EVAL_PORT} (healthy)"
+echo "Memories: ${MEMORIES_URL} (healthy)"
 if [[ -n "${MEMORIES_API_KEY:-}" ]]; then echo "API Key:  [set]"; else echo "API Key:  NOT SET"; fi
 echo "MCP Path: ${EVAL_MCP_SERVER_PATH:-not set}"
 echo "Args:     $*"

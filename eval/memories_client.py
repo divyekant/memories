@@ -8,6 +8,8 @@ import httpx
 class MemoriesClient:
     """Thin wrapper around the Memories REST API."""
 
+    MAX_BATCH_MEMORIES = 1000
+
     def __init__(self, url: str = "http://localhost:8900", api_key: str = "") -> None:
         self._client = httpx.Client(
             base_url=url,
@@ -16,15 +18,37 @@ class MemoriesClient:
         )
 
     def seed_memories(self, memories: list[dict]) -> list[int]:
-        """POST /memory/add for each memory. Returns list of assigned IDs."""
-        ids: list[int] = []
-        for mem in memories:
+        """Add memories, preferring batch mode for larger payloads."""
+        if not memories:
+            return []
+        if len(memories) == 1:
+            mem = memories[0]
             resp = self._client.post(
                 "/memory/add",
-                json={"text": mem["text"], "source": mem["source"], "deduplicate": False},
+                json={
+                    "text": mem["text"],
+                    "source": mem["source"],
+                    "metadata": mem.get("metadata"),
+                    "deduplicate": False,
+                },
             )
             resp.raise_for_status()
-            ids.append(resp.json()["id"])
+            return [resp.json()["id"]]
+        return self.add_batch(memories, deduplicate=False)
+
+    def add_batch(self, memories: list[dict], deduplicate: bool = False) -> list[int]:
+        """POST /memory/add-batch. Returns list of assigned IDs."""
+        if not memories:
+            return []
+        ids: list[int] = []
+        for start in range(0, len(memories), self.MAX_BATCH_MEMORIES):
+            batch = memories[start:start + self.MAX_BATCH_MEMORIES]
+            resp = self._client.post(
+                "/memory/add-batch",
+                json={"memories": batch, "deduplicate": deduplicate},
+            )
+            resp.raise_for_status()
+            ids.extend(resp.json().get("ids", []))
         return ids
 
     def clear_by_prefix(self, prefix: str) -> int:
