@@ -14,6 +14,7 @@ This script:
 
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -51,15 +52,25 @@ def _process_question(
     mode: str,
     prefix: str,
     cc_executor=None,
-    project_dir: str = "",
+    project_queue: "queue.Queue | None" = None,
 ) -> dict:
-    """Process a single question. Thread-safe — uses scoped prefix per question."""
+    """Process a single question. Thread-safe — uses scoped prefix per question.
+
+    For system mode: acquires a project dir from the queue exclusively,
+    returns it when done (even on failure). No two questions share a
+    project dir simultaneously.
+    """
     qid = q.get("question_id", idx)
     qtype = q.get("question_type", "unknown")
     question = str(q.get("question", ""))
     expected = str(q.get("answer", ""))
 
     _log(f"\n[{idx+1}/{total}] Q{qid} ({qtype}): {question[:60]}...")
+
+    # Acquire exclusive project dir for system mode
+    project_dir = ""
+    if project_queue is not None:
+        project_dir = project_queue.get()
 
     try:
         try:
@@ -110,6 +121,11 @@ def _process_question(
             runner.clear_question(q, source_prefix=prefix)
         except Exception as e:
             _log(f"  Cleanup failed: {e}")
+        # Return project dir to pool (even on failure — scrub auto-memory first)
+        if project_queue is not None and project_dir:
+            if cc_executor:
+                cc_executor._cleanup_auto_memory(project_dir)
+            project_queue.put(project_dir)
 
 
 def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "tool", workers: int = 1):
@@ -140,6 +156,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
 
     # System mode setup
     cc_executor = None
+    project_queue = None
     project_dirs = []
     if mode == "system":
         from eval.cc_executor import CCExecutor
@@ -154,9 +171,12 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
             mcp_server_path=mcp_server_path,
         )
         CCExecutor.cleanup_stale_auto_memory()
-        # Create reusable project dirs — one per worker
+        # Create reusable project dirs — one per worker, managed via thread-safe queue
+        project_queue = queue.Queue()
         for i in range(workers):
-            project_dirs.append(cc_executor.create_isolated_project(with_memories=True))
+            proj = cc_executor.create_isolated_project(with_memories=True)
+            project_dirs.append(proj)
+            project_queue.put(proj)
         _log(f"System eval mode: {workers} worker(s), MCP server at {mcp_server_path}")
 
     _log(f"Running in {mode} eval mode with {workers} worker(s)")
@@ -166,28 +186,26 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     total = len(dataset)
 
     if workers <= 1:
-        # Sequential — same behavior as before, with reusable project dir
+        # Sequential — project queue ensures exclusive access even with 1 worker
         scores = []
         by_type = {}
-        proj = project_dirs[0] if project_dirs else ""
         for i, q in enumerate(dataset):
-            result = _process_question(i, total, q, runner, mode, prefix, cc_executor, proj)
+            result = _process_question(i, total, q, runner, mode, prefix, cc_executor, project_queue)
             if result:
                 scores.append(result)
                 by_type.setdefault(result["type"], []).append(result["score"])
     else:
-        # Parallel — distribute questions across workers
+        # Parallel — project queue ensures each worker gets exclusive project dir
         scores = [None] * total
         by_type = {}
         _log(f"Distributing {total} questions across {workers} workers...")
 
-        def _worker(idx, q, worker_id):
-            proj = project_dirs[worker_id % len(project_dirs)] if project_dirs else ""
-            return idx, _process_question(idx, total, q, runner, mode, prefix, cc_executor, proj)
+        def _worker(idx, q):
+            return idx, _process_question(idx, total, q, runner, mode, prefix, cc_executor, project_queue)
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(_worker, i, q, i % workers): i
+                executor.submit(_worker, i, q): i
                 for i, q in enumerate(dataset)
             }
             for future in as_completed(futures):

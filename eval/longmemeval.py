@@ -283,10 +283,6 @@ class LongMemEvalRunner:
             agent_response = cc_executor.run_prompt(prompt, project_dir)
             logger.debug("Agent response for Q%s: %s", qid, agent_response[:200])
 
-            # Clean auto-memory between questions when reusing project dir
-            if not owns_project:
-                cc_executor._cleanup_auto_memory(project_dir)
-
             return {
                 "question_id": qid,
                 "category": category,
