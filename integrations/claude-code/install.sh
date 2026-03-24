@@ -563,6 +563,7 @@ echo -e "[4/4] Writing configuration files..."
 
 # Optional: Multi-backend setup
 if [ "$hooks_target_count" -gt 0 ]; then
+ if [ -t 0 ]; then
   echo ""
   echo -e "${BLUE}Multi-backend routing (optional):${NC}"
   echo "  Route a single session to multiple Memories instances (e.g., dev+prod, personal+shared)."
@@ -581,7 +582,6 @@ if [ "$hooks_target_count" -gt 0 ]; then
 
     case "$SCENARIO_CHOICE" in
       1)
-        SCENARIO="dev+prod"
         echo ""
         read -r -p "  Dev backend URL [http://localhost:8900]: " DEV_URL
         DEV_URL="${DEV_URL:-http://localhost:8900}"
@@ -594,20 +594,20 @@ if [ "$hooks_target_count" -gt 0 ]; then
           BACKENDS_YAML="$HOME/.config/memories/backends.yaml"
           mkdir -p "$(dirname "$BACKENDS_YAML")"
           cat > "$BACKENDS_YAML" <<MBEOF
-scenario: $SCENARIO
 backends:
   dev:
     url: $DEV_URL
     api_key: $DEV_KEY
+    scenario: dev
   prod:
     url: $PROD_URL
     api_key: $PROD_KEY
+    scenario: prod
 MBEOF
           echo -e "  ${GREEN}[OK]${NC} Wrote multi-backend config: $BACKENDS_YAML"
         fi
         ;;
       2)
-        SCENARIO="personal+shared"
         echo ""
         read -r -p "  Personal backend URL [http://localhost:8900]: " PERSONAL_URL
         PERSONAL_URL="${PERSONAL_URL:-http://localhost:8900}"
@@ -620,14 +620,15 @@ MBEOF
           BACKENDS_YAML="$HOME/.config/memories/backends.yaml"
           mkdir -p "$(dirname "$BACKENDS_YAML")"
           cat > "$BACKENDS_YAML" <<MBEOF
-scenario: $SCENARIO
 backends:
   personal:
     url: $PERSONAL_URL
     api_key: $PERSONAL_KEY
+    scenario: personal
   shared:
     url: $SHARED_URL
     api_key: $SHARED_KEY
+    scenario: shared
 MBEOF
           echo -e "  ${GREEN}[OK]${NC} Wrote multi-backend config: $BACKENDS_YAML"
         fi
@@ -640,6 +641,9 @@ MBEOF
         ;;
     esac
   fi
+ else
+  echo -e "  ${YELLOW}[SKIP]${NC} Non-interactive mode: skipping multi-backend setup"
+ fi
 fi
 
 # ~/.config/memories/env — loaded by hook scripts at runtime

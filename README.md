@@ -689,14 +689,15 @@ Multi-backend is configured via YAML files and is fully backward compatible — 
 **Quick example (dev + prod):**
 
 ```yaml
-scenario: dev+prod
 backends:
   dev:
     url: http://localhost:8900
     api_key: ${MEMORIES_DEV_KEY}
+    scenario: dev
   prod:
     url: https://memory.yourdomain.com
     api_key: ${MEMORIES_PROD_KEY}
+    scenario: prod
 ```
 
 Config supports env var interpolation (`${VAR_NAME}`) for API keys and URLs.
@@ -1388,6 +1389,12 @@ memories/
 Memories includes a built-in eval harness that measures how much Memories improves AI assistant performance. It runs controlled A/B tests: each scenario executes via Claude Code (`claude -p`) both with and without Memories, then scores the outputs against deterministic rubrics.
 
 ```bash
+# Start the isolated eval stack in OrbStack/Docker
+docker compose -f docker-compose.eval.yml up -d --build
+
+# Verify the eval instance is healthy (separate from the main service on :8900)
+curl http://localhost:8901/health
+
 # Run all scenarios (via wrapper script)
 ./eval/run.sh
 
@@ -1400,6 +1407,8 @@ python -m eval --category coding
 # Run a single scenario
 python -m eval --scenario coding-001 -v
 ```
+
+The eval defaults target `http://localhost:8901`, which is the isolated instance from [`docker-compose.eval.yml`](/Users/dk/projects/memories/docker-compose.eval.yml). Override with `MEMORIES_URL=http://host:port` if you want to point the harness somewhere else.
 
 ### Results
 

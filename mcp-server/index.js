@@ -27,12 +27,9 @@ function loadBackends() {
   for (const p of configPaths) {
     if (fs.existsSync(p)) {
       const raw = yaml.load(fs.readFileSync(p, "utf8"));
+      const interp = (v) => { const m = (v || "").match(/\$\{(\w+)\}/); return m ? (process.env[m[1]] || v) : v; };
       const backends = Object.entries(raw.backends || {}).map(([name, cfg]) => {
-        let apiKey = cfg.api_key || "";
-        // Env var interpolation
-        const match = apiKey.match(/\$\{(\w+)\}/);
-        if (match) apiKey = process.env[match[1]] || apiKey;
-        return { name, url: cfg.url, apiKey, scenario: cfg.scenario || "" };
+        return { name, url: interp(cfg.url || ""), apiKey: interp(cfg.api_key || ""), scenario: cfg.scenario || "" };
       });
       const routing = raw.routing || {};
       return { backends, routing };

@@ -368,36 +368,38 @@ Create `~/.config/memories/backends.yaml` (global) or `.memories/backends.yaml` 
 ```yaml
 # Scenario: dev + prod
 # Searches both backends, extracts to dev only
-scenario: dev+prod
 backends:
   dev:
     url: http://localhost:8900
     api_key: ${MEMORIES_DEV_KEY}
+    scenario: dev
   prod:
     url: https://memory.yourdomain.com
     api_key: ${MEMORIES_PROD_KEY}
+    scenario: prod
 ```
 
 ```yaml
 # Scenario: personal + shared
 # Searches both, routes decisions to shared
-scenario: personal+shared
 backends:
   personal:
     url: http://localhost:8900
     api_key: ${MEMORIES_PERSONAL_KEY}
+    scenario: personal
   shared:
     url: https://team-memory.yourdomain.com
     api_key: ${MEMORIES_SHARED_KEY}
+    scenario: shared
 ```
 
 ```yaml
 # Scenario: single instance (explicit, same as no config)
-scenario: single
 backends:
   default:
     url: http://localhost:8900
     api_key: ${MEMORIES_API_KEY}
+    scenario: single
 ```
 
 ### Env var interpolation
