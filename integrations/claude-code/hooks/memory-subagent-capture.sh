@@ -58,12 +58,6 @@ fi
 _log_info "Extracting from $AGENT_TYPE subagent ($PROJECT)"
 
 # Fire-and-forget extraction
-curl -sf --max-time 30 \
-  -X POST "$MEMORIES_URL/memory/extract" \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: $MEMORIES_API_KEY" \
-  -d "$(jq -nc --arg msgs "$MESSAGES" --arg src "$SOURCE" --arg ctx "subagent_stop" \
-    '{messages: $msgs, source: $src, context: $ctx}')" \
-  >/dev/null || _log_error "Subagent extraction failed"
+_extract_multi "$MESSAGES" "$SOURCE" "subagent_stop"
 
 exit 0

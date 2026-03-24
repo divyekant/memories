@@ -87,9 +87,4 @@ fi
 
 _log_info "Commit-extracting from $PROJECT (${#MESSAGES} chars, source=$SOURCE)"
 
-curl -sf -X POST "$MEMORIES_URL/memory/extract" \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: $MEMORIES_API_KEY" \
-  -d "$(jq -nc --arg messages "$MESSAGES" --arg source "$SOURCE" --arg context "session_end" \
-    '{messages: $messages, source: $source, context: $context}')" \
-  > /dev/null 2>&1 || _log_error "Commit extract API call failed for $PROJECT"
+_extract_multi "$MESSAGES" "$SOURCE" "session_end"

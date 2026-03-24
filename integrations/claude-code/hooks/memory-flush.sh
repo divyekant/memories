@@ -78,9 +78,4 @@ MESSAGES="${MESSAGES:0:$MSG_CAP}"
 
 _log_info "Flush-extracting from $PROJECT (${#MESSAGES} chars, source=$SOURCE)"
 
-curl -sf -X POST "$MEMORIES_URL/memory/extract" \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: $MEMORIES_API_KEY" \
-  -d "$(jq -nc --arg messages "$MESSAGES" --arg source "$SOURCE" --arg context "pre_compact" \
-    '{messages: $messages, source: $source, context: $context}')" \
-  > /dev/null 2>&1 || _log_error "Flush extract API call failed for $PROJECT"
+_extract_multi "$MESSAGES" "$SOURCE" "pre_compact"
