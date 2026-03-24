@@ -248,11 +248,15 @@ class LongMemEvalRunner:
         question: dict,
         cc_executor,
         source_prefix: str = "eval/longmemeval",
+        project_dir: str = "",
     ) -> dict:
         """Run a question through Claude Code with MCP tools (system eval mode).
 
         Instead of raw API search, this boots a Claude Code session with the
         Memories MCP server and lets the agent search, reason, and answer.
+
+        If project_dir is provided, reuses it (caller manages lifecycle).
+        If empty, creates and cleans up a temporary project per call.
         """
         query = str(question.get("question", ""))
         expected = str(question.get("answer", ""))
@@ -260,11 +264,11 @@ class LongMemEvalRunner:
         category = self._question_category(question)
         q_prefix = self._question_prefix(question, source_prefix)
 
-        # Create isolated project with MCP tools enabled
-        project_dir = cc_executor.create_isolated_project(with_memories=True)
+        owns_project = not project_dir
+        if owns_project:
+            project_dir = cc_executor.create_isolated_project(with_memories=True)
 
         try:
-            # Prompt the agent — give it the question and let it use memory tools
             prompt = (
                 f"You have access to memory_search and other memory tools via MCP. "
                 f"Use them to find relevant context, then answer the following question.\n\n"
@@ -284,12 +288,13 @@ class LongMemEvalRunner:
                 "category": category,
                 "question": query,
                 "expected": expected,
-                "context": agent_response,  # The agent's full response IS the context for judging
-                "search_results": [],  # Not applicable in system mode
+                "context": agent_response,
+                "search_results": [],
                 "eval_mode": "system",
             }
         finally:
-            cc_executor.cleanup_project(project_dir)
+            if owns_project:
+                cc_executor.cleanup_project(project_dir)
 
     def run_questions(self, questions: list[dict], k: int = 5, source_prefix: str = "eval/longmemeval") -> list[dict]:
         """Run retrieval for multiple LongMemEval questions."""
