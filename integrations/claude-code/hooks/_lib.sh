@@ -166,3 +166,94 @@ _get_backends_for_op() {
       ;;
   esac
 }
+
+# -- Multi-Backend Search --------------------------------------------------
+
+_search_memories_multi() {
+  local query="$1"
+  local prefix="${2:-}"
+  local limit="${3:-5}"
+  local threshold="${4:-0.4}"
+
+  local backends
+  backends=$(_get_backends_for_op "search")
+  local count
+  count=$(echo "$backends" | jq 'length')
+
+  local body
+  if [ -n "$prefix" ]; then
+    body=$(jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
+      '{query: $q, source_prefix: $p, k: $k, hybrid: true, threshold: $t}')
+  else
+    body=$(jq -nc --arg q "$query" --argjson k "$limit" --argjson t "$threshold" \
+      '{query: $q, k: $k, hybrid: true, threshold: $t}')
+  fi
+
+  if [ "$count" -le 1 ]; then
+    # Single backend — direct call (backward compat, no overhead)
+    local url key
+    url=$(echo "$backends" | jq -r '.[0].url')
+    key=$(echo "$backends" | jq -r '.[0].api_key')
+    curl -sf --max-time 4 -X POST "$url/search" \
+      -H "Content-Type: application/json" \
+      -H "X-API-Key: $key" \
+      -d "$body" 2>/dev/null || echo '{"results":[],"count":0}'
+    return
+  fi
+
+  # Multi-backend: parallel fan-out with background subshells
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  local i=0
+  echo "$backends" | jq -c '.[]' | while read -r backend; do
+    local url key name
+    url=$(echo "$backend" | jq -r '.url')
+    key=$(echo "$backend" | jq -r '.api_key')
+    name=$(echo "$backend" | jq -r '.name')
+    (
+      result=$(curl -sf --max-time 4 -X POST "$url/search" \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: $key" \
+        -d "$body" 2>/dev/null)
+      if [ -n "$result" ]; then
+        # Tag results with _backend
+        echo "$result" | jq -c --arg b "$name" '.results[] | . + {_backend: $b}' > "$tmpdir/result_${name}.jsonl"
+      fi
+    ) &
+    i=$((i + 1))
+  done
+  wait
+
+  # Merge results: collect, dedup by exact text hash, sort by score
+  cat "$tmpdir"/result_*.jsonl 2>/dev/null | jq -s '
+    unique_by(.text)
+    | sort_by(-(.similarity // .rrf_score // 0))
+  ' | jq -c '{results: ., count: length}'
+
+  rm -rf "$tmpdir"
+}
+
+# -- Multi-Backend Extract -------------------------------------------------
+
+_extract_multi() {
+  local messages="$1"
+  local source="$2"
+  local context="${3:-stop}"
+
+  local backends
+  backends=$(_get_backends_for_op "extract")
+  local body
+  body=$(jq -nc --arg m "$messages" --arg s "$source" --arg c "$context" \
+    '{messages: $m, source: $s, context: $c}')
+
+  echo "$backends" | jq -c '.[]' | while read -r backend; do
+    local url key name
+    url=$(echo "$backend" | jq -r '.url')
+    key=$(echo "$backend" | jq -r '.api_key')
+    name=$(echo "$backend" | jq -r '.name')
+    curl -sf --max-time 30 -X POST "$url/memory/extract" \
+      -H "Content-Type: application/json" \
+      -H "X-API-Key: $key" \
+      -d "$body" > /dev/null 2>&1 || _log_error "Extract failed for backend $name"
+  done
+}
