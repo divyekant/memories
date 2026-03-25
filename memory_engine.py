@@ -1458,9 +1458,16 @@ class MemoryEngine:
             links = self.get_links(seed_id, link_type="related_to", include_incoming=True)
             valid_neighbors = []
 
+            seen_this_seed = set()
             for link in links:
                 neighbor_id = link["to_id"] if link["direction"] == "outgoing" else link["from_id"]
                 info["neighbors_found"] += 1
+
+                # Dedupe per seed: reciprocal links (A→B + B→A) should count once
+                if neighbor_id in seen_this_seed:
+                    info["neighbors_filtered"] += 1
+                    continue
+                seen_this_seed.add(neighbor_id)
 
                 # Skip self and non-existent
                 if neighbor_id == seed_id or not self._id_exists(neighbor_id):

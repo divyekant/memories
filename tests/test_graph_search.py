@@ -181,6 +181,21 @@ class TestGraphExpand:
         assert 3 in candidates
         assert 2 not in candidates
 
+    def test_reciprocal_links_count_once_per_seed(self, engine):
+        """Reciprocal links (A→B + B→A) should not double-count bonus from same seed."""
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "seed", "source": "t", "created_at": now,
+             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "neighbor", "source": "t", "created_at": now,
+             "links": [{"to_id": 1, "type": "related_to", "created_at": now}]},
+        ]
+        engine._rebuild_id_map()
+        candidates, _ = engine._graph_expand([(1, 0.025)], 0.1, None, False)
+        assert 2 in candidates
+        assert candidates[2]["graph_support"] == pytest.approx(0.00125, abs=0.0001)
+        assert candidates[2]["graph_via"] == [1]
+
 
 class TestHybridSearchGraph:
     """Test graph_weight parameter integration in hybrid_search()."""
