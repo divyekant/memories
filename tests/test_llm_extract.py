@@ -821,3 +821,61 @@ class TestApplyMaintenance:
         result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
         assert result["links_created"] == []
         mock_engine.add_link.assert_not_called()
+
+    def test_compaction_candidate_detected_for_tight_cluster(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "rrf_score": 0.025, "source": "learning/proj"},
+            {"id": 6, "rrf_score": 0.024, "source": "learning/proj"},
+            {"id": 7, "rrf_score": 0.023, "source": "claude-code/proj"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        assert len(result["compaction_candidates"]) == 1
+        candidate = result["compaction_candidates"][0]
+        assert candidate["fact_index"] == 0
+        assert set(candidate["memory_ids"]) == {5, 6, 7}
+        assert candidate["cross_source"] is True
+        assert "learning/proj" in candidate["sources"]
+        assert "claude-code/proj" in candidate["sources"]
+
+    def test_no_compaction_for_fewer_than_three(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "rrf_score": 0.025, "source": "t"},
+            {"id": 6, "rrf_score": 0.024, "source": "t"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        assert result["compaction_candidates"] == []
+
+    def test_no_compaction_for_spread_scores(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "rrf_score": 0.030, "source": "t"},
+            {"id": 6, "rrf_score": 0.020, "source": "t"},
+            {"id": 7, "rrf_score": 0.010, "source": "t"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        assert result["compaction_candidates"] == []
+
+    def test_same_source_compaction_not_cross_source(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "rrf_score": 0.025, "source": "learning/proj"},
+            {"id": 6, "rrf_score": 0.024, "source": "learning/proj"},
+            {"id": 7, "rrf_score": 0.023, "source": "learning/proj"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        assert len(result["compaction_candidates"]) == 1
+        assert result["compaction_candidates"][0]["cross_source"] is False
