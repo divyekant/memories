@@ -341,8 +341,8 @@ class TestAUDNCycle:
         )
 
         prompt = mock_provider.complete.call_args[0][1]
-        assert '"similarity":0.025' in prompt or '"similarity":0.02' in prompt
-        assert '"similarity":0.0,' not in prompt  # must NOT be zero
+        assert '"relevance":0.025' in prompt or '"relevance":0.02' in prompt
+        assert '"relevance":0.0,' not in prompt  # must NOT be zero
 
     def test_audn_facts_json_includes_category(self):
         """Verify the facts_json sent to the LLM includes category."""
