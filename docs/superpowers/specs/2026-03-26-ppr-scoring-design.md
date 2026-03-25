@@ -57,6 +57,8 @@ def _build_adjacency(self, link_type: str = "related_to") -> Dict[int, Set[int]]
             tid = link["to_id"]
             if not self._id_exists(tid):
                 continue  # skip dangling links
+            if tid == mid:
+                continue  # skip self-links (prevent PPR score inflation)
             adj.setdefault(mid, set()).add(tid)
             adj.setdefault(tid, set()).add(mid)
     return adj
@@ -191,11 +193,16 @@ def _graph_expand(self, direct_results, graph_weight, source_prefix, include_arc
             "graph_via": via,
         }
 
+    # Compute edge counts from pre/post filtering
+    unfiltered_adj = self._build_adjacency("related_to")
+    unfiltered_edges = sum(len(n) for n in unfiltered_adj.values()) // 2
+    filtered_edges = sum(len(n) for n in adj.values()) // 2
+
     info = {
         "seeds": [{"id": s[0], "rrf_score": round(s[1], 6)}
                   for s in direct_results[:min(10, len(direct_results))]],
-        "neighbors_found": sum(len(n) for n in adj.values()) // 2,
-        "neighbors_filtered": 0,  # filtering happens at adjacency level
+        "neighbors_found": unfiltered_edges,
+        "neighbors_filtered": unfiltered_edges - filtered_edges,
         "neighbors_added": len(candidates),
         "ppr_iterations": PPR_MAX_ITERS,
         "ppr_alpha": PPR_ALPHA,
@@ -310,6 +317,14 @@ Defense-in-depth: results are also filtered post-PPR in `_merge_graph_results()`
 - Reserved slots still work with PPR scoring
 - Graph-only PPR results excluded when threshold set
 - Graph-only PPR results not reinforced
+
+**Negative/regression tests:**
+- Disconnected subgraphs: two clusters with no bridge → PPR does not leak between them
+- High-degree hub: node connected to 50+ others does not dominate scores (degree normalization)
+- Self-links in metadata: filtered by `_build_adjacency()`, no score inflation
+- PPR convergence: verify iteration 4 changes scores by < epsilon vs iteration 3
+- Score magnitude: PPR-based graph_support is within same order of magnitude as flat formula for typical inputs
+- Empty personalization: all RRF scores are 0 → graph expansion skipped, no division by zero
 
 **Integration tests:**
 - Full `hybrid_search()` with PPR → graph neighbor appears in results
