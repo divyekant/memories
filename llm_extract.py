@@ -328,7 +328,7 @@ def run_audn(
                 {
                     "id": m.get("id"),
                     "text": _clip_text(str(m.get("text", "")), EXTRACT_SIMILAR_TEXT_CHARS),
-                    "similarity": round(float(m.get("similarity", 0.0)), 3),
+                    "similarity": round(_mem_score(m), 3),
                 }
                 for m in mems[:EXTRACT_SIMILAR_PER_FACT]
             ]
