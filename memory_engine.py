@@ -35,6 +35,11 @@ except ImportError:
     CLOUD_SYNC_AVAILABLE = False
     logger.info("Cloud sync not available (cloud_sync.py not found or boto3 not installed)")
 
+# Graph expansion tuning knobs (env-configurable)
+SEARCH_GRAPH_SEED_K = int(os.environ.get("SEARCH_GRAPH_SEED_K", "3"))
+SEARCH_GRAPH_MAX_NEIGHBORS = int(os.environ.get("SEARCH_GRAPH_MAX_NEIGHBORS", "2"))
+SEARCH_GRAPH_DECAY = float(os.environ.get("SEARCH_GRAPH_DECAY", "0.5"))
+
 
 class MemoryEngine:
     """Memories engine with hybrid search and backup support."""
@@ -1411,6 +1416,94 @@ class MemoryEngine:
             return math.pow(0.5, age_days / half_life_days)
         except (ValueError, TypeError, ZeroDivisionError):
             return 0.0
+
+    def _graph_expand(
+        self,
+        direct_results: list,
+        graph_weight: float,
+        source_prefix: Optional[str],
+        include_archived: bool,
+    ) -> tuple:
+        """Expand direct search results via related_to graph edges.
+
+        Args:
+            direct_results: list of (doc_id, rrf_score) tuples, sorted descending
+            graph_weight: scaling factor for graph bonus
+            source_prefix: scope filter (applied to neighbors)
+            include_archived: whether archived neighbors are included
+
+        Returns:
+            (candidates, info) where:
+            - candidates: dict {doc_id: {"graph_support": float, "graph_via": [int]}}
+            - info: dict with seeds, neighbors_found, neighbors_filtered, neighbors_added
+        """
+        info = {
+            "seeds": [],
+            "neighbors_found": 0,
+            "neighbors_filtered": 0,
+            "neighbors_added": 0,
+        }
+        candidates: dict = {}
+
+        if not direct_results:
+            return candidates, info
+
+        seed_count = min(SEARCH_GRAPH_SEED_K, len(direct_results))
+        seeds = direct_results[:seed_count]
+        top_direct_rrf = seeds[0][1] if seeds else 0.0
+        bonus_cap = 0.33 * top_direct_rrf
+        info["seeds"] = [{"id": s[0], "rrf_score": round(s[1], 6)} for s in seeds]
+
+        for seed_id, seed_rrf in seeds:
+            links = self.get_links(seed_id, link_type="related_to", include_incoming=True)
+            valid_neighbors = []
+
+            for link in links:
+                neighbor_id = link["to_id"] if link["direction"] == "outgoing" else link["from_id"]
+                info["neighbors_found"] += 1
+
+                # Skip self and non-existent
+                if neighbor_id == seed_id or not self._id_exists(neighbor_id):
+                    info["neighbors_filtered"] += 1
+                    continue
+
+                meta = self._get_meta_by_id(neighbor_id)
+
+                # Scope: source_prefix
+                if source_prefix and not meta.get("source", "").startswith(source_prefix):
+                    info["neighbors_filtered"] += 1
+                    continue
+
+                # Scope: archived
+                if not include_archived and meta.get("archived"):
+                    info["neighbors_filtered"] += 1
+                    continue
+
+                valid_neighbors.append(neighbor_id)
+
+            # Cap after filtering
+            for neighbor_id in valid_neighbors[:SEARCH_GRAPH_MAX_NEIGHBORS]:
+                bonus = seed_rrf * SEARCH_GRAPH_DECAY * graph_weight
+
+                if neighbor_id in candidates:
+                    candidates[neighbor_id]["graph_support"] += bonus
+                    if seed_id not in candidates[neighbor_id]["graph_via"]:
+                        candidates[neighbor_id]["graph_via"].append(seed_id)
+                else:
+                    candidates[neighbor_id] = {
+                        "graph_support": bonus,
+                        "graph_via": [seed_id],
+                    }
+
+        # Apply cap
+        for doc_id, cand in candidates.items():
+            if cand["graph_support"] > bonus_cap:
+                cand["graph_support"] = round(bonus_cap, 6)
+            else:
+                cand["graph_support"] = round(cand["graph_support"], 6)
+
+        info["neighbors_added"] = len(candidates)
+        return candidates, info
 
     def hybrid_search(
         self,
