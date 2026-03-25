@@ -1,0 +1,37 @@
+# Graph Eval: Cross-source link — learning/* linked to claude-code/*
+# Tests: graph expansion across source families within allowed scope
+id: graph-004
+category: graph
+name: "Cross-source knowledge connection"
+description: >
+  A learning about error handling patterns links to a project-specific implementation.
+  Query is about the project's error handling — graph should surface the general pattern
+  that explains WHY the project does it that way.
+memories:
+  - id: m1
+    text: "The payments service uses the Result monad pattern for error handling. Every service method returns Result<T, PaymentError> instead of throwing exceptions."
+    source: eval/graph/004/code
+  - id: m2
+    text: "Result monad pattern eliminates try/catch blocks and makes error paths explicit in the type system. Functions compose via flatMap/chain. Adopted from Rust's Result<T, E> model."
+    source: eval/graph/004/learning
+  - id: m3
+    text: "Monitoring uses Datadog with custom dashboards. Alert thresholds: p99 latency > 500ms triggers PagerDuty for payment endpoints."
+    source: eval/graph/004/ops
+links:
+  - from: m1
+    to: m2
+    type: related_to
+prompt: "Why does the payments service use the Result monad pattern instead of exceptions?"
+expected:
+  - type: contains
+    value: "explicit"
+    weight: 0.3
+  - type: contains
+    value: "type system"
+    weight: 0.3
+  - type: contains
+    value: "Rust"
+    weight: 0.2
+  - type: contains
+    value: "Result"
+    weight: 0.2

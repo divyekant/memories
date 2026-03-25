@@ -1,0 +1,38 @@
+# Graph Eval: Answer is ONLY reachable via graph — not in direct results at all
+# Tests: a graph-only result surfaces when no direct result has the answer
+id: graph-006
+category: graph
+name: "Answer only reachable via graph link"
+description: >
+  Memory about the deployment platform links to a memory about the secret management
+  approach. The query asks about secrets — the deployment memory matches "production"
+  and "infrastructure" keywords, but the secrets detail is in a completely different
+  vocabulary space. Only graph expansion can bridge the gap.
+memories:
+  - id: m1
+    text: "Production infrastructure runs on AWS EKS (Kubernetes 1.28) in us-east-1 and eu-west-1. Deployments use ArgoCD with GitOps workflow from the infra/ repository."
+    source: eval/graph/006
+  - id: m2
+    text: "Sensitive credentials are managed via HashiCorp Vault running in HA mode. Applications fetch secrets at startup using the Vault agent sidecar injector. Rotation period is 90 days."
+    source: eval/graph/006
+  - id: m3
+    text: "Frontend assets are served from CloudFront CDN with a 1-hour cache TTL. Invalidation runs automatically after each deploy."
+    source: eval/graph/006
+links:
+  - from: m1
+    to: m2
+    type: related_to
+prompt: "How are production secrets managed and how often are they rotated?"
+expected:
+  - type: contains
+    value: "Vault"
+    weight: 0.3
+  - type: contains
+    value: "HashiCorp"
+    weight: 0.2
+  - type: contains
+    value: "90 days"
+    weight: 0.3
+  - type: contains
+    value: "sidecar"
+    weight: 0.2

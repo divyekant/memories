@@ -1,0 +1,41 @@
+# Graph Eval: Two seeds both link to the same neighbor — multi-seed convergence
+# Tests: accumulated graph support from multiple seeds surfaces a well-connected neighbor
+id: graph-005
+category: graph
+name: "Multi-seed convergence"
+description: >
+  Two searchable memories (about API design and database design) both link to a
+  shared neighbor (about the data validation library). Query asks about validation —
+  the shared neighbor should get double graph support and surface even if it doesn't
+  directly match the query terms well.
+memories:
+  - id: m1
+    text: "API endpoints use OpenAPI 3.1 spec generated from decorators. Request validation happens at the middleware layer before reaching handlers."
+    source: eval/graph/005
+  - id: m2
+    text: "Database writes go through a validation layer that ensures referential integrity. All foreign keys are checked before insert."
+    source: eval/graph/005
+  - id: m3
+    text: "Data validation uses the Zod library version 3.22. Schemas are defined in src/schemas/ and shared between API request validation and database write validation."
+    source: eval/graph/005
+  - id: m4
+    text: "The project uses pnpm as package manager with strict peer dependencies enabled."
+    source: eval/graph/005
+links:
+  - from: m1
+    to: m3
+    type: related_to
+  - from: m2
+    to: m3
+    type: related_to
+prompt: "What validation library does the project use and where are the schemas defined?"
+expected:
+  - type: contains
+    value: "Zod"
+    weight: 0.4
+  - type: contains
+    value: "src/schemas"
+    weight: 0.4
+  - type: contains
+    value: "3.22"
+    weight: 0.2

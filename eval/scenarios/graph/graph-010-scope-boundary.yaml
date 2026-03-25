@@ -1,0 +1,38 @@
+# Graph Eval: Scope safety — linked neighbor is out of prefix scope
+# Tests: graph expansion respects source_prefix and does NOT leak cross-scope
+id: graph-010
+category: graph
+name: "Scope boundary — linked neighbor filtered by prefix"
+description: >
+  Memory in wip/project links to a memory in learning/general. When searching
+  with source_prefix="wip/", the linked neighbor should NOT appear even though
+  the link exists. This tests scope safety.
+memories:
+  - id: m1
+    text: "WIP: Implementing rate limiting for the payments API. Current approach uses token bucket algorithm with 100 tokens/minute per API key."
+    source: eval/graph/010/wip
+  - id: m2
+    text: "Token bucket algorithm works by adding tokens at a fixed rate. Each request consumes one token. When bucket is empty, requests are rejected with 429."
+    source: eval/graph/010/learning
+  - id: m3
+    text: "WIP: Payment retries use exponential backoff starting at 100ms, max 3 retries, with jitter to prevent thundering herd."
+    source: eval/graph/010/wip
+links:
+  - from: m1
+    to: m2
+    type: related_to
+# This scenario tests scope enforcement:
+# When search is scoped to eval/graph/010/wip, m2 (eval/graph/010/learning) must NOT appear
+# The correct answer should come from m1 (the wip source)
+prompt: "What rate limiting approach is used for the payments API?"
+source_prefix: "eval/graph/010/wip"
+expected:
+  - type: contains
+    value: "token bucket"
+    weight: 0.4
+  - type: contains
+    value: "100"
+    weight: 0.3
+  - type: contains
+    value: "payments"
+    weight: 0.3

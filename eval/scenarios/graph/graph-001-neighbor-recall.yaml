@@ -1,0 +1,71 @@
+# Graph Eval: Answer memory uses completely different vocabulary from query.
+# The ONLY way to find it is through the graph link from a direct match.
+id: graph-001
+category: graph
+name: "Neighbor recall — disjoint vocabulary"
+description: >
+  Query: "What ORM does the project use?" → matches m1 (Drizzle ORM).
+  Answer: m2 has the config path (src/db/drizzle.config.ts) but mentions NEITHER
+  "ORM" nor "database" — it says "persistence layer configuration" instead.
+  15 noise memories compete for top-5. m2 should only surface via graph.
+memories:
+  - id: m1
+    text: "Project uses Drizzle ORM for all database access. Chosen over Prisma for smaller Docker images and zero runtime dependencies."
+    source: eval/graph/001
+  - id: m2
+    text: "Persistence layer configuration lives at src/db/drizzle.config.ts. Connection pooling max 20. SSL required in production. Migrations output to src/db/migrations/."
+    source: eval/graph/001
+  - id: n1
+    text: "API framework is Hono running on Cloudflare Workers. Request routing uses file-based convention in src/routes/."
+    source: eval/graph/001
+  - id: n2
+    text: "Authentication uses Clerk with JWT verification middleware. User sessions expire after 24 hours of inactivity."
+    source: eval/graph/001
+  - id: n3
+    text: "CI/CD pipeline runs on GitHub Actions. Build step compiles TypeScript and runs Vitest. Deploy step pushes to Cloudflare via Wrangler."
+    source: eval/graph/001
+  - id: n4
+    text: "Frontend state management uses Zustand with immer middleware. Global store defined in src/store/index.ts."
+    source: eval/graph/001
+  - id: n5
+    text: "Email notifications sent via Resend API. Templates in src/emails/ use React Email components."
+    source: eval/graph/001
+  - id: n6
+    text: "File uploads stored in Cloudflare R2. Presigned URLs generated server-side with 15-minute expiry."
+    source: eval/graph/001
+  - id: n7
+    text: "Search functionality uses Typesense hosted on Railway. Index rebuilt nightly from primary store."
+    source: eval/graph/001
+  - id: n8
+    text: "Monitoring uses Grafana Cloud with Prometheus metrics. Custom dashboards for API latency and error rates."
+    source: eval/graph/001
+  - id: n9
+    text: "Feature flags managed via Unleash self-hosted instance. SDK initialized at app startup in src/flags.ts."
+    source: eval/graph/001
+  - id: n10
+    text: "Background jobs run on BullMQ with Redis. Queue definitions in src/jobs/. Retry policy: 3 attempts with exponential backoff."
+    source: eval/graph/001
+  - id: n11
+    text: "Logging uses Pino with structured JSON output. Log level configurable via LOG_LEVEL environment variable."
+    source: eval/graph/001
+  - id: n12
+    text: "Rate limiting uses upstash/ratelimit package. Sliding window algorithm, 100 requests per minute per API key."
+    source: eval/graph/001
+  - id: n13
+    text: "WebSocket connections managed by PartyKit. Real-time events for collaborative editing features."
+    source: eval/graph/001
+links:
+  - from: m1
+    to: m2
+    type: related_to
+prompt: "Where is the ORM configuration file and what are its connection settings?"
+expected:
+  - type: contains
+    value: "src/db/drizzle.config.ts"
+    weight: 0.5
+  - type: contains
+    value: "pooling"
+    weight: 0.25
+  - type: contains
+    value: "SSL"
+    weight: 0.25

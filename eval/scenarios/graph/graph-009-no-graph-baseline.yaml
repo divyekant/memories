@@ -1,0 +1,35 @@
+# Graph Eval: Control scenario — answer is in direct results, no links needed
+# Tests: graph expansion does NOT degrade results when links add no value
+id: graph-009
+category: graph
+name: "Control — direct match (no graph needed)"
+description: >
+  The answer is directly searchable. Links exist but point to irrelevant memories.
+  Graph expansion should not degrade the result by pushing irrelevant linked
+  neighbors above the correct direct match.
+memories:
+  - id: m1
+    text: "Docker images are built with multi-stage Dockerfile. Base image is node:20-alpine. Final image size is ~150MB."
+    source: eval/graph/009
+  - id: m2
+    text: "The team uses Figma for design handoff. Design tokens are exported to CSS custom properties."
+    source: eval/graph/009
+  - id: m3
+    text: "Sprint planning happens every Monday at 10am. Retros are biweekly on Fridays."
+    source: eval/graph/009
+links:
+  # Links exist but between unrelated memories
+  - from: m2
+    to: m3
+    type: related_to
+prompt: "What base Docker image does the project use and how big is the final image?"
+expected:
+  - type: contains
+    value: "node:20-alpine"
+    weight: 0.5
+  - type: contains
+    value: "150MB"
+    weight: 0.3
+  - type: contains
+    value: "multi-stage"
+    weight: 0.2

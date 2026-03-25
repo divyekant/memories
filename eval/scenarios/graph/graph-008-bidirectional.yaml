@@ -1,0 +1,38 @@
+# Graph Eval: Incoming link — newer memory links TO older seed
+# Tests: graph expansion follows incoming links (B→A) when A is the seed
+id: graph-008
+category: graph
+name: "Incoming link discovery"
+description: >
+  Old memory A (logging setup) is a direct match. Newer memory B (structured logging
+  format) was added later and links TO A. Graph expansion should discover B via
+  incoming link on A, even though A has no outgoing links.
+memories:
+  - id: m1
+    text: "Logging uses Winston with console and file transports. Log files rotate daily in /var/log/app/. Retention is 30 days."
+    source: eval/graph/008
+  - id: m2
+    text: "Log format is structured JSON with fields: timestamp, level, service, requestId, message, metadata. Request IDs propagate via X-Request-Id header for distributed tracing."
+    source: eval/graph/008
+  - id: m3
+    text: "Error monitoring uses Sentry with sourcemap uploads. Alert rules: >5 errors/minute triggers Slack notification."
+    source: eval/graph/008
+links:
+  # B links TO A (incoming from A's perspective)
+  - from: m2
+    to: m1
+    type: related_to
+prompt: "What is the log format and what fields are included?"
+expected:
+  - type: contains
+    value: "JSON"
+    weight: 0.3
+  - type: contains
+    value: "requestId"
+    weight: 0.3
+  - type: contains
+    value: "X-Request-Id"
+    weight: 0.2
+  - type: contains
+    value: "structured"
+    weight: 0.2
