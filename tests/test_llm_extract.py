@@ -880,6 +880,27 @@ class TestApplyMaintenance:
         assert len(result["compaction_candidates"]) == 1
         assert result["compaction_candidates"][0]["cross_source"] is False
 
+    def test_compaction_excludes_deleted_memories(self):
+        """Memories deleted in the same batch should not appear in compaction candidates."""
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [
+            {"action": "DELETE", "fact_index": 0, "old_id": 5},
+            {"action": "ADD", "fact_index": 1},
+        ]
+        exec_result = {"actions": [
+            {"action": "delete", "old_id": 5},
+            {"action": "add", "text": "New", "id": 100},
+        ]}
+        audn_artifacts = {"similar_per_fact": {1: [
+            {"id": 5, "rrf_score": 0.025, "source": "t"},  # deleted in batch
+            {"id": 6, "rrf_score": 0.024, "source": "t"},
+            {"id": 7, "rrf_score": 0.023, "source": "t"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        # Only 2 non-deleted memories remain — below threshold of 3
+        assert result["compaction_candidates"] == []
+
 
 class TestExtractionMaintenance:
     """Test _apply_maintenance() integration in run_extraction()."""

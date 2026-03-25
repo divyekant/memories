@@ -654,7 +654,7 @@ def _apply_maintenance(
         scores = [
             (m.get("id"), _mem_score(m), m.get("source", ""))
             for m in similar
-            if m.get("id") is not None
+            if m.get("id") is not None and m.get("id") not in deleted_ids
         ]
         if len(scores) < 3:
             continue
