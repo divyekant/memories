@@ -566,6 +566,11 @@ def execute_actions(
     }
 
 
+def _mem_score(m: dict) -> float:
+    """Extract the relevance score from a memory dict (RRF or cosine fallback)."""
+    return float(m.get("rrf_score", m.get("similarity", 0.0)))
+
+
 def _apply_maintenance(
     engine,
     decisions: list[dict],
@@ -617,17 +622,17 @@ def _apply_maintenance(
 
             scored = [
                 m for m in similar
-                if m.get("rrf_score", m.get("similarity", 0.0)) >= min_link_score
+                if _mem_score(m) >= min_link_score
                 and m.get("id") is not None
                 and m["id"] not in deleted_ids
                 and m["id"] != new_id
             ]
-            scored.sort(key=lambda m: m.get("rrf_score", m.get("similarity", 0.0)), reverse=True)
+            scored.sort(key=_mem_score, reverse=True)
             targets = scored[:max_links]
 
             for target in targets:
                 target_id = target["id"]
-                rrf = target.get("rrf_score", target.get("similarity", 0.0))
+                rrf = _mem_score(target)
                 try:
                     engine.add_link(new_id, target_id, "related_to")
                     links_created.append({"from_id": new_id, "to_id": target_id, "rrf_score": round(rrf, 6)})
@@ -644,7 +649,7 @@ def _apply_maintenance(
         if len(similar) < 3:
             continue
         scores = [
-            (m.get("id"), m.get("rrf_score", m.get("similarity", 0.0)), m.get("source", ""))
+            (m.get("id"), _mem_score(m), m.get("source", ""))
             for m in similar
             if m.get("id") is not None
         ]
