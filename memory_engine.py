@@ -45,22 +45,39 @@ SEARCH_GRAPH_DECAY = float(os.environ.get("SEARCH_GRAPH_DECAY", "0.5"))
 PPR_ALPHA = float(os.environ.get("SEARCH_PPR_ALPHA", "0.85"))
 PPR_MAX_ITERS = int(os.environ.get("SEARCH_PPR_MAX_ITERS", "3"))
 PPR_MIN_RELATIVE = float(os.environ.get("SEARCH_PPR_MIN_RELATIVE", "0.05"))
-GRAPH_RESERVED_SLOTS = int(os.environ.get("SEARCH_GRAPH_RESERVED_SLOTS", "2"))
+# Compatibility: fall back to SEARCH_GRAPH_MAX_NEIGHBORS if SEARCH_GRAPH_RESERVED_SLOTS not set
+GRAPH_RESERVED_SLOTS = int(os.environ.get(
+    "SEARCH_GRAPH_RESERVED_SLOTS",
+    os.environ.get("SEARCH_GRAPH_MAX_NEIGHBORS", "2")
+))
 
 
 def _trace_top_contributors(doc_id, personalization, adj, max_via=5):
-    """Approximate top contributing seeds for a PPR-scored node."""
+    """Approximate top contributing seeds for a PPR-scored node.
+
+    Checks 1-hop (direct neighbor), 2-hop (shared neighbor), and 3-hop
+    (neighbor-of-neighbor-of-seed) paths. Contribution decays by hop count.
+    """
     contributions = []
     neighbors = adj.get(doc_id, set())
     for seed_id, p_score in personalization.items():
         if seed_id == doc_id:
             continue
         if seed_id in neighbors:
+            # 1-hop: direct link
             contributions.append((seed_id, p_score))
         else:
             seed_neighbors = adj.get(seed_id, set())
             if neighbors & seed_neighbors:
+                # 2-hop: shared neighbor
                 contributions.append((seed_id, p_score * 0.5))
+            else:
+                # 3-hop: check if any neighbor of doc has a neighbor that's a neighbor of seed
+                for n in neighbors:
+                    n_neighbors = adj.get(n, set())
+                    if n_neighbors & seed_neighbors:
+                        contributions.append((seed_id, p_score * 0.25))
+                        break
     contributions.sort(key=lambda x: x[1], reverse=True)
     return [c[0] for c in contributions[:max_via]]
 
@@ -1661,6 +1678,10 @@ class MemoryEngine:
                 if threshold is not None:
                     vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
                     if vec_match and vec_match["similarity"] < threshold:
+                        continue
+                    # Graph-only results have no vector match — exclude when
+                    # threshold is set since similarity can't be verified
+                    if not vec_match and score_info["match_type"] == "graph":
                         continue
                 result["base_rrf_score"] = round(score_info["base_rrf_score"], 6)
                 result["match_type"] = score_info["match_type"]
