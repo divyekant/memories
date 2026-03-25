@@ -157,13 +157,15 @@ server.tool(
     source_prefix: z.string().optional().describe("Filter by source prefix (e.g. 'claude-code/myproject' or 'eval/longmemeval/q42')"),
     feedback_weight: z.number().min(0).max(1).default(0.1).describe("Weight for feedback-based ranking (0=disabled, default 0.1)"),
     confidence_weight: z.number().min(0).max(1).default(0).describe("Weight for confidence-based ranking (0=disabled)"),
+    graph_weight: z.number().min(0).max(1).default(0.1).describe("Weight for graph-based link expansion (0=disabled, default 0.1). Linked memories get bonus score."),
   },
-  async ({ query, k = 5, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight }) => {
+  async ({ query, k = 5, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight }) => {
     const body = { query, k, hybrid };
     if (threshold !== undefined) body.threshold = threshold;
     if (source_prefix) body.source_prefix = source_prefix;
     if (feedback_weight !== undefined) body.feedback_weight = feedback_weight;
     if (confidence_weight !== undefined && confidence_weight > 0) body.confidence_weight = confidence_weight;
+    if (graph_weight !== undefined) body.graph_weight = graph_weight;
 
     const data = await memoriesRequest("/search", {
       method: "POST",
