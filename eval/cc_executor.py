@@ -19,10 +19,12 @@ class CCExecutor:
         memories_url: str = "http://localhost:8900",
         memories_api_key: str = "",
         mcp_server_path: str = "",
+        model: str = "",
     ):
         self.timeout = timeout
         self.memories_url = memories_url
         self.memories_api_key = memories_api_key
+        self.model = model
         self.mcp_server_path = mcp_server_path
 
     def create_isolated_project(self, with_memories: bool = False) -> str:
@@ -128,8 +130,10 @@ class CCExecutor:
             "--dangerously-skip-permissions",
             "--strict-mcp-config",
             "--mcp-config", mcp_arg,
-            "-p", prompt,
         ]
+        if self.model:
+            cmd.extend(["--model", self.model])
+        cmd.extend(["-p", prompt])
         # Strip env vars that cause Claude Code to detect nesting
         env = {
             k: v
