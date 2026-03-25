@@ -35,6 +35,11 @@ except ImportError:
     CLOUD_SYNC_AVAILABLE = False
     logger.info("Cloud sync not available (cloud_sync.py not found or boto3 not installed)")
 
+# Graph expansion tuning knobs (env-configurable)
+SEARCH_GRAPH_SEED_K = int(os.environ.get("SEARCH_GRAPH_SEED_K", "3"))
+SEARCH_GRAPH_MAX_NEIGHBORS = int(os.environ.get("SEARCH_GRAPH_MAX_NEIGHBORS", "2"))
+SEARCH_GRAPH_DECAY = float(os.environ.get("SEARCH_GRAPH_DECAY", "0.5"))
+
 
 class MemoryEngine:
     """Memories engine with hybrid search and backup support."""
@@ -1412,6 +1417,163 @@ class MemoryEngine:
         except (ValueError, TypeError, ZeroDivisionError):
             return 0.0
 
+    def _graph_expand(
+        self,
+        direct_results: list,
+        graph_weight: float,
+        source_prefix: Optional[str],
+        include_archived: bool,
+    ) -> tuple:
+        """Expand direct search results via related_to graph edges.
+
+        Args:
+            direct_results: list of (doc_id, rrf_score) tuples, sorted descending
+            graph_weight: scaling factor for graph bonus
+            source_prefix: scope filter (applied to neighbors)
+            include_archived: whether archived neighbors are included
+
+        Returns:
+            (candidates, info) where:
+            - candidates: dict {doc_id: {"graph_support": float, "graph_via": [int]}}
+            - info: dict with seeds, neighbors_found, neighbors_filtered, neighbors_added
+        """
+        info = {
+            "seeds": [],
+            "neighbors_found": 0,
+            "neighbors_filtered": 0,
+            "neighbors_added": 0,
+        }
+        candidates: dict = {}
+
+        if not direct_results:
+            return candidates, info
+
+        seed_count = min(SEARCH_GRAPH_SEED_K, len(direct_results))
+        seeds = direct_results[:seed_count]
+        top_direct_rrf = seeds[0][1] if seeds else 0.0
+        bonus_cap = 0.33 * top_direct_rrf
+        info["seeds"] = [{"id": s[0], "rrf_score": round(s[1], 6)} for s in seeds]
+
+        for seed_id, seed_rrf in seeds:
+            links = self.get_links(seed_id, link_type="related_to", include_incoming=True)
+            valid_neighbors = []
+
+            seen_this_seed = set()
+            for link in links:
+                neighbor_id = link["to_id"] if link["direction"] == "outgoing" else link["from_id"]
+                info["neighbors_found"] += 1
+
+                # Dedupe per seed: reciprocal links (A→B + B→A) should count once
+                if neighbor_id in seen_this_seed:
+                    info["neighbors_filtered"] += 1
+                    continue
+                seen_this_seed.add(neighbor_id)
+
+                # Skip self and non-existent
+                if neighbor_id == seed_id or not self._id_exists(neighbor_id):
+                    info["neighbors_filtered"] += 1
+                    continue
+
+                meta = self._get_meta_by_id(neighbor_id)
+
+                # Scope: source_prefix
+                if source_prefix and not meta.get("source", "").startswith(source_prefix):
+                    info["neighbors_filtered"] += 1
+                    continue
+
+                # Scope: archived
+                if not include_archived and meta.get("archived"):
+                    info["neighbors_filtered"] += 1
+                    continue
+
+                valid_neighbors.append(neighbor_id)
+
+            # Cap after filtering
+            for neighbor_id in valid_neighbors[:SEARCH_GRAPH_MAX_NEIGHBORS]:
+                bonus = seed_rrf * SEARCH_GRAPH_DECAY * graph_weight
+
+                if neighbor_id in candidates:
+                    candidates[neighbor_id]["graph_support"] += bonus
+                    if seed_id not in candidates[neighbor_id]["graph_via"]:
+                        candidates[neighbor_id]["graph_via"].append(seed_id)
+                else:
+                    candidates[neighbor_id] = {
+                        "graph_support": bonus,
+                        "graph_via": [seed_id],
+                    }
+
+        # Apply cap
+        for doc_id, cand in candidates.items():
+            if cand["graph_support"] > bonus_cap:
+                cand["graph_support"] = round(bonus_cap, 6)
+            else:
+                cand["graph_support"] = round(cand["graph_support"], 6)
+
+        info["neighbors_added"] = len(candidates)
+        return candidates, info
+
+    def _merge_graph_results(
+        self,
+        rrf_scores: Dict[int, float],
+        graph_candidates: dict,
+        k: int,
+        vector_results: list,
+        threshold: Optional[float],
+        reinforce: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Merge direct RRF scores with graph candidates, annotate, and return top-k.
+
+        Shared by hybrid_search() and hybrid_search_explain().
+        When reinforce=True, direct and direct+graph results get reinforced.
+        """
+        sorted_direct = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+
+        merged_scores = {}
+        for doc_id, score in sorted_direct:
+            merged_scores[doc_id] = {
+                "rrf_score": score,
+                "base_rrf_score": score,
+                "match_type": "direct",
+                "graph_support": 0.0,
+                "graph_via": [],
+            }
+
+        for doc_id, cand in graph_candidates.items():
+            if doc_id in merged_scores:
+                merged_scores[doc_id]["rrf_score"] += cand["graph_support"]
+                merged_scores[doc_id]["graph_support"] = cand["graph_support"]
+                merged_scores[doc_id]["graph_via"] = cand["graph_via"]
+                merged_scores[doc_id]["match_type"] = "direct+graph"
+            else:
+                merged_scores[doc_id] = {
+                    "rrf_score": cand["graph_support"],
+                    "base_rrf_score": 0.0,
+                    "match_type": "graph",
+                    "graph_support": cand["graph_support"],
+                    "graph_via": cand["graph_via"],
+                }
+
+        final_sorted = sorted(merged_scores.items(), key=lambda x: x[1]["rrf_score"], reverse=True)[:k]
+
+        results = []
+        for doc_id, score_info in final_sorted:
+            if self._id_exists(doc_id):
+                meta = self._get_meta_by_id(doc_id)
+                result = self._enrich_with_confidence({**meta, "rrf_score": round(score_info["rrf_score"], 6)})
+                if threshold is not None:
+                    vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
+                    if vec_match and vec_match["similarity"] < threshold:
+                        continue
+                result["base_rrf_score"] = round(score_info["base_rrf_score"], 6)
+                result["match_type"] = score_info["match_type"]
+                result["graph_support"] = round(score_info["graph_support"], 6)
+                result["graph_via"] = score_info["graph_via"]
+                results.append(result)
+                if reinforce and score_info["match_type"] != "graph":
+                    self.reinforce(doc_id)
+
+        return results
+
     def hybrid_search(
         self,
         query: str,
@@ -1425,6 +1587,7 @@ class MemoryEngine:
         feedback_weight: float = 0.0,
         feedback_scores: Optional[Dict[int, int]] = None,
         confidence_weight: float = 0.0,
+        graph_weight: float = 0.0,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -1480,6 +1643,7 @@ class MemoryEngine:
         # 5-signal weight scaling (vector + BM25 + recency + feedback + confidence = 1.0)
         feedback_weight = max(0.0, min(1.0, feedback_weight))
         confidence_weight = max(0.0, min(1.0, confidence_weight))
+        graph_weight = max(0.0, min(1.0, graph_weight))
         total_auxiliary = feedback_weight + confidence_weight
         if total_auxiliary > 1.0:
             feedback_weight = feedback_weight / total_auxiliary
@@ -1541,21 +1705,36 @@ class MemoryEngine:
             for rank, (doc_id, _) in enumerate(conf_scored):
                 rrf_scores[doc_id] += confidence_weight * (1.0 / (rank + rrf_k))
 
-        sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+        # --- Zero-overhead fast path when graph is disabled ---
+        if graph_weight <= 0:
+            sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+            results = []
+            for doc_id, rrf_score in sorted_ids:
+                if self._id_exists(doc_id):
+                    meta = self._get_meta_by_id(doc_id)
+                    result = self._enrich_with_confidence({**meta, "rrf_score": round(rrf_score, 6)})
+                    if threshold is not None:
+                        vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
+                        if vec_match and vec_match["similarity"] < threshold:
+                            continue
+                    results.append(result)
+                    self.reinforce(doc_id)
+            return results
 
-        results = []
-        for doc_id, rrf_score in sorted_ids:
-            if self._id_exists(doc_id):
-                meta = self._get_meta_by_id(doc_id)
-                result = self._enrich_with_confidence({**meta, "rrf_score": round(rrf_score, 6)})
-                if threshold is not None:
-                    vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
-                    if vec_match and vec_match["similarity"] < threshold:
-                        continue
-                results.append(result)
-                self.reinforce(doc_id)
+        # --- Graph expansion path (graph_weight > 0) ---
+        # Graph bonus is additive post-RRF, not part of the 5-signal normalization budget
+        sorted_direct = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+        top_k_direct = sorted_direct[:k]
+        graph_candidates, graph_info = self._graph_expand(
+            direct_results=top_k_direct,
+            graph_weight=graph_weight,
+            source_prefix=source_prefix,
+            include_archived=include_archived,
+        )
 
-        return results
+        return self._merge_graph_results(
+            rrf_scores, graph_candidates, k, vector_results, threshold, reinforce=True
+        )
 
     def _search_no_reinforce(
         self,
@@ -1604,6 +1783,7 @@ class MemoryEngine:
         feedback_weight: float = 0.0,
         feedback_scores: Optional[Dict[int, int]] = None,
         confidence_weight: float = 0.0,
+        graph_weight: float = 0.0,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -1627,8 +1807,11 @@ class MemoryEngine:
                         "confidence": round(confidence_weight, 4),
                     },
                     "rrf_k": 60,
+                    "graph": {"enabled": False, "graph_weight": 0.0},
                 },
             }
+
+        graph_weight = max(0.0, min(1.0, graph_weight))
 
         k = min(k, len(self.metadata), 100)
         oversample = min(k * 3, len(self.metadata))
@@ -1777,18 +1960,34 @@ class MemoryEngine:
             for rank, (doc_id, _) in enumerate(conf_scored):
                 rrf_scores[doc_id] += confidence_weight * (1.0 / (rank + rrf_k))
 
-        sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+        # --- Graph expansion (explain variant — no reinforcement) ---
+        if graph_weight <= 0:
+            sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+            results = []
+            for doc_id, rrf_score in sorted_ids:
+                if self._id_exists(doc_id):
+                    meta = self._get_meta_by_id(doc_id)
+                    result = self._enrich_with_confidence({**meta, "rrf_score": round(rrf_score, 6)})
+                    if threshold is not None:
+                        vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
+                        if vec_match and vec_match["similarity"] < threshold:
+                            continue
+                    results.append(result)
+            graph_explain = {"enabled": False, "graph_weight": 0.0}
+        else:
+            sorted_direct = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+            top_k_direct = sorted_direct[:k]
+            graph_candidates, graph_info = self._graph_expand(
+                direct_results=top_k_direct,
+                graph_weight=graph_weight,
+                source_prefix=source_prefix,
+                include_archived=include_archived,
+            )
 
-        results = []
-        for doc_id, rrf_score in sorted_ids:
-            if self._id_exists(doc_id):
-                meta = self._get_meta_by_id(doc_id)
-                result = self._enrich_with_confidence({**meta, "rrf_score": round(rrf_score, 6)})
-                if threshold is not None:
-                    vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
-                    if vec_match and vec_match["similarity"] < threshold:
-                        continue
-                results.append(result)
+            results = self._merge_graph_results(
+                rrf_scores, graph_candidates, k, vector_results, threshold, reinforce=False
+            )
+            graph_explain = {"enabled": True, "graph_weight": graph_weight, **graph_info}
 
         return {
             "results": results,
@@ -1806,6 +2005,7 @@ class MemoryEngine:
                     "confidence": round(confidence_weight, 4),
                 },
                 "rrf_k": rrf_k,
+                "graph": graph_explain,
             },
         }
 
