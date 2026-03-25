@@ -367,6 +367,67 @@ class TestAUDNCycle:
         assert "Allowed" in prompt
         assert "Blocked" not in prompt
 
+    def test_audn_returns_artifacts_dict_with_similar_per_fact(self):
+        """run_audn() always returns audn_artifacts dict with similar_per_fact."""
+        from llm_extract import run_audn
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {"id": 5, "text": "Existing memory", "rrf_score": 0.025, "source": "test/proj"}
+        ]
+        decisions, tokens, artifacts = run_audn(
+            mock_provider, mock_engine,
+            facts=[{"text": "New fact", "category": "decision"}],
+            source="test/project"
+        )
+        assert isinstance(artifacts, dict)
+        assert "similar_per_fact" in artifacts
+        assert 0 in artifacts["similar_per_fact"]
+        assert artifacts["similar_per_fact"][0][0]["id"] == 5
+        assert "debug_similar" not in artifacts
+
+    def test_audn_artifacts_includes_debug_similar_when_debug(self):
+        from llm_extract import run_audn
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [{"id": 5, "text": "Existing memory", "rrf_score": 0.025}]
+        _, _, artifacts = run_audn(
+            mock_provider, mock_engine,
+            facts=[{"text": "New fact", "category": "decision"}],
+            source="test/project", debug=True,
+        )
+        assert "debug_similar" in artifacts
+        assert 0 in artifacts["debug_similar"]
+
+    def test_audn_ollama_returns_empty_artifacts(self):
+        from llm_extract import run_audn
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = False
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (True, None)
+        _, _, artifacts = run_audn(
+            mock_provider, mock_engine,
+            facts=[{"text": "New fact", "category": "detail"}],
+            source="test/project"
+        )
+        assert isinstance(artifacts, dict)
+        assert artifacts["similar_per_fact"] == {}
+
+    def test_audn_empty_facts_returns_empty_artifacts(self):
+        from llm_extract import run_audn
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        decisions, _, artifacts = run_audn(
+            mock_provider, MagicMock(), facts=[], source="test/project"
+        )
+        assert decisions == []
+        assert isinstance(artifacts, dict)
+        assert artifacts["similar_per_fact"] == {}
+
 
 class TestExecuteActions:
     """Test execute_actions() function."""
