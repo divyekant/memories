@@ -1,0 +1,34 @@
+# Graph Eval: Chain of related facts — A links to B, query matches A, answer needs B
+# Tests: does 1-hop expansion find the answer that's one link away?
+id: graph-003
+category: graph
+name: "Knowledge chain — 1-hop answer"
+description: >
+  Memory about authentication method links to memory about session storage.
+  Query asks about session storage — the word "session" appears in both, but the
+  specific answer (DynamoDB with 24h TTL) is only in the linked neighbor.
+memories:
+  - id: m1
+    text: "Authentication uses JWT tokens signed with RS256. Tokens are issued by the /auth/login endpoint and expire after 1 hour. Refresh tokens last 30 days."
+    source: eval/graph/003
+  - id: m2
+    text: "User sessions are stored in DynamoDB table 'user-sessions' with a 24-hour TTL. Session data includes last_active timestamp, device fingerprint, and permission cache."
+    source: eval/graph/003
+  - id: m3
+    text: "CI/CD pipeline uses GitHub Actions with three stages: lint, test, deploy. Deployment to production requires approval from the team lead."
+    source: eval/graph/003
+links:
+  - from: m1
+    to: m2
+    type: related_to
+prompt: "Where are user sessions stored and what is their TTL?"
+expected:
+  - type: contains
+    value: "DynamoDB"
+    weight: 0.4
+  - type: contains
+    value: "24"
+    weight: 0.3
+  - type: contains
+    value: "user-sessions"
+    weight: 0.3

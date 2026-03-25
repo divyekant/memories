@@ -1,0 +1,39 @@
+# Graph Eval: Linked neighbor should surface ABOVE unlinked noise
+# Tests: graph bonus pushes the relevant linked result above unlinked distractors
+id: graph-007
+category: graph
+name: "Noise resistance — linked neighbor ranks above distractors"
+description: >
+  Multiple memories mention "testing" but only one is linked to the actual test
+  framework decision. The linked neighbor should rank higher than the noise.
+memories:
+  - id: m1
+    text: "Testing strategy: unit tests for business logic, integration tests for API endpoints, e2e tests for critical user flows. Coverage target is 80%."
+    source: eval/graph/007
+  - id: m2
+    text: "Test framework is Vitest 1.3 with @testing-library/react for component tests. Configuration in vitest.config.ts with happy-dom environment."
+    source: eval/graph/007
+  - id: m3
+    text: "Load testing uses k6 scripts in tests/load/. Baseline: 500 concurrent users with p99 < 200ms."
+    source: eval/graph/007
+  - id: m4
+    text: "QA team does manual testing on staging before each release. Testing checklist lives in Notion."
+    source: eval/graph/007
+  - id: m5
+    text: "A/B testing framework uses LaunchDarkly feature flags. Test variants are defined in the experiments/ directory."
+    source: eval/graph/007
+links:
+  - from: m1
+    to: m2
+    type: related_to
+prompt: "What test framework and configuration does the project use?"
+expected:
+  - type: contains
+    value: "Vitest"
+    weight: 0.4
+  - type: contains
+    value: "vitest.config.ts"
+    weight: 0.3
+  - type: contains
+    value: "@testing-library"
+    weight: 0.3

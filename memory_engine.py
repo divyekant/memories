@@ -36,7 +36,7 @@ except ImportError:
     logger.info("Cloud sync not available (cloud_sync.py not found or boto3 not installed)")
 
 # Graph expansion tuning knobs (env-configurable)
-SEARCH_GRAPH_SEED_K = int(os.environ.get("SEARCH_GRAPH_SEED_K", "3"))
+SEARCH_GRAPH_SEED_K = int(os.environ.get("SEARCH_GRAPH_SEED_K", "0"))  # 0 = use all top-k results as seeds
 SEARCH_GRAPH_MAX_NEIGHBORS = int(os.environ.get("SEARCH_GRAPH_MAX_NEIGHBORS", "2"))
 SEARCH_GRAPH_DECAY = float(os.environ.get("SEARCH_GRAPH_DECAY", "0.5"))
 
@@ -1448,7 +1448,7 @@ class MemoryEngine:
         if not direct_results:
             return candidates, info
 
-        seed_count = min(SEARCH_GRAPH_SEED_K, len(direct_results))
+        seed_count = len(direct_results) if SEARCH_GRAPH_SEED_K <= 0 else min(SEARCH_GRAPH_SEED_K, len(direct_results))
         seeds = direct_results[:seed_count]
         top_direct_rrf = seeds[0][1] if seeds else 0.0
         bonus_cap = 0.33 * top_direct_rrf
@@ -1491,23 +1491,35 @@ class MemoryEngine:
             # Cap after filtering
             for neighbor_id in valid_neighbors[:SEARCH_GRAPH_MAX_NEIGHBORS]:
                 bonus = seed_rrf * SEARCH_GRAPH_DECAY * graph_weight
+                # inject_score: competitive score for graph-only injection
+                # Uses seed_rrf directly — a neighbor of a strong seed should
+                # rank near that seed, not be halved into irrelevance
+                inject = seed_rrf
 
                 if neighbor_id in candidates:
                     candidates[neighbor_id]["graph_support"] += bonus
+                    candidates[neighbor_id]["inject_score"] = max(
+                        candidates[neighbor_id].get("inject_score", 0.0), inject
+                    )
                     if seed_id not in candidates[neighbor_id]["graph_via"]:
                         candidates[neighbor_id]["graph_via"].append(seed_id)
                 else:
                     candidates[neighbor_id] = {
                         "graph_support": bonus,
+                        "inject_score": inject,
                         "graph_via": [seed_id],
                     }
 
-        # Apply cap
+        # Apply caps
         for doc_id, cand in candidates.items():
             if cand["graph_support"] > bonus_cap:
                 cand["graph_support"] = round(bonus_cap, 6)
             else:
                 cand["graph_support"] = round(cand["graph_support"], 6)
+            if cand.get("inject_score", 0.0) > bonus_cap:
+                cand["inject_score"] = round(bonus_cap, 6)
+            else:
+                cand["inject_score"] = round(cand.get("inject_score", 0.0), 6)
 
         info["neighbors_added"] = len(candidates)
         return candidates, info
@@ -1540,20 +1552,35 @@ class MemoryEngine:
 
         for doc_id, cand in graph_candidates.items():
             if doc_id in merged_scores:
+                # Direct+graph: additive bonus on existing score
                 merged_scores[doc_id]["rrf_score"] += cand["graph_support"]
                 merged_scores[doc_id]["graph_support"] = cand["graph_support"]
                 merged_scores[doc_id]["graph_via"] = cand["graph_via"]
                 merged_scores[doc_id]["match_type"] = "direct+graph"
             else:
+                # Graph-only injection: use inject_score so neighbor can compete
+                # with direct results. inject_score = seed_rrf * decay (without
+                # the additional graph_weight reduction that makes additive bonuses tiny).
                 merged_scores[doc_id] = {
-                    "rrf_score": cand["graph_support"],
+                    "rrf_score": cand.get("inject_score", cand["graph_support"]),
                     "base_rrf_score": 0.0,
                     "match_type": "graph",
                     "graph_support": cand["graph_support"],
                     "graph_via": cand["graph_via"],
                 }
 
-        final_sorted = sorted(merged_scores.items(), key=lambda x: x[1]["rrf_score"], reverse=True)[:k]
+        # Reserve slots for graph-only results (HopRAG-style injection)
+        # Without reserved slots, graph-only results with low RRF scores get pushed
+        # out by noise at scale. Reserve up to SEARCH_GRAPH_MAX_NEIGHBORS slots.
+        all_sorted = sorted(merged_scores.items(), key=lambda x: x[1]["rrf_score"], reverse=True)
+        graph_only = [(doc_id, si) for doc_id, si in all_sorted if si["match_type"] == "graph"]
+        non_graph = [(doc_id, si) for doc_id, si in all_sorted if si["match_type"] != "graph"]
+
+        # Take top-(k - reserved) direct/boosted + top-reserved graph-only
+        reserved = min(SEARCH_GRAPH_MAX_NEIGHBORS, len(graph_only), k)
+        direct_slots = k - reserved
+        final_sorted = non_graph[:direct_slots] + graph_only[:reserved]
+        final_sorted.sort(key=lambda x: x[1]["rrf_score"], reverse=True)
 
         results = []
         for doc_id, score_info in final_sorted:
@@ -1723,10 +1750,11 @@ class MemoryEngine:
 
         # --- Graph expansion path (graph_weight > 0) ---
         # Graph bonus is additive post-RRF, not part of the 5-signal normalization budget
+        # Use full RRF candidate pool as seeds (not just top-k) so linked neighbors
+        # of lower-ranked but relevant memories can be discovered and injected
         sorted_direct = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-        top_k_direct = sorted_direct[:k]
         graph_candidates, graph_info = self._graph_expand(
-            direct_results=top_k_direct,
+            direct_results=sorted_direct,
             graph_weight=graph_weight,
             source_prefix=source_prefix,
             include_archived=include_archived,
@@ -1976,9 +2004,8 @@ class MemoryEngine:
             graph_explain = {"enabled": False, "graph_weight": 0.0}
         else:
             sorted_direct = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-            top_k_direct = sorted_direct[:k]
             graph_candidates, graph_info = self._graph_expand(
-                direct_results=top_k_direct,
+                direct_results=sorted_direct,
                 graph_weight=graph_weight,
                 source_prefix=source_prefix,
                 include_archived=include_archived,

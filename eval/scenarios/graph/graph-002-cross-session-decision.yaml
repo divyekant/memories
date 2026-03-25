@@ -1,0 +1,34 @@
+# Graph Eval: Decision in one session, implementation detail in another, linked
+# Tests: can graph expansion connect a decision to its implementation context?
+id: graph-002
+category: graph
+name: "Cross-session decision to implementation"
+description: >
+  Session 1 captured a decision (use Redis for caching). Session 2 captured
+  the implementation detail (cache TTL is 15 minutes, configured in config/cache.yaml).
+  They are linked. Query asks about cache configuration — should find session 2 via link from session 1.
+memories:
+  - id: m1
+    text: "Decision: Use Redis for application-level caching. Evaluated Memcached but Redis won due to support for data structures (sorted sets for leaderboards) and built-in pub/sub for cache invalidation."
+    source: eval/graph/002
+  - id: m2
+    text: "Cache configuration is in config/cache.yaml. Default TTL is 15 minutes. Leaderboard cache uses sorted sets with 5-minute TTL. Invalidation happens via Redis pub/sub channel 'cache:invalidate'."
+    source: eval/graph/002
+  - id: m3
+    text: "The API gateway uses Kong with rate limiting plugin. Rate limits are 100 requests per minute for authenticated users and 20 for anonymous."
+    source: eval/graph/002
+links:
+  - from: m1
+    to: m2
+    type: related_to
+prompt: "What is the cache TTL and where is it configured?"
+expected:
+  - type: contains
+    value: "15 minutes"
+    weight: 0.4
+  - type: contains
+    value: "config/cache.yaml"
+    weight: 0.4
+  - type: contains
+    value: "TTL"
+    weight: 0.2
