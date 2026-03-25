@@ -879,3 +879,89 @@ class TestApplyMaintenance:
         result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
         assert len(result["compaction_candidates"]) == 1
         assert result["compaction_candidates"][0]["cross_source"] is False
+
+
+class TestExtractionMaintenance:
+    """Test _apply_maintenance() integration in run_extraction()."""
+
+    def test_run_extraction_includes_maintenance_results(self):
+        from llm_extract import run_extraction
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.side_effect = [
+            _cr(json.dumps([{"category": "DECISION", "text": "Uses Drizzle ORM"}])),
+            _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
+        ]
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {"id": 30, "text": "Prisma was the old ORM", "rrf_score": 0.022, "source": "test/proj"}
+        ]
+        mock_engine.add_memories.return_value = [121]
+        mock_engine.add_link.return_value = {}
+        result = run_extraction(
+            mock_provider, mock_engine,
+            messages="User: use drizzle\nAssistant: Done",
+            source="test/project", context="stop"
+        )
+        assert "links_created" in result
+        assert "compaction_candidates" in result
+        assert len(result["links_created"]) == 1
+        assert result["links_created"][0]["from_id"] == 121
+        assert result["links_created"][0]["to_id"] == 30
+        mock_engine.add_link.assert_called_once_with(121, 30, "related_to")
+
+    def test_single_call_mode_skips_maintenance(self):
+        from llm_extract import run_extraction
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {"action": "ADD", "fact_index": 0, "text": "Some fact", "category": "detail"}
+        ]))
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [100]
+        result = run_extraction(
+            mock_provider, mock_engine,
+            messages="User: test", source="test/project",
+            profile={"single_call": True},
+        )
+        mock_engine.add_link.assert_not_called()
+
+    def test_dry_run_skips_maintenance(self):
+        from llm_extract import run_extraction
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.side_effect = [
+            _cr(json.dumps([{"category": "DETAIL", "text": "Some fact"}])),
+            _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
+        ]
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = []
+        result = run_extraction(
+            mock_provider, mock_engine,
+            messages="User: test", source="test/project",
+            profile={"dry_run": True},
+        )
+        assert result.get("dry_run") is True
+        mock_engine.add_link.assert_not_called()
+
+    def test_maintenance_failure_does_not_crash_extraction(self):
+        """If _apply_maintenance raises, extraction result is still returned."""
+        from llm_extract import run_extraction
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.side_effect = [
+            _cr(json.dumps([{"category": "DETAIL", "text": "Some fact"}])),
+            _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
+        ]
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [{"id": 5, "rrf_score": 0.025, "source": "t"}]
+        mock_engine.add_memories.return_value = [100]
+        with patch("llm_extract._apply_maintenance", side_effect=RuntimeError("Maintenance crashed")):
+            result = run_extraction(
+                mock_provider, mock_engine,
+                messages="User: test", source="test/project",
+            )
+        assert result["stored_count"] == 1
+        assert result["extracted_count"] == 1
+        assert result["links_created"] == []
+        assert result["compaction_candidates"] == []
