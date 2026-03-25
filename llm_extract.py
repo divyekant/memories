@@ -441,6 +441,9 @@ def execute_actions(
 ) -> dict:
     """Execute AUDN decisions against the memory engine.
 
+    Produces exactly one result action per input action, maintaining positional
+    correspondence. _apply_maintenance() depends on this invariant.
+
     Args:
         facts: list of {"category": str, "text": str} dicts
         job_id: extraction job identifier for provenance tracking
@@ -746,6 +749,8 @@ def run_extraction(
         result = execute_actions(engine, actions, facts, source, allowed_prefixes, job_id=job_id)
         result["tokens"] = {"single_call": usage}
         result["job_id"] = job_id
+        result["links_created"] = []
+        result["compaction_candidates"] = []
         return result
 
     # Temporarily override module-level constants for extract_facts
@@ -816,6 +821,8 @@ def run_extraction(
             "actions": annotated,
             "extracted_count": len(facts),
             "tokens": {"extract": extract_tokens, "audn": audn_tokens},
+            "links_created": [],
+            "compaction_candidates": [],
         }
 
     # Step 4: Execute
