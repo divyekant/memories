@@ -660,3 +660,164 @@ class TestMaintenanceConfig:
         from llm_extract import _env_float
         val = _env_float("EXTRACT_MIN_LINK_SCORE", 0.005)
         assert val == 0.005
+
+
+class TestApplyMaintenance:
+    """Test _apply_maintenance() auto-linking and compaction detection."""
+
+    def test_auto_links_created_for_add_action(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.return_value = {"from_id": 100, "to_id": 5, "type": "related_to"}
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New fact", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "text": "Similar memory", "rrf_score": 0.025, "source": "test/proj"},
+            {"id": 6, "text": "Another memory", "rrf_score": 0.020, "source": "test/proj"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert len(result["links_created"]) == 2
+        assert result["links_created"][0]["from_id"] == 100
+        assert result["links_created"][0]["to_id"] == 5
+        mock_engine.add_link.assert_any_call(100, 5, "related_to")
+        mock_engine.add_link.assert_any_call(100, 6, "related_to")
+
+    def test_auto_links_created_for_conflict_action(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.return_value = {"from_id": 200, "to_id": 10}
+        decisions = [{"action": "CONFLICT", "fact_index": 0, "old_id": 10}]
+        exec_result = {"actions": [{"action": "conflict", "text": "Conflicting fact", "id": 200, "conflicts_with": 10}]}
+        audn_artifacts = {"similar_per_fact": {0: [{"id": 10, "text": "Original", "rrf_score": 0.028, "source": "test/proj"}]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert len(result["links_created"]) == 1
+        mock_engine.add_link.assert_called_once_with(200, 10, "related_to")
+
+    def test_no_links_for_update_delete_noop(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [
+            {"action": "UPDATE", "fact_index": 0, "old_id": 1},
+            {"action": "DELETE", "fact_index": 1, "old_id": 2},
+            {"action": "NOOP", "fact_index": 2, "existing_id": 3},
+        ]
+        exec_result = {"actions": [
+            {"action": "update", "old_id": 1, "text": "updated", "new_id": 50},
+            {"action": "delete", "old_id": 2},
+            {"action": "noop", "text": "existing", "existing_id": 3},
+        ]}
+        audn_artifacts = {"similar_per_fact": {
+            0: [{"id": 10, "rrf_score": 0.025, "source": "t"}],
+            1: [{"id": 11, "rrf_score": 0.020, "source": "t"}],
+            2: [{"id": 12, "rrf_score": 0.018, "source": "t"}],
+        }}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert result["links_created"] == []
+        mock_engine.add_link.assert_not_called()
+
+    def test_max_links_caps_per_memory(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.return_value = {}
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": i, "rrf_score": 0.03 - i * 0.001, "source": "t"} for i in range(10)
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=2)
+        assert len(result["links_created"]) == 2
+        assert mock_engine.add_link.call_count == 2
+
+    def test_min_link_score_filters_weak_matches(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.return_value = {}
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "rrf_score": 0.025, "source": "t"},
+            {"id": 6, "rrf_score": 0.003, "source": "t"},
+            {"id": 7, "rrf_score": 0.001, "source": "t"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, min_link_score=0.005)
+        assert len(result["links_created"]) == 1
+        assert result["links_created"][0]["to_id"] == 5
+
+    def test_max_links_zero_disables_linking(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [{"id": 5, "rrf_score": 0.025, "source": "t"}]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        assert result["links_created"] == []
+        mock_engine.add_link.assert_not_called()
+
+    def test_error_and_skipped_actions_ignored(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}, {"action": "ADD", "fact_index": 1}]
+        exec_result = {"actions": [
+            {"action": "error", "text": "failed", "error": "some error"},
+            {"action": "skipped", "reason": "protected", "old_id": 99},
+        ]}
+        audn_artifacts = {"similar_per_fact": {
+            0: [{"id": 5, "rrf_score": 0.025, "source": "t"}],
+            1: [{"id": 6, "rrf_score": 0.020, "source": "t"}],
+        }}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert result["links_created"] == []
+        mock_engine.add_link.assert_not_called()
+
+    def test_add_link_value_error_skipped_gracefully(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.side_effect = ValueError("Target memory 5 not found")
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [{"id": 5, "rrf_score": 0.025, "source": "t"}]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert result["links_created"] == []
+
+    def test_empty_similar_per_fact_no_errors(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert result["links_created"] == []
+        assert result["compaction_candidates"] == []
+
+    def test_two_new_memories_can_link_to_same_target(self):
+        """Per-edge dedup: different new memories MAY both link to same target."""
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.return_value = {}
+        decisions = [{"action": "ADD", "fact_index": 0}, {"action": "ADD", "fact_index": 1}]
+        exec_result = {"actions": [
+            {"action": "add", "text": "Fact A", "id": 100},
+            {"action": "add", "text": "Fact B", "id": 101},
+        ]}
+        audn_artifacts = {"similar_per_fact": {
+            0: [{"id": 5, "rrf_score": 0.025, "source": "t"}],
+            1: [{"id": 5, "rrf_score": 0.022, "source": "t"}],
+        }}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert len(result["links_created"]) == 2
+        assert mock_engine.add_link.call_count == 2
+        mock_engine.add_link.assert_any_call(100, 5, "related_to")
+        mock_engine.add_link.assert_any_call(101, 5, "related_to")
+
+    def test_deleted_target_skipped_in_auto_linking(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "DELETE", "fact_index": 0, "old_id": 5}, {"action": "ADD", "fact_index": 1}]
+        exec_result = {"actions": [
+            {"action": "delete", "old_id": 5},
+            {"action": "add", "text": "New", "id": 100},
+        ]}
+        audn_artifacts = {"similar_per_fact": {1: [{"id": 5, "rrf_score": 0.025, "source": "t"}]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert result["links_created"] == []
+        mock_engine.add_link.assert_not_called()
