@@ -1642,13 +1642,13 @@ class MemoryEngine:
 
         # Reserve slots for graph-only results (HopRAG-style injection)
         # Without reserved slots, graph-only results with low RRF scores get pushed
-        # out by noise at scale. Reserve up to SEARCH_GRAPH_MAX_NEIGHBORS slots.
+        # out by noise at scale. Reserve up to GRAPH_RESERVED_SLOTS slots.
         all_sorted = sorted(merged_scores.items(), key=lambda x: x[1]["rrf_score"], reverse=True)
         graph_only = [(doc_id, si) for doc_id, si in all_sorted if si["match_type"] == "graph"]
         non_graph = [(doc_id, si) for doc_id, si in all_sorted if si["match_type"] != "graph"]
 
         # Take top-(k - reserved) direct/boosted + top-reserved graph-only
-        reserved = min(SEARCH_GRAPH_MAX_NEIGHBORS, len(graph_only), k)
+        reserved = min(GRAPH_RESERVED_SLOTS, len(graph_only), k)
         direct_slots = k - reserved
         final_sorted = non_graph[:direct_slots] + graph_only[:reserved]
         final_sorted.sort(key=lambda x: x[1]["rrf_score"], reverse=True)
