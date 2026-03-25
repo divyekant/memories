@@ -21,7 +21,7 @@ import yaml
 
 logger = logging.getLogger("eval.graph")
 
-GRAPH_PREFIX = "eval/graph/scenarios/"  # scoped to avoid wiping synthetic corpus at eval/graph/synth/
+GRAPH_PREFIX = "eval/graph/scenarios"  # scoped to avoid wiping synthetic corpus at eval/graph/synth/
 
 
 def _load_env():
@@ -74,17 +74,17 @@ def run_scenario(client: httpx.Client, scenario: dict, verbose: bool = False) ->
     6. Return comparison
     """
     sid = scenario["id"]
-    api_key = client.headers.get("X-API-Key", "")
+    scenario_prefix = f"{GRAPH_PREFIX}/{sid}"
 
-    # Step 1: Clear
-    client.post("/memory/delete-by-prefix", json={"source_prefix": GRAPH_PREFIX})
+    # Step 1: Clear this scenario's memories only (not the whole graph prefix)
+    client.post("/memory/delete-by-prefix", json={"source_prefix": scenario_prefix})
 
-    # Step 2: Seed memories
+    # Step 2: Seed memories (override source to use scoped prefix)
     id_map = {}  # scenario_id -> real_id
     for mem in scenario["memories"]:
         resp = client.post("/memory/add", json={
             "text": mem["text"],
-            "source": mem["source"],
+            "source": f"{scenario_prefix}/{mem.get('id', 'mem')}",
             "deduplicate": False,
         })
         resp.raise_for_status()
@@ -113,8 +113,8 @@ def run_scenario(client: httpx.Client, scenario: dict, verbose: bool = False) ->
         "hybrid": True,
         "graph_weight": 0.0,
     }
-    if "source_prefix" in scenario:
-        search_body["source_prefix"] = scenario["source_prefix"]
+    # Always scope search to this scenario's memories
+    search_body["source_prefix"] = scenario_prefix
 
     resp_off = client.post("/search", json=search_body)
     resp_off.raise_for_status()

@@ -277,8 +277,10 @@ def _gen_meeting_memories(n=100):
 
 def generate_all(target_count=2000):
     """Generate all memory categories to reach target count."""
+    global PORTS
     random.seed(42)  # Reproducible
-    random.shuffle(PORTS)  # Shuffle after seed for deterministic port assignments
+    PORTS = list(range(3000, 9999))  # Reset to original state before shuffling
+    random.shuffle(PORTS)  # Now deterministic across repeated calls
 
     all_mems = []
     # Proportional distribution matching real usage patterns
