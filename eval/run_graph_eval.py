@@ -21,7 +21,7 @@ import yaml
 
 logger = logging.getLogger("eval.graph")
 
-GRAPH_PREFIX = "eval/graph/"
+GRAPH_PREFIX = "eval/graph/scenarios/"  # scoped to avoid wiping synthetic corpus at eval/graph/synth/
 
 
 def _load_env():

@@ -72,7 +72,7 @@ TECHNOLOGIES = [
 ]
 
 PORTS = list(range(3000, 9999))
-random.shuffle(PORTS)
+# Note: PORTS shuffle moved into generate_all() after random.seed(42) for reproducibility
 
 CONFIG_PATHS = [
     "src/config/{}.ts", "config/{}.yaml", "deploy/values/{}.yaml",
@@ -278,6 +278,7 @@ def _gen_meeting_memories(n=100):
 def generate_all(target_count=2000):
     """Generate all memory categories to reach target count."""
     random.seed(42)  # Reproducible
+    random.shuffle(PORTS)  # Shuffle after seed for deterministic port assignments
 
     all_mems = []
     # Proportional distribution matching real usage patterns
