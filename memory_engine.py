@@ -1755,6 +1755,7 @@ class MemoryEngine:
         feedback_weight: float = 0.0,
         feedback_scores: Optional[Dict[int, int]] = None,
         confidence_weight: float = 0.0,
+        graph_weight: float = 0.0,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -1778,8 +1779,11 @@ class MemoryEngine:
                         "confidence": round(confidence_weight, 4),
                     },
                     "rrf_k": 60,
+                    "graph": {"enabled": False, "graph_weight": 0.0},
                 },
             }
+
+        graph_weight = max(0.0, min(1.0, graph_weight))
 
         k = min(k, len(self.metadata), 100)
         oversample = min(k * 3, len(self.metadata))
@@ -1928,18 +1932,73 @@ class MemoryEngine:
             for rank, (doc_id, _) in enumerate(conf_scored):
                 rrf_scores[doc_id] += confidence_weight * (1.0 / (rank + rrf_k))
 
-        sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+        # --- Graph expansion (explain variant — no reinforcement) ---
+        if graph_weight <= 0:
+            sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+            results = []
+            for doc_id, rrf_score in sorted_ids:
+                if self._id_exists(doc_id):
+                    meta = self._get_meta_by_id(doc_id)
+                    result = self._enrich_with_confidence({**meta, "rrf_score": round(rrf_score, 6)})
+                    if threshold is not None:
+                        vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
+                        if vec_match and vec_match["similarity"] < threshold:
+                            continue
+                    results.append(result)
+            graph_explain = {"enabled": False, "graph_weight": 0.0}
+        else:
+            sorted_direct = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+            top_k_direct = sorted_direct[:k]
+            graph_candidates, graph_info = self._graph_expand(
+                direct_results=top_k_direct,
+                graph_weight=graph_weight,
+                source_prefix=source_prefix,
+                include_archived=include_archived,
+            )
 
-        results = []
-        for doc_id, rrf_score in sorted_ids:
-            if self._id_exists(doc_id):
-                meta = self._get_meta_by_id(doc_id)
-                result = self._enrich_with_confidence({**meta, "rrf_score": round(rrf_score, 6)})
-                if threshold is not None:
-                    vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
-                    if vec_match and vec_match["similarity"] < threshold:
-                        continue
-                results.append(result)
+            merged_scores = {}
+            for doc_id, score in sorted_direct:
+                merged_scores[doc_id] = {
+                    "rrf_score": score,
+                    "base_rrf_score": score,
+                    "match_type": "direct",
+                    "graph_support": 0.0,
+                    "graph_via": [],
+                }
+
+            for doc_id, cand in graph_candidates.items():
+                if doc_id in merged_scores:
+                    merged_scores[doc_id]["rrf_score"] += cand["graph_support"]
+                    merged_scores[doc_id]["graph_support"] = cand["graph_support"]
+                    merged_scores[doc_id]["graph_via"] = cand["graph_via"]
+                    merged_scores[doc_id]["match_type"] = "direct+graph"
+                else:
+                    merged_scores[doc_id] = {
+                        "rrf_score": cand["graph_support"],
+                        "base_rrf_score": 0.0,
+                        "match_type": "graph",
+                        "graph_support": cand["graph_support"],
+                        "graph_via": cand["graph_via"],
+                    }
+
+            final_sorted = sorted(merged_scores.items(), key=lambda x: x[1]["rrf_score"], reverse=True)[:k]
+
+            results = []
+            for doc_id, score_info in final_sorted:
+                if self._id_exists(doc_id):
+                    meta = self._get_meta_by_id(doc_id)
+                    result = self._enrich_with_confidence({**meta, "rrf_score": round(score_info["rrf_score"], 6)})
+                    if threshold is not None:
+                        vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
+                        if vec_match and vec_match["similarity"] < threshold:
+                            continue
+                    result["base_rrf_score"] = round(score_info["base_rrf_score"], 6)
+                    result["match_type"] = score_info["match_type"]
+                    result["graph_support"] = round(score_info["graph_support"], 6)
+                    result["graph_via"] = score_info["graph_via"]
+                    results.append(result)
+
+            graph_explain = {"enabled": True, "graph_weight": graph_weight, **graph_info}
 
         return {
             "results": results,
@@ -1957,6 +2016,7 @@ class MemoryEngine:
                     "confidence": round(confidence_weight, 4),
                 },
                 "rrf_k": rrf_k,
+                "graph": graph_explain,
             },
         }
 

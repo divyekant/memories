@@ -282,6 +282,7 @@ class TestHybridSearchExplainGraph:
             {"id": 1, "text": "test fact", "source": "test", "created_at": now,
              "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
             {"id": 2, "text": "linked fact", "source": "test", "created_at": now},
+            {"id": 3, "text": "unrelated other document", "source": "test", "created_at": now},
         ]
         engine._rebuild_id_map()
         engine._rebuild_bm25()
