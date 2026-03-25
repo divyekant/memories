@@ -247,7 +247,7 @@ def run_audn(
     allowed_prefixes: Optional[List[str]] = None,
     debug: bool = False,
     rules: dict | None = None,
-) -> tuple[list[dict], dict, Optional[dict]]:
+) -> tuple[list[dict], dict, dict]:
     """Run AUDN cycle on extracted facts.
 
     For providers with supports_audn=True: uses LLM to decide action per fact.
@@ -257,10 +257,10 @@ def run_audn(
         facts: list of {"category": str, "text": str} dicts
         debug: when True, return similar memories per fact in debug_info
 
-    Returns: (list of action dicts, token usage dict, optional debug info dict)
+    Returns: (list of action dicts, token usage dict, audn_artifacts dict with similar_per_fact always present)
     """
     if not facts:
-        return [], {"input": 0, "output": 0}, None
+        return [], {"input": 0, "output": 0}, {"similar_per_fact": {}}
 
     if not provider.supports_audn:
         # Ollama fallback: novelty check only
@@ -272,7 +272,7 @@ def run_audn(
                 decisions.append({"action": "ADD", "fact_index": i})
             else:
                 decisions.append({"action": "NOOP", "fact_index": i})
-        return decisions, {"input": 0, "output": 0}, None
+        return decisions, {"input": 0, "output": 0}, {"similar_per_fact": {}}
 
     # Full AUDN with LLM
     similar_per_fact = {}
@@ -289,12 +289,11 @@ def run_audn(
         except Exception:
             similar_per_fact[i] = []
 
-    # Capture debug info before we serialize and discard
-    debug_similar = None
+    # Build audn_artifacts with similar_per_fact always present
+    audn_artifacts = {"similar_per_fact": dict(similar_per_fact)}
     if debug:
-        debug_similar = {}
-        for i, mems in similar_per_fact.items():
-            debug_similar[i] = [
+        audn_artifacts["debug_similar"] = {
+            i: [
                 {
                     "id": m.get("id"),
                     "text": _clip_text(str(m.get("text", "")), EXTRACT_SIMILAR_TEXT_CHARS),
@@ -302,6 +301,8 @@ def run_audn(
                 }
                 for m in mems[:EXTRACT_SIMILAR_PER_FACT]
             ]
+            for i, mems in similar_per_fact.items()
+        }
 
     facts_json = json.dumps(
         [{"index": i, "text": _clip_text(f["text"], EXTRACT_MAX_FACT_CHARS), "category": f.get("category", "detail")} for i, f in enumerate(facts)],
@@ -331,16 +332,16 @@ def run_audn(
         result = provider.complete("You are a memory manager. Output only valid JSON.", prompt)
         tokens = {"input": result.input_tokens, "output": result.output_tokens}
         decisions = _parse_json_array(result.text)
-        del result, prompt, facts_json, similar_json, similar_per_fact
+        del result, prompt, facts_json, similar_json
         valid = []
         for d in decisions:
             if isinstance(d, dict) and "action" in d:
                 d["action"] = d["action"].upper()
                 valid.append(d)
-        return valid, tokens, debug_similar
+        return valid, tokens, audn_artifacts
     except Exception as e:
         logger.error("AUDN cycle failed: %s", e)
-        return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}, debug_similar
+        return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}, audn_artifacts
 
 
 SINGLE_CALL_PROMPT = """You are a memory extraction and classification system.
@@ -652,7 +653,7 @@ def run_extraction(
         }
 
     # Step 2: AUDN decisions
-    decisions, audn_tokens, debug_similar = run_audn(
+    decisions, audn_tokens, audn_artifacts = run_audn(
         provider,
         engine,
         facts,
@@ -693,6 +694,7 @@ def run_extraction(
     result["job_id"] = job_id
 
     # Step 5: Build debug trace when requested
+    debug_similar = audn_artifacts.get("debug_similar", {})
     if debug:
         # Build AUDN decisions trace with similar memories
         audn_trace = []
@@ -703,7 +705,7 @@ def run_extraction(
                 "similar_memories": [],
             }
             fi = d.get("fact_index", -1)
-            if debug_similar and fi in debug_similar:
+            if fi in debug_similar:
                 entry["similar_memories"] = debug_similar[fi]
 
             # Attach resulting IDs from execution
