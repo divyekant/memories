@@ -214,12 +214,9 @@ class LongMemEvalRunner:
                 if session_date:
                     metadata["document_at"] = session_date
 
-                # Prepend date to text so it's visible in search results
-                dated_text = f"[{session_date}] {chunk}" if session_date else chunk
-
                 memories.append(
                     {
-                        "text": dated_text,
+                        "text": chunk,  # Don't prepend dates — hurts embedding retrieval
                         "source": f"{question_prefix}/s{session_index}/c{chunk_index}",
                         "metadata": metadata,
                     }

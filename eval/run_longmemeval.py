@@ -166,6 +166,11 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     dataset = runner.load_dataset()
     _log(f"Loaded {len(dataset)} questions")
 
+    # Filter by category if specified
+    if args.category:
+        dataset = [q for q in dataset if q.get("question_type") == args.category]
+        _log(f"Filtered to category '{args.category}': {len(dataset)} questions")
+
     if max_questions > 0:
         dataset = dataset[:max_questions]
         _log(f"Running subset: {max_questions} questions")
@@ -292,6 +297,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run LongMemEval benchmark")
     parser.add_argument("--questions", type=int, default=0, help="Limit to N questions (0=all)")
+    parser.add_argument("--category", default=None, help="Filter to specific question_type (e.g., temporal-reasoning)")
     parser.add_argument("--output", default=None, help="Output file (default: eval/results/longmemeval-v4.0.0-{mode}.json)")
     parser.add_argument("--mode", choices=["tool", "system"], default="tool",
                         help="Eval mode: 'tool' = raw API search (diagnostic), 'system' = agent + MCP tools (product score)")
