@@ -14,7 +14,7 @@ import threading
 import gc
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from entity_locks import EntityLockManager
@@ -36,9 +36,50 @@ except ImportError:
     logger.info("Cloud sync not available (cloud_sync.py not found or boto3 not installed)")
 
 # Graph expansion tuning knobs (env-configurable)
-SEARCH_GRAPH_SEED_K = int(os.environ.get("SEARCH_GRAPH_SEED_K", "0"))  # 0 = use all top-k results as seeds
+# Legacy constants (deprecated — PPR handles seed selection and decay)
+SEARCH_GRAPH_SEED_K = int(os.environ.get("SEARCH_GRAPH_SEED_K", "0"))
 SEARCH_GRAPH_MAX_NEIGHBORS = int(os.environ.get("SEARCH_GRAPH_MAX_NEIGHBORS", "2"))
 SEARCH_GRAPH_DECAY = float(os.environ.get("SEARCH_GRAPH_DECAY", "0.5"))
+
+# PPR scoring constants
+PPR_ALPHA = float(os.environ.get("SEARCH_PPR_ALPHA", "0.85"))
+PPR_MAX_ITERS = int(os.environ.get("SEARCH_PPR_MAX_ITERS", "3"))
+PPR_MIN_RELATIVE = float(os.environ.get("SEARCH_PPR_MIN_RELATIVE", "0.05"))
+# Compatibility: fall back to SEARCH_GRAPH_MAX_NEIGHBORS if SEARCH_GRAPH_RESERVED_SLOTS not set
+GRAPH_RESERVED_SLOTS = int(os.environ.get(
+    "SEARCH_GRAPH_RESERVED_SLOTS",
+    os.environ.get("SEARCH_GRAPH_MAX_NEIGHBORS", "2")
+))
+
+
+def _trace_top_contributors(doc_id, personalization, adj, max_via=5):
+    """Approximate top contributing seeds for a PPR-scored node.
+
+    Checks 1-hop (direct neighbor), 2-hop (shared neighbor), and 3-hop
+    (neighbor-of-neighbor-of-seed) paths. Contribution decays by hop count.
+    """
+    contributions = []
+    neighbors = adj.get(doc_id, set())
+    for seed_id, p_score in personalization.items():
+        if seed_id == doc_id:
+            continue
+        if seed_id in neighbors:
+            # 1-hop: direct link
+            contributions.append((seed_id, p_score))
+        else:
+            seed_neighbors = adj.get(seed_id, set())
+            if neighbors & seed_neighbors:
+                # 2-hop: shared neighbor
+                contributions.append((seed_id, p_score * 0.5))
+            else:
+                # 3-hop: check if any neighbor of doc has a neighbor that's a neighbor of seed
+                for n in neighbors:
+                    n_neighbors = adj.get(n, set())
+                    if n_neighbors & seed_neighbors:
+                        contributions.append((seed_id, p_score * 0.25))
+                        break
+    contributions.sort(key=lambda x: x[1], reverse=True)
+    return [c[0] for c in contributions[:max_via]]
 
 
 class MemoryEngine:
@@ -1417,6 +1458,57 @@ class MemoryEngine:
         except (ValueError, TypeError, ZeroDivisionError):
             return 0.0
 
+    def _build_adjacency(self, link_type: str = "related_to") -> Dict[int, Set[int]]:
+        """Build bidirectional adjacency index for a link type.
+
+        Single O(M*L) scan replaces per-seed get_links(include_incoming=True).
+        """
+        adj: Dict[int, Set[int]] = {}
+        for m in self.metadata:
+            mid = m["id"]
+            for link in m.get("links", []):
+                if link["type"] != link_type:
+                    continue
+                tid = link["to_id"]
+                if not self._id_exists(tid):
+                    continue
+                if tid == mid:
+                    continue
+                adj.setdefault(mid, set()).add(tid)
+                adj.setdefault(tid, set()).add(mid)
+        return adj
+
+    def _filter_adjacency(
+        self,
+        adj: Dict[int, Set[int]],
+        source_prefix: Optional[str],
+        include_archived: bool,
+    ) -> Dict[int, Set[int]]:
+        """Filter adjacency to visible subgraph.
+
+        Scope is a boundary — out-of-scope nodes cannot act as transit bridges.
+        Nodes with no visible neighbors are omitted from the result.
+        """
+        if not source_prefix and include_archived:
+            return adj
+
+        visible = set()
+        for m in self.metadata:
+            if source_prefix and not m.get("source", "").startswith(source_prefix):
+                continue
+            if not include_archived and m.get("archived"):
+                continue
+            visible.add(m["id"])
+
+        filtered = {}
+        for node, neighbors in adj.items():
+            if node not in visible:
+                continue
+            filtered_neighbors = neighbors & visible
+            if filtered_neighbors:
+                filtered[node] = filtered_neighbors
+        return filtered
+
     def _graph_expand(
         self,
         direct_results: list,
@@ -1424,102 +1516,98 @@ class MemoryEngine:
         source_prefix: Optional[str],
         include_archived: bool,
     ) -> tuple:
-        """Expand direct search results via related_to graph edges.
+        """Expand search results via PPR on scope-filtered adjacency graph.
 
-        Args:
-            direct_results: list of (doc_id, rrf_score) tuples, sorted descending
-            graph_weight: scaling factor for graph bonus
-            source_prefix: scope filter (applied to neighbors)
-            include_archived: whether archived neighbors are included
-
-        Returns:
-            (candidates, info) where:
-            - candidates: dict {doc_id: {"graph_support": float, "graph_via": [int]}}
-            - info: dict with seeds, neighbors_found, neighbors_filtered, neighbors_added
+        Uses truncated Personalized PageRank seeded from max-normalized RRF
+        scores. Replaces the previous flat decay scoring with principled
+        multi-hop propagation.
         """
         info = {
             "seeds": [],
             "neighbors_found": 0,
             "neighbors_filtered": 0,
             "neighbors_added": 0,
+            "ppr_iterations": PPR_MAX_ITERS,
+            "ppr_alpha": PPR_ALPHA,
         }
         candidates: dict = {}
 
         if not direct_results:
             return candidates, info
 
-        seed_count = len(direct_results) if SEARCH_GRAPH_SEED_K <= 0 else min(SEARCH_GRAPH_SEED_K, len(direct_results))
-        seeds = direct_results[:seed_count]
-        top_direct_rrf = seeds[0][1] if seeds else 0.0
-        bonus_cap = 0.33 * top_direct_rrf
-        info["seeds"] = [{"id": s[0], "rrf_score": round(s[1], 6)} for s in seeds]
+        # 1. Build and filter adjacency
+        full_adj = self._build_adjacency("related_to")
+        adj = self._filter_adjacency(full_adj, source_prefix, include_archived)
 
-        for seed_id, seed_rrf in seeds:
-            links = self.get_links(seed_id, link_type="related_to", include_incoming=True)
-            valid_neighbors = []
+        # Edge counts for info
+        unfiltered_edges = sum(len(n) for n in full_adj.values()) // 2
+        filtered_edges = sum(len(n) for n in adj.values()) // 2
+        info["neighbors_found"] = unfiltered_edges
+        info["neighbors_filtered"] = unfiltered_edges - filtered_edges
 
-            seen_this_seed = set()
-            for link in links:
-                neighbor_id = link["to_id"] if link["direction"] == "outgoing" else link["from_id"]
-                info["neighbors_found"] += 1
+        # 2. Initialize PPR — max-normalized so top seed starts at 1.0
+        top_rrf = direct_results[0][1] if direct_results else 1.0
+        if top_rrf <= 0:
+            return candidates, info
+        personalization = {doc_id: score / top_rrf for doc_id, score in direct_results if score > 0}
 
-                # Dedupe per seed: reciprocal links (A→B + B→A) should count once
-                if neighbor_id in seen_this_seed:
-                    info["neighbors_filtered"] += 1
-                    continue
-                seen_this_seed.add(neighbor_id)
+        info["seeds"] = [{"id": s[0], "rrf_score": round(s[1], 6)}
+                         for s in direct_results[:min(10, len(direct_results))]]
 
-                # Skip self and non-existent
-                if neighbor_id == seed_id or not self._id_exists(neighbor_id):
-                    info["neighbors_filtered"] += 1
-                    continue
+        ppr = dict(personalization)
+        p_total = sum(personalization.values()) or 1.0
 
-                meta = self._get_meta_by_id(neighbor_id)
+        # 3. Truncated PPR with dangling mass handling
+        alpha = PPR_ALPHA
+        restart = 1.0 - alpha
 
-                # Scope: source_prefix
-                if source_prefix and not meta.get("source", "").startswith(source_prefix):
-                    info["neighbors_filtered"] += 1
-                    continue
+        for _ in range(PPR_MAX_ITERS):
+            new_ppr = {}
 
-                # Scope: archived
-                if not include_archived and meta.get("archived"):
-                    info["neighbors_filtered"] += 1
-                    continue
+            # Dangling mass: score on nodes with no visible neighbors
+            dangling_mass = sum(score for node, score in ppr.items() if not adj.get(node))
 
-                valid_neighbors.append(neighbor_id)
+            # Restart: teleport to personalization + redistribute dangling
+            dangling_share = alpha * dangling_mass
+            for node, p_score in personalization.items():
+                new_ppr[node] = new_ppr.get(node, 0.0) + restart * p_score
+                new_ppr[node] += dangling_share * (p_score / p_total)
 
-            # Cap after filtering
-            for neighbor_id in valid_neighbors[:SEARCH_GRAPH_MAX_NEIGHBORS]:
-                bonus = seed_rrf * SEARCH_GRAPH_DECAY * graph_weight
-                # inject_score: competitive score for graph-only injection
-                # Uses seed_rrf directly — a neighbor of a strong seed should
-                # rank near that seed, not be halved into irrelevance
-                inject = seed_rrf
+            # Propagation: distribute alpha * score to neighbors
+            for node, score in ppr.items():
+                neighbors = adj.get(node, set())
+                if neighbors:
+                    share = alpha * score / len(neighbors)
+                    for neighbor in neighbors:
+                        new_ppr[neighbor] = new_ppr.get(neighbor, 0.0) + share
 
-                if neighbor_id in candidates:
-                    candidates[neighbor_id]["graph_support"] += bonus
-                    candidates[neighbor_id]["inject_score"] = max(
-                        candidates[neighbor_id].get("inject_score", 0.0), inject
-                    )
-                    if seed_id not in candidates[neighbor_id]["graph_via"]:
-                        candidates[neighbor_id]["graph_via"].append(seed_id)
-                else:
-                    candidates[neighbor_id] = {
-                        "graph_support": bonus,
-                        "inject_score": inject,
-                        "graph_via": [seed_id],
-                    }
+            ppr = new_ppr
 
-        # Apply caps
-        for doc_id, cand in candidates.items():
-            if cand["graph_support"] > bonus_cap:
-                cand["graph_support"] = round(bonus_cap, 6)
-            else:
-                cand["graph_support"] = round(cand["graph_support"], 6)
-            if cand.get("inject_score", 0.0) > bonus_cap:
-                cand["inject_score"] = round(bonus_cap, 6)
-            else:
-                cand["inject_score"] = round(cand.get("inject_score", 0.0), 6)
+        # 4. Build candidates
+        direct_ids = {doc_id for doc_id, _ in direct_results}
+        max_ppr = max(ppr.values()) if ppr else 1.0
+
+        for doc_id, ppr_score in ppr.items():
+            original_score = personalization.get(doc_id, 0.0)
+            graph_gain = ppr_score - original_score
+
+            if doc_id in direct_ids and graph_gain <= 0:
+                continue
+
+            relative_ppr = ppr_score / max_ppr if max_ppr > 0 else 0.0
+            if doc_id not in direct_ids and relative_ppr < PPR_MIN_RELATIVE:
+                continue
+
+            via = _trace_top_contributors(doc_id, personalization, adj)
+
+            scaled_support = (graph_gain / max_ppr) * top_rrf * graph_weight
+            scaled_inject = (ppr_score / max_ppr) * top_rrf
+
+            candidates[doc_id] = {
+                "graph_support": round(min(scaled_support, 0.33 * top_rrf), 6),
+                "inject_score": round(min(scaled_inject, 0.33 * top_rrf), 6),
+                "graph_via": via,
+            }
 
         info["neighbors_added"] = len(candidates)
         return candidates, info
@@ -1571,13 +1659,13 @@ class MemoryEngine:
 
         # Reserve slots for graph-only results (HopRAG-style injection)
         # Without reserved slots, graph-only results with low RRF scores get pushed
-        # out by noise at scale. Reserve up to SEARCH_GRAPH_MAX_NEIGHBORS slots.
+        # out by noise at scale. Reserve up to GRAPH_RESERVED_SLOTS slots.
         all_sorted = sorted(merged_scores.items(), key=lambda x: x[1]["rrf_score"], reverse=True)
         graph_only = [(doc_id, si) for doc_id, si in all_sorted if si["match_type"] == "graph"]
         non_graph = [(doc_id, si) for doc_id, si in all_sorted if si["match_type"] != "graph"]
 
         # Take top-(k - reserved) direct/boosted + top-reserved graph-only
-        reserved = min(SEARCH_GRAPH_MAX_NEIGHBORS, len(graph_only), k)
+        reserved = min(GRAPH_RESERVED_SLOTS, len(graph_only), k)
         direct_slots = k - reserved
         final_sorted = non_graph[:direct_slots] + graph_only[:reserved]
         final_sorted.sort(key=lambda x: x[1]["rrf_score"], reverse=True)
@@ -1590,6 +1678,10 @@ class MemoryEngine:
                 if threshold is not None:
                     vec_match = next((r for r in vector_results if r["id"] == doc_id), None)
                     if vec_match and vec_match["similarity"] < threshold:
+                        continue
+                    # Graph-only results have no vector match — exclude when
+                    # threshold is set since similarity can't be verified
+                    if not vec_match and score_info["match_type"] == "graph":
                         continue
                 result["base_rrf_score"] = round(score_info["base_rrf_score"], 6)
                 result["match_type"] = score_info["match_type"]
