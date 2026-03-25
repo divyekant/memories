@@ -79,12 +79,17 @@ def run_scenario(client: httpx.Client, scenario: dict, verbose: bool = False) ->
     # Step 1: Clear this scenario's memories only (not the whole graph prefix)
     client.post("/memory/delete-by-prefix", json={"source_prefix": scenario_prefix})
 
-    # Step 2: Seed memories (override source to use scoped prefix)
+    # Step 2: Seed memories — preserve original source semantics (needed for
+    # cross-source and scope-boundary scenarios) but prepend scenario_prefix
+    # so cleanup can find them
     id_map = {}  # scenario_id -> real_id
     for mem in scenario["memories"]:
+        # Original source from YAML, scoped under scenario prefix for cleanup
+        original_source = mem["source"]
+        scoped_source = f"{scenario_prefix}/{original_source}"
         resp = client.post("/memory/add", json={
             "text": mem["text"],
-            "source": f"{scenario_prefix}/{mem.get('id', 'mem')}",
+            "source": scoped_source,
             "deduplicate": False,
         })
         resp.raise_for_status()
@@ -113,8 +118,12 @@ def run_scenario(client: httpx.Client, scenario: dict, verbose: bool = False) ->
         "hybrid": True,
         "graph_weight": 0.0,
     }
-    # Always scope search to this scenario's memories
-    search_body["source_prefix"] = scenario_prefix
+    # Scope search: if scenario declares a source_prefix (for scope-boundary tests),
+    # prepend scenario_prefix to maintain isolation. Otherwise use scenario_prefix.
+    if "source_prefix" in scenario:
+        search_body["source_prefix"] = f"{scenario_prefix}/{scenario['source_prefix']}"
+    else:
+        search_body["source_prefix"] = scenario_prefix
 
     resp_off = client.post("/search", json=search_body)
     resp_off.raise_for_status()
