@@ -255,3 +255,42 @@ class TestHybridSearchGraph:
         original_updated = engine.metadata[1].get("updated_at")
         engine.hybrid_search(query="direct match query word", graph_weight=0.1)
         assert engine.metadata[1].get("updated_at") == original_updated
+
+
+class TestHybridSearchExplainGraph:
+    """Test graph section in hybrid_search_explain()."""
+
+    @pytest.fixture
+    def engine(self, tmp_path):
+        with patch("memory_engine.QdrantStore") as MockStore, \
+             patch("memory_engine.QdrantSettings") as MockSettings:
+            mock_store = MagicMock()
+            mock_store.ensure_collection.return_value = None
+            mock_store.ensure_payload_indexes.return_value = None
+            mock_store.count.return_value = 0
+            mock_store.search.return_value = []
+            MockStore.return_value = mock_store
+            mock_settings = MagicMock()
+            mock_settings.read_consistency = "majority"
+            MockSettings.from_env.return_value = mock_settings
+            eng = MemoryEngine(data_dir=str(tmp_path / "data"))
+            return eng
+
+    def test_explain_includes_graph_section(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "test fact", "source": "test", "created_at": now,
+             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "linked fact", "source": "test", "created_at": now},
+        ]
+        engine._rebuild_id_map()
+        engine._rebuild_bm25()
+        result = engine.hybrid_search_explain(query="test", graph_weight=0.1)
+        assert "graph" in result["explain"]
+        assert result["explain"]["graph"]["enabled"] is True
+        assert len(result["explain"]["graph"]["seeds"]) > 0
+
+    def test_explain_graph_disabled_when_zero(self, engine):
+        result = engine.hybrid_search_explain(query="test", graph_weight=0.0)
+        assert "graph" in result["explain"]
+        assert result["explain"]["graph"]["enabled"] is False
