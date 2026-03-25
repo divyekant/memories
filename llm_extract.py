@@ -30,6 +30,18 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return max(minimum, default)
 
 
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    """Parse float env var with fallback and lower bound."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return max(minimum, default)
+    try:
+        return max(minimum, float(raw))
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return max(minimum, default)
+
+
 def _clip_text(text: str, max_chars: int) -> str:
     """Normalize whitespace and cap text length to reduce prompt bloat."""
     compact = " ".join(text.split())
@@ -42,6 +54,8 @@ EXTRACT_MAX_FACTS = _env_int("EXTRACT_MAX_FACTS", 30)
 EXTRACT_MAX_FACT_CHARS = _env_int("EXTRACT_MAX_FACT_CHARS", 500, minimum=40)
 EXTRACT_SIMILAR_TEXT_CHARS = _env_int("EXTRACT_SIMILAR_TEXT_CHARS", 280, minimum=40)
 EXTRACT_SIMILAR_PER_FACT = _env_int("EXTRACT_SIMILAR_PER_FACT", 5)
+EXTRACT_MAX_LINKS = _env_int("EXTRACT_MAX_LINKS", 3, minimum=0)
+EXTRACT_MIN_LINK_SCORE = _env_float("EXTRACT_MIN_LINK_SCORE", 0.005)
 
 
 # --- Prompts ---

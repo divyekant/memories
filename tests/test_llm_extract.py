@@ -643,3 +643,20 @@ class TestFullPipeline:
         # The first complete call is extract_facts; check that source was used in prompt
         system_prompt = mock_provider.complete.call_args_list[0][0][0]
         assert "my-app" in system_prompt
+
+
+class TestMaintenanceConfig:
+    """Test maintenance configuration env vars."""
+
+    def test_extract_max_links_zero_allowed(self):
+        """EXTRACT_MAX_LINKS=0 must be supported (disables auto-linking)."""
+        from llm_extract import _env_int
+        import os
+        with patch.dict(os.environ, {"EXTRACT_MAX_LINKS": "0"}):
+            val = _env_int("EXTRACT_MAX_LINKS", 3, minimum=0)
+        assert val == 0
+
+    def test_extract_min_link_score_default(self):
+        from llm_extract import _env_float
+        val = _env_float("EXTRACT_MIN_LINK_SCORE", 0.005)
+        assert val == 0.005
