@@ -151,7 +151,7 @@ def _process_question(
             project_queue.put(project_dir)
 
 
-def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "tool", workers: int = 1):
+def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "tool", workers: int = 1, agent_model: str = ""):
     _load_local_env()
     url = os.environ.get("MEMORIES_URL", "http://localhost:8900")
     api_key = os.environ.get("MEMORIES_API_KEY", "")
@@ -191,6 +191,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
             memories_url=url,
             memories_api_key=api_key,
             mcp_server_path=mcp_server_path,
+            model=agent_model,
         )
         CCExecutor.cleanup_stale_auto_memory()
         project_queue = queue.Queue()
@@ -198,7 +199,8 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
             project_queue.put(cc_executor.create_isolated_project(with_memories=True))
         _log(f"System eval mode: {workers} worker(s), MCP server at {mcp_server_path}")
 
-    _log(f"Running in {mode} eval mode with {workers} worker(s)")
+    model_label = agent_model or "default"
+    _log(f"Running in {mode} eval mode with {workers} worker(s), agent model: {model_label}")
     start_time = time.time()
 
     prefix = "eval/longmemeval"
@@ -268,6 +270,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
         result = {
             "version": "4.0.0",
             "eval_mode": mode,
+            "agent_model": agent_model or "default",
             "workers": workers,
             "elapsed_seconds": round(elapsed, 1),
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -295,6 +298,9 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, default=1, choices=range(1, 33),
                         metavar="N",
                         help="Number of parallel workers, 1-32 (default: 1).")
+    parser.add_argument("--agent-model", default="",
+                        help="Claude model for system eval agent (e.g. sonnet, haiku, opus). Empty = default.")
     args = parser.parse_args()
-    output = args.output or f"eval/results/longmemeval-v4.0.0-{args.mode}.json"
-    run_benchmark(max_questions=args.questions, output_path=output, mode=args.mode, workers=args.workers)
+    model_suffix = f"-{args.agent_model}" if args.agent_model else ""
+    output = args.output or f"eval/results/longmemeval-v4.0.0-{args.mode}{model_suffix}.json"
+    run_benchmark(max_questions=args.questions, output_path=output, mode=args.mode, workers=args.workers, agent_model=args.agent_model)
