@@ -25,176 +25,134 @@ def engine(tmp_path):
 
 
 class TestGraphExpand:
-    """Test _graph_expand() private method."""
+    """Test _graph_expand() with PPR scoring."""
 
-    def test_returns_empty_when_no_links(self, engine):
+    def test_no_links_returns_empty(self, engine):
         now = datetime.now(timezone.utc).isoformat()
-        engine.metadata = [{"id": 1, "text": "seed", "source": "test/proj", "created_at": now}]
+        engine.metadata = [{"id": 1, "text": "seed", "source": "t", "created_at": now}]
         engine._rebuild_id_map()
         candidates, info = engine._graph_expand([(1, 0.025)], 0.1, None, False)
         assert candidates == {}
-        assert info["neighbors_found"] == 0
 
-    def test_finds_outgoing_neighbor(self, engine):
+    def test_1hop_neighbor_discovered(self, engine):
         now = datetime.now(timezone.utc).isoformat()
         engine.metadata = [
-            {"id": 1, "text": "seed", "source": "test/proj", "created_at": now,
+            {"id": 1, "text": "seed", "source": "t", "created_at": now,
              "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
-            {"id": 2, "text": "neighbor", "source": "test/proj", "created_at": now},
+            {"id": 2, "text": "neighbor", "source": "t", "created_at": now},
         ]
         engine._rebuild_id_map()
         candidates, info = engine._graph_expand([(1, 0.025)], 0.1, None, False)
         assert 2 in candidates
         assert candidates[2]["graph_support"] > 0
-        assert 1 in candidates[2]["graph_via"]
+        assert candidates[2]["inject_score"] > 0
 
-    def test_finds_incoming_neighbor(self, engine):
-        now = datetime.now(timezone.utc).isoformat()
-        engine.metadata = [
-            {"id": 1, "text": "seed (old)", "source": "test/proj", "created_at": now},
-            {"id": 2, "text": "newer related", "source": "test/proj", "created_at": now,
-             "links": [{"to_id": 1, "type": "related_to", "created_at": now}]},
-        ]
-        engine._rebuild_id_map()
-        candidates, info = engine._graph_expand([(1, 0.025)], 0.1, None, False)
-        assert 2 in candidates
-
-    def test_filters_source_prefix(self, engine):
-        now = datetime.now(timezone.utc).isoformat()
-        engine.metadata = [
-            {"id": 1, "text": "seed", "source": "wip/proj", "created_at": now,
-             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
-            {"id": 2, "text": "out of scope", "source": "learning/other", "created_at": now},
-        ]
-        engine._rebuild_id_map()
-        candidates, info = engine._graph_expand([(1, 0.025)], 0.1, "wip/", False)
-        assert 2 not in candidates
-        assert info["neighbors_filtered"] >= 1
-
-    def test_filters_archived(self, engine):
-        now = datetime.now(timezone.utc).isoformat()
-        engine.metadata = [
-            {"id": 1, "text": "seed", "source": "test/proj", "created_at": now,
-             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
-            {"id": 2, "text": "archived", "source": "test/proj", "created_at": now, "archived": True},
-        ]
-        engine._rebuild_id_map()
-        candidates, _ = engine._graph_expand([(1, 0.025)], 0.1, None, False)
-        assert 2 not in candidates
-
-    def test_includes_archived_when_flag_set(self, engine):
-        now = datetime.now(timezone.utc).isoformat()
-        engine.metadata = [
-            {"id": 1, "text": "seed", "source": "test/proj", "created_at": now,
-             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
-            {"id": 2, "text": "archived", "source": "test/proj", "created_at": now, "archived": True},
-        ]
-        engine._rebuild_id_map()
-        candidates, _ = engine._graph_expand([(1, 0.025)], 0.1, None, True)
-        assert 2 in candidates
-
-    def test_caps_neighbors_per_seed(self, engine):
-        now = datetime.now(timezone.utc).isoformat()
-        engine.metadata = [
-            {"id": 1, "text": "seed", "source": "test/proj", "created_at": now,
-             "links": [{"to_id": i, "type": "related_to", "created_at": now} for i in range(2, 12)]},
-        ] + [{"id": i, "text": f"n{i}", "source": "test/proj", "created_at": now} for i in range(2, 12)]
-        engine._rebuild_id_map()
-        candidates, _ = engine._graph_expand([(1, 0.025)], 0.1, None, False)
-        assert len(candidates) <= 2  # SEARCH_GRAPH_MAX_NEIGHBORS default
-
-    def test_accumulates_multi_seed_support(self, engine):
-        now = datetime.now(timezone.utc).isoformat()
-        engine.metadata = [
-            {"id": 1, "text": "seed A", "source": "test/proj", "created_at": now,
-             "links": [{"to_id": 3, "type": "related_to", "created_at": now}]},
-            {"id": 2, "text": "seed B", "source": "test/proj", "created_at": now,
-             "links": [{"to_id": 3, "type": "related_to", "created_at": now}]},
-            {"id": 3, "text": "shared neighbor", "source": "test/proj", "created_at": now},
-        ]
-        engine._rebuild_id_map()
-        candidates, _ = engine._graph_expand([(1, 0.025), (2, 0.020)], 0.1, None, False)
-        assert 3 in candidates
-        assert len(candidates[3]["graph_via"]) == 2
-        assert candidates[3]["graph_support"] == pytest.approx(0.00225, abs=0.0001)
-
-    def test_caps_bonus(self, engine):
-        now = datetime.now(timezone.utc).isoformat()
-        engine.metadata = [
-            {"id": 1, "text": "s1", "source": "t", "created_at": now,
-             "links": [{"to_id": 4, "type": "related_to", "created_at": now}]},
-            {"id": 2, "text": "s2", "source": "t", "created_at": now,
-             "links": [{"to_id": 4, "type": "related_to", "created_at": now}]},
-            {"id": 3, "text": "s3", "source": "t", "created_at": now,
-             "links": [{"to_id": 4, "type": "related_to", "created_at": now}]},
-            {"id": 4, "text": "popular", "source": "t", "created_at": now},
-        ]
-        engine._rebuild_id_map()
-        candidates, _ = engine._graph_expand([(1, 0.025), (2, 0.020), (3, 0.018)], 1.0, None, False)
-        assert candidates[4]["graph_support"] <= 0.33 * 0.025 + 0.0001
-
-    def test_excludes_self_links(self, engine):
+    def test_2hop_neighbor_discovered(self, engine):
+        """PPR discovers 2-hop neighbors via iterative propagation."""
         now = datetime.now(timezone.utc).isoformat()
         engine.metadata = [
             {"id": 1, "text": "seed", "source": "t", "created_at": now,
-             "links": [{"to_id": 1, "type": "related_to", "created_at": now}]},
+             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "bridge", "source": "t", "created_at": now,
+             "links": [{"to_id": 3, "type": "related_to", "created_at": now}]},
+            {"id": 3, "text": "2hop target", "source": "t", "created_at": now},
+        ]
+        engine._rebuild_id_map()
+        candidates, info = engine._graph_expand([(1, 0.025)], 0.1, None, False)
+        assert 3 in candidates
+
+    def test_1hop_scores_higher_than_2hop(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "seed", "source": "t", "created_at": now,
+             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "1hop", "source": "t", "created_at": now,
+             "links": [{"to_id": 3, "type": "related_to", "created_at": now}]},
+            {"id": 3, "text": "2hop", "source": "t", "created_at": now},
         ]
         engine._rebuild_id_map()
         candidates, _ = engine._graph_expand([(1, 0.025)], 0.1, None, False)
-        assert 1 not in candidates
+        assert candidates[2]["inject_score"] > candidates[3]["inject_score"]
 
-    def test_filter_then_cap_order(self, engine):
+    def test_multi_seed_convergence(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "A", "source": "t", "created_at": now,
+             "links": [{"to_id": 3, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "B", "source": "t", "created_at": now,
+             "links": [{"to_id": 3, "type": "related_to", "created_at": now}]},
+            {"id": 3, "text": "shared", "source": "t", "created_at": now},
+            {"id": 4, "text": "C", "source": "t", "created_at": now,
+             "links": [{"to_id": 5, "type": "related_to", "created_at": now}]},
+            {"id": 5, "text": "single", "source": "t", "created_at": now},
+        ]
+        engine._rebuild_id_map()
+        candidates, _ = engine._graph_expand(
+            [(1, 0.025), (2, 0.020), (4, 0.015)], 0.1, None, False
+        )
+        assert candidates[3]["inject_score"] >= candidates[5]["inject_score"]
+
+    def test_scope_filters_neighbors(self, engine):
         now = datetime.now(timezone.utc).isoformat()
         engine.metadata = [
             {"id": 1, "text": "seed", "source": "wip/proj", "created_at": now,
-             "links": [
-                 {"to_id": 2, "type": "related_to", "created_at": now},
-                 {"to_id": 3, "type": "related_to", "created_at": now},
-                 {"to_id": 4, "type": "related_to", "created_at": now},
-             ]},
-            {"id": 2, "text": "wrong scope", "source": "learning/other", "created_at": now},
-            {"id": 3, "text": "wrong scope", "source": "learning/other", "created_at": now},
-            {"id": 4, "text": "valid", "source": "wip/proj", "created_at": now},
+             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "out", "source": "learning/other", "created_at": now},
         ]
         engine._rebuild_id_map()
         candidates, _ = engine._graph_expand([(1, 0.025)], 0.1, "wip/", False)
-        assert 4 in candidates
+        assert 2 not in candidates
+
+    def test_scope_blocks_transit(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "A", "source": "wip/proj", "created_at": now,
+             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "B (hidden)", "source": "learning/other", "created_at": now,
+             "links": [{"to_id": 3, "type": "related_to", "created_at": now}]},
+            {"id": 3, "text": "C", "source": "wip/proj", "created_at": now},
+        ]
+        engine._rebuild_id_map()
+        candidates, _ = engine._graph_expand([(1, 0.025)], 0.1, "wip/", False)
+        assert 3 not in candidates
+
+    def test_archived_filtered(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "seed", "source": "t", "created_at": now,
+             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "archived", "source": "t", "created_at": now, "archived": True},
+        ]
+        engine._rebuild_id_map()
+        candidates, _ = engine._graph_expand([(1, 0.025)], 0.1, None, False)
+        assert 2 not in candidates
 
     def test_empty_direct_results(self, engine):
         candidates, info = engine._graph_expand([], 0.1, None, False)
         assert candidates == {}
-        assert info["seeds"] == []
 
-    def test_only_related_to_links(self, engine):
+    def test_disconnected_subgraphs_no_leak(self, engine):
         now = datetime.now(timezone.utc).isoformat()
         engine.metadata = [
-            {"id": 1, "text": "seed", "source": "t", "created_at": now,
-             "links": [
-                 {"to_id": 2, "type": "supersedes", "created_at": now},
-                 {"to_id": 3, "type": "related_to", "created_at": now},
-             ]},
-            {"id": 2, "text": "superseded", "source": "t", "created_at": now},
-            {"id": 3, "text": "related", "source": "t", "created_at": now},
-        ]
-        engine._rebuild_id_map()
-        candidates, _ = engine._graph_expand([(1, 0.025)], 0.1, None, False)
-        assert 3 in candidates
-        assert 2 not in candidates
-
-    def test_reciprocal_links_count_once_per_seed(self, engine):
-        """Reciprocal links (A→B + B→A) should not double-count bonus from same seed."""
-        now = datetime.now(timezone.utc).isoformat()
-        engine.metadata = [
-            {"id": 1, "text": "seed", "source": "t", "created_at": now,
+            {"id": 1, "text": "A1", "source": "t", "created_at": now,
              "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
-            {"id": 2, "text": "neighbor", "source": "t", "created_at": now,
-             "links": [{"to_id": 1, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "A2", "source": "t", "created_at": now},
+            {"id": 3, "text": "B1", "source": "t", "created_at": now,
+             "links": [{"to_id": 4, "type": "related_to", "created_at": now}]},
+            {"id": 4, "text": "B2", "source": "t", "created_at": now},
         ]
         engine._rebuild_id_map()
         candidates, _ = engine._graph_expand([(1, 0.025)], 0.1, None, False)
         assert 2 in candidates
-        assert candidates[2]["graph_support"] == pytest.approx(0.00125, abs=0.0001)
-        assert candidates[2]["graph_via"] == [1]
+        assert 4 not in candidates
+
+    def test_info_includes_ppr_params(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [{"id": 1, "text": "A", "source": "t", "created_at": now}]
+        engine._rebuild_id_map()
+        _, info = engine._graph_expand([(1, 0.025)], 0.1, None, False)
+        assert "ppr_iterations" in info
+        assert "ppr_alpha" in info
 
 
 class TestHybridSearchGraph:
