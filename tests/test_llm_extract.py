@@ -367,6 +367,67 @@ class TestAUDNCycle:
         assert "Allowed" in prompt
         assert "Blocked" not in prompt
 
+    def test_audn_returns_artifacts_dict_with_similar_per_fact(self):
+        """run_audn() always returns audn_artifacts dict with similar_per_fact."""
+        from llm_extract import run_audn
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {"id": 5, "text": "Existing memory", "rrf_score": 0.025, "source": "test/proj"}
+        ]
+        decisions, tokens, artifacts = run_audn(
+            mock_provider, mock_engine,
+            facts=[{"text": "New fact", "category": "decision"}],
+            source="test/project"
+        )
+        assert isinstance(artifacts, dict)
+        assert "similar_per_fact" in artifacts
+        assert 0 in artifacts["similar_per_fact"]
+        assert artifacts["similar_per_fact"][0][0]["id"] == 5
+        assert "debug_similar" not in artifacts
+
+    def test_audn_artifacts_includes_debug_similar_when_debug(self):
+        from llm_extract import run_audn
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [{"id": 5, "text": "Existing memory", "rrf_score": 0.025}]
+        _, _, artifacts = run_audn(
+            mock_provider, mock_engine,
+            facts=[{"text": "New fact", "category": "decision"}],
+            source="test/project", debug=True,
+        )
+        assert "debug_similar" in artifacts
+        assert 0 in artifacts["debug_similar"]
+
+    def test_audn_ollama_returns_empty_artifacts(self):
+        from llm_extract import run_audn
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = False
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (True, None)
+        _, _, artifacts = run_audn(
+            mock_provider, mock_engine,
+            facts=[{"text": "New fact", "category": "detail"}],
+            source="test/project"
+        )
+        assert isinstance(artifacts, dict)
+        assert artifacts["similar_per_fact"] == {}
+
+    def test_audn_empty_facts_returns_empty_artifacts(self):
+        from llm_extract import run_audn
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        decisions, _, artifacts = run_audn(
+            mock_provider, MagicMock(), facts=[], source="test/project"
+        )
+        assert decisions == []
+        assert isinstance(artifacts, dict)
+        assert artifacts["similar_per_fact"] == {}
+
 
 class TestExecuteActions:
     """Test execute_actions() function."""
@@ -582,3 +643,346 @@ class TestFullPipeline:
         # The first complete call is extract_facts; check that source was used in prompt
         system_prompt = mock_provider.complete.call_args_list[0][0][0]
         assert "my-app" in system_prompt
+
+
+class TestMaintenanceConfig:
+    """Test maintenance configuration env vars."""
+
+    def test_extract_max_links_zero_allowed(self):
+        """EXTRACT_MAX_LINKS=0 must be supported (disables auto-linking)."""
+        from llm_extract import _env_int
+        import os
+        with patch.dict(os.environ, {"EXTRACT_MAX_LINKS": "0"}):
+            val = _env_int("EXTRACT_MAX_LINKS", 3, minimum=0)
+        assert val == 0
+
+    def test_extract_min_link_score_default(self):
+        from llm_extract import _env_float
+        val = _env_float("EXTRACT_MIN_LINK_SCORE", 0.005)
+        assert val == 0.005
+
+
+class TestApplyMaintenance:
+    """Test _apply_maintenance() auto-linking and compaction detection."""
+
+    def test_auto_links_created_for_add_action(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.return_value = {"from_id": 100, "to_id": 5, "type": "related_to"}
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New fact", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "text": "Similar memory", "rrf_score": 0.025, "source": "test/proj"},
+            {"id": 6, "text": "Another memory", "rrf_score": 0.020, "source": "test/proj"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert len(result["links_created"]) == 2
+        assert result["links_created"][0]["from_id"] == 100
+        assert result["links_created"][0]["to_id"] == 5
+        mock_engine.add_link.assert_any_call(100, 5, "related_to")
+        mock_engine.add_link.assert_any_call(100, 6, "related_to")
+
+    def test_auto_links_created_for_conflict_action(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.return_value = {"from_id": 200, "to_id": 10}
+        decisions = [{"action": "CONFLICT", "fact_index": 0, "old_id": 10}]
+        exec_result = {"actions": [{"action": "conflict", "text": "Conflicting fact", "id": 200, "conflicts_with": 10}]}
+        audn_artifacts = {"similar_per_fact": {0: [{"id": 10, "text": "Original", "rrf_score": 0.028, "source": "test/proj"}]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert len(result["links_created"]) == 1
+        mock_engine.add_link.assert_called_once_with(200, 10, "related_to")
+
+    def test_no_links_for_update_delete_noop(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [
+            {"action": "UPDATE", "fact_index": 0, "old_id": 1},
+            {"action": "DELETE", "fact_index": 1, "old_id": 2},
+            {"action": "NOOP", "fact_index": 2, "existing_id": 3},
+        ]
+        exec_result = {"actions": [
+            {"action": "update", "old_id": 1, "text": "updated", "new_id": 50},
+            {"action": "delete", "old_id": 2},
+            {"action": "noop", "text": "existing", "existing_id": 3},
+        ]}
+        audn_artifacts = {"similar_per_fact": {
+            0: [{"id": 10, "rrf_score": 0.025, "source": "t"}],
+            1: [{"id": 11, "rrf_score": 0.020, "source": "t"}],
+            2: [{"id": 12, "rrf_score": 0.018, "source": "t"}],
+        }}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert result["links_created"] == []
+        mock_engine.add_link.assert_not_called()
+
+    def test_max_links_caps_per_memory(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.return_value = {}
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": i, "rrf_score": 0.03 - i * 0.001, "source": "t"} for i in range(10)
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=2)
+        assert len(result["links_created"]) == 2
+        assert mock_engine.add_link.call_count == 2
+
+    def test_min_link_score_filters_weak_matches(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.return_value = {}
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "rrf_score": 0.025, "source": "t"},
+            {"id": 6, "rrf_score": 0.003, "source": "t"},
+            {"id": 7, "rrf_score": 0.001, "source": "t"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, min_link_score=0.005)
+        assert len(result["links_created"]) == 1
+        assert result["links_created"][0]["to_id"] == 5
+
+    def test_max_links_zero_disables_linking(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [{"id": 5, "rrf_score": 0.025, "source": "t"}]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        assert result["links_created"] == []
+        mock_engine.add_link.assert_not_called()
+
+    def test_error_and_skipped_actions_ignored(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}, {"action": "ADD", "fact_index": 1}]
+        exec_result = {"actions": [
+            {"action": "error", "text": "failed", "error": "some error"},
+            {"action": "skipped", "reason": "protected", "old_id": 99},
+        ]}
+        audn_artifacts = {"similar_per_fact": {
+            0: [{"id": 5, "rrf_score": 0.025, "source": "t"}],
+            1: [{"id": 6, "rrf_score": 0.020, "source": "t"}],
+        }}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert result["links_created"] == []
+        mock_engine.add_link.assert_not_called()
+
+    def test_add_link_value_error_skipped_gracefully(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.side_effect = ValueError("Target memory 5 not found")
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [{"id": 5, "rrf_score": 0.025, "source": "t"}]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert result["links_created"] == []
+
+    def test_empty_similar_per_fact_no_errors(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert result["links_created"] == []
+        assert result["compaction_candidates"] == []
+
+    def test_two_new_memories_can_link_to_same_target(self):
+        """Per-edge dedup: different new memories MAY both link to same target."""
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.return_value = {}
+        decisions = [{"action": "ADD", "fact_index": 0}, {"action": "ADD", "fact_index": 1}]
+        exec_result = {"actions": [
+            {"action": "add", "text": "Fact A", "id": 100},
+            {"action": "add", "text": "Fact B", "id": 101},
+        ]}
+        audn_artifacts = {"similar_per_fact": {
+            0: [{"id": 5, "rrf_score": 0.025, "source": "t"}],
+            1: [{"id": 5, "rrf_score": 0.022, "source": "t"}],
+        }}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert len(result["links_created"]) == 2
+        assert mock_engine.add_link.call_count == 2
+        mock_engine.add_link.assert_any_call(100, 5, "related_to")
+        mock_engine.add_link.assert_any_call(101, 5, "related_to")
+
+    def test_deleted_target_skipped_in_auto_linking(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "DELETE", "fact_index": 0, "old_id": 5}, {"action": "ADD", "fact_index": 1}]
+        exec_result = {"actions": [
+            {"action": "delete", "old_id": 5},
+            {"action": "add", "text": "New", "id": 100},
+        ]}
+        audn_artifacts = {"similar_per_fact": {1: [{"id": 5, "rrf_score": 0.025, "source": "t"}]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert result["links_created"] == []
+        mock_engine.add_link.assert_not_called()
+
+    def test_compaction_candidate_detected_for_tight_cluster(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "rrf_score": 0.025, "source": "learning/proj"},
+            {"id": 6, "rrf_score": 0.024, "source": "learning/proj"},
+            {"id": 7, "rrf_score": 0.023, "source": "claude-code/proj"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        assert len(result["compaction_candidates"]) == 1
+        candidate = result["compaction_candidates"][0]
+        assert candidate["fact_index"] == 0
+        assert set(candidate["memory_ids"]) == {5, 6, 7}
+        assert candidate["cross_source"] is True
+        assert "learning/proj" in candidate["sources"]
+        assert "claude-code/proj" in candidate["sources"]
+
+    def test_no_compaction_for_fewer_than_three(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "rrf_score": 0.025, "source": "t"},
+            {"id": 6, "rrf_score": 0.024, "source": "t"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        assert result["compaction_candidates"] == []
+
+    def test_no_compaction_for_spread_scores(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "rrf_score": 0.030, "source": "t"},
+            {"id": 6, "rrf_score": 0.020, "source": "t"},
+            {"id": 7, "rrf_score": 0.010, "source": "t"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        assert result["compaction_candidates"] == []
+
+    def test_same_source_compaction_not_cross_source(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [{"action": "ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "add", "text": "New", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "rrf_score": 0.025, "source": "learning/proj"},
+            {"id": 6, "rrf_score": 0.024, "source": "learning/proj"},
+            {"id": 7, "rrf_score": 0.023, "source": "learning/proj"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        assert len(result["compaction_candidates"]) == 1
+        assert result["compaction_candidates"][0]["cross_source"] is False
+
+    def test_compaction_excludes_deleted_memories(self):
+        """Memories deleted in the same batch should not appear in compaction candidates."""
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        decisions = [
+            {"action": "DELETE", "fact_index": 0, "old_id": 5},
+            {"action": "ADD", "fact_index": 1},
+        ]
+        exec_result = {"actions": [
+            {"action": "delete", "old_id": 5},
+            {"action": "add", "text": "New", "id": 100},
+        ]}
+        audn_artifacts = {"similar_per_fact": {1: [
+            {"id": 5, "rrf_score": 0.025, "source": "t"},  # deleted in batch
+            {"id": 6, "rrf_score": 0.024, "source": "t"},
+            {"id": 7, "rrf_score": 0.023, "source": "t"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts, max_links=0)
+        # Only 2 non-deleted memories remain — below threshold of 3
+        assert result["compaction_candidates"] == []
+
+
+class TestExtractionMaintenance:
+    """Test _apply_maintenance() integration in run_extraction()."""
+
+    def test_run_extraction_includes_maintenance_results(self):
+        from llm_extract import run_extraction
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.side_effect = [
+            _cr(json.dumps([{"category": "DECISION", "text": "Uses Drizzle ORM"}])),
+            _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
+        ]
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {"id": 30, "text": "Prisma was the old ORM", "rrf_score": 0.022, "source": "test/proj"}
+        ]
+        mock_engine.add_memories.return_value = [121]
+        mock_engine.add_link.return_value = {}
+        result = run_extraction(
+            mock_provider, mock_engine,
+            messages="User: use drizzle\nAssistant: Done",
+            source="test/project", context="stop"
+        )
+        assert "links_created" in result
+        assert "compaction_candidates" in result
+        assert len(result["links_created"]) == 1
+        assert result["links_created"][0]["from_id"] == 121
+        assert result["links_created"][0]["to_id"] == 30
+        mock_engine.add_link.assert_called_once_with(121, 30, "related_to")
+
+    def test_single_call_mode_skips_maintenance(self):
+        from llm_extract import run_extraction
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {"action": "ADD", "fact_index": 0, "text": "Some fact", "category": "detail"}
+        ]))
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [100]
+        result = run_extraction(
+            mock_provider, mock_engine,
+            messages="User: test", source="test/project",
+            profile={"single_call": True},
+        )
+        mock_engine.add_link.assert_not_called()
+
+    def test_dry_run_skips_maintenance(self):
+        from llm_extract import run_extraction
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.side_effect = [
+            _cr(json.dumps([{"category": "DETAIL", "text": "Some fact"}])),
+            _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
+        ]
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = []
+        result = run_extraction(
+            mock_provider, mock_engine,
+            messages="User: test", source="test/project",
+            profile={"dry_run": True},
+        )
+        assert result.get("dry_run") is True
+        mock_engine.add_link.assert_not_called()
+
+    def test_maintenance_failure_does_not_crash_extraction(self):
+        """If _apply_maintenance raises, extraction result is still returned."""
+        from llm_extract import run_extraction
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.side_effect = [
+            _cr(json.dumps([{"category": "DETAIL", "text": "Some fact"}])),
+            _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
+        ]
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [{"id": 5, "rrf_score": 0.025, "source": "t"}]
+        mock_engine.add_memories.return_value = [100]
+        with patch("llm_extract._apply_maintenance", side_effect=RuntimeError("Maintenance crashed")):
+            result = run_extraction(
+                mock_provider, mock_engine,
+                messages="User: test", source="test/project",
+            )
+        assert result["stored_count"] == 1
+        assert result["extracted_count"] == 1
+        assert result["links_created"] == []
+        assert result["compaction_candidates"] == []

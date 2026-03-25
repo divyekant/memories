@@ -30,6 +30,18 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return max(minimum, default)
 
 
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    """Parse float env var with fallback and lower bound."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return max(minimum, default)
+    try:
+        return max(minimum, float(raw))
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return max(minimum, default)
+
+
 def _clip_text(text: str, max_chars: int) -> str:
     """Normalize whitespace and cap text length to reduce prompt bloat."""
     compact = " ".join(text.split())
@@ -42,6 +54,8 @@ EXTRACT_MAX_FACTS = _env_int("EXTRACT_MAX_FACTS", 30)
 EXTRACT_MAX_FACT_CHARS = _env_int("EXTRACT_MAX_FACT_CHARS", 500, minimum=40)
 EXTRACT_SIMILAR_TEXT_CHARS = _env_int("EXTRACT_SIMILAR_TEXT_CHARS", 280, minimum=40)
 EXTRACT_SIMILAR_PER_FACT = _env_int("EXTRACT_SIMILAR_PER_FACT", 5)
+EXTRACT_MAX_LINKS = _env_int("EXTRACT_MAX_LINKS", 3, minimum=0)
+EXTRACT_MIN_LINK_SCORE = _env_float("EXTRACT_MIN_LINK_SCORE", 0.005)
 
 
 # --- Prompts ---
@@ -247,7 +261,7 @@ def run_audn(
     allowed_prefixes: Optional[List[str]] = None,
     debug: bool = False,
     rules: dict | None = None,
-) -> tuple[list[dict], dict, Optional[dict]]:
+) -> tuple[list[dict], dict, dict]:
     """Run AUDN cycle on extracted facts.
 
     For providers with supports_audn=True: uses LLM to decide action per fact.
@@ -257,10 +271,10 @@ def run_audn(
         facts: list of {"category": str, "text": str} dicts
         debug: when True, return similar memories per fact in debug_info
 
-    Returns: (list of action dicts, token usage dict, optional debug info dict)
+    Returns: (list of action dicts, token usage dict, audn_artifacts dict with similar_per_fact always present)
     """
     if not facts:
-        return [], {"input": 0, "output": 0}, None
+        return [], {"input": 0, "output": 0}, {"similar_per_fact": {}}
 
     if not provider.supports_audn:
         # Ollama fallback: novelty check only
@@ -272,7 +286,7 @@ def run_audn(
                 decisions.append({"action": "ADD", "fact_index": i})
             else:
                 decisions.append({"action": "NOOP", "fact_index": i})
-        return decisions, {"input": 0, "output": 0}, None
+        return decisions, {"input": 0, "output": 0}, {"similar_per_fact": {}}
 
     # Full AUDN with LLM
     similar_per_fact = {}
@@ -289,12 +303,11 @@ def run_audn(
         except Exception:
             similar_per_fact[i] = []
 
-    # Capture debug info before we serialize and discard
-    debug_similar = None
+    # Build audn_artifacts with similar_per_fact always present
+    audn_artifacts = {"similar_per_fact": dict(similar_per_fact)}
     if debug:
-        debug_similar = {}
-        for i, mems in similar_per_fact.items():
-            debug_similar[i] = [
+        audn_artifacts["debug_similar"] = {
+            i: [
                 {
                     "id": m.get("id"),
                     "text": _clip_text(str(m.get("text", "")), EXTRACT_SIMILAR_TEXT_CHARS),
@@ -302,6 +315,8 @@ def run_audn(
                 }
                 for m in mems[:EXTRACT_SIMILAR_PER_FACT]
             ]
+            for i, mems in similar_per_fact.items()
+        }
 
     facts_json = json.dumps(
         [{"index": i, "text": _clip_text(f["text"], EXTRACT_MAX_FACT_CHARS), "category": f.get("category", "detail")} for i, f in enumerate(facts)],
@@ -331,16 +346,16 @@ def run_audn(
         result = provider.complete("You are a memory manager. Output only valid JSON.", prompt)
         tokens = {"input": result.input_tokens, "output": result.output_tokens}
         decisions = _parse_json_array(result.text)
-        del result, prompt, facts_json, similar_json, similar_per_fact
+        del result, prompt, facts_json, similar_json
         valid = []
         for d in decisions:
             if isinstance(d, dict) and "action" in d:
                 d["action"] = d["action"].upper()
                 valid.append(d)
-        return valid, tokens, debug_similar
+        return valid, tokens, audn_artifacts
     except Exception as e:
         logger.error("AUDN cycle failed: %s", e)
-        return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}, debug_similar
+        return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}, audn_artifacts
 
 
 SINGLE_CALL_PROMPT = """You are a memory extraction and classification system.
@@ -425,6 +440,9 @@ def execute_actions(
     job_id: Optional[str] = None,
 ) -> dict:
     """Execute AUDN decisions against the memory engine.
+
+    Produces exactly one result action per input action, maintaining positional
+    correspondence. _apply_maintenance() depends on this invariant.
 
     Args:
         facts: list of {"category": str, "text": str} dicts
@@ -551,6 +569,130 @@ def execute_actions(
     }
 
 
+def _mem_score(m: dict) -> float:
+    """Extract the relevance score from a memory dict (RRF or cosine fallback)."""
+    return float(m.get("rrf_score", m.get("similarity", 0.0)))
+
+
+def _apply_maintenance(
+    engine,
+    decisions: list[dict],
+    exec_result: dict,
+    audn_artifacts: dict,
+    max_links: int = None,
+    min_link_score: float = None,
+) -> dict:
+    """Post-execution maintenance: auto-linking and compaction detection.
+
+    Non-fatal: exceptions are caught and logged. Never rolls back execute_actions() results.
+    Individual add_link() failures (deleted target, duplicate) are logged as warnings and skipped.
+    """
+    if max_links is None:
+        max_links = EXTRACT_MAX_LINKS
+    if min_link_score is None:
+        min_link_score = EXTRACT_MIN_LINK_SCORE
+
+    links_created = []
+    compaction_candidates = []
+    similar_per_fact = audn_artifacts.get("similar_per_fact", {})
+    result_actions = exec_result.get("actions", [])
+
+    # Collect IDs deleted in this batch (skip as link targets)
+    deleted_ids = {
+        a.get("old_id") for a in result_actions
+        if a.get("action") == "delete" and a.get("old_id") is not None
+    }
+
+    # --- Auto-linking ---
+    if max_links > 0:
+        if len(decisions) != len(result_actions):
+            logger.error(
+                "decisions/actions length mismatch: %d vs %d; skipping auto-linking",
+                len(decisions), len(result_actions),
+            )
+            max_links = 0
+
+        for i, (decision, result_action) in enumerate(zip(decisions, result_actions)):
+            act = result_action.get("action", "")
+            if act not in ("add", "conflict"):
+                continue
+            new_id = result_action.get("id")
+            if new_id is None:
+                continue
+
+            fact_index = decision.get("fact_index", -1)
+            similar = similar_per_fact.get(fact_index, [])
+
+            scored = [
+                m for m in similar
+                if _mem_score(m) >= min_link_score
+                and m.get("id") is not None
+                and m["id"] not in deleted_ids
+                and m["id"] != new_id
+            ]
+            scored.sort(key=_mem_score, reverse=True)
+            targets = scored[:max_links]
+
+            for target in targets:
+                target_id = target["id"]
+                rrf = _mem_score(target)
+                try:
+                    engine.add_link(new_id, target_id, "related_to")
+                    links_created.append({"from_id": new_id, "to_id": target_id, "rrf_score": round(rrf, 6)})
+                except ValueError as e:
+                    logger.warning("Auto-link %d -> %d skipped: %s", new_id, target_id, e)
+                except Exception as e:
+                    logger.error("Auto-link %d -> %d failed: %s", new_id, target_id, e)
+
+    if links_created:
+        logger.info("Auto-linked %d edges during extraction", len(links_created))
+
+    # --- Compaction detection ---
+    for fact_idx, similar in similar_per_fact.items():
+        if len(similar) < 3:
+            continue
+        scores = [
+            (m.get("id"), _mem_score(m), m.get("source", ""))
+            for m in similar
+            if m.get("id") is not None and m.get("id") not in deleted_ids
+        ]
+        if len(scores) < 3:
+            continue
+
+        scores.sort(key=lambda x: x[1], reverse=True)
+        best_cluster = []
+        for start in range(len(scores) - 2):
+            cluster = [scores[start]]
+            for j in range(start + 1, len(scores)):
+                if scores[start][1] > 0 and scores[j][1] / scores[start][1] >= 0.8:
+                    cluster.append(scores[j])
+                else:
+                    break
+            if len(cluster) >= 3 and len(cluster) > len(best_cluster):
+                best_cluster = cluster
+
+        if len(best_cluster) >= 3:
+            memory_ids = [s[0] for s in best_cluster]
+            sources = list({s[2] for s in best_cluster})
+            source_families = {s.split("/")[0] for s in sources if "/" in s}
+            avg_score = sum(s[1] for s in best_cluster) / len(best_cluster)
+            compaction_candidates.append({
+                "fact_index": fact_idx,
+                "memory_ids": memory_ids,
+                "avg_rrf_score": round(avg_score, 6),
+                "sources": sorted(sources),
+                "cross_source": len(source_families) > 1,
+            })
+
+    if compaction_candidates:
+        logger.info("Compaction candidates detected: %d clusters", len(compaction_candidates))
+
+    return {
+        "links_created": links_created,
+        "compaction_candidates": compaction_candidates,
+    }
+
+
 def run_extraction(
     provider: Optional[object],
     engine,
@@ -607,6 +749,8 @@ def run_extraction(
         result = execute_actions(engine, actions, facts, source, allowed_prefixes, job_id=job_id)
         result["tokens"] = {"single_call": usage}
         result["job_id"] = job_id
+        result["links_created"] = []
+        result["compaction_candidates"] = []
         return result
 
     # Temporarily override module-level constants for extract_facts
@@ -652,7 +796,7 @@ def run_extraction(
         }
 
     # Step 2: AUDN decisions
-    decisions, audn_tokens, debug_similar = run_audn(
+    decisions, audn_tokens, audn_artifacts = run_audn(
         provider,
         engine,
         facts,
@@ -677,6 +821,8 @@ def run_extraction(
             "actions": annotated,
             "extracted_count": len(facts),
             "tokens": {"extract": extract_tokens, "audn": audn_tokens},
+            "links_created": [],
+            "compaction_candidates": [],
         }
 
     # Step 4: Execute
@@ -692,7 +838,20 @@ def run_extraction(
     result["tokens"] = {"extract": extract_tokens, "audn": audn_tokens}
     result["job_id"] = job_id
 
+    # Step 4b: Post-execution maintenance (auto-linking + compaction detection)
+    try:
+        maintenance = _apply_maintenance(
+            engine, decisions, result, audn_artifacts
+        )
+        result["links_created"] = maintenance["links_created"]
+        result["compaction_candidates"] = maintenance["compaction_candidates"]
+    except Exception as e:
+        logger.error("Extraction maintenance failed (non-fatal): %s", e)
+        result["links_created"] = []
+        result["compaction_candidates"] = []
+
     # Step 5: Build debug trace when requested
+    debug_similar = audn_artifacts.get("debug_similar", {})
     if debug:
         # Build AUDN decisions trace with similar memories
         audn_trace = []
@@ -703,7 +862,7 @@ def run_extraction(
                 "similar_memories": [],
             }
             fi = d.get("fact_index", -1)
-            if debug_similar and fi in debug_similar:
+            if fi in debug_similar:
                 entry["similar_memories"] = debug_similar[fi]
 
             # Attach resulting IDs from execution
