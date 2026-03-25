@@ -14,7 +14,7 @@ import threading
 import gc
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from entity_locks import EntityLockManager
@@ -36,9 +36,16 @@ except ImportError:
     logger.info("Cloud sync not available (cloud_sync.py not found or boto3 not installed)")
 
 # Graph expansion tuning knobs (env-configurable)
-SEARCH_GRAPH_SEED_K = int(os.environ.get("SEARCH_GRAPH_SEED_K", "0"))  # 0 = use all top-k results as seeds
+# Legacy constants (deprecated — PPR handles seed selection and decay)
+SEARCH_GRAPH_SEED_K = int(os.environ.get("SEARCH_GRAPH_SEED_K", "0"))
 SEARCH_GRAPH_MAX_NEIGHBORS = int(os.environ.get("SEARCH_GRAPH_MAX_NEIGHBORS", "2"))
 SEARCH_GRAPH_DECAY = float(os.environ.get("SEARCH_GRAPH_DECAY", "0.5"))
+
+# PPR scoring constants
+PPR_ALPHA = float(os.environ.get("SEARCH_PPR_ALPHA", "0.85"))
+PPR_MAX_ITERS = int(os.environ.get("SEARCH_PPR_MAX_ITERS", "3"))
+PPR_MIN_RELATIVE = float(os.environ.get("SEARCH_PPR_MIN_RELATIVE", "0.05"))
+GRAPH_RESERVED_SLOTS = int(os.environ.get("SEARCH_GRAPH_RESERVED_SLOTS", "2"))
 
 
 class MemoryEngine:
@@ -1416,6 +1423,26 @@ class MemoryEngine:
             return math.pow(0.5, age_days / half_life_days)
         except (ValueError, TypeError, ZeroDivisionError):
             return 0.0
+
+    def _build_adjacency(self, link_type: str = "related_to") -> Dict[int, Set[int]]:
+        """Build bidirectional adjacency index for a link type.
+
+        Single O(M*L) scan replaces per-seed get_links(include_incoming=True).
+        """
+        adj: Dict[int, Set[int]] = {}
+        for m in self.metadata:
+            mid = m["id"]
+            for link in m.get("links", []):
+                if link["type"] != link_type:
+                    continue
+                tid = link["to_id"]
+                if not self._id_exists(tid):
+                    continue
+                if tid == mid:
+                    continue
+                adj.setdefault(mid, set()).add(tid)
+                adj.setdefault(tid, set()).add(mid)
+        return adj
 
     def _graph_expand(
         self,

@@ -310,3 +310,61 @@ class TestHybridSearchExplainGraph:
         result = engine.hybrid_search_explain(query="test", graph_weight=0.0)
         assert "graph" in result["explain"]
         assert result["explain"]["graph"]["enabled"] is False
+
+
+class TestBuildAdjacency:
+    """Test _build_adjacency() method."""
+
+    def test_builds_bidirectional_edges(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "A", "source": "t", "created_at": now,
+             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "B", "source": "t", "created_at": now},
+        ]
+        engine._rebuild_id_map()
+        adj = engine._build_adjacency()
+        assert 2 in adj.get(1, set())
+        assert 1 in adj.get(2, set())
+
+    def test_skips_non_related_to_links(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "A", "source": "t", "created_at": now,
+             "links": [
+                 {"to_id": 2, "type": "supersedes", "created_at": now},
+                 {"to_id": 3, "type": "related_to", "created_at": now},
+             ]},
+            {"id": 2, "text": "B", "source": "t", "created_at": now},
+            {"id": 3, "text": "C", "source": "t", "created_at": now},
+        ]
+        engine._rebuild_id_map()
+        adj = engine._build_adjacency()
+        assert 2 not in adj.get(1, set())
+        assert 3 in adj.get(1, set())
+
+    def test_skips_dangling_links(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "A", "source": "t", "created_at": now,
+             "links": [{"to_id": 999, "type": "related_to", "created_at": now}]},
+        ]
+        engine._rebuild_id_map()
+        adj = engine._build_adjacency()
+        assert 999 not in adj.get(1, set())
+
+    def test_skips_self_links(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "A", "source": "t", "created_at": now,
+             "links": [{"to_id": 1, "type": "related_to", "created_at": now}]},
+        ]
+        engine._rebuild_id_map()
+        adj = engine._build_adjacency()
+        assert 1 not in adj.get(1, set())
+
+    def test_empty_metadata_returns_empty(self, engine):
+        engine.metadata = []
+        engine._rebuild_id_map()
+        adj = engine._build_adjacency()
+        assert adj == {}
