@@ -826,6 +826,18 @@ def run_extraction(
     result["tokens"] = {"extract": extract_tokens, "audn": audn_tokens}
     result["job_id"] = job_id
 
+    # Step 4b: Post-execution maintenance (auto-linking + compaction detection)
+    try:
+        maintenance = _apply_maintenance(
+            engine, decisions, result, audn_artifacts
+        )
+        result["links_created"] = maintenance["links_created"]
+        result["compaction_candidates"] = maintenance["compaction_candidates"]
+    except Exception as e:
+        logger.error("Extraction maintenance failed (non-fatal): %s", e)
+        result["links_created"] = []
+        result["compaction_candidates"] = []
+
     # Step 5: Build debug trace when requested
     debug_similar = audn_artifacts.get("debug_similar", {})
     if debug:
