@@ -566,6 +566,85 @@ def execute_actions(
     }
 
 
+def _apply_maintenance(
+    engine,
+    decisions: list[dict],
+    exec_result: dict,
+    audn_artifacts: dict,
+    max_links: int = None,
+    min_link_score: float = None,
+) -> dict:
+    """Post-execution maintenance: auto-linking and compaction detection.
+
+    Non-fatal: exceptions are caught and logged. Never rolls back execute_actions() results.
+    Individual add_link() failures (deleted target, duplicate) are logged as warnings and skipped.
+    """
+    if max_links is None:
+        max_links = EXTRACT_MAX_LINKS
+    if min_link_score is None:
+        min_link_score = EXTRACT_MIN_LINK_SCORE
+
+    links_created = []
+    compaction_candidates = []
+    similar_per_fact = audn_artifacts.get("similar_per_fact", {})
+    result_actions = exec_result.get("actions", [])
+
+    # Collect IDs deleted in this batch (skip as link targets)
+    deleted_ids = {
+        a.get("old_id") for a in result_actions
+        if a.get("action") == "delete" and a.get("old_id") is not None
+    }
+
+    # --- Auto-linking ---
+    if max_links > 0:
+        if len(decisions) != len(result_actions):
+            logger.error(
+                "decisions/actions length mismatch: %d vs %d; skipping auto-linking",
+                len(decisions), len(result_actions),
+            )
+            max_links = 0
+
+        for i, (decision, result_action) in enumerate(zip(decisions, result_actions)):
+            act = result_action.get("action", "")
+            if act not in ("add", "conflict"):
+                continue
+            new_id = result_action.get("id")
+            if new_id is None:
+                continue
+
+            fact_index = decision.get("fact_index", -1)
+            similar = similar_per_fact.get(fact_index, [])
+
+            scored = [
+                m for m in similar
+                if m.get("rrf_score", m.get("similarity", 0.0)) >= min_link_score
+                and m.get("id") is not None
+                and m["id"] not in deleted_ids
+                and m["id"] != new_id
+            ]
+            scored.sort(key=lambda m: m.get("rrf_score", m.get("similarity", 0.0)), reverse=True)
+            targets = scored[:max_links]
+
+            for target in targets:
+                target_id = target["id"]
+                rrf = target.get("rrf_score", target.get("similarity", 0.0))
+                try:
+                    engine.add_link(new_id, target_id, "related_to")
+                    links_created.append({"from_id": new_id, "to_id": target_id, "rrf_score": round(rrf, 6)})
+                except ValueError as e:
+                    logger.warning("Auto-link %d -> %d skipped: %s", new_id, target_id, e)
+                except Exception as e:
+                    logger.error("Auto-link %d -> %d failed: %s", new_id, target_id, e)
+
+    if links_created:
+        logger.info("Auto-linked %d edges during extraction", len(links_created))
+
+    return {
+        "links_created": links_created,
+        "compaction_candidates": compaction_candidates,
+    }
+
+
 def run_extraction(
     provider: Optional[object],
     engine,
