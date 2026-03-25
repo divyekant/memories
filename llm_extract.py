@@ -639,6 +639,46 @@ def _apply_maintenance(
     if links_created:
         logger.info("Auto-linked %d edges during extraction", len(links_created))
 
+    # --- Compaction detection ---
+    for fact_idx, similar in similar_per_fact.items():
+        if len(similar) < 3:
+            continue
+        scores = [
+            (m.get("id"), m.get("rrf_score", m.get("similarity", 0.0)), m.get("source", ""))
+            for m in similar
+            if m.get("id") is not None
+        ]
+        if len(scores) < 3:
+            continue
+
+        scores.sort(key=lambda x: x[1], reverse=True)
+        best_cluster = []
+        for start in range(len(scores) - 2):
+            cluster = [scores[start]]
+            for j in range(start + 1, len(scores)):
+                if scores[start][1] > 0 and scores[j][1] / scores[start][1] >= 0.8:
+                    cluster.append(scores[j])
+                else:
+                    break
+            if len(cluster) >= 3 and len(cluster) > len(best_cluster):
+                best_cluster = cluster
+
+        if len(best_cluster) >= 3:
+            memory_ids = [s[0] for s in best_cluster]
+            sources = list({s[2] for s in best_cluster})
+            source_families = {s.split("/")[0] for s in sources if "/" in s}
+            avg_score = sum(s[1] for s in best_cluster) / len(best_cluster)
+            compaction_candidates.append({
+                "fact_index": fact_idx,
+                "memory_ids": memory_ids,
+                "avg_rrf_score": round(avg_score, 6),
+                "sources": sorted(sources),
+                "cross_source": len(source_families) > 1,
+            })
+
+    if compaction_candidates:
+        logger.info("Compaction candidates detected: %d clusters", len(compaction_candidates))
+
     return {
         "links_created": links_created,
         "compaction_candidates": compaction_candidates,
