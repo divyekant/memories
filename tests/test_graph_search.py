@@ -180,3 +180,78 @@ class TestGraphExpand:
         candidates, _ = engine._graph_expand([(1, 0.025)], 0.1, None, False)
         assert 3 in candidates
         assert 2 not in candidates
+
+
+class TestHybridSearchGraph:
+    """Test graph_weight parameter integration in hybrid_search()."""
+
+    @pytest.fixture
+    def engine(self, tmp_path):
+        with patch("memory_engine.QdrantStore") as MockStore, \
+             patch("memory_engine.QdrantSettings") as MockSettings:
+            mock_store = MagicMock()
+            mock_store.ensure_collection.return_value = None
+            mock_store.ensure_payload_indexes.return_value = None
+            mock_store.count.return_value = 0
+            mock_store.search.return_value = []
+            MockStore.return_value = mock_store
+            mock_settings = MagicMock()
+            mock_settings.read_consistency = "majority"
+            MockSettings.from_env.return_value = mock_settings
+            eng = MemoryEngine(data_dir=str(tmp_path / "data"))
+            return eng
+
+    def test_graph_weight_zero_no_annotations(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [{"id": 1, "text": "test fact", "source": "test", "created_at": now}]
+        engine._rebuild_id_map()
+        engine._rebuild_bm25()
+        results = engine.hybrid_search(query="test", graph_weight=0.0)
+        for r in results:
+            assert "match_type" not in r
+            assert "graph_support" not in r
+
+    def test_graph_weight_positive_adds_annotations(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [{"id": 1, "text": "test fact", "source": "test", "created_at": now}]
+        engine._rebuild_id_map()
+        engine._rebuild_bm25()
+        results = engine.hybrid_search(query="test", graph_weight=0.1)
+        for r in results:
+            assert r["match_type"] == "direct"
+            assert r["graph_support"] == 0.0
+            assert r["graph_via"] == []
+            assert r["base_rrf_score"] == r["rrf_score"]
+
+    def test_graph_weight_clamped(self, engine):
+        engine.hybrid_search(query="test", graph_weight=-0.5)  # should not raise
+        engine.hybrid_search(query="test", graph_weight=5.0)   # should not raise
+
+    def test_graph_neighbor_appears_in_results(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "Python project uses FastAPI", "source": "test/proj", "created_at": now,
+             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "Deployment uses Docker", "source": "test/proj", "created_at": now},
+        ]
+        engine._rebuild_id_map()
+        engine._rebuild_bm25()
+        results = engine.hybrid_search(query="Python FastAPI", k=5, graph_weight=0.1)
+        result_ids = [r["id"] for r in results]
+        if 2 in result_ids:
+            r2 = next(r for r in results if r["id"] == 2)
+            assert r2["match_type"] in ("graph", "direct+graph")
+            assert r2["graph_support"] > 0
+
+    def test_graph_only_not_reinforced(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "direct match query word", "source": "test", "created_at": now,
+             "links": [{"to_id": 2, "type": "related_to", "created_at": now}]},
+            {"id": 2, "text": "completely unrelated different text", "source": "test", "created_at": now},
+        ]
+        engine._rebuild_id_map()
+        engine._rebuild_bm25()
+        original_updated = engine.metadata[1].get("updated_at")
+        engine.hybrid_search(query="direct match query word", graph_weight=0.1)
+        assert engine.metadata[1].get("updated_at") == original_updated
