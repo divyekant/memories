@@ -194,21 +194,34 @@ class LongMemEvalRunner:
         qtype = self._question_category(question)
         self.client.clear_by_prefix(question_prefix)
 
+        # Get session dates for temporal grounding
+        haystack_dates = question.get("haystack_dates", [])
+
         memories = []
         for session_index, session in enumerate(question.get("haystack_sessions", [])):
+            # Inject session date as document_at for temporal reasoning
+            session_date = haystack_dates[session_index] if session_index < len(haystack_dates) else None
+
             for chunk_index, chunk in enumerate(self._chunk_session(session, max_chars=max_chars)):
                 if not chunk.strip():
                     continue
+                metadata = {
+                    "question_id": qid,
+                    "question_type": qtype,
+                    "session_index": session_index,
+                    "chunk_index": chunk_index,
+                }
+                if session_date:
+                    metadata["document_at"] = session_date
+
+                # Prepend date to text so it's visible in search results
+                dated_text = f"[{session_date}] {chunk}" if session_date else chunk
+
                 memories.append(
                     {
-                        "text": chunk,
+                        "text": dated_text,
                         "source": f"{question_prefix}/s{session_index}/c{chunk_index}",
-                        "metadata": {
-                            "question_id": qid,
-                            "question_type": qtype,
-                            "session_index": session_index,
-                            "chunk_index": chunk_index,
-                        },
+                        "metadata": metadata,
                     }
                 )
 
@@ -269,12 +282,19 @@ class LongMemEvalRunner:
             project_dir = cc_executor.create_isolated_project(with_memories=True)
 
         try:
+            # Include question_date for temporal reasoning
+            question_date = question.get("question_date", "")
+            date_context = f"\nToday's date is: {question_date}\n" if question_date else ""
+
             prompt = (
                 f"You have access to memory_search and other memory tools via MCP. "
                 f"Use them to find relevant context, then answer the following question.\n\n"
                 f"IMPORTANT: Search within the source prefix '{q_prefix}' to find relevant memories. "
                 f"Try multiple search queries if your first attempt doesn't find the answer. "
-                f"Think about what keywords or phrases might be stored in memory.\n\n"
+                f"Think about what keywords or phrases might be stored in memory.\n"
+                f"Memory entries include dates in brackets like [2023/05/20 (Sat) 14:30]. "
+                f"Use these dates for temporal calculations (how many days, which came first, etc.).\n"
+                f"{date_context}\n"
                 f"Question: {query}\n\n"
                 f"Provide a direct, concise answer based on what you find in memory. "
                 f"If you cannot find the answer, say so clearly."
