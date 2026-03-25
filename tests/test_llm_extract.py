@@ -319,6 +319,31 @@ class TestAUDNCycle:
         assert "m" * (EXTRACT_SIMILAR_TEXT_CHARS + 50) not in prompt
         assert "..." in prompt
 
+    def test_audn_prompt_includes_rrf_score_not_zero(self):
+        """Verify similar_json sent to LLM includes actual RRF score, not 0.0."""
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {"action": "ADD", "fact_index": 0}
+        ]))
+
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {"id": 42, "text": "Uses Drizzle ORM", "rrf_score": 0.025}
+        ]
+
+        run_audn(
+            mock_provider, mock_engine,
+            facts=[{"text": "New fact", "category": "decision"}],
+            source="test/project"
+        )
+
+        prompt = mock_provider.complete.call_args[0][1]
+        assert '"relevance":0.025' in prompt or '"relevance":0.02' in prompt
+        assert '"relevance":0.0,' not in prompt  # must NOT be zero
+
     def test_audn_facts_json_includes_category(self):
         """Verify the facts_json sent to the LLM includes category."""
         from llm_extract import run_audn

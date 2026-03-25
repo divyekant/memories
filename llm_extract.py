@@ -118,7 +118,7 @@ Actions:
 New facts:
 {facts_json}
 
-Existing similar memories (per fact):
+Existing similar memories (per fact, with relevance score — higher is more relevant):
 {similar_json}
 
 Output a JSON array of decisions. Each decision must have:
@@ -328,7 +328,7 @@ def run_audn(
                 {
                     "id": m.get("id"),
                     "text": _clip_text(str(m.get("text", "")), EXTRACT_SIMILAR_TEXT_CHARS),
-                    "similarity": round(float(m.get("similarity", 0.0)), 3),
+                    "relevance": round(_mem_score(m), 3),
                 }
                 for m in mems[:EXTRACT_SIMILAR_PER_FACT]
             ]
