@@ -1852,6 +1852,20 @@ class MemoryEngine:
             include_archived=include_archived,
         )
 
+        # Semantic verification: drop graph-only candidates that have zero
+        # vector similarity to the query. If a candidate didn't appear in the
+        # oversample vector search results, it's too semantically distant.
+        vector_ids = {r["id"] for r in vector_results}
+        to_drop = [
+            doc_id for doc_id, cand in graph_candidates.items()
+            if doc_id not in rrf_scores and doc_id not in vector_ids
+        ]
+        for doc_id in to_drop:
+            del graph_candidates[doc_id]
+        if to_drop:
+            graph_info["neighbors_added"] -= len(to_drop)
+            graph_info["semantic_filtered"] = len(to_drop)
+
         return self._merge_graph_results(
             rrf_scores, graph_candidates, k, vector_results, threshold, reinforce=True
         )
@@ -2102,6 +2116,18 @@ class MemoryEngine:
                 source_prefix=source_prefix,
                 include_archived=include_archived,
             )
+
+            # Semantic verification (same as hybrid_search)
+            vector_ids = {r["id"] for r in vector_results}
+            to_drop = [
+                doc_id for doc_id, cand in graph_candidates.items()
+                if doc_id not in rrf_scores and doc_id not in vector_ids
+            ]
+            for doc_id in to_drop:
+                del graph_candidates[doc_id]
+            if to_drop:
+                graph_info["neighbors_added"] -= len(to_drop)
+                graph_info["semantic_filtered"] = len(to_drop)
 
             results = self._merge_graph_results(
                 rrf_scores, graph_candidates, k, vector_results, threshold, reinforce=False
