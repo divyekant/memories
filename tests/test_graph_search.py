@@ -368,3 +368,63 @@ class TestBuildAdjacency:
         engine._rebuild_id_map()
         adj = engine._build_adjacency()
         assert adj == {}
+
+
+class TestFilterAdjacency:
+    """Test _filter_adjacency() scope filtering."""
+
+    def test_no_filter_returns_original(self, engine):
+        adj = {1: {2}, 2: {1}}
+        result = engine._filter_adjacency(adj, None, True)
+        assert result == adj
+
+    def test_filters_by_source_prefix(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "A", "source": "wip/proj", "created_at": now},
+            {"id": 2, "text": "B", "source": "learning/other", "created_at": now},
+            {"id": 3, "text": "C", "source": "wip/proj", "created_at": now},
+        ]
+        engine._rebuild_id_map()
+        adj = {1: {2, 3}, 2: {1}, 3: {1}}
+        result = engine._filter_adjacency(adj, "wip/", False)
+        assert 2 not in result
+        assert result.get(1) == {3}
+        assert result.get(3) == {1}
+
+    def test_filters_archived(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "A", "source": "t", "created_at": now},
+            {"id": 2, "text": "B", "source": "t", "created_at": now, "archived": True},
+        ]
+        engine._rebuild_id_map()
+        adj = {1: {2}, 2: {1}}
+        result = engine._filter_adjacency(adj, None, False)
+        assert 2 not in result
+        assert 1 not in result
+
+    def test_includes_archived_when_flag_set(self, engine):
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "A", "source": "t", "created_at": now},
+            {"id": 2, "text": "B", "source": "t", "created_at": now, "archived": True},
+        ]
+        engine._rebuild_id_map()
+        adj = {1: {2}, 2: {1}}
+        result = engine._filter_adjacency(adj, None, True)
+        assert result == adj
+
+    def test_scope_blocks_transit(self, engine):
+        """Out-of-scope node B cannot bridge in-scope A and C."""
+        now = datetime.now(timezone.utc).isoformat()
+        engine.metadata = [
+            {"id": 1, "text": "A", "source": "wip/proj", "created_at": now},
+            {"id": 2, "text": "B", "source": "learning/other", "created_at": now},
+            {"id": 3, "text": "C", "source": "wip/proj", "created_at": now},
+        ]
+        engine._rebuild_id_map()
+        adj = {1: {2}, 2: {1, 3}, 3: {2}}
+        result = engine._filter_adjacency(adj, "wip/", False)
+        assert 1 not in result
+        assert 3 not in result

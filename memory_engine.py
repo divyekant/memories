@@ -1444,6 +1444,37 @@ class MemoryEngine:
                 adj.setdefault(tid, set()).add(mid)
         return adj
 
+    def _filter_adjacency(
+        self,
+        adj: Dict[int, Set[int]],
+        source_prefix: Optional[str],
+        include_archived: bool,
+    ) -> Dict[int, Set[int]]:
+        """Filter adjacency to visible subgraph.
+
+        Scope is a boundary — out-of-scope nodes cannot act as transit bridges.
+        Nodes with no visible neighbors are omitted from the result.
+        """
+        if not source_prefix and include_archived:
+            return adj
+
+        visible = set()
+        for m in self.metadata:
+            if source_prefix and not m.get("source", "").startswith(source_prefix):
+                continue
+            if not include_archived and m.get("archived"):
+                continue
+            visible.add(m["id"])
+
+        filtered = {}
+        for node, neighbors in adj.items():
+            if node not in visible:
+                continue
+            filtered_neighbors = neighbors & visible
+            if filtered_neighbors:
+                filtered[node] = filtered_neighbors
+        return filtered
+
     def _graph_expand(
         self,
         direct_results: list,
