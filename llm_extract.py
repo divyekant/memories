@@ -494,8 +494,9 @@ def execute_actions(
                 if not source_matches_prefixes(source, allowed_prefixes):
                     raise PermissionError(f"source not authorized for update: {source}")
                 if old_id is not None:
-                    engine.delete_memory(old_id)
-                fact_meta = {"category": fact.get("category", "detail"), "supersedes": old_id} if isinstance(fact, dict) else {"supersedes": old_id}
+                    # Archive old memory instead of deleting (version preservation)
+                    engine.update_memory(old_id, archived=True, metadata_patch={"is_latest": False})
+                fact_meta = {"category": fact.get("category", "detail"), "supersedes": old_id, "is_latest": True} if isinstance(fact, dict) else {"supersedes": old_id, "is_latest": True}
                 if job_id:
                     fact_meta["extraction_job_id"] = job_id
                     fact_meta["extract_source"] = source
@@ -506,6 +507,12 @@ def execute_actions(
                     deduplicate=False,
                 )
                 new_id = added_ids[0] if added_ids else None
+                # Create supersedes link from new → old
+                if new_id and old_id is not None:
+                    try:
+                        engine.add_link(new_id, old_id, "supersedes")
+                    except (ValueError, Exception):
+                        pass  # Link creation is non-fatal
                 result_actions.append({"action": "update", "old_id": old_id, "text": new_text, "new_id": new_id})
                 updated_count += 1
 
