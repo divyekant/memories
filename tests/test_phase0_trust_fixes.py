@@ -497,7 +497,10 @@ class TestExtractionAuthScope:
         )
 
         assert result["updated_count"] == 1
-        assert not engine._id_exists(0), "Old memory should have been replaced"
+        # Version preservation: old memory is archived, not deleted
+        assert engine._id_exists(0), "Old memory should still exist (archived)"
+        old_meta = engine._get_meta_by_id(0)
+        assert old_meta.get("archived") is True, "Old memory should be archived"
 
     def test_admin_key_can_update_any_source(self, engine):
         """allowed_prefixes=None means admin / unrestricted."""
