@@ -67,15 +67,15 @@ class TestReinforcement:
             eng = MemoryEngine(data_dir=str(tmp_path / "data"))
             return eng
 
-    def test_reinforce_updates_updated_at(self, engine):
+    def test_reinforce_updates_last_reinforced_at(self, engine):
         engine.add_memories(texts=["test fact"], sources=["test"])
         meta = engine._get_meta_by_id(0)
         old_updated = meta.get("updated_at")
 
         engine.reinforce(0)
-        new_updated = meta.get("updated_at")
-        assert new_updated != old_updated
-        assert new_updated > old_updated
+        # reinforce() now sets last_reinforced_at, not updated_at
+        assert "last_reinforced_at" in meta
+        assert meta["updated_at"] == old_updated  # updated_at unchanged
 
     def test_reinforce_nonexistent_does_not_crash(self, engine):
         # Should not raise
