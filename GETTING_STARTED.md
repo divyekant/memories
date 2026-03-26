@@ -200,7 +200,33 @@ via Memories MCP tools (memory_add, memory_extract) — NOT in MEMORY.md.
 
 This tells Claude Code to prefer Memories MCP for durable facts and keep `MEMORY.md` minimal.
 
-## 12) Where to go next
+## 12) Graph-aware search (v5.0.0)
+
+Memories automatically creates `related_to` links between similar memories during extraction. Search uses these links to surface related context via graph expansion.
+
+**MCP `memory_search`** has graph expansion enabled by default (`graph_weight=0.1`). No configuration needed — it just works.
+
+**HTTP `/search`** has graph disabled by default (`graph_weight=0.0`). Enable it:
+```json
+{"query": "database choice", "hybrid": true, "graph_weight": 0.1}
+```
+
+## 13) Temporal search (v5.0.0)
+
+Filter memories by date range using `since` and `until`:
+
+```json
+{"query": "decisions", "hybrid": true, "since": "2026-03-01T00:00:00Z", "until": "2026-03-31T23:59:59Z"}
+```
+
+Set `document_at` when adding memories to provide a stable content date:
+```json
+{"text": "Chose Redis for caching", "source": "decisions", "metadata": {"document_at": "2026-03-15T10:30:00Z"}}
+```
+
+Version history: UPDATE now archives the old memory instead of deleting it. Search with `include_archived=true` to see previous versions.
+
+## 14) Where to go next
 
 - Full architecture: [`docs/architecture.md`](docs/architecture.md)
 - Decisions/tradeoffs: [`docs/decisions.md`](docs/decisions.md)

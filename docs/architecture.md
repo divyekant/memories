@@ -16,9 +16,11 @@ Core storage and retrieval are handled by `MemoryEngine` (`memory_engine.py`) us
 - vector similarity search via Qdrant (`qdrant_store.py`)
 - lexical ranking (BM25)
 - reciprocal-rank fusion (RRF) for hybrid search
-- recency-weighted scoring with configurable half-life decay
-- confidence weighting with decay and access-based reinforcement
-- payload filtering for source prefix and metadata
+- recency-weighted scoring with configurable half-life decay (prefers `document_at` over `created_at`)
+- confidence weighting with decay and reinforcement-based refresh (`last_reinforced_at`)
+- graph-aware expansion via Personalized PageRank (PPR) on `related_to` link adjacency
+- temporal filtering with `since`/`until` date-range parameters
+- payload filtering for source prefix, archived status, and metadata
 
 Supporting subsystems:
 

@@ -57,3 +57,4 @@ eval/scenarios/longmemeval/*.jsonl
 
 # Apollo (personal config)
 .apollo.yaml
+.superpowers/

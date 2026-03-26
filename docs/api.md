@@ -101,6 +101,12 @@ Semantic or hybrid search over memories.
 | `source_prefix` | string | null | Filter results to memories whose source starts with this prefix |
 | `recency_weight` | float | 0.0 | Recency boost weight (0.0=off, 1.0=heavily favor recent). Hybrid mode only |
 | `recency_half_life_days` | float | 30.0 | Half-life in days for recency decay |
+| `feedback_weight` | float | 0.0 | Weight for feedback-based ranking (0=disabled) |
+| `confidence_weight` | float | 0.0 | Weight for confidence-based ranking (0=disabled) |
+| `graph_weight` | float | 0.0 | Weight for graph-based link expansion (0=disabled). Linked memories get a bonus score via PPR traversal |
+| `since` | string | null | Filter to memories at or after this ISO 8601 date |
+| `until` | string | null | Filter to memories at or before this ISO 8601 date |
+| `include_archived` | bool | false | Include archived/superseded memories (needed for version history queries) |
 
 **Response:**
 ```json

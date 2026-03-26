@@ -1,5 +1,50 @@
 # Changelog
 
+## [5.0.0] - 2026-03-26
+
+### Added
+- **Graph-Aware Search** — memories build a relationship graph automatically (#59, #61, #63)
+  - Auto-linking: extraction creates `related_to` graph edges between new memories and similar existing ones
+  - PPR scoring: Personalized PageRank replaces flat decay for principled multi-hop graph traversal
+  - Link-expanded retrieval: search results enriched with graph-connected neighbors via `graph_weight` param
+  - Reserved slot injection: graph-only results guaranteed in top-k (HopRAG-style)
+  - Result annotations: `match_type`, `base_rrf_score`, `graph_support`, `graph_via` on every result
+  - `graph_weight` param on MCP `memory_search` (default 0.1) and HTTP `/search` (default 0.0)
+  - Bidirectional adjacency index + scope-safe subgraph filtering (no cross-prefix leakage)
+  - Config: `EXTRACT_MAX_LINKS`, `EXTRACT_MIN_LINK_SCORE`, `SEARCH_PPR_ALPHA`, `SEARCH_PPR_MAX_ITERS`
+
+- **Temporal Reasoning Engine** — stable temporal metadata + date-range search (#64)
+  - `document_at` field: optional ISO 8601 date for when source content was created
+  - Version preservation: UPDATE archives old memory + creates `supersedes` link (no more hard-delete)
+  - `is_latest` flag: distinguishes current versions from superseded ones
+  - `since`/`until` filters: date-range search across all methods (hybrid, vector, explain, batch)
+  - `last_reinforced_at`: reinforcement separated from content `updated_at`
+  - Qdrant payload indexes on `document_at` and `is_latest`
+  - MCP `memory_search` gains `since`, `until`, `include_archived` params
+
+- **AUDN Improvements** (#60)
+  - Relevance scores in AUDN prompt (was sending 0.0 for all similar memories)
+  - Compaction candidate detection flagged in extraction results
+
+- **Eval Framework** (#55-58, #62)
+  - Three-tier eval: Tool (raw API), System (agent + MCP), Scenario (conversational)
+  - Scalable windowed eval runner with adapter pattern (no Qdrant crashes)
+  - MuSiQue 2-hop/3-hop/4-hop benchmark (1,165 questions)
+  - Voltis synthetic benchmark (2,000-5,000 memories)
+  - `--agent-model` flag for model comparison, `--category` filter
+  - Parallel eval workers with thread-safe project isolation
+
+### Changed
+- `reinforce()` now updates `last_reinforced_at` instead of `updated_at` (breaking)
+- UPDATE action archives old memory instead of deleting (breaking)
+- Confidence scoring reads `last_reinforced_at` → `updated_at` → `created_at`
+- Recency scoring reads `document_at` → `created_at` → `timestamp`
+
+### Benchmark Results
+- Graph search: +20% answer hit rate on 2-hop MuSiQue (100 questions, 0 regressions)
+- Support chain recall: +15.3% on 3-hop questions
+- LongMemEval system eval baseline: 69.5% (vs supermemory 81.6%)
+
 ## [4.0.0] - 2026-03-23
 
 ### Added
