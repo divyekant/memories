@@ -108,7 +108,10 @@ Actions:
 - ADD: No similar memory exists. Store as new.
 - UPDATE: An existing memory covers the same topic but the information
   has changed. Provide old_id and new_text that replaces it.
-- DELETE: An existing memory is now contradicted or obsolete. Provide old_id.
+- DELETE: An existing memory is no longer true and no replacement exists.
+  Use when something was removed, stopped, or revoked entirely
+  (e.g. "removed Redis" should DELETE "we use Redis for caching").
+  If there IS a replacement, use UPDATE instead. Provide old_id.
 - NOOP: The fact is already captured by an existing memory. Provide existing_id.
 - CONFLICT: The new fact directly contradicts an existing memory, but BOTH
   may be valid (e.g. different contexts, evolving decisions, unresolved
@@ -355,7 +358,7 @@ def run_audn(
         return valid, tokens, audn_artifacts
     except Exception as e:
         logger.error("AUDN cycle failed: %s", e)
-        return [{"action": "ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}, audn_artifacts
+        return [{"action": "FALLBACK_ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}, audn_artifacts
 
 
 SINGLE_CALL_PROMPT = """You are a memory extraction and classification system.
@@ -463,7 +466,7 @@ def execute_actions(
         fact_text = fact["text"] if isinstance(fact, dict) else str(fact)
 
         try:
-            if act == "ADD":
+            if act in ("ADD", "FALLBACK_ADD"):
                 if not source_matches_prefixes(source, allowed_prefixes):
                     raise PermissionError(f"source not authorized for add: {source}")
                 fact_meta = {"category": fact.get("category", "detail")} if isinstance(fact, dict) else {}
@@ -479,7 +482,7 @@ def execute_actions(
                     deduplicate=True,
                 )
                 new_id = added_ids[0] if added_ids else None
-                result_actions.append({"action": "add", "text": fact_text, "id": new_id})
+                result_actions.append({"action": "fallback_add" if act == "FALLBACK_ADD" else "add", "text": fact_text, "id": new_id})
                 stored_count += 1
 
             elif act == "UPDATE":

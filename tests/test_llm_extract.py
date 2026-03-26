@@ -1017,3 +1017,125 @@ class TestExtractionMaintenance:
         assert result["extracted_count"] == 1
         assert result["links_created"] == []
         assert result["compaction_candidates"] == []
+
+
+class TestAUDNFallbackVisibility:
+    """Test that AUDN exception fallback produces distinguishable actions."""
+
+    def test_audn_exception_returns_fallback_add_not_plain_add(self):
+        """When AUDN LLM call throws, actions should be tagged FALLBACK_ADD."""
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.side_effect = RuntimeError("API timeout")
+
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = []
+
+        decisions, tokens, _ = run_audn(
+            mock_provider, mock_engine,
+            facts=[{"text": "fact one", "category": "detail"},
+                   {"text": "fact two", "category": "decision"}],
+            source="test/project"
+        )
+        assert len(decisions) == 2
+        for d in decisions:
+            assert d["action"] == "FALLBACK_ADD", \
+                f"Expected FALLBACK_ADD, got {d['action']} — fallback should be distinguishable from real ADD"
+
+    def test_fallback_add_tokens_are_zero(self):
+        """Fallback path should report zero tokens (no LLM call succeeded)."""
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.side_effect = Exception("connection reset")
+
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = []
+
+        _, tokens, _ = run_audn(
+            mock_provider, mock_engine,
+            facts=[{"text": "a fact", "category": "detail"}],
+            source="test/project"
+        )
+        assert tokens == {"input": 0, "output": 0}
+
+    def test_execute_actions_handles_fallback_add_as_add(self):
+        """execute_actions should treat FALLBACK_ADD the same as ADD."""
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [100]
+
+        actions = [{"action": "FALLBACK_ADD", "fact_index": 0}]
+        facts = [{"text": "Fallback fact", "category": "detail"}]
+
+        result = execute_actions(mock_engine, actions, facts, source="test/proj")
+        assert result["stored_count"] == 1
+        mock_engine.add_memories.assert_called_once()
+
+    def test_execute_actions_preserves_fallback_add_label(self):
+        """result_actions should use 'fallback_add' not 'add' for fallback actions."""
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [100]
+
+        actions = [{"action": "FALLBACK_ADD", "fact_index": 0}]
+        facts = [{"text": "Fallback fact", "category": "detail"}]
+
+        result = execute_actions(mock_engine, actions, facts, source="test/proj")
+        assert result["actions"][0]["action"] == "fallback_add", \
+            "FALLBACK_ADD should be preserved in result_actions for metrics visibility"
+
+
+class TestAUDNPromptDeleteSemantics:
+    """Test that AUDN prompt gives DELETE distinct, non-overlapping semantics."""
+
+    def test_delete_definition_mentions_no_replacement(self):
+        """DELETE should be defined as 'no longer true AND no replacement exists'."""
+        from llm_extract import AUDN_PROMPT
+
+        delete_section = _extract_action_definition(AUDN_PROMPT, "DELETE")
+        assert "no replacement" in delete_section.lower() or "no successor" in delete_section.lower(), \
+            f"DELETE definition should mention 'no replacement' to distinguish from UPDATE. Got: {delete_section}"
+
+    def test_delete_definition_not_same_as_update(self):
+        """DELETE and UPDATE must have clearly different trigger conditions."""
+        from llm_extract import AUDN_PROMPT
+
+        delete_def = _extract_action_definition(AUDN_PROMPT, "DELETE")
+        update_def = _extract_action_definition(AUDN_PROMPT, "UPDATE")
+
+        # DELETE should NOT use "changed" (that's UPDATE's job)
+        assert "changed" not in delete_def.lower(), \
+            "DELETE definition should not use 'changed' — that's UPDATE's domain"
+        # UPDATE should NOT use "obsolete" (that's DELETE's job)
+        assert "obsolete" not in update_def.lower(), \
+            "UPDATE definition should not use 'obsolete' — that's DELETE's domain"
+
+    def test_delete_has_concrete_example(self):
+        """DELETE definition should include a concrete example."""
+        from llm_extract import AUDN_PROMPT
+
+        delete_section = _extract_action_definition(AUDN_PROMPT, "DELETE")
+        assert "e.g." in delete_section.lower() or "example" in delete_section.lower(), \
+            f"DELETE definition should include an example. Got: {delete_section}"
+
+
+def _extract_action_definition(prompt: str, action: str) -> str:
+    """Extract the definition text for a specific AUDN action from the prompt."""
+    lines = prompt.split("\n")
+    for i, line in enumerate(lines):
+        if line.strip().startswith(f"- {action}:"):
+            parts = [line]
+            for j in range(i + 1, len(lines)):
+                next_line = lines[j]
+                if next_line.strip().startswith("- ") and ":" in next_line.split("-", 1)[1][:20]:
+                    break
+                if next_line.strip():
+                    parts.append(next_line)
+            return " ".join(parts)
+    return ""
