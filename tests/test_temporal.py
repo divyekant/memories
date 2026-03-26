@@ -19,6 +19,13 @@ def engine(tmp_path):
         mock_settings.read_consistency = "majority"
         MockSettings.from_env.return_value = mock_settings
         eng = MemoryEngine(data_dir=str(tmp_path / "data"))
+
+        # Make mock store return all metadata items as search hits so
+        # vector search produces results for temporal filter tests.
+        def _dynamic_search(**kwargs):
+            return [{"id": m["id"], "score": 0.9} for m in eng.metadata]
+        mock_store.search.side_effect = _dynamic_search
+
         return eng
 
 
@@ -90,3 +97,62 @@ class TestVersionPreservation:
         add_call = mock_engine.add_memories.call_args
         metadata = add_call.kwargs.get("metadata_list", [{}])[0]
         assert metadata.get("is_latest") is True
+
+
+class TestTemporalFilters:
+    def test_since_excludes_old(self, engine):
+        engine.metadata = [
+            {"id": 1, "text": "old fact", "source": "t", "created_at": "2023-01-01T00:00:00+00:00", "document_at": "2023-01-01T00:00:00+00:00"},
+            {"id": 2, "text": "new fact", "source": "t", "created_at": "2023-06-01T00:00:00+00:00", "document_at": "2023-06-01T00:00:00+00:00"},
+        ]
+        engine._rebuild_id_map()
+        engine._rebuild_bm25()
+        results = engine.hybrid_search(query="fact", since="2023-03-01T00:00:00+00:00")
+        ids = [r["id"] for r in results]
+        assert 1 not in ids
+        assert 2 in ids
+
+    def test_until_excludes_future(self, engine):
+        engine.metadata = [
+            {"id": 1, "text": "old fact", "source": "t", "created_at": "2023-01-01T00:00:00+00:00", "document_at": "2023-01-01T00:00:00+00:00"},
+            {"id": 2, "text": "new fact", "source": "t", "created_at": "2023-06-01T00:00:00+00:00", "document_at": "2023-06-01T00:00:00+00:00"},
+        ]
+        engine._rebuild_id_map()
+        engine._rebuild_bm25()
+        results = engine.hybrid_search(query="fact", until="2023-03-01T00:00:00+00:00")
+        ids = [r["id"] for r in results]
+        assert 1 in ids
+        assert 2 not in ids
+
+    def test_range_filter(self, engine):
+        engine.metadata = [
+            {"id": 1, "text": "jan fact", "source": "t", "created_at": "2023-01-15T00:00:00+00:00", "document_at": "2023-01-15T00:00:00+00:00"},
+            {"id": 2, "text": "mar fact", "source": "t", "created_at": "2023-03-15T00:00:00+00:00", "document_at": "2023-03-15T00:00:00+00:00"},
+            {"id": 3, "text": "jun fact", "source": "t", "created_at": "2023-06-15T00:00:00+00:00", "document_at": "2023-06-15T00:00:00+00:00"},
+        ]
+        engine._rebuild_id_map()
+        engine._rebuild_bm25()
+        results = engine.hybrid_search(query="fact", since="2023-02-01T00:00:00+00:00", until="2023-05-01T00:00:00+00:00")
+        ids = [r["id"] for r in results]
+        assert 2 in ids
+        assert 1 not in ids
+        assert 3 not in ids
+
+    def test_missing_document_at_uses_created_at(self, engine):
+        engine.metadata = [
+            {"id": 1, "text": "no doc date", "source": "t", "created_at": "2023-03-01T00:00:00+00:00"},
+        ]
+        engine._rebuild_id_map()
+        engine._rebuild_bm25()
+        results = engine.hybrid_search(query="no doc date", since="2023-01-01T00:00:00+00:00")
+        assert len(results) >= 1
+
+    def test_no_filters_returns_all(self, engine):
+        engine.metadata = [
+            {"id": 1, "text": "fact one", "source": "t", "created_at": "2023-01-01T00:00:00+00:00"},
+            {"id": 2, "text": "fact two", "source": "t", "created_at": "2023-06-01T00:00:00+00:00"},
+        ]
+        engine._rebuild_id_map()
+        engine._rebuild_bm25()
+        results = engine.hybrid_search(query="fact")
+        assert len(results) == 2
