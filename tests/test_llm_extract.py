@@ -490,17 +490,23 @@ class TestExecuteActions:
         from llm_extract import execute_actions
 
         mock_engine = MagicMock()
+        mock_engine.get_memory.return_value = {"id": 42, "source": "test", "text": "old"}
         mock_engine.add_memories.return_value = [101]
+        mock_engine.add_link.return_value = {}
 
         actions = [{"action": "UPDATE", "fact_index": 0, "old_id": 42, "new_text": "updated text"}]
         facts = [{"text": "original fact", "category": "decision"}]
 
         result = execute_actions(mock_engine, actions, facts, source="test/proj")
         assert result["updated_count"] == 1
-        mock_engine.delete_memory.assert_called_once_with(42)
-        # Verify metadata includes both category and supersedes
+        # Old memory is archived, not deleted (version preservation)
+        mock_engine.delete_memory.assert_not_called()
+        mock_engine.update_memory.assert_called_once_with(42, archived=True, metadata_patch={"is_latest": False})
+        # Verify metadata includes category, supersedes, and is_latest
         call_kwargs = mock_engine.add_memories.call_args
-        assert call_kwargs.kwargs.get("metadata_list") == [{"category": "decision", "supersedes": 42}]
+        assert call_kwargs.kwargs.get("metadata_list") == [{"category": "decision", "supersedes": 42, "is_latest": True}]
+        # Verify supersedes link is created
+        mock_engine.add_link.assert_called_once_with(101, 42, "supersedes")
 
     def test_execute_noop_does_nothing(self):
         from llm_extract import execute_actions

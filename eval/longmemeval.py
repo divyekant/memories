@@ -34,6 +34,21 @@ class LongMemEvalResult:
         return cls(**{k: v for k, v in data.items() if k in known})
 
 
+def _normalize_longmemeval_date(raw: str) -> str:
+    """Convert LongMemEval date format to ISO 8601.
+    Input: '2023/05/20 (Sat) 02:21'
+    Output: '2023-05-20T02:21:00+00:00'
+    """
+    import re
+    try:
+        # Strip day-of-week in parens: "2023/05/20 (Sat) 02:21" → "2023/05/20  02:21"
+        clean = re.sub(r'\s*\([^)]*\)\s*', ' ', raw).strip()
+        dt = datetime.strptime(clean, "%Y/%m/%d %H:%M")
+        return dt.strftime("%Y-%m-%dT%H:%M:00+00:00")
+    except Exception:
+        return raw
+
+
 LONGMEMEVAL_CATEGORIES = [
     "multi-session",
     "temporal-reasoning",
@@ -212,7 +227,7 @@ class LongMemEvalRunner:
                     "chunk_index": chunk_index,
                 }
                 if session_date:
-                    metadata["document_at"] = session_date
+                    metadata["document_at"] = _normalize_longmemeval_date(session_date)
 
                 memories.append(
                     {

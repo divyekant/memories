@@ -947,11 +947,11 @@ class MemoryEngine:
         if not self._id_exists(memory_id):
             return
         meta = self._get_meta_by_id(memory_id)
-        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+        meta["last_reinforced_at"] = datetime.now(timezone.utc).isoformat()
 
     def _enrich_with_confidence(self, mem: Dict[str, Any]) -> Dict[str, Any]:
         """Add computed confidence to a memory dict."""
-        anchor = mem.get("updated_at") or mem.get("created_at") or mem.get("timestamp")
+        anchor = mem.get("last_reinforced_at") or mem.get("updated_at") or mem.get("created_at") or mem.get("timestamp")
         # Resolve per-prefix half-life
         half_life = 90.0  # default
         if hasattr(self, '_profiles') and self._profiles:
@@ -1387,6 +1387,8 @@ class MemoryEngine:
         threshold: Optional[float] = None,
         source_prefix: Optional[str] = None,
         include_archived: bool = False,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Vector-only search for similar memories."""
         if not self.metadata:
@@ -1423,6 +1425,10 @@ class MemoryEngine:
             if source_prefix and not source.startswith(source_prefix):
                 continue
 
+            # Temporal filtering
+            if not self._passes_temporal_filter(meta, since, until):
+                continue
+
             similarity = float(hit.get("score", 0.0))
             if threshold is not None and similarity < threshold:
                 continue
@@ -1457,6 +1463,28 @@ class MemoryEngine:
             return math.pow(0.5, age_days / half_life_days)
         except (ValueError, TypeError, ZeroDivisionError):
             return 0.0
+
+    @staticmethod
+    def _passes_temporal_filter(meta: dict, since: Optional[str], until: Optional[str]) -> bool:
+        """Check if memory passes temporal since/until filter."""
+        if not since and not until:
+            return True
+        doc_date = meta.get("document_at") or meta.get("created_at") or meta.get("timestamp")
+        if not doc_date:
+            return True
+        try:
+            ts = datetime.fromisoformat(doc_date)
+            if since:
+                since_ts = datetime.fromisoformat(since)
+                if ts < since_ts:
+                    return False
+            if until:
+                until_ts = datetime.fromisoformat(until)
+                if ts > until_ts:
+                    return False
+            return True
+        except (ValueError, TypeError):
+            return True
 
     def _build_adjacency(self, link_type: str = "related_to") -> Dict[int, Set[int]]:
         """Build bidirectional adjacency index for a link type.
@@ -1707,6 +1735,8 @@ class MemoryEngine:
         feedback_scores: Optional[Dict[int, int]] = None,
         confidence_weight: float = 0.0,
         graph_weight: float = 0.0,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -1788,7 +1818,7 @@ class MemoryEngine:
             for doc_id in rrf_scores:
                 if self._id_exists(doc_id):
                     meta = self._get_meta_by_id(doc_id)
-                    created_at = meta.get("created_at") or meta.get("timestamp")
+                    created_at = meta.get("document_at") or meta.get("created_at") or meta.get("timestamp")
                     rs = self._recency_score(created_at, half_life_days=recency_half_life_days)
                     recency_scored.append((doc_id, rs))
             # Sort by recency score descending to assign ranks
@@ -1810,7 +1840,7 @@ class MemoryEngine:
             for doc_id in rrf_scores:
                 if self._id_exists(doc_id):
                     meta = self._get_meta_by_id(doc_id)
-                    anchor = meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
+                    anchor = meta.get("last_reinforced_at") or meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
                     # Per-prefix half-life from profiles if available
                     half_life = 90.0
                     profiles = getattr(self, '_profiles', None)
@@ -1823,6 +1853,13 @@ class MemoryEngine:
             conf_scored.sort(key=lambda x: x[1], reverse=True)
             for rank, (doc_id, _) in enumerate(conf_scored):
                 rrf_scores[doc_id] += confidence_weight * (1.0 / (rank + rrf_k))
+
+        # Temporal filtering
+        if since or until:
+            rrf_scores = {
+                doc_id: score for doc_id, score in rrf_scores.items()
+                if self._id_exists(doc_id) and self._passes_temporal_filter(self._get_meta_by_id(doc_id), since, until)
+            }
 
         # --- Zero-overhead fast path when graph is disabled ---
         if graph_weight <= 0:
@@ -1863,6 +1900,8 @@ class MemoryEngine:
         threshold: Optional[float] = None,
         source_prefix: Optional[str] = None,
         include_archived: bool = False,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Vector search without reinforcement side effects (for explain/debug)."""
         if not self.metadata:
@@ -1882,6 +1921,9 @@ class MemoryEngine:
             meta = self._get_meta_by_id(mem_id)
             source = str(meta.get("source", ""))
             if source_prefix and not source.startswith(source_prefix):
+                continue
+            # Temporal filtering
+            if not self._passes_temporal_filter(meta, since, until):
                 continue
             similarity = float(hit.get("score", 0.0))
             if threshold is not None and similarity < threshold:
@@ -1904,6 +1946,8 @@ class MemoryEngine:
         feedback_scores: Optional[Dict[int, int]] = None,
         confidence_weight: float = 0.0,
         graph_weight: float = 0.0,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -2045,7 +2089,7 @@ class MemoryEngine:
             for doc_id in rrf_scores:
                 if self._id_exists(doc_id):
                     meta = self._get_meta_by_id(doc_id)
-                    created_at = meta.get("created_at") or meta.get("timestamp")
+                    created_at = meta.get("document_at") or meta.get("created_at") or meta.get("timestamp")
                     rs = self._recency_score(created_at, half_life_days=recency_half_life_days)
                     recency_scored.append((doc_id, rs))
             recency_scored.sort(key=lambda x: x[1], reverse=True)
@@ -2066,7 +2110,7 @@ class MemoryEngine:
             for doc_id in rrf_scores:
                 if self._id_exists(doc_id):
                     meta = self._get_meta_by_id(doc_id)
-                    anchor = meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
+                    anchor = meta.get("last_reinforced_at") or meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
                     # Per-prefix half-life from profiles if available
                     half_life = 90.0
                     profiles = getattr(self, '_profiles', None)
@@ -2079,6 +2123,13 @@ class MemoryEngine:
             conf_scored.sort(key=lambda x: x[1], reverse=True)
             for rank, (doc_id, _) in enumerate(conf_scored):
                 rrf_scores[doc_id] += confidence_weight * (1.0 / (rank + rrf_k))
+
+        # Temporal filtering
+        if since or until:
+            rrf_scores = {
+                doc_id: score for doc_id, score in rrf_scores.items()
+                if self._id_exists(doc_id) and self._passes_temporal_filter(self._get_meta_by_id(doc_id), since, until)
+            }
 
         # --- Graph expansion (explain variant — no reinforcement) ---
         if graph_weight <= 0:

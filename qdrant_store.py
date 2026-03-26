@@ -154,6 +154,24 @@ class QdrantStore:
         except Exception:
             pass
 
+        try:
+            self.client.create_payload_index(
+                collection_name=self.collection,
+                field_name="document_at",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass
+
+        try:
+            self.client.create_payload_index(
+                collection_name=self.collection,
+                field_name="is_latest",
+                field_schema=models.PayloadSchemaType.BOOL,
+            )
+        except Exception:
+            pass
+
     def count_filtered(
         self,
         count_filter: Optional[models.Filter] = None,
