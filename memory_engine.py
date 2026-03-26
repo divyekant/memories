@@ -1989,6 +1989,8 @@ class MemoryEngine:
             threshold=threshold,
             source_prefix=source_prefix,
             include_archived=include_archived,
+            since=since,
+            until=until,
         )
 
         vector_candidates = [
