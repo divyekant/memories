@@ -9,6 +9,12 @@ from cli.config import resolve_config, write_config, DEFAULT_URL
 
 
 class TestDefaults:
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        """Remove env vars that would override defaults."""
+        monkeypatch.delenv("MEMORIES_URL", raising=False)
+        monkeypatch.delenv("MEMORIES_API_KEY", raising=False)
+
     def test_default_url(self):
         cfg = resolve_config(config_dir="/nonexistent")
         assert cfg["url"] == DEFAULT_URL
@@ -53,7 +59,9 @@ class TestConfigFile:
         assert cfg["api_key"] == "file-key"
         assert cfg["_sources"]["api_key"] == "file"
 
-    def test_missing_config_file_is_ok(self, tmp_path):
+    def test_missing_config_file_is_ok(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MEMORIES_URL", raising=False)
+        monkeypatch.delenv("MEMORIES_API_KEY", raising=False)
         cfg = resolve_config(config_dir=str(tmp_path))
         assert cfg["url"] == DEFAULT_URL
 
