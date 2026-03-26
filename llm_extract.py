@@ -438,6 +438,7 @@ def execute_actions(
     source: str,
     allowed_prefixes: Optional[List[str]] = None,
     job_id: Optional[str] = None,
+    document_at: Optional[str] = None,
 ) -> dict:
     """Execute AUDN decisions against the memory engine.
 
@@ -447,6 +448,7 @@ def execute_actions(
     Args:
         facts: list of {"category": str, "text": str} dicts
         job_id: extraction job identifier for provenance tracking
+        document_at: ISO 8601 timestamp for when the source content was created
     """
     stored_count = 0
     updated_count = 0
@@ -468,6 +470,8 @@ def execute_actions(
                 if job_id:
                     fact_meta["extraction_job_id"] = job_id
                     fact_meta["extract_source"] = source
+                if document_at:
+                    fact_meta["document_at"] = document_at
                 added_ids = engine.add_memories(
                     texts=[fact_text],
                     sources=[source],
@@ -500,6 +504,8 @@ def execute_actions(
                 if job_id:
                     fact_meta["extraction_job_id"] = job_id
                     fact_meta["extract_source"] = source
+                if document_at:
+                    fact_meta["document_at"] = document_at
                 added_ids = engine.add_memories(
                     texts=[new_text],
                     sources=[source],
@@ -541,6 +547,8 @@ def execute_actions(
                 if job_id:
                     fact_meta["extraction_job_id"] = job_id
                     fact_meta["extract_source"] = source
+                if document_at:
+                    fact_meta["document_at"] = document_at
                 if old_id is not None:
                     fact_meta["conflicts_with"] = old_id
                 added_ids = engine.add_memories(
@@ -709,6 +717,7 @@ def run_extraction(
     allowed_prefixes: Optional[List[str]] = None,
     debug: bool = False,
     profile: dict | None = None,
+    document_at: Optional[str] = None,
 ) -> dict:
     """Full extraction pipeline: extract facts -> AUDN -> execute.
 
@@ -753,7 +762,7 @@ def run_extraction(
         )
         facts = [{"text": a.get("text", ""), "category": a.get("category", "detail")}
                  for a in actions]
-        result = execute_actions(engine, actions, facts, source, allowed_prefixes, job_id=job_id)
+        result = execute_actions(engine, actions, facts, source, allowed_prefixes, job_id=job_id, document_at=document_at)
         result["tokens"] = {"single_call": usage}
         result["job_id"] = job_id
         result["links_created"] = []
@@ -840,6 +849,7 @@ def run_extraction(
         source,
         allowed_prefixes=allowed_prefixes,
         job_id=job_id,
+        document_at=document_at,
     )
     result["extracted_count"] = len(facts)
     result["tokens"] = {"extract": extract_tokens, "audn": audn_tokens}

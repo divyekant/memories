@@ -733,6 +733,7 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data.get("allowed_prefixes"),
                 request_data.get("debug", False),
                 request_data.get("profile"),
+                request_data.get("document_at"),
             )
             is_dry_run = request_data.get("profile", {}).get("dry_run", False)
             if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result) and not is_dry_run:
@@ -3016,6 +3017,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
                     "allowed_prefixes": auth.prefixes,
                     "debug": request_body.debug,
                     "profile": profile,
+                    "document_at": request_body.document_at,
                 },
             }
         )
