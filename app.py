@@ -1389,6 +1389,7 @@ class ExtractRequest(BaseModel):
     context: str = Field(default="stop", description="Extraction context: stop, pre_compact, session_end")
     debug: bool = Field(default=False, description="When True, return detailed extraction trace")
     dry_run: bool = Field(default=False, description="Return actions without executing")
+    document_at: Optional[str] = Field(default=None, description="ISO 8601 date for when the source content was created. Propagated to all extracted memories.")
 
 
 class ExtractCommitRequest(BaseModel):

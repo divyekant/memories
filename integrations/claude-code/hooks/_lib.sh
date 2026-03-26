@@ -360,9 +360,12 @@ _extract_multi() {
 
   local backends
   backends=$(_get_backends_for_op "extract")
+  # Pass current timestamp as document_at for temporal reasoning
+  local doc_at
+  doc_at=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
   local body
-  body=$(jq -nc --arg m "$messages" --arg s "$source" --arg c "$context" \
-    '{messages: $m, source: $s, context: $c}')
+  body=$(jq -nc --arg m "$messages" --arg s "$source" --arg c "$context" --arg d "$doc_at" \
+    '{messages: $m, source: $s, context: $c, document_at: $d}')
 
   echo "$backends" | jq -c '.[]' | while read -r backend; do
     local url key name

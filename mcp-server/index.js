@@ -204,11 +204,14 @@ server.tool(
     text: z.string().min(1).describe("The memory content to store"),
     source: z.string().min(1).describe("Source identifier (e.g. 'project/decisions.md', 'bug-fix/redis')"),
     deduplicate: z.boolean().default(true).describe("Skip if a very similar memory already exists"),
+    document_at: z.string().optional().describe("ISO 8601 date for when the content was created (e.g. session date). Enables temporal search."),
   },
-  async ({ text, source, deduplicate = true }) => {
+  async ({ text, source, deduplicate = true, document_at }) => {
+    const body = { text, source, deduplicate };
+    if (document_at) body.metadata = { document_at };
     const data = await memoriesRequest("/memory/add", {
       method: "POST",
-      body: JSON.stringify({ text, source, deduplicate }),
+      body: JSON.stringify(body),
     }, "add");
 
     return {
@@ -441,12 +444,15 @@ server.tool(
     source: z.string().min(1).describe("Source identifier (e.g. 'claude-code/myapp')"),
     context: z.enum(["stop", "pre_compact", "session_end"]).default("stop")
       .describe("Extraction intensity: 'stop' (standard), 'pre_compact' (aggressive), 'session_end'"),
+    document_at: z.string().optional().describe("ISO 8601 date for when the conversation happened. All extracted memories inherit this timestamp."),
   },
-  async ({ messages, source, context = "stop" }) => {
+  async ({ messages, source, context = "stop", document_at }) => {
     // Submit extraction job
+    const body = { messages, source, context };
+    if (document_at) body.document_at = document_at;
     const submitData = await memoriesRequest("/memory/extract", {
       method: "POST",
-      body: JSON.stringify({ messages, source, context }),
+      body: JSON.stringify(body),
     }, "extract");
 
     const jobId = submitData.job_id;
