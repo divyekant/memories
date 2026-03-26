@@ -137,7 +137,9 @@ if [ -z "$SOURCE" ]; then
   SOURCE="$SOURCE_PREFIX/$PROJECT"
 fi
 
-BODY=$(jq -nc --arg msgs "$MESSAGES" --arg src "$SOURCE" '{"messages": $msgs, "source": $src, "context": "after_agent"}')
+# Include current timestamp as document_at for temporal reasoning
+DOC_AT=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
+BODY=$(jq -nc --arg msgs "$MESSAGES" --arg src "$SOURCE" --arg d "$DOC_AT" '{"messages": $msgs, "source": $src, "context": "after_agent", "document_at": $d}')
 curl -sf --connect-timeout 1 --max-time 2 -X POST "$MEMORIES_URL/memory/extract" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $MEMORIES_API_KEY" \

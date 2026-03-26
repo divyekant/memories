@@ -524,4 +524,23 @@ Adjust novelty detection sensitivity:
 
 ---
 
+## v5.0.0 Features
+
+### Graph-Aware Search
+
+Memories automatically links related facts during extraction. The MCP `memory_search` tool has graph expansion enabled by default (`graph_weight=0.1`). Related memories are surfaced alongside direct search results.
+
+### Temporal Search
+
+Filter by date range using `since` and `until` parameters:
+- MCP `memory_search` accepts `since` and `until` (ISO 8601 dates)
+- MCP `memory_add` accepts `document_at` to timestamp when content was created
+- All extraction hooks now pass the session timestamp as `document_at`
+
+### Version History
+
+When extraction updates a memory, the old version is archived (not deleted). Search with `include_archived=true` to see previous versions and track how facts evolved.
+
+---
+
 **Built for Claude Code users who want persistent memory across sessions** 🧠

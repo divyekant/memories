@@ -654,3 +654,16 @@ curl -s -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/stats | jq '.tot
 # The recall hook uses 0.3 threshold, query hook uses 0.4
 # If all memories have low similarity to your project name, they won't appear
 ```
+
+---
+
+## v5.0.0 New Features
+
+### Graph-Aware Search
+MCP `memory_search` now has `graph_weight=0.1` by default — related memories are automatically surfaced alongside direct search results. No configuration needed.
+
+### Temporal Search
+Filter by date range: `since` and `until` params on `memory_search`. Set `document_at` on `memory_add` to timestamp when content was created. Extraction hooks now pass session timestamps automatically.
+
+### Version History
+`include_archived=true` on `memory_search` to see previous versions of updated memories.

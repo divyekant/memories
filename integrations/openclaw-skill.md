@@ -25,6 +25,9 @@ Local semantic memory using Memories vector search + BM25 hybrid retrieval (Dock
 - **Independent**: Survives OpenClaw upgrades
 - **CRUD**: Full create, read, update, delete support
 - **QMD Bridge**: Sync Memories into OpenClaw's native `memory_search` via QMD
+- **Graph search**: Related memories linked automatically, surfaced via `graph_weight` param
+- **Temporal search**: `since`/`until` date-range filters, `document_at` timestamps on memories
+- **Version tracking**: UPDATE archives old version with `supersedes` link, searchable with `include_archived`
 
 ## Prerequisites
 
