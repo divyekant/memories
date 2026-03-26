@@ -46,7 +46,7 @@ class TestExtractionDryRun:
         captured = {}
 
         def fake_run_extraction(provider, engine, messages, source, context,
-                                allowed_prefixes=None, debug=False, profile=None):
+                                allowed_prefixes=None, debug=False, profile=None, document_at=None):
             captured["profile"] = profile
             return {
                 "dry_run": True,
@@ -70,7 +70,7 @@ class TestExtractionDryRun:
         captured = {}
 
         def fake_run_extraction(provider, engine, messages, source, context,
-                                allowed_prefixes=None, debug=False, profile=None):
+                                allowed_prefixes=None, debug=False, profile=None, document_at=None):
             captured["profile"] = profile
             return {
                 "actions": [],
