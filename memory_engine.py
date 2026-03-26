@@ -1473,13 +1473,14 @@ class MemoryEngine:
         if not doc_date:
             return True
         try:
-            ts = datetime.fromisoformat(doc_date)
+            # Handle Z suffix for ISO compatibility (Python <3.11)
+            ts = datetime.fromisoformat(doc_date.replace("Z", "+00:00"))
             if since:
-                since_ts = datetime.fromisoformat(since)
+                since_ts = datetime.fromisoformat(since.replace("Z", "+00:00"))
                 if ts < since_ts:
                     return False
             if until:
-                until_ts = datetime.fromisoformat(until)
+                until_ts = datetime.fromisoformat(until.replace("Z", "+00:00"))
                 if ts > until_ts:
                     return False
             return True
