@@ -947,11 +947,11 @@ class MemoryEngine:
         if not self._id_exists(memory_id):
             return
         meta = self._get_meta_by_id(memory_id)
-        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+        meta["last_reinforced_at"] = datetime.now(timezone.utc).isoformat()
 
     def _enrich_with_confidence(self, mem: Dict[str, Any]) -> Dict[str, Any]:
         """Add computed confidence to a memory dict."""
-        anchor = mem.get("updated_at") or mem.get("created_at") or mem.get("timestamp")
+        anchor = mem.get("last_reinforced_at") or mem.get("updated_at") or mem.get("created_at") or mem.get("timestamp")
         # Resolve per-prefix half-life
         half_life = 90.0  # default
         if hasattr(self, '_profiles') and self._profiles:
@@ -1788,7 +1788,7 @@ class MemoryEngine:
             for doc_id in rrf_scores:
                 if self._id_exists(doc_id):
                     meta = self._get_meta_by_id(doc_id)
-                    created_at = meta.get("created_at") or meta.get("timestamp")
+                    created_at = meta.get("document_at") or meta.get("created_at") or meta.get("timestamp")
                     rs = self._recency_score(created_at, half_life_days=recency_half_life_days)
                     recency_scored.append((doc_id, rs))
             # Sort by recency score descending to assign ranks
@@ -1810,7 +1810,7 @@ class MemoryEngine:
             for doc_id in rrf_scores:
                 if self._id_exists(doc_id):
                     meta = self._get_meta_by_id(doc_id)
-                    anchor = meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
+                    anchor = meta.get("last_reinforced_at") or meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
                     # Per-prefix half-life from profiles if available
                     half_life = 90.0
                     profiles = getattr(self, '_profiles', None)
@@ -2045,7 +2045,7 @@ class MemoryEngine:
             for doc_id in rrf_scores:
                 if self._id_exists(doc_id):
                     meta = self._get_meta_by_id(doc_id)
-                    created_at = meta.get("created_at") or meta.get("timestamp")
+                    created_at = meta.get("document_at") or meta.get("created_at") or meta.get("timestamp")
                     rs = self._recency_score(created_at, half_life_days=recency_half_life_days)
                     recency_scored.append((doc_id, rs))
             recency_scored.sort(key=lambda x: x[1], reverse=True)
@@ -2066,7 +2066,7 @@ class MemoryEngine:
             for doc_id in rrf_scores:
                 if self._id_exists(doc_id):
                     meta = self._get_meta_by_id(doc_id)
-                    anchor = meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
+                    anchor = meta.get("last_reinforced_at") or meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
                     # Per-prefix half-life from profiles if available
                     half_life = 90.0
                     profiles = getattr(self, '_profiles', None)
