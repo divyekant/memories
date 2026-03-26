@@ -1282,6 +1282,16 @@ class SearchRequest(BaseModel):
         le=1.0,
         description="Weight for graph-based link expansion (0=disabled). When enabled, linked memories get a bonus score.",
     )
+    since: Optional[str] = Field(
+        None,
+        max_length=50,
+        description="Filter memories created/documented at or after this ISO 8601 date",
+    )
+    until: Optional[str] = Field(
+        None,
+        max_length=50,
+        description="Filter memories created/documented at or before this ISO 8601 date",
+    )
     source: str = Field("", max_length=500, description="Caller source for usage tracking")
     include_archived: bool = Field(default=False, description="Include archived memories in search results")
 
@@ -1919,6 +1929,8 @@ async def search(request_body: SearchRequest, request: Request):
                 feedback_scores=fb_scores,
                 confidence_weight=request_body.confidence_weight,
                 graph_weight=request_body.graph_weight,
+                since=request_body.since,
+                until=request_body.until,
             )
         else:
             results = memory.search(
@@ -1927,6 +1939,8 @@ async def search(request_body: SearchRequest, request: Request):
                 threshold=request_body.threshold,
                 source_prefix=request_body.source_prefix,
                 include_archived=request_body.include_archived,
+                since=request_body.since,
+                until=request_body.until,
             )
         results = auth.filter_results(results)
         result_count = len(results)
@@ -1971,6 +1985,8 @@ async def search_explain(request_body: SearchRequest, request: Request):
             feedback_scores=fb_scores,
             confidence_weight=request_body.confidence_weight,
             graph_weight=request_body.graph_weight,
+            since=request_body.since,
+            until=request_body.until,
         )
         # Apply auth filtering to results and track how many were removed
         raw_results = explain_result["results"]
@@ -2002,6 +2018,8 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     recency_half_life_days=item.recency_half_life_days,
                     confidence_weight=item.confidence_weight,
                     graph_weight=item.graph_weight,
+                    since=item.since,
+                    until=item.until,
                 )
             else:
                 results = memory.search(
@@ -2009,6 +2027,8 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     k=item.k,
                     threshold=item.threshold,
                     source_prefix=item.source_prefix,
+                    since=item.since,
+                    until=item.until,
                 )
             results = auth.filter_results(results)
             batch_result_count = len(results)
