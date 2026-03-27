@@ -1,5 +1,13 @@
 # Changelog
 
+## [5.0.1] - 2026-03-27
+
+### Fixed
+- AUDN DELETE action never fired — rewrote prompt definition to "no longer true and no replacement exists" with concrete example, clearly separated from UPDATE and CONFLICT
+- Silent all-ADD fallback on AUDN exception now tagged as `FALLBACK_ADD` and tracked separately through metrics pipeline (DB column, extraction-quality endpoint, quality-summary endpoint)
+- `fallback_add` propagated to all downstream consumers: MCP formatter, debug trace builder, execution summary, auto-linking maintenance
+- DB migration adds `fallback` column to existing `extraction_outcomes` tables
+
 ## [5.0.0] - 2026-03-26
 
 ### Added
