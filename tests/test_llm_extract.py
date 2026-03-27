@@ -1138,6 +1138,68 @@ class TestAUDNPromptDeleteSemantics:
             f"DELETE definition should include an example. Got: {delete_section}"
 
 
+class TestTrainingDataCollection:
+    """Test _save_training_pair() passive data collection."""
+
+    def test_saves_jsonl_when_dir_set(self, tmp_path):
+        import llm_extract
+        orig = llm_extract.TRAINING_DATA_DIR
+        llm_extract.TRAINING_DATA_DIR = str(tmp_path)
+        try:
+            llm_extract._save_training_pair(
+                "User: pick a DB\nAssistant: PostgreSQL for ACID.",
+                [{"category": "decision", "text": "PostgreSQL chosen for ACID."}],
+                "eval/test",
+                "stop",
+            )
+            files = list(tmp_path.glob("extraction-training-*.jsonl"))
+            assert len(files) == 1
+            line = files[0].read_text().strip()
+            record = json.loads(line)
+            assert record["input"] == "User: pick a DB\nAssistant: PostgreSQL for ACID."
+            assert record["output"] == [{"category": "decision", "text": "PostgreSQL chosen for ACID."}]
+            assert record["source"] == "eval/test"
+            assert record["context"] == "stop"
+            assert "ts" in record
+        finally:
+            llm_extract.TRAINING_DATA_DIR = orig
+
+    def test_noop_when_dir_not_set(self, tmp_path):
+        import llm_extract
+        orig = llm_extract.TRAINING_DATA_DIR
+        llm_extract.TRAINING_DATA_DIR = ""
+        try:
+            llm_extract._save_training_pair("input", [{"text": "fact"}], "src", "stop")
+            # No files written anywhere
+            assert not list(tmp_path.glob("*.jsonl"))
+        finally:
+            llm_extract.TRAINING_DATA_DIR = orig
+
+    def test_appends_multiple_records(self, tmp_path):
+        import llm_extract
+        orig = llm_extract.TRAINING_DATA_DIR
+        llm_extract.TRAINING_DATA_DIR = str(tmp_path)
+        try:
+            for i in range(3):
+                llm_extract._save_training_pair(f"msg-{i}", [{"text": f"fact-{i}"}], "src", "stop")
+            files = list(tmp_path.glob("extraction-training-*.jsonl"))
+            assert len(files) == 1
+            lines = files[0].read_text().strip().split("\n")
+            assert len(lines) == 3
+        finally:
+            llm_extract.TRAINING_DATA_DIR = orig
+
+    def test_never_raises_on_bad_dir(self):
+        import llm_extract
+        orig = llm_extract.TRAINING_DATA_DIR
+        llm_extract.TRAINING_DATA_DIR = "/nonexistent/readonly/path"
+        try:
+            # Should not raise — best-effort, never fatal
+            llm_extract._save_training_pair("msg", [{"text": "fact"}], "src", "stop")
+        finally:
+            llm_extract.TRAINING_DATA_DIR = orig
+
+
 def _extract_action_definition(prompt: str, action: str) -> str:
     """Extract the definition text for a specific AUDN action from the prompt."""
     lines = prompt.split("\n")
