@@ -184,11 +184,10 @@ def consolidate_cluster(
 
     # Parse response
     try:
-        new_texts = json.loads(result.text)
-        if not isinstance(new_texts, list):
-            new_texts = [str(new_texts)]
-        new_texts = [str(t) for t in new_texts]
-    except (json.JSONDecodeError, TypeError):
+        from llm_extract import _parse_json_array
+        new_texts = _parse_json_array(result.text)
+        new_texts = [str(t) for t in new_texts] if new_texts else [result.text.strip()]
+    except Exception:
         # Fallback: treat entire response as a single consolidated memory
         new_texts = [result.text.strip()]
 

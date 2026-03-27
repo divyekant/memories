@@ -11,11 +11,50 @@ import json
 import logging
 import os
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, List
 
 from auth_context import source_matches_prefixes
 
 logger = logging.getLogger(__name__)
+
+TRAINING_DATA_DIR = os.environ.get("EXTRACT_TRAINING_DATA_DIR", "").strip()
+_TRAINING_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50MB rotation threshold
+
+
+def _save_training_pair(messages: str, facts: list[dict], source: str, context: str) -> None:
+    """Persist an (input, output) pair for future fine-tuning. Best-effort, never raises."""
+    if not TRAINING_DATA_DIR:
+        return
+    try:
+        out_dir = Path(TRAINING_DATA_DIR)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc)
+        path = out_dir / f"extraction-training-{now.strftime('%Y-%m-%d')}.jsonl"
+        # Rotate if file exceeds threshold (single stat call, no exists check)
+        try:
+            if path.stat().st_size > _TRAINING_MAX_FILE_BYTES:
+                seq = 1
+                while True:
+                    rotated = out_dir / f"extraction-training-{now.strftime('%Y-%m-%d')}-{seq}.jsonl"
+                    if not rotated.exists():
+                        path = rotated
+                        break
+                    seq += 1
+        except OSError:
+            pass  # File doesn't exist yet — use default path
+        record = json.dumps({
+            "input": messages,
+            "output": facts,
+            "source": source,
+            "context": context,
+            "ts": now.isoformat(),
+        }, ensure_ascii=False)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(record + "\n")
+    except Exception as e:
+        logger.debug("Training data save failed (non-fatal): %s", e)
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -268,7 +307,7 @@ def run_audn(
     """Run AUDN cycle on extracted facts.
 
     For providers with supports_audn=True: uses LLM to decide action per fact.
-    For Ollama (supports_audn=False): uses engine.is_novel() for ADD/NOOP only.
+    For providers with supports_audn=False: uses engine.is_novel() for ADD/NOOP only.
 
     Args:
         facts: list of {"category": str, "text": str} dicts
@@ -414,10 +453,8 @@ def extract_and_decide_single_call(
     usage = {"input_tokens": result.input_tokens, "output_tokens": result.output_tokens}
 
     try:
-        actions = json.loads(result.text.strip())
-        if not isinstance(actions, list):
-            actions = []
-    except (json.JSONDecodeError, ValueError):
+        actions = _parse_json_array(result.text)
+    except Exception:
         actions = []
 
     for i, action in enumerate(actions[:max_facts]):
@@ -817,6 +854,9 @@ def run_extraction(
             "deleted_count": 0,
             "tokens": {"extract": extract_tokens, "audn": {"input": 0, "output": 0}},
         }
+
+    # Passive training data collection (when EXTRACT_TRAINING_DATA_DIR is set)
+    _save_training_pair(messages, facts, source, context)
 
     # Step 2: AUDN decisions
     decisions, audn_tokens, audn_artifacts = run_audn(

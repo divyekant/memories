@@ -348,12 +348,14 @@ class OllamaProvider(LLMProvider):
         self.model = model or DEFAULT_MODELS["ollama"]
 
     def complete(self, system: str, user: str) -> CompletionResult:
+        # No format:"json" — breaks array extraction; _parse_json_array handles freeform text.
+        # think:false — prevents empty responses on thinking models (Qwen3.5+).
         payload = json.dumps({
             "model": self.model,
             "system": system,
             "prompt": user,
             "stream": False,
-            "format": "json",
+            "think": False,
             "options": {"temperature": DEFAULT_TEMPERATURE},
         }).encode()
         req = urllib.request.Request(
@@ -362,7 +364,7 @@ class OllamaProvider(LLMProvider):
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read())
         return CompletionResult(
             text=data["response"],

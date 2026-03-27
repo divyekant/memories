@@ -253,7 +253,8 @@ class TestOllamaProvider:
             provider = get_provider()
             assert provider.supports_audn is True
 
-    def test_ollama_complete_sends_json_format(self):
+    def test_ollama_complete_sends_correct_payload(self):
+        """No format:'json' (breaks array extraction), think:false for thinking models."""
         env = {"EXTRACT_PROVIDER": "ollama"}
         with patch.dict(os.environ, env):
             from llm_provider import get_provider
@@ -269,7 +270,8 @@ class TestOllamaProvider:
                 call_args = mock_urlopen.call_args
                 request_obj = call_args[0][0]
                 body = json.loads(request_obj.data)
-                assert body.get("format") == "json"
+                assert "format" not in body
+                assert body.get("think") is False
                 assert body.get("options", {}).get("temperature") == 0.0
 
 
