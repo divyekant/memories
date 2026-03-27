@@ -746,6 +746,19 @@ class TestApplyMaintenance:
         assert result["links_created"] == []
         mock_engine.add_link.assert_not_called()
 
+    def test_auto_links_created_for_fallback_add_action(self):
+        from llm_extract import _apply_maintenance
+        mock_engine = MagicMock()
+        mock_engine.add_link.return_value = {"from_id": 100, "to_id": 5, "type": "related_to"}
+        decisions = [{"action": "FALLBACK_ADD", "fact_index": 0}]
+        exec_result = {"actions": [{"action": "fallback_add", "text": "Fallback fact", "id": 100}]}
+        audn_artifacts = {"similar_per_fact": {0: [
+            {"id": 5, "text": "Similar memory", "rrf_score": 0.025, "source": "test/proj"},
+        ]}}
+        result = _apply_maintenance(mock_engine, decisions, exec_result, audn_artifacts)
+        assert len(result["links_created"]) == 1
+        mock_engine.add_link.assert_called_once_with(100, 5, "related_to")
+
     def test_max_links_caps_per_memory(self):
         from llm_extract import _apply_maintenance
         mock_engine = MagicMock()

@@ -116,3 +116,65 @@ class TestExtractionQualityEndpoint:
         tc, _ = client
         resp = tc.get("/metrics/extraction-quality", headers={"X-API-Key": "wrong"})
         assert resp.status_code in (401, 403)
+
+
+class TestFallbackMetrics:
+    """Test that fallback_add is tracked through the metrics pipeline."""
+
+    @pytest.fixture
+    def tracker(self, tmp_path):
+        from usage_tracker import UsageTracker
+        return UsageTracker(str(tmp_path / "usage.db"))
+
+    def test_fallback_count_in_extraction_quality(self, tracker):
+        tracker.log_extraction_outcome(
+            source="test/proj", extracted=5, stored=3, updated=0, deleted=0,
+            noop=1, conflict=0, fallback=2,
+        )
+        quality = tracker.get_extraction_quality()
+        assert quality["totals"]["fallback"] == 2
+
+    def test_fallback_in_per_source_breakdown(self, tracker):
+        tracker.log_extraction_outcome(
+            source="test/proj", extracted=3, stored=1, updated=0, deleted=0,
+            noop=1, conflict=0, fallback=1,
+        )
+        quality = tracker.get_extraction_quality()
+        assert quality["by_source"]["test/proj"]["fallback"] == 1
+
+    def test_fallback_rate_in_quality_summary(self, tracker):
+        tracker.log_extraction_outcome(
+            source="test/proj", extracted=10, stored=5, updated=0, deleted=0,
+            noop=3, conflict=0, fallback=2,
+        )
+        summary = tracker.get_quality_summary()
+        assert summary["extraction_accuracy"]["fallback_rate"] == pytest.approx(0.2, rel=0.01)
+
+    def test_fallback_zero_by_default(self, tracker):
+        tracker.log_extraction_outcome(
+            source="test/proj", extracted=5, stored=3, updated=0, deleted=0, noop=2, conflict=0,
+        )
+        quality = tracker.get_extraction_quality()
+        assert quality["totals"]["fallback"] == 0
+
+    def test_db_migration_adds_fallback_column(self, tmp_path):
+        """Existing DB without fallback column should get it via migration."""
+        import sqlite3
+        db_path = str(tmp_path / "legacy.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""CREATE TABLE extraction_outcomes (
+            id INTEGER PRIMARY KEY,
+            ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            source TEXT DEFAULT '', extracted INTEGER DEFAULT 0,
+            stored INTEGER DEFAULT 0, updated INTEGER DEFAULT 0,
+            deleted INTEGER DEFAULT 0, noop INTEGER DEFAULT 0,
+            conflict INTEGER DEFAULT 0
+        )""")
+        conn.commit()
+        conn.close()
+        from usage_tracker import UsageTracker
+        tracker = UsageTracker(db_path)
+        # Column should exist after migration
+        tracker.log_extraction_outcome(source="new", extracted=5, stored=3, fallback=1)
+        quality = tracker.get_extraction_quality()
+        assert quality["totals"]["fallback"] == 1

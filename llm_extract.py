@@ -636,7 +636,7 @@ def _apply_maintenance(
 
         for i, (decision, result_action) in enumerate(zip(decisions, result_actions)):
             act = result_action.get("action", "")
-            if act not in ("add", "conflict"):
+            if act not in ("add", "fallback_add", "conflict"):
                 continue
             new_id = result_action.get("id")
             if new_id is None:
