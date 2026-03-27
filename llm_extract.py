@@ -457,6 +457,7 @@ def execute_actions(
     updated_count = 0
     deleted_count = 0
     conflict_count = 0
+    fallback_count = 0
     result_actions = []
 
     for action in actions:
@@ -484,6 +485,8 @@ def execute_actions(
                 new_id = added_ids[0] if added_ids else None
                 result_actions.append({"action": "fallback_add" if act == "FALLBACK_ADD" else "add", "text": fact_text, "id": new_id})
                 stored_count += 1
+                if act == "FALLBACK_ADD":
+                    fallback_count += 1
 
             elif act == "UPDATE":
                 old_id = action.get("old_id")
@@ -584,6 +587,7 @@ def execute_actions(
         "updated_count": updated_count,
         "deleted_count": deleted_count,
         "conflict_count": conflict_count,
+        "fallback_count": fallback_count,
     }
 
 
@@ -888,7 +892,7 @@ def run_extraction(
             # Attach resulting IDs from execution
             for ra in result.get("actions", []):
                 act = ra.get("action", "")
-                if act == "add" and ra.get("text") == (facts[fi]["text"] if 0 <= fi < len(facts) else ""):
+                if act in ("add", "fallback_add") and ra.get("text") == (facts[fi]["text"] if 0 <= fi < len(facts) else ""):
                     entry["new_id"] = ra.get("id")
                 elif act == "update" and d.get("old_id") == ra.get("old_id"):
                     entry["old_id"] = ra.get("old_id")
@@ -903,7 +907,7 @@ def run_extraction(
             audn_trace.append(entry)
 
         # Build execution summary
-        added_ids = [a.get("id") for a in result.get("actions", []) if a.get("action") == "add" and a.get("id") is not None]
+        added_ids = [a.get("id") for a in result.get("actions", []) if a.get("action") in ("add", "fallback_add") and a.get("id") is not None]
         updated_entries = [{"old": a.get("old_id"), "new": a.get("new_id")} for a in result.get("actions", []) if a.get("action") == "update"]
         deleted_ids = [a.get("old_id") for a in result.get("actions", []) if a.get("action") == "delete" and a.get("old_id") is not None]
         noop_count = sum(1 for a in result.get("actions", []) if a.get("action") == "noop")

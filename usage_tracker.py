@@ -72,7 +72,8 @@ class NullTracker:
         return {"enabled": False}
 
     def log_extraction_outcome(self, source: str = "", extracted: int = 0, stored: int = 0,
-                               updated: int = 0, deleted: int = 0, noop: int = 0, conflict: int = 0) -> None:
+                               updated: int = 0, deleted: int = 0, noop: int = 0, conflict: int = 0,
+                               fallback: int = 0) -> None:
         pass
 
     def get_extraction_quality(self, period: str = "7d") -> Dict[str, Any]:
@@ -155,7 +156,8 @@ class UsageTracker:
                 updated INTEGER DEFAULT 0,
                 deleted INTEGER DEFAULT 0,
                 noop INTEGER DEFAULT 0,
-                conflict INTEGER DEFAULT 0
+                conflict INTEGER DEFAULT 0,
+                fallback INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_extraction_outcomes_ts ON extraction_outcomes(ts);
         """)
@@ -166,6 +168,13 @@ class UsageTracker:
                 conn.execute("ALTER TABLE retrieval_log ADD COLUMN rank INTEGER DEFAULT 0")
             if "result_count" not in cols:
                 conn.execute("ALTER TABLE retrieval_log ADD COLUMN result_count INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        # Migrate extraction_outcomes: add fallback column if missing
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(extraction_outcomes)").fetchall()}
+            if "fallback" not in cols:
+                conn.execute("ALTER TABLE extraction_outcomes ADD COLUMN fallback INTEGER DEFAULT 0")
         except Exception:
             pass
         conn.close()
@@ -394,13 +403,14 @@ class UsageTracker:
             conn.close()
 
     def log_extraction_outcome(self, source: str = "", extracted: int = 0, stored: int = 0,
-                               updated: int = 0, deleted: int = 0, noop: int = 0, conflict: int = 0) -> None:
+                               updated: int = 0, deleted: int = 0, noop: int = 0, conflict: int = 0,
+                               fallback: int = 0) -> None:
         try:
             conn = self._get_conn()
             conn.execute(
-                "INSERT INTO extraction_outcomes (source, extracted, stored, updated, deleted, noop, conflict) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (source, extracted, stored, updated, deleted, noop, conflict),
+                "INSERT INTO extraction_outcomes (source, extracted, stored, updated, deleted, noop, conflict, fallback) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (source, extracted, stored, updated, deleted, noop, conflict, fallback),
             )
             conn.commit()
         except Exception:
@@ -419,7 +429,8 @@ class UsageTracker:
                 f"COALESCE(SUM(updated), 0) as updated, "
                 f"COALESCE(SUM(deleted), 0) as deleted, "
                 f"COALESCE(SUM(noop), 0) as noop, "
-                f"COALESCE(SUM(conflict), 0) as conflict "
+                f"COALESCE(SUM(conflict), 0) as conflict, "
+                f"COALESCE(SUM(fallback), 0) as fallback "
                 f"FROM extraction_outcomes WHERE 1=1 {period_filter}"
             ).fetchone()
             extraction_count = row["cnt"]
@@ -432,7 +443,7 @@ class UsageTracker:
                 f"SUM(extracted) as extracted, SUM(stored) as stored, "
                 f"SUM(updated) as updated, SUM(deleted) as deleted, "
                 f"SUM(noop) as noop, SUM(conflict) as conflict, "
-                f"COUNT(*) as cnt "
+                f"SUM(fallback) as fallback, COUNT(*) as cnt "
                 f"FROM extraction_outcomes WHERE 1=1 {period_filter} GROUP BY source"
             ).fetchall()
             by_source = {}
@@ -446,6 +457,7 @@ class UsageTracker:
                     "deleted": sr["deleted"],
                     "noop": sr["noop"],
                     "conflict": sr["conflict"],
+                    "fallback": sr["fallback"],
                 }
 
             return {
@@ -458,6 +470,7 @@ class UsageTracker:
                     "deleted": row["deleted"],
                     "noop": row["noop"],
                     "conflict": row["conflict"],
+                    "fallback": row["fallback"],
                     "noop_ratio": noop_ratio,
                 },
                 "by_source": by_source,
@@ -563,7 +576,8 @@ class UsageTracker:
                 f"COALESCE(SUM(updated), 0) as updated, "
                 f"COALESCE(SUM(deleted), 0) as deleted, "
                 f"COALESCE(SUM(noop), 0) as noop, "
-                f"COALESCE(SUM(conflict), 0) as conflict "
+                f"COALESCE(SUM(conflict), 0) as conflict, "
+                f"COALESCE(SUM(fallback), 0) as fallback "
                 f"FROM extraction_outcomes WHERE 1=1 {period_filter}"
             ).fetchone()
             total_extractions = ext_row["cnt"]
@@ -573,6 +587,7 @@ class UsageTracker:
             noop_rate = round(ext_row["noop"] / total_extracted, 4) if total_extracted > 0 else 0.0
             delete_rate = round(ext_row["deleted"] / total_extracted, 4) if total_extracted > 0 else 0.0
             conflict_rate = round(ext_row["conflict"] / total_extracted, 4) if total_extracted > 0 else 0.0
+            fallback_rate = round(ext_row["fallback"] / total_extracted, 4) if total_extracted > 0 else 0.0
 
             return {
                 "retrieval_precision": {
@@ -587,6 +602,7 @@ class UsageTracker:
                     "noop_rate": noop_rate,
                     "delete_rate": delete_rate,
                     "conflict_rate": conflict_rate,
+                    "fallback_rate": fallback_rate,
                 },
                 "period": period,
             }

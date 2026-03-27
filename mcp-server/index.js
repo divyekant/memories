@@ -493,6 +493,7 @@ server.tool(
       lines.push("");
       for (const a of r.actions) {
         if (a.action === "add") lines.push(`  + ADD: ${a.text}`);
+        else if (a.action === "fallback_add") lines.push(`  + FALLBACK_ADD: ${a.text}`);
         else if (a.action === "update") lines.push(`  ~ UPDATE (was #${a.old_id}): ${a.text}`);
         else if (a.action === "delete") lines.push(`  - DELETE #${a.old_id}`);
         else if (a.action === "noop") lines.push(`  = SKIP (exists #${a.existing_id}): ${a.text}`);

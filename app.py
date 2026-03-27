@@ -776,6 +776,7 @@ async def _extract_worker(worker_id: int) -> None:
                 deleted=result.get("deleted_count", 0),
                 noop=noop_count,
                 conflict=result.get("conflict_count", 0),
+                fallback=result.get("fallback_count", 0),
             )
             tokens = result.get("tokens", {})
             for stage_name in ("extract", "audn"):
@@ -2964,6 +2965,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
                 deleted=result.get("deleted_count", 0),
                 noop=result.get("noop_count", 0),
                 conflict=result.get("conflict_count", 0),
+                fallback=result.get("fallback_count", 0),
             )
             logger.info(
                 "Extract fallback completed: job_id=%s source=%s context=%s extracted=%d stored=%d",
