@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-recall.sh",
+        "timeout": 5
+      }]
+    }],
+    "UserPromptSubmit": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-query.sh",
+        "timeout": 3
+      }]
+    }],
+    "Stop": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-extract.sh",
+        "timeout": 30
+      }]
+    }],
+    "PostToolUse": [{
+      "matcher": "mcp__memories__",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-observe.sh",
+        "timeout": 1
+      }]
+    }],
+    "PreToolUse": [{
+      "matcher": "Write|Edit",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-guard.sh",
+        "timeout": 1
+      }]
+    }]
+  }
+}
