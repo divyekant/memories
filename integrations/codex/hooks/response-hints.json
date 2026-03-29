@@ -1,0 +1,29 @@
+{
+  "patterns": [
+    {
+      "match": "still on|we're still|we are still|don't want to change|do not want to change",
+      "type": "context_continuation",
+      "template": "## Context Continuation Hint\nThe user is confirming a current choice or direction. If recalled memories show that choice, restate it with the stored trigger condition in the same sentence. Do not ask to reconfirm."
+    },
+    {
+      "match": "should we switch to|should we move to|should we change to",
+      "type": "switch_now",
+      "template": "## Follow-up Response Hint\nThe user is considering a switch. If a prior decision memory exists, state the current choice and why it was made. Then evaluate the proposed switch against the stored reasoning."
+    },
+    {
+      "match": "okay for now|fine for now|good enough for now|works for now",
+      "type": "simple_for_now",
+      "template": "## Follow-up Response Hint\nThe user accepts the current state provisionally. If a deferred-work or decision memory exists, preserve the boundary condition (e.g., 'until X') in the answer."
+    },
+    {
+      "match": "does that still apply|is that still true|still valid|still relevant",
+      "type": "confirmation",
+      "template": "## Follow-up Response Hint\nThe user is checking whether a prior decision or fact still holds. Search memories for the referenced topic. Answer directly: 'yes, still applies because...' or 'no, superseded by...'."
+    },
+    {
+      "match": "what about|how about|and for|regarding",
+      "type": "missing_piece",
+      "template": "## Follow-up Response Hint\nThe user is asking about a related aspect. Search memories for the new topic. If found, state it directly. If not found, say so clearly."
+    }
+  ]
+}
