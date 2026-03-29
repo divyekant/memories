@@ -14,6 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HOOKS_SRC="$SCRIPT_DIR/hooks"
 OPENCLAW_SKILL_SRC="$REPO_ROOT/integrations/openclaw-skill.md"
+CODEX_HOOKS_SRC="$REPO_ROOT/integrations/codex/hooks"
 
 CODEX_NOTIFY_MARKER="Memories Codex notify"
 CODEX_MCP_MARKER="Memories Codex MCP"
@@ -247,6 +248,23 @@ if [ "$UNINSTALL" = true ]; then
 
   if [ "$TARGET_CODEX" = true ]; then
     remove_target "Codex hooks" "$HOME/.codex/hooks/memory"
+    if [ -f "$HOME/.codex/hooks.json" ]; then
+      local cleaned
+      cleaned=$(jq '
+        .hooks |= with_entries(
+          .value |= map(
+            .hooks |= map(select(.command | test("/hooks/memory/memory-") | not))
+          )
+          | .value |= map(select(.hooks | length > 0))
+        )
+        | .hooks |= with_entries(select(.value | length > 0))
+        | if .hooks == {} then del(.hooks) else . end
+      ' "$HOME/.codex/hooks.json" 2>/dev/null)
+      if [ -n "$cleaned" ]; then
+        echo "$cleaned" > "$HOME/.codex/hooks.json"
+        echo -e "  ${GREEN}[OK]${NC} Removed memory hooks from $HOME/.codex/hooks.json"
+      fi
+    fi
     remove_marked_block "$HOME/.codex/config.toml" "$CODEX_NOTIFY_MARKER"
     remove_marked_block "$HOME/.codex/config.toml" "$CODEX_MCP_MARKER"
     remove_marked_block "$HOME/.codex/config.toml" "$CODEX_DEV_INSTR_MARKER"
@@ -345,31 +363,6 @@ render_hooks_json() {
   local hooks_dir="$1"
   jq --arg hooks_dir "$hooks_dir" '
     .hooks |= with_entries(
-      .value |= map(
-        .hooks |= map(
-          if .type == "command"
-          then .command = ($hooks_dir + "/" + (.command | split("/") | last))
-          else .
-          end
-        )
-      )
-    )
-  ' "$HOOKS_SRC/hooks.json"
-}
-
-render_codex_hooks_json() {
-  local hooks_dir="$1"
-  jq --arg hooks_dir "$hooks_dir" '
-    .hooks |= with_entries(
-      select(
-        .key == "SessionStart" or
-        .key == "UserPromptSubmit" or
-        .key == "Stop" or
-        .key == "PreCompact" or
-        .key == "SessionEnd"
-      )
-    )
-    | .hooks |= with_entries(
       .value |= map(
         .hooks |= map(
           if .type == "command"
@@ -486,20 +479,69 @@ install_openclaw_target() {
 
 install_codex_target() {
   local hook_dir="$HOME/.codex/hooks/memory"
+  local codex_hooks_json="$HOME/.codex/hooks.json"
   local codex_settings="$HOME/.codex/settings.json"
   local codex_config="$HOME/.codex/config.toml"
 
-  install_hooks_target "Codex" "$hook_dir" "$codex_settings" "codex"
+  # Copy Codex-specific hooks (NOT Claude Code hooks)
+  mkdir -p "$hook_dir"
+  cp "$CODEX_HOOKS_SRC"/memory-*.sh "$hook_dir/"
+  [ -f "$CODEX_HOOKS_SRC/_lib.sh" ] && cp "$CODEX_HOOKS_SRC/_lib.sh" "$hook_dir/"
+  [ -f "$CODEX_HOOKS_SRC/response-hints.json" ] && cp "$CODEX_HOOKS_SRC/response-hints.json" "$hook_dir/"
+  chmod +x "$hook_dir"/*.sh
+  echo -e "  ${GREEN}[OK]${NC} Installed Codex hooks: $hook_dir"
 
+  # Write standalone hooks.json with resolved paths
+  local rendered_hooks
+  rendered_hooks=$(jq --arg hooks_dir "$hook_dir" '
+    .hooks |= with_entries(
+      .value |= map(
+        .hooks |= map(
+          if .type == "command"
+          then .command = ($hooks_dir + "/" + (.command | split("/") | last))
+          else .
+          end
+        )
+      )
+    )
+  ' "$CODEX_HOOKS_SRC/hooks.json")
+
+  # Merge into existing hooks.json if present, or create new
+  mkdir -p "$(dirname "$codex_hooks_json")"
+  if [ -f "$codex_hooks_json" ]; then
+    local merged
+    merged=$(jq -s '
+      .[0] as $existing |
+      .[1] as $new |
+      $existing * {hooks: (($existing.hooks // {}) * $new.hooks)}
+    ' "$codex_hooks_json" <(echo "$rendered_hooks"))
+    echo "$merged" > "$codex_hooks_json"
+  else
+    echo "$rendered_hooks" > "$codex_hooks_json"
+  fi
+  echo -e "  ${GREEN}[OK]${NC} Wrote Codex hook config: $codex_hooks_json"
+
+  # Merge read-only memory tool permissions into settings.json
+  mkdir -p "$(dirname "$codex_settings")"
+  if [ ! -f "$codex_settings" ]; then
+    echo '{}' > "$codex_settings"
+  fi
+  local readonly_tools='["mcp__memories__memory_search","mcp__memories__memory_list","mcp__memories__memory_count","mcp__memories__memory_stats","mcp__memories__memory_is_novel","mcp__memories__memory_is_useful","mcp__memories__memory_conflicts"]'
+  local perms_merged
+  perms_merged=$(jq --argjson tools "$readonly_tools" '
+    .permissions.allow = ((.permissions.allow // []) + $tools | unique)
+  ' "$codex_settings")
+  echo "$perms_merged" > "$codex_settings"
+  echo -e "  ${GREEN}[OK]${NC} Merged read-only memory tool permissions into $codex_settings"
+
+  # MCP config in config.toml (unchanged)
   mkdir -p "$(dirname "$codex_config")"
   touch "$codex_config"
 
   if grep -Eq '^[[:space:]]*\[mcp_servers\.memories\][[:space:]]*$' "$codex_config"; then
     echo -e "  ${YELLOW}[SKIP]${NC} Codex MCP server 'memories' already configured"
   else
-    local escaped_repo_mcp
-    local escaped_memories_url
-    local escaped_memories_api_key
+    local escaped_repo_mcp escaped_memories_url escaped_memories_api_key
     escaped_repo_mcp=$(toml_escape "$REPO_ROOT/mcp-server/index.js")
     escaped_memories_url=$(toml_escape "$MEMORIES_URL")
     escaped_memories_api_key=$(toml_escape "$MEMORIES_API_KEY")
@@ -518,6 +560,7 @@ EOF
     echo -e "  ${GREEN}[OK]${NC} Added Codex MCP config in $codex_config"
   fi
 
+  # Developer instructions (unchanged)
   if grep -Eq '^[[:space:]]*developer_instructions[[:space:]]*=' "$codex_config"; then
     echo -e "  ${YELLOW}[SKIP]${NC} developer_instructions already configured in $codex_config"
   else
