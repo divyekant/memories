@@ -17,7 +17,7 @@ INPUT=$(cat)
 FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 
 # Block writes to MEMORY.md (auto-memory managed by Memories MCP sync)
-if [[ "$FILE" == */MEMORY.md ]] || [[ "$FILE" == */memory/MEMORY.md ]]; then
+if [[ "$FILE" == */MEMORY.md ]]; then
   _log_warn "Blocked write to MEMORY.md: $FILE"
   echo "MEMORY.md is managed by Memories MCP sync. Use memory_add or memory_extract instead of writing directly." >&2
   exit 2

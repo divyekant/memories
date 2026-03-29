@@ -19,7 +19,8 @@ TOOL=$(echo "$INPUT" | jq -r '.tool_name // "unknown"')
 USAGE_LOG="${MEMORIES_TOOL_LOG:-$HOME/.config/memories/tool-usage.log}"
 
 # Append tool usage
-echo "$(date -u +%FT%TZ) $TOOL [codex]" >> "$USAGE_LOG" 2>/dev/null || true
+CLIENT=$(_memory_client_prefix 2>/dev/null || echo "codex")
+echo "$(date -u +%FT%TZ) $TOOL [$CLIENT]" >> "$USAGE_LOG" 2>/dev/null || true
 
 _log_info "Tool used: $TOOL"
 exit 0

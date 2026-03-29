@@ -16,6 +16,8 @@ HOOKS_SRC="$SCRIPT_DIR/hooks"
 OPENCLAW_SKILL_SRC="$REPO_ROOT/integrations/openclaw-skill.md"
 CODEX_HOOKS_SRC="$REPO_ROOT/integrations/codex/hooks"
 
+READONLY_MCP_TOOLS='["mcp__memories__memory_search","mcp__memories__memory_list","mcp__memories__memory_count","mcp__memories__memory_stats","mcp__memories__memory_is_novel","mcp__memories__memory_is_useful","mcp__memories__memory_conflicts"]'
+
 CODEX_NOTIFY_MARKER="Memories Codex notify"
 CODEX_MCP_MARKER="Memories Codex MCP"
 CODEX_DEV_INSTR_MARKER="Memories Codex developer instructions"
@@ -413,8 +415,7 @@ install_hooks_target() {
   echo -e "  ${GREEN}[OK]${NC} Merged hook config into $settings_file"
 
   # Merge read-only memory tool permissions into permissions.allow
-  local readonly_tools='["mcp__memories__memory_search","mcp__memories__memory_list","mcp__memories__memory_count","mcp__memories__memory_stats","mcp__memories__memory_is_novel","mcp__memories__memory_is_useful","mcp__memories__memory_conflicts"]'
-  merged=$(jq --argjson tools "$readonly_tools" '
+  merged=$(jq --argjson tools "$READONLY_MCP_TOOLS" '
     .permissions.allow = ((.permissions.allow // []) + $tools | unique)
   ' "$settings_file")
 
@@ -526,9 +527,8 @@ install_codex_target() {
   if [ ! -f "$codex_settings" ]; then
     echo '{}' > "$codex_settings"
   fi
-  local readonly_tools='["mcp__memories__memory_search","mcp__memories__memory_list","mcp__memories__memory_count","mcp__memories__memory_stats","mcp__memories__memory_is_novel","mcp__memories__memory_is_useful","mcp__memories__memory_conflicts"]'
   local perms_merged
-  perms_merged=$(jq --argjson tools "$readonly_tools" '
+  perms_merged=$(jq --argjson tools "$READONLY_MCP_TOOLS" '
     .permissions.allow = ((.permissions.allow // []) + $tools | unique)
   ' "$codex_settings")
   echo "$perms_merged" > "$codex_settings"
