@@ -210,9 +210,13 @@ If you prefer MCP-only manual config, add this to `~/.cursor/mcp.json`:
 ## Setup for Codex
 
 Codex uses:
-- `~/.codex/settings.json` for a 5-hook lifecycle (`SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`, `SessionEnd`)
+- `~/.codex/hooks.json` for 5 native hook events (`SessionStart`, `UserPromptSubmit`, `Stop`, `PreToolUse`, `PostToolUse`)
 - `~/.codex/config.toml` for MCP + developer instructions
-- hook defaults that read/write `codex/{project}` memories unless you override them
+- `~/.codex/settings.json` for tool permissions
+- Codex-specific hook scripts in `integrations/codex/hooks/` (separate from Claude Code hooks)
+- Hook defaults that read/write `codex/{project}` memories unless you override them
+
+The Codex Stop hook is **beefier** than Claude Code's (500 tail lines, 10 message pairs, 8000 char cap, no signal filter) to compensate for Codex lacking PreCompact/SessionEnd events.
 
 ### Option A: Run the installer (recommended)
 
@@ -223,10 +227,11 @@ cd mcp-server && npm install && cd ..
 ```
 
 The installer will:
-1. Install memory hook scripts to `~/.codex/hooks/memory/`
-2. Merge the 5 Codex hook events into `~/.codex/settings.json`
-3. Add MCP server config for `memories` to `~/.codex/config.toml` when missing
-4. Add default `developer_instructions` (if not already set) to bias `memory_search` usage
+1. Install Codex-specific hook scripts to `~/.codex/hooks/memory/`
+2. Write hook config to `~/.codex/hooks.json` (standalone, merged with existing if present)
+3. Merge read-only memory tool permissions into `~/.codex/settings.json`
+4. Add MCP server config for `memories` to `~/.codex/config.toml` when missing
+5. Add default `developer_instructions` (if not already set) to bias `memory_search` usage
 
 The hooks load `MEMORIES_URL` / `MEMORIES_API_KEY` from `~/.config/memories/env` (or `MEMORIES_ENV_FILE` override).
 Default scoped prefixes are `codex/{project},learning/{project},wip/{project}` for retrieval and `codex/{project}` for extraction.
@@ -238,13 +243,13 @@ For scoped API keys, override them with `MEMORIES_SOURCE_PREFIXES` and `MEMORIES
 
 ```bash
 mkdir -p ~/.codex/hooks/memory
-cp ~/projects/memories/integrations/claude-code/hooks/memory-*.sh ~/.codex/hooks/memory/
-cp ~/projects/memories/integrations/claude-code/hooks/_lib.sh ~/.codex/hooks/memory/
-cp ~/projects/memories/integrations/claude-code/hooks/response-hints.json ~/.codex/hooks/memory/
+cp ~/projects/memories/integrations/codex/hooks/memory-*.sh ~/.codex/hooks/memory/
+cp ~/projects/memories/integrations/codex/hooks/_lib.sh ~/.codex/hooks/memory/
+cp ~/projects/memories/integrations/codex/hooks/response-hints.json ~/.codex/hooks/memory/
 chmod +x ~/.codex/hooks/memory/*.sh
 ```
 
-**Step 2: Edit `~/.codex/settings.json`**
+**Step 2: Create `~/.codex/hooks.json`**
 
 ```json
 {
@@ -273,27 +278,27 @@ chmod +x ~/.codex/hooks/memory/*.sh
         "timeout": 30
       }]
     }],
-    "PreCompact": [{
-      "matcher": "",
+    "PostToolUse": [{
+      "matcher": "mcp__memories__",
       "hooks": [{
         "type": "command",
-        "command": "/Users/you/.codex/hooks/memory/memory-flush.sh",
-        "timeout": 30
+        "command": "/Users/you/.codex/hooks/memory/memory-observe.sh",
+        "timeout": 1
       }]
     }],
-    "SessionEnd": [{
-      "matcher": "",
+    "PreToolUse": [{
+      "matcher": "Write|Edit",
       "hooks": [{
         "type": "command",
-        "command": "/Users/you/.codex/hooks/memory/memory-commit.sh",
-        "timeout": 30
+        "command": "/Users/you/.codex/hooks/memory/memory-guard.sh",
+        "timeout": 1
       }]
     }]
   }
 }
 ```
 
-If `~/.codex/settings.json` already has hooks, merge these entries instead of replacing the file.
+If `~/.codex/hooks.json` already exists, merge these entries instead of replacing the file.
 
 **Step 3: Edit `~/.codex/config.toml`**
 
@@ -430,7 +435,7 @@ curl -s https://memory.yourdomain.com/health   # prod
 | Client | Multi-backend supported? | Notes |
 |--------|--------------------------|-------|
 | Claude Code | Yes | Uses hook scripts that read `backends.yaml` |
-| Codex | Yes | Same hook scripts as Claude Code |
+| Codex | Yes | Codex-specific hook scripts that read `backends.yaml` |
 | Cursor | Yes | Same hook scripts via Third-party skills |
 | OpenClaw | Not yet | Uses skill-based extraction, not hooks |
 
@@ -450,16 +455,16 @@ curl -s https://memory.yourdomain.com/health   # prod
 
 ### Codex
 
-| Mechanism | Event | What It Does |
-|-----------|-------|--------------|
-| `settings.json` + `memory-recall.sh` | Session start | Loads project-scoped memories and recall guidance |
-| `settings.json` + `memory-query.sh` | Before each prompt | Searches relevant memories using transcript context when available |
-| `settings.json` + `memory-extract.sh` | After response | Sends the last exchange to `/memory/extract` (`context=stop`) |
-| `settings.json` + `memory-flush.sh` | Pre-compact | Sends a larger transcript slice to `/memory/extract` (`context=pre_compact`) |
-| `settings.json` + `memory-commit.sh` | Session end | Final extraction pass when the session closes |
-| MCP tools + developer instructions | Each new user turn | Drives `memory_search` usage before implementation-heavy responses |
+| Hook | Event | Sync? | What It Does |
+|------|-------|-------|-------------|
+| `memory-recall.sh` | SessionStart | Sync | Searches project-scoped memories, injects top results and recall playbook (no MEMORY.md hydration) |
+| `memory-query.sh` | UserPromptSubmit | Sync | Searches project-scoped memories using transcript context and prompt enrichment |
+| `memory-extract.sh` | Stop | Async | Beefier extraction: 500 lines, 10 msg pairs, 8000 chars, no signal filter (compensates for no PreCompact/SessionEnd) |
+| `memory-guard.sh` | PreToolUse | Sync | Blocks writes to MEMORY.md files |
+| `memory-observe.sh` | PostToolUse | Async | Logs memory MCP tool usage with `[codex]` tag |
+| MCP tools + developer instructions | Each new user turn | — | Drives `memory_search` usage before implementation-heavy responses |
 
-Codex uses `~/.codex/settings.json` for hooks and `~/.codex/config.toml` for MCP + developer instructions.
+Codex uses `~/.codex/hooks.json` for hooks, `~/.codex/settings.json` for tool permissions, and `~/.codex/config.toml` for MCP + developer instructions. The legacy `memory-codex-notify.sh` (config.toml notify hook) is preserved for backward compatibility but superseded by native hooks.
 
 **Token cost:** ~1500 tokens/turn injected context (retrieval). Extraction is async and free if using Ollama, ~$0.001/turn with API providers.
 
@@ -592,7 +597,7 @@ rm -rf ~/.claude/hooks/memory/
 # Remove Codex hooks
 rm -rf ~/.codex/hooks/memory/
 
-# Remove Codex hook entries from ~/.codex/settings.json
+# Remove Codex hook entries from ~/.codex/hooks.json (or delete the file if only Memories hooks exist)
 
 # Remove Codex config entries from ~/.codex/config.toml:
 # - [mcp_servers.memories] section
@@ -616,12 +621,12 @@ ls -la ~/.claude/hooks/memory/
 # Claude: test recall hook manually
 echo '{"cwd": "/Users/you/project", "session_type": "startup"}' | bash ~/.claude/hooks/memory/memory-recall.sh
 
-# Codex: check hook scripts and merged config
+# Codex: check hook scripts and config
 ls -la ~/.codex/hooks/memory/
-jq '.hooks' ~/.codex/settings.json
+jq '.hooks' ~/.codex/hooks.json
 
 # Codex: test recall hook manually
-echo '{"cwd": "/Users/you/project", "session_type": "startup"}' | bash ~/.codex/hooks/memory/memory-recall.sh
+echo '{"cwd": "/Users/you/project", "source": "startup"}' | bash ~/.codex/hooks/memory/memory-recall.sh
 ```
 
 ### Extraction returning 501
