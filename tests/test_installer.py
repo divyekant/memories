@@ -18,11 +18,10 @@ def _prepare_installer_fixture(tmp_path: Path) -> Path:
         repo_root / "integrations" / "claude-code",
         dirs_exist_ok=True,
     )
-    codex_dir = repo_root / "integrations" / "codex"
-    codex_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(
-        REPO_ROOT / "integrations" / "codex" / "memory-codex-notify.sh",
-        codex_dir / "memory-codex-notify.sh",
+    shutil.copytree(
+        REPO_ROOT / "integrations" / "codex",
+        repo_root / "integrations" / "codex",
+        dirs_exist_ok=True,
     )
     mcp_dir = repo_root / "mcp-server"
     mcp_dir.mkdir(parents=True, exist_ok=True)
@@ -103,7 +102,7 @@ def test_uninstall_mode_does_not_require_shell_profile_variable(tmp_path: Path) 
     assert "unbound variable" not in (result.stderr + result.stdout).lower()
 
 
-def test_codex_install_uses_settings_json_hooks_instead_of_notify(tmp_path: Path) -> None:
+def test_codex_install_writes_standalone_hooks_json(tmp_path: Path) -> None:
     install_script = _prepare_installer_fixture(tmp_path)
     home = tmp_path / "home"
     bin_dir = tmp_path / "bin"
@@ -120,8 +119,9 @@ def test_codex_install_uses_settings_json_hooks_instead_of_notify(tmp_path: Path
 
     assert result.returncode == 0, result.stderr
 
-    settings = json.loads((home / ".codex" / "settings.json").read_text())
-    hooks = settings["hooks"]
+    # Hooks config goes to standalone hooks.json (not settings.json)
+    hooks_json = json.loads((home / ".codex" / "hooks.json").read_text())
+    hooks = hooks_json["hooks"]
     assert (
         hooks["SessionStart"][0]["hooks"][0]["command"]
         == f"{home}/.codex/hooks/memory/memory-recall.sh"
@@ -134,6 +134,19 @@ def test_codex_install_uses_settings_json_hooks_instead_of_notify(tmp_path: Path
         hooks["Stop"][0]["hooks"][0]["command"]
         == f"{home}/.codex/hooks/memory/memory-extract.sh"
     )
+    assert (
+        hooks["PreToolUse"][0]["hooks"][0]["command"]
+        == f"{home}/.codex/hooks/memory/memory-guard.sh"
+    )
+    assert (
+        hooks["PostToolUse"][0]["hooks"][0]["command"]
+        == f"{home}/.codex/hooks/memory/memory-observe.sh"
+    )
+
+    # settings.json has permissions only (no hooks)
+    settings = json.loads((home / ".codex" / "settings.json").read_text())
+    assert "hooks" not in settings
+    assert "mcp__memories__memory_search" in settings["permissions"]["allow"]
 
     config_toml = (home / ".codex" / "config.toml").read_text()
     assert "[mcp_servers.memories]" in config_toml
@@ -144,4 +157,7 @@ def test_codex_install_uses_settings_json_hooks_instead_of_notify(tmp_path: Path
     assert (hook_dir / "memory-recall.sh").exists()
     assert (hook_dir / "memory-query.sh").exists()
     assert (hook_dir / "memory-extract.sh").exists()
-    assert not (hook_dir / "memory-codex-notify.sh").exists()
+    assert (hook_dir / "memory-guard.sh").exists()
+    assert (hook_dir / "memory-observe.sh").exists()
+    assert (hook_dir / "_lib.sh").exists()
+    assert (hook_dir / "response-hints.json").exists()
