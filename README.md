@@ -24,27 +24,44 @@ Start here:
 
 ## API Quick Start
 
+**Option A — no clone required (pre-built image):**
+
+```bash
+# 1. Download the compose file and start
+curl -fsSL https://raw.githubusercontent.com/divyekant/memories/main/docker-compose.standalone.yml -o docker-compose.yml
+docker compose up -d
+
+# 2. Verify
+curl http://localhost:8900/health
+```
+
+**Option B — clone and build from source:**
+
 ```bash
 # 1. Clone and build
 git clone git@github.com:divyekant/memories.git
 cd memories
-docker compose -f docker-compose.snippet.yml up -d
+docker compose up -d
 
 # 2. Verify
 curl http://localhost:8900/health
+```
 
-# 3. Add a memory
+**Then add and search memories:**
+
+```bash
+# Add a memory
 curl -X POST http://localhost:8900/memory/add \
   -H "Content-Type: application/json" \
   -d '{"text": "Always use TypeScript strict mode", "source": "standards.md"}'
 
-# 4. Search
+# Search
 curl -X POST http://localhost:8900/search \
   -H "Content-Type: application/json" \
   -d '{"query": "TypeScript config", "k": 3, "hybrid": true}'
 ```
 
-The service runs at **http://localhost:8900**. API docs at http://localhost:8900/docs. Web UI at http://localhost:8900/ui.
+The service runs at **[http://localhost:8900](http://localhost:8900)**. API docs at [http://localhost:8900/docs](http://localhost:8900/docs). Web UI at [http://localhost:8900/ui](http://localhost:8900/ui).
 
 ### Web UI
 

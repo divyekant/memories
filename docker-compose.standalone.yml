@@ -1,0 +1,101 @@
+# Standalone compose file — no clone required.
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/divyekant/memories/main/docker-compose.standalone.yml -o docker-compose.yml
+#   docker compose up -d
+#
+# To use the extraction-capable image (Anthropic/OpenAI/Ollama extraction):
+#   MEMORIES_IMAGE_TAG=extract docker compose up -d
+#
+# Set API_KEY to enable authentication:
+#   API_KEY=my-secret docker compose up -d
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - qdrant-storage:/qdrant/storage
+
+  memories:
+    image: ghcr.io/divyekant/memories:${MEMORIES_IMAGE_TAG:-latest}
+    container_name: memories
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    mem_limit: ${MEMORIES_MEM_LIMIT:-3g}
+    ports:
+      - "8900:8000"
+    volumes:
+      - memories-data:/data
+      # Optional: mount a directory of text files to index
+      # - /path/to/your/documents:/workspace:ro
+    environment:
+      - DATA_DIR=/data
+      # - WORKSPACE_DIR=/workspace  # Uncomment if mounting documents
+      - API_KEY=${API_KEY:-}
+      - MODEL_NAME=all-MiniLM-L6-v2
+      # Embedding provider: onnx (local, default) or openai (BYOK)
+      - EMBED_PROVIDER=${EMBED_PROVIDER:-onnx}
+      - EMBED_MODEL=${EMBED_MODEL:-}
+      - MAX_BACKUPS=10
+      # Qdrant backend
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-memories}
+      - QDRANT_WAIT=${QDRANT_WAIT:-true}
+      - QDRANT_WRITE_ORDERING=${QDRANT_WRITE_ORDERING:-strong}
+      - QDRANT_READ_CONSISTENCY=${QDRANT_READ_CONSISTENCY:-majority}
+      - QDRANT_REPLICATION_FACTOR=${QDRANT_REPLICATION_FACTOR:-1}
+      - QDRANT_WRITE_CONSISTENCY_FACTOR=${QDRANT_WRITE_CONSISTENCY_FACTOR:-1}
+      # Optional extraction provider pass-through
+      - EXTRACT_PROVIDER=${EXTRACT_PROVIDER:-}
+      - EXTRACT_MODEL=${EXTRACT_MODEL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_URL=${OLLAMA_URL:-}
+      - CHATGPT_REFRESH_TOKEN=${CHATGPT_REFRESH_TOKEN:-}
+      - CHATGPT_CLIENT_ID=${CHATGPT_CLIENT_ID:-}
+      - EXTRACT_FALLBACK_ADD=${EXTRACT_FALLBACK_ADD:-false}
+      # Usage analytics (opt-in)
+      - USAGE_TRACKING=${USAGE_TRACKING:-}
+      # Audit log (opt-in)
+      - AUDIT_LOG=${AUDIT_LOG:-false}
+      # Scheduled maintenance
+      - MAINTENANCE_ENABLED=${MAINTENANCE_ENABLED:-false}
+      # Allocator guardrails
+      - MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}
+      - MALLOC_TRIM_THRESHOLD_=${MALLOC_TRIM_THRESHOLD_:-131072}
+      - MALLOC_MMAP_THRESHOLD_=${MALLOC_MMAP_THRESHOLD_:-131072}
+      # Embedder auto-reload
+      - EMBEDDER_AUTO_RELOAD_ENABLED=${EMBEDDER_AUTO_RELOAD_ENABLED:-true}
+      - EMBEDDER_AUTO_RELOAD_RSS_KB_THRESHOLD=${EMBEDDER_AUTO_RELOAD_RSS_KB_THRESHOLD:-1200000}
+      - EMBEDDER_AUTO_RELOAD_CHECK_SEC=${EMBEDDER_AUTO_RELOAD_CHECK_SEC:-15}
+      - EMBEDDER_AUTO_RELOAD_HIGH_STREAK=${EMBEDDER_AUTO_RELOAD_HIGH_STREAK:-3}
+      - EMBEDDER_AUTO_RELOAD_MIN_INTERVAL_SEC=${EMBEDDER_AUTO_RELOAD_MIN_INTERVAL_SEC:-900}
+      - EMBEDDER_AUTO_RELOAD_WINDOW_SEC=${EMBEDDER_AUTO_RELOAD_WINDOW_SEC:-3600}
+      - EMBEDDER_AUTO_RELOAD_MAX_PER_WINDOW=${EMBEDDER_AUTO_RELOAD_MAX_PER_WINDOW:-2}
+      - EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS=${EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS:-2}
+      - EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH=${EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH:-0}
+      # Cloud Sync (optional - uncomment to enable)
+      # - CLOUD_SYNC_ENABLED=true
+      # - CLOUD_SYNC_BUCKET=my-memories
+      # - CLOUD_SYNC_REGION=us-east-1
+      # - CLOUD_SYNC_PREFIX=memories/
+      # - CLOUD_SYNC_ACCESS_KEY=AKIA...
+      # - CLOUD_SYNC_SECRET_KEY=...
+      # - CLOUD_SYNC_ENDPOINT=  # Optional: for MinIO, B2, etc.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if 200 <= urllib.request.urlopen('http://localhost:8000/health', timeout=3).getcode() < 400 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  qdrant-storage:
+  memories-data:
