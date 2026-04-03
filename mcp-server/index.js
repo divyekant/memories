@@ -5,7 +5,19 @@
  *
  * Exposes the Memories service (localhost:8900) as MCP tools
  * for Claude Code, Claude Desktop, Codex, and any MCP client.
+ *
+ * Subcommands:
+ *   (none)           Start the MCP server (default)
+ *   install          Set up hooks and MCP config for Claude/Codex/Cursor/OpenClaw
+ *   uninstall        Remove hooks and MCP config
  */
+
+const subcommand = process.argv[2];
+if (subcommand === 'install' || subcommand === 'uninstall') {
+  const { run } = await import('./install.js');
+  await run(process.argv.slice(2));
+  process.exit(0);
+}
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";

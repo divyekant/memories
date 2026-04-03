@@ -218,27 +218,26 @@ The MCP server gives Claude Code native `memory_search`, `memory_add`, `memory_e
 
 **Setup:**
 
-1. Install the MCP server dependencies:
-
-```bash
-cd memories/mcp-server
-npm install
-```
-
-2. Register the MCP server with Claude Code (user scope — available in every project):
+1. Register the MCP server with Claude Code (user scope — available in every project):
 
 ```bash
 claude mcp add -s user \
   -e MEMORIES_URL=http://localhost:8900 \
   -e MEMORIES_API_KEY=your-api-key-here \
-  -- memories node /path/to/memories/mcp-server/index.js
+  -- memories npx -y memories-mcp
 ```
 
 This writes to `~/.claude.json`. **Do not** add MCP servers to `~/.claude/settings.json` or `~/.claude/.mcp.json` — Claude Code CLI does not read MCP config from those files (Claude Desktop uses separate config, see below).
 
-3. Restart Claude Code. The tools are now available in every project.
+2. Restart Claude Code. The tools are now available in every project.
 
-4. (Optional) Install the **Memories skill** for disciplined memory capture and proactive recall:
+3. (Optional) Install the **automatic memory layer** (hooks for proactive recall and extraction):
+
+```bash
+npx memories-mcp install --claude
+```
+
+4. (Optional) Install the **Memories skill** for disciplined memory capture and proactive recall. Clone the repo and symlink:
 
 ```bash
 mkdir -p ~/.claude/skills/memories
@@ -260,7 +259,7 @@ For a **single project only**, use project scope instead:
 claude mcp add -s project \
   -e MEMORIES_URL=http://localhost:8900 \
   -e MEMORIES_API_KEY=your-api-key-here \
-  -- memories node /path/to/memories/mcp-server/index.js
+  -- memories npx -y memories-mcp
 ```
 
 ---
@@ -271,21 +270,14 @@ Same MCP server, different config file. Claude Desktop reads MCP config from its
 
 **Setup:**
 
-1. Install dependencies (same as above):
-
-```bash
-cd memories/mcp-server
-npm install
-```
-
-2. Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+1. Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
   "mcpServers": {
     "memories": {
-      "command": "node",
-      "args": ["/path/to/memories/mcp-server/index.js"],
+      "command": "npx",
+      "args": ["-y", "memories-mcp"],
       "env": {
         "MEMORIES_URL": "http://localhost:8900",
         "MEMORIES_API_KEY": "your-api-key-here"
@@ -295,7 +287,7 @@ npm install
 }
 ```
 
-3. Restart the Claude Desktop app. Memory tools appear in chat and cowork mode.
+2. Restart the Claude Desktop app. Memory tools appear in chat and cowork mode.
 
 ---
 
@@ -328,19 +320,12 @@ Codex supports MCP natively via `~/.codex/config.toml`.
 
 **Setup:**
 
-1. Install dependencies:
-
-```bash
-cd memories/mcp-server
-npm install
-```
-
-2. Add to `~/.codex/config.toml`:
+1. Add to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.memories]
-command = "node"
-args = ["/path/to/memories/mcp-server/index.js"]
+command = "npx"
+args = ["-y", "memories-mcp"]
 
 [mcp_servers.memories.env]
 MEMORIES_URL = "http://localhost:8900"
@@ -354,15 +339,12 @@ MEMORIES_SOURCE_PREFIXES="your-authorized-prefix/{project},learning/{project},wi
 MEMORIES_EXTRACT_SOURCE="your-authorized-prefix/{project}"
 ```
 
-3. Restart Codex. The `memory_search`, `memory_add`, `memory_extract`, `memory_delete`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, and other tools will be available.
+2. Restart Codex. The `memory_search`, `memory_add`, `memory_extract`, `memory_delete`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, and other tools will be available.
 
 **Automatic memory layer for Codex:**
 
 ```bash
-cd memories/mcp-server
-npm install
-cd ..
-./integrations/claude-code/install.sh --codex
+npx memories-mcp install --codex
 ```
 
 This configures:
@@ -372,8 +354,7 @@ This configures:
 - default `developer_instructions` (if not already set) to bias `memory_search` usage on each turn
 - hook env loading from `~/.config/memories/env` (or `MEMORIES_ENV_FILE`) for `MEMORIES_URL`, `MEMORIES_API_KEY`, and optional source overrides (`MEMORIES_SOURCE_PREFIXES`, `MEMORIES_EXTRACT_SOURCE`)
 
-The installer requires `jq`, `curl`, and a running Memories service (`/health` must respond).
-For scoped API keys, set `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE` so hook reads/writes stay inside authorized prefixes.
+Requires a running Memories service (`/health` must respond). For scoped API keys, set `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE` so hook reads/writes stay inside authorized prefixes.
 
 Codex uses `~/.codex/settings.json` for lifecycle hooks and `~/.codex/config.toml` for MCP + developer instructions.
 
@@ -393,14 +374,7 @@ Cursor supports MCP with the same server.
 
 **Setup:**
 
-1. Install dependencies:
-
-```bash
-cd memories/mcp-server
-npm install
-```
-
-2. Add to Cursor MCP config:
+1. Add to Cursor MCP config:
 - Global: `~/.cursor/mcp.json`
 - Project: `.cursor/mcp.json`
 
@@ -408,8 +382,8 @@ npm install
 {
   "mcpServers": {
     "memories": {
-      "command": "node",
-      "args": ["/path/to/memories/mcp-server/index.js"],
+      "command": "npx",
+      "args": ["-y", "memories-mcp"],
       "env": {
         "MEMORIES_URL": "http://localhost:8900",
         "MEMORIES_API_KEY": "your-api-key-here"
@@ -419,9 +393,13 @@ npm install
 }
 ```
 
-3. Restart Cursor.
+2. Restart Cursor.
 
-Cursor also supports the full hook lifecycle via its "Third-party skills" feature. Run `./integrations/claude-code/install.sh --cursor` to install hooks alongside the MCP config.
+Cursor also supports the full hook lifecycle via its "Third-party skills" feature. Run the one-liner to install hooks alongside the MCP config:
+
+```bash
+npx memories-mcp install --cursor
+```
 
 **Multi-backend:** Cursor uses the same hook scripts as Claude Code, so [multi-backend routing](#multi-backend-routing-optional) works automatically when configured.
 
@@ -1028,45 +1006,37 @@ Codex uses `~/.codex/settings.json` for these hooks and `~/.codex/config.toml` f
 ### Quick setup
 
 **Prerequisites:**
-- `jq` and `curl` installed (required by installer)
-- running Memories service (`curl -s http://localhost:8900/health | jq .`)
-- if installing Codex integration, MCP deps installed:
-
-```bash
-cd memories/mcp-server
-npm install
-```
+- Running Memories service (`curl -s http://localhost:8900/health`)
 
 **One-command auto-detect installer (recommended):**
+
 ```bash
-./integrations/claude-code/install.sh --auto
+npx memories-mcp install
 ```
 
-This detects and configures any available targets on your machine:
-- Claude Code hooks (`~/.claude/settings.json`)
+This auto-detects installed tools and configures:
+- Claude Code hooks (`~/.claude/settings.json`) + MCP
 - Codex hooks (`~/.codex/settings.json`) + MCP/developer instructions (`~/.codex/config.toml`)
+- Cursor MCP config (`~/.cursor/mcp.json`) + hooks
 - OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
 
-Cursor is supported via manual MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`).
+The installer writes runtime config to `~/.config/memories/env` for `MEMORIES_URL`, optional `MEMORIES_API_KEY`, and optional source overrides (`MEMORIES_SOURCE_PREFIXES` / `MEMORIES_EXTRACT_SOURCE`).
 
-The installer writes runtime config to:
-- `~/.config/memories/env` for hook vars (`MEMORIES_URL`, optional `MEMORIES_API_KEY`, optional `MEMORIES_SOURCE_PREFIXES` / `MEMORIES_EXTRACT_SOURCE` to override default source families)
-- repo `.env` for extraction vars (`EXTRACT_PROVIDER`, provider keys/URL)
+Claude/Cursor hooks also support `MEMORIES_SOURCE_PREFIXES` in `~/.config/memories/env` — a comma-separated list of source prefix templates (default: `claude-code/{project},learning/{project},wip/{project}`).
 
-Claude/Cursor read hooks also support an optional `MEMORIES_SOURCE_PREFIXES` env var in
-`~/.config/memories/env`. It is a comma-separated list of source prefix templates and
-defaults to `claude-code/{project},learning/{project},wip/{project}`.
+**Target specific tools:**
 
-**Target only Claude, Cursor, or Codex:**
 ```bash
-./integrations/claude-code/install.sh --claude
-./integrations/claude-code/install.sh --cursor
-./integrations/claude-code/install.sh --codex
+npx memories-mcp install --claude
+npx memories-mcp install --cursor
+npx memories-mcp install --codex
+npx memories-mcp install --openclaw
 ```
 
-**Target only OpenClaw:**
+**Uninstall:**
+
 ```bash
-./integrations/claude-code/install.sh --openclaw
+npx memories-mcp uninstall
 ```
 
 **LLM-assisted setup:** Feed [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md) to your AI assistant and it will configure everything automatically.

@@ -4,8 +4,18 @@
   "description": "MCP server for Memories — semantic search, add, extract, delete, browse",
   "type": "module",
   "main": "index.js",
+  "bin": {
+    "memories-mcp": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "install.js",
+    "hooks/",
+    "assets/"
+  ],
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "prepack": "cp -r ../integrations/claude-code/hooks/. ./hooks/ && cp ../integrations/openclaw-skill.md ./assets/openclaw-skill.md"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
