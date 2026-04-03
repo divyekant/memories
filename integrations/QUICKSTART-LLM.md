@@ -20,21 +20,25 @@ Before starting, verify:
 
 ```bash
 # 1. Memories service is running
-curl -s http://localhost:8900/health | jq .
+curl -s http://localhost:8900/health
 
 # 2. Hook env file (installer writes this)
 grep -E '^(MEMORIES_URL|MEMORIES_API_KEY)=' ~/.config/memories/env 2>/dev/null || echo "No hook env file yet (installer will create it)"
 
-# 3. jq is installed
-jq --version
-
-# 4. Node/npm available for MCP server
-node --version && npm --version
+# 3. Node/npm available (for npx)
+node --version
 ```
 
-If the service isn't running:
+If the service isn't running, start it — no clone required:
+
 ```bash
-cd ~/projects/memories  # or wherever the repo lives
+curl -fsSL https://raw.githubusercontent.com/divyekant/memories/main/docker-compose.standalone.yml -o docker-compose.yml
+docker compose up -d
+```
+
+Or if you have the repo cloned:
+```bash
+cd ~/projects/memories
 docker compose up -d memories
 ```
 
@@ -45,16 +49,17 @@ docker compose up -d memories
 ### Option A: Run the Installer (Recommended)
 
 ```bash
-cd ~/projects/memories
-./integrations/claude-code/install.sh
+npx memories-mcp install --claude
 ```
 
 The installer will:
 1. Check Memories service health
-2. Ask which extraction provider to use (Anthropic, OpenAI, ChatGPT Subscription, Ollama, or skip)
+2. Ask which extraction provider to use (Anthropic, OpenAI, Ollama, or skip)
 3. Copy hook scripts to `~/.claude/hooks/memory/`
 4. Merge hook configuration into `~/.claude/settings.json`
-5. Write env files (`~/.config/memories/env` for hooks, repo `.env` for extraction)
+5. Write `~/.config/memories/env` with `MEMORIES_URL` and extraction vars
+
+No clone required. No `jq` or `curl` dependencies.
 
 ### Option B: Manual Setup
 
@@ -76,10 +81,11 @@ MEMORIES_API_KEY="your-api-key-here"  # optional if API auth is disabled
 EOF
 ```
 
-**Step 2b: Configure extraction provider in repo `.env`**
+**Step 2b: Configure extraction provider**
+
+Add to `~/.config/memories/env` (also set these in your docker-compose environment or `.env` so the service picks them up):
 
 ```bash
-cat >> ~/projects/memories/.env <<'EOF'
 # Choose one provider (or omit all for retrieval-only mode)
 EXTRACT_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
@@ -89,7 +95,6 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 # EXTRACT_PROVIDER=ollama
 # OLLAMA_URL=http://localhost:11434
-EOF
 ```
 
 **Step 3: Add hooks to Claude Code settings**
@@ -171,12 +176,11 @@ Cursor supports full automatic memory via its **Third-party skills** feature, wh
 ### Step 1: Run the installer
 
 ```bash
-cd ~/projects/memories
-./integrations/claude-code/install.sh --cursor
+npx memories-mcp install --cursor
 ```
 
 This copies hook scripts to `~/.claude/hooks/memory/` and merges hook config into `~/.claude/settings.json`.
-It also writes Cursor MCP config at `~/.cursor/mcp.json` so tool calls work alongside hooks.
+It also writes Cursor MCP config at `~/.cursor/mcp.json` using `npx memories-mcp` so no local path is needed.
 
 ### Step 2: Enable Third-party skills in Cursor
 
@@ -194,8 +198,8 @@ If you prefer MCP-only manual config, add this to `~/.cursor/mcp.json`:
 {
   "mcpServers": {
     "memories": {
-      "command": "node",
-      "args": ["/path/to/memories/mcp-server/index.js"],
+      "command": "npx",
+      "args": ["-y", "memories-mcp"],
       "env": {
         "MEMORIES_URL": "http://localhost:8900",
         "MEMORIES_API_KEY": "your-api-key-here"
@@ -217,25 +221,37 @@ Codex uses:
 ### Option A: Run the installer (recommended)
 
 ```bash
-cd ~/projects/memories
-cd mcp-server && npm install && cd ..
-./integrations/claude-code/install.sh --codex
+npx memories-mcp install --codex
 ```
 
 The installer will:
 1. Install memory hook scripts to `~/.codex/hooks/memory/`
 2. Merge the 5 Codex hook events into `~/.codex/settings.json`
-3. Add MCP server config for `memories` to `~/.codex/config.toml` when missing
+3. Add MCP server config for `memories` to `~/.codex/config.toml` using `npx memories-mcp`
 4. Add default `developer_instructions` (if not already set) to bias `memory_search` usage
 
 The hooks load `MEMORIES_URL` / `MEMORIES_API_KEY` from `~/.config/memories/env` (or `MEMORIES_ENV_FILE` override).
 Default scoped prefixes are `codex/{project},learning/{project},wip/{project}` for retrieval and `codex/{project}` for extraction.
 For scoped API keys, override them with `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE`.
 
+No clone required. No `jq` or `curl` dependencies.
+
 ### Option B: Manual setup
 
 **Step 1: Install hook scripts**
 
+```bash
+# Option: use npx to get hook scripts from the package
+node -e "
+const src = require('path').join(require.resolve('memories-mcp'), '..', 'hooks');
+require('fs').mkdirSync(process.env.HOME + '/.codex/hooks/memory', {recursive:true});
+require('child_process').execSync('cp -r ' + src + '/. ' + process.env.HOME + '/.codex/hooks/memory/');
+console.log('Done');
+"
+chmod +x ~/.codex/hooks/memory/*.sh
+```
+
+Or if you have the repo cloned:
 ```bash
 mkdir -p ~/.codex/hooks/memory
 cp ~/projects/memories/integrations/claude-code/hooks/memory-*.sh ~/.codex/hooks/memory/
@@ -299,8 +315,8 @@ If `~/.codex/settings.json` already has hooks, merge these entries instead of re
 
 ```toml
 [mcp_servers.memories]
-command = "node"
-args = ["/path/to/memories/mcp-server/index.js"]
+command = "npx"
+args = ["-y", "memories-mcp"]
 
 [mcp_servers.memories.env]
 MEMORIES_URL = "http://localhost:8900"
@@ -585,8 +601,16 @@ This enables strict add-only fallback writes (no AUDN update/delete behavior), i
 
 ### Remove all integrations
 
+The easiest way is to use the installer:
+
 ```bash
-# Remove Claude hooks
+npx memories-mcp uninstall
+```
+
+Or manually:
+
+```bash
+# Remove Claude/Cursor hooks
 rm -rf ~/.claude/hooks/memory/
 
 # Remove Codex hooks
@@ -598,9 +622,8 @@ rm -rf ~/.codex/hooks/memory/
 # - [mcp_servers.memories] section
 # - [mcp_servers.memories.env] section
 
-# Remove env vars from hook/repo env files
-# Edit ~/.config/memories/env and remove MEMORIES_URL/MEMORIES_API_KEY/MEMORIES_SOURCE_PREFIXES/MEMORIES_EXTRACT_SOURCE
-# Edit ~/projects/memories/.env and remove EXTRACT_PROVIDER/provider keys
+# Remove env vars from hook env file
+# Edit ~/.config/memories/env and remove MEMORIES_URL/MEMORIES_API_KEY/MEMORIES_SOURCE_PREFIXES/MEMORIES_EXTRACT_SOURCE/EXTRACT_PROVIDER/provider keys
 ```
 
 ---
@@ -627,9 +650,14 @@ echo '{"cwd": "/Users/you/project", "session_type": "startup"}' | bash ~/.codex/
 ### Extraction returning 501
 
 ```bash
-# Extraction is disabled. Set EXTRACT_PROVIDER:
-echo 'EXTRACT_PROVIDER=anthropic' >> ~/projects/memories/.env  # or openai, chatgpt-subscription, ollama
-# Then restart docker-compose and your Claude/Cursor/Codex session
+# Extraction is disabled. Set EXTRACT_PROVIDER in your docker-compose environment:
+# Add to your .env file next to docker-compose.yml (or pass via docker compose env):
+echo 'EXTRACT_PROVIDER=anthropic' >> .env   # or openai, chatgpt-subscription, ollama
+echo 'ANTHROPIC_API_KEY=sk-ant-...' >> .env
+docker compose up -d memories  # restart to pick up new env
+
+# Also add to ~/.config/memories/env so hook scripts know the provider:
+echo 'EXTRACT_PROVIDER=anthropic' >> ~/.config/memories/env
 ```
 
 ### Slow retrieval hooks
