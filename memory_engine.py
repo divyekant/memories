@@ -2278,8 +2278,10 @@ class MemoryEngine:
     ) -> List[List[int]]:
         """Find clusters of similar memories above the threshold.
 
-        Returns a list of clusters, where each cluster is a list of memory IDs
-        that are mutually similar. Uses union-find on the pairwise similarity matrix.
+        Returns a list of clusters, where each cluster is a list of memory IDs.
+        Uses union-find on pairwise similarity, then tightens clusters by removing
+        members that aren't similar to at least half the other cluster members.
+        This prevents chain-connected items from forming overly broad groups.
         """
         if len(self.metadata) < min_cluster_size:
             return []
@@ -2312,7 +2314,32 @@ class MemoryEngine:
             root = find(mid)
             groups.setdefault(root, []).append(mid)
 
-        return [sorted(ids) for ids in groups.values() if len(ids) >= min_cluster_size]
+        # Tighten clusters: remove members that aren't similar to majority of cluster
+        # This prevents chain-connected items (A~B, B~C where A≁C) from forming
+        # overly broad groups.
+        tightened = []
+        for ids in groups.values():
+            if len(ids) < min_cluster_size:
+                continue
+            # Build pairwise similarity lookup from the pairs we already computed
+            sim_lookup = {}
+            for pair in pairs:
+                sim_lookup[(pair["id_a"], pair["id_b"])] = pair["similarity"]
+                sim_lookup[(pair["id_b"], pair["id_a"])] = pair["similarity"]
+
+            # Keep only members similar to at least half the others in the cluster
+            filtered = []
+            for mid in ids:
+                similar_count = sum(
+                    1 for other in ids
+                    if other != mid and sim_lookup.get((mid, other), 0) >= threshold
+                )
+                if similar_count >= (len(ids) - 1) / 2:
+                    filtered.append(mid)
+            if len(filtered) >= min_cluster_size:
+                tightened.append(sorted(filtered))
+
+        return tightened
 
     # ------------------------------------------------------------------
     # Browse / List
