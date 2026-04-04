@@ -1,7 +1,0 @@
-{"type":"server-started","port":59658,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:59658","screen_dir":"/Users/divyekant/Projects/memories/.superpowers/brainstorm/39862-1773972395"}
-{"type":"screen-added","file":"/Users/divyekant/Projects/memories/.superpowers/brainstorm/39862-1773972395/memories-write-path.html"}
-{"type":"screen-added","file":"/Users/divyekant/Projects/memories/.superpowers/brainstorm/39862-1773972395/browse-vs-search.html"}
-{"type":"screen-added","file":"/Users/divyekant/Projects/memories/.superpowers/brainstorm/39862-1773972395/write-modals.html"}
-{"type":"screen-added","file":"/Users/divyekant/Projects/memories/.superpowers/brainstorm/39862-1773972395/lifecycle-and-conflicts.html"}
-{"type":"screen-added","file":"/Users/divyekant/Projects/memories/.superpowers/brainstorm/39862-1773972395/waiting.html"}
-{"type":"server-stopped","reason":"idle timeout"}

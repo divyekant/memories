@@ -58,3 +58,7 @@ eval/scenarios/longmemeval/*.jsonl
 # Apollo (personal config)
 .apollo.yaml
 .superpowers/
+
+# Internal working artifacts (specs, plans, brainstorm)
+docs/superpowers/
+docs/plans/
