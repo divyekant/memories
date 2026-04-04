@@ -203,7 +203,7 @@ jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
   hookSpecificOutput: {
     hookEventName: "UserPromptSubmit",
     additionalContext: (
-      "## Retrieved Memories\n" + $memories +
+      "IMPORTANT: The following memories from prior sessions are relevant to this prompt. These represent prior decisions and context that MUST be considered before responding. Do not contradict stored decisions without explicitly acknowledging the change.\n\n## Retrieved Memories\n" + $memories +
       (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
     )
   }

@@ -47,6 +47,13 @@
         "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-observe.sh",
         "timeout": 1
       }]
+    }, {
+      "matcher": "Write|Edit|Bash",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-tool-observe.sh",
+        "timeout": 1
+      }]
     }],
     "PreToolUse": [{
       "matcher": "Write|Edit",

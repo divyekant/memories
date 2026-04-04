@@ -79,11 +79,9 @@ fi
 # Cap at MSG_CAP chars (one pair is plenty for the Stop hook)
 MESSAGES="${MESSAGES:0:$MSG_CAP}"
 
-# Signal keyword pre-filter — skip extraction if no signals detected
-SIGNAL_KEYWORDS="${MEMORIES_SIGNAL_KEYWORDS:-decide|decision|chose|choice|choose|bug|fix|remember|architecture|convention|pattern|learning|mistake|prefer|going with|let.s use|switched|trade.off|because|reason|constraint|require|defer|later|revisit|park|todo|skip|always|never|should|must|careful|gotcha|turns out|realized|actually|migrate|upgrade|replace|remove|install|important|agreed|confirmed|rule|policy|approach|strategy|design|plan|ship|release|block|depend|until|unless|worth|config|deploy|endpoint|schema|model|database|cache|queue|auth}"
-if [ -n "$SIGNAL_KEYWORDS" ] && [ -n "$MESSAGES" ] && ! echo "$MESSAGES" | grep -qiE "$SIGNAL_KEYWORDS"; then
-  exit 0
-fi
+# No pre-filter — extraction runs unconditionally on every Stop event.
+# The extraction LLM (AUDN) decides what's worth keeping.
+# Cost: ~$0.001/call. Missed memories are more expensive than the filter saves.
 
 _log_info "Extracting from $PROJECT (${#MESSAGES} chars, source=$SOURCE)"
 
