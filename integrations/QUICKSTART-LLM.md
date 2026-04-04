@@ -2,6 +2,8 @@
 
 > **This document is designed to be fed directly to an LLM (Claude Code, Codex, Cursor, OpenClaw, or any AI coding assistant) so it can set up automatic memory integration for you.**
 
+> **Recommended:** Install via the plugin marketplace: `claude plugins install memories@dk-marketplace`, then run `/memories:setup` to provision the backend. This handles hook installation, settings configuration, and env file creation automatically. The manual steps below are for reference or non-plugin environments.
+
 ## What This Does
 
 Memories is a local semantic memory service running at `http://localhost:8900`. This guide sets up automatic memory integrations so your AI assistant:
@@ -62,7 +64,7 @@ The installer will:
 
 ```bash
 mkdir -p ~/.claude/hooks/memory
-cp ~/projects/memories/integrations/claude-code/hooks/*.sh ~/.claude/hooks/memory/
+cp ~/projects/memories/plugin/hooks/*.sh ~/.claude/hooks/memory/
 chmod +x ~/.claude/hooks/memory/*.sh
 ```
 
@@ -107,6 +109,14 @@ Edit `~/.claude/settings.json` and merge in:
         "timeout": 5
       }]
     }],
+    "SubagentStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "~/.claude/hooks/memory/memory-subagent-recall.sh",
+        "timeout": 5
+      }]
+    }],
     "UserPromptSubmit": [{
       "matcher": "",
       "hooks": [{
@@ -121,6 +131,14 @@ Edit `~/.claude/settings.json` and merge in:
         "type": "command",
         "command": "~/.claude/hooks/memory/memory-extract.sh",
         "timeout": 30
+      }]
+    }],
+    "PostToolUse": [{
+      "matcher": "Write|Edit|Bash",
+      "hooks": [{
+        "type": "command",
+        "command": "~/.claude/hooks/memory/memory-tool-observe.sh",
+        "timeout": 1
       }]
     }],
     "PreCompact": [{
@@ -166,7 +184,7 @@ Start a new Claude Code session. You should see "Relevant Memories" injected at 
 
 ## Setup for Cursor
 
-Cursor supports full automatic memory via its **Third-party skills** feature, which reads Claude Code's `~/.claude/settings.json` directly. All 5 hook events work: `SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`, and `SessionEnd`.
+Cursor supports full automatic memory via its **Third-party skills** feature, which reads Claude Code's `~/.claude/settings.json` directly. All 7 hook events work: `SessionStart`, `SubagentStart`, `UserPromptSubmit`, `Stop`, `PostToolUse`, `PreCompact`, and `SessionEnd`.
 
 ### Step 1: Run the installer
 
@@ -449,7 +467,9 @@ curl -s https://memory.yourdomain.com/health   # prod
 |------|-------|-------|-------------|
 | `memory-recall.sh` | SessionStart | Sync | Searches project-scoped memories, injects top results, and adds a short recall playbook for the session |
 | `memory-query.sh` | UserPromptSubmit | Sync | Searches project-scoped memories first and uses recent transcript context so short follow-up prompts still retrieve useful memories |
-| `memory-extract.sh` | Stop | Async | POSTs the last exchange to `/memory/extract` for fact extraction |
+| `memory-subagent-recall.sh` | SubagentStart | Sync | Injects project-scoped memories into subagents (Plan, Explore, code-reviewer, etc.) at spawn time |
+| `memory-extract.sh` | Stop | Async | POSTs the last exchange to `/memory/extract` for fact extraction (fires unconditionally — no keyword filter) |
+| `memory-tool-observe.sh` | PostToolUse | Async | Logs Write/Edit/Bash tool observations to a session-scoped JSONL file for richer extraction context |
 | `memory-flush.sh` | PreCompact | Async | Same as extract but with `context=pre_compact` (more aggressive before context loss) |
 | `memory-commit.sh` | SessionEnd | Async | Final extraction pass when session ends |
 
