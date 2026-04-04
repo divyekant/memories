@@ -20,10 +20,15 @@ case "$SOURCE" in
   *) exit 0 ;;
 esac
 
+# In plugin mode, hooks are managed by the plugin system — skip settings.json check
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  exit 0
+fi
+
 SETTINGS_FILE="$HOME/.claude/settings.json"
 [ -f "$SETTINGS_FILE" ] || { _log_warn "Settings file not found"; exit 0; }
 
-# Check if memory hooks are still configured
+# Legacy mode: check if memory hooks are still configured in settings.json
 MISSING=""
 for hook in "memory-recall" "memory-query" "memory-extract"; do
   if ! grep -q "$hook" "$SETTINGS_FILE" 2>/dev/null; then
