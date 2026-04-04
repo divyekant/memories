@@ -1,0 +1,43 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  memories:
+    image: ghcr.io/divyekant/memories:${MEMORIES_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    ports:
+      - "8900:8000"
+    volumes:
+      - memories_data:/data
+    environment:
+      - DATA_DIR=/data
+      - API_KEY=${API_KEY:-}
+      - MODEL_NAME=all-MiniLM-L6-v2
+      - EMBED_PROVIDER=${EMBED_PROVIDER:-onnx}
+      - EMBED_MODEL=${EMBED_MODEL:-}
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-memories}
+      - QDRANT_WAIT=true
+      - EXTRACT_PROVIDER=${EXTRACT_PROVIDER:-}
+      - EXTRACT_MODEL=${EXTRACT_MODEL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_URL=${OLLAMA_URL:-}
+      - MALLOC_ARENA_MAX=2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if 200 <= urllib.request.urlopen('http://localhost:8000/health', timeout=3).getcode() < 400 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  qdrant_data:
+  memories_data:
