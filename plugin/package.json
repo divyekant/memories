@@ -1,0 +1,5 @@
+{
+  "name": "memories",
+  "version": "5.1.0",
+  "description": "Persistent, searchable memory for Claude Code via Memories MCP"
+}
