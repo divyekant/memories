@@ -63,6 +63,14 @@
         "timeout": 1
       }]
     }],
+    "SubagentStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-subagent-recall.sh",
+        "timeout": 5
+      }]
+    }],
     "SubagentStop": [{
       "matcher": "",
       "hooks": [{
