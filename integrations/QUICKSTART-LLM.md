@@ -236,7 +236,24 @@ Codex uses:
 
 The Codex Stop hook is **beefier** than Claude Code's (500 tail lines, 10 message pairs, 8000 char cap, no signal filter) to compensate for Codex lacking PreCompact/SessionEnd events.
 
-### Option A: Run the installer (recommended)
+### Option A: Install the repo-local Codex plugin
+
+If you're inside a checkout of this repository, Codex can read the repo marketplace at `.agents/plugins/marketplace.json`.
+Install the `memories` plugin from that repo marketplace, then run:
+
+```text
+$memories:setup
+```
+
+That skill finds the current repo checkout, installs `mcp-server` dependencies, and then runs the canonical installer:
+
+```bash
+./integrations/claude-code/install.sh --codex
+```
+
+This is the lowest-maintenance way to get the setup workflow into Codex without hard-coding repo-specific paths into a cached plugin copy.
+
+### Option B: Run the installer directly
 
 ```bash
 cd ~/projects/memories
@@ -255,7 +272,7 @@ The hooks load `MEMORIES_URL` / `MEMORIES_API_KEY` from `~/.config/memories/env`
 Default scoped prefixes are `codex/{project},learning/{project},wip/{project}` for retrieval and `codex/{project}` for extraction.
 For scoped API keys, override them with `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE`.
 
-### Option B: Manual setup
+### Option C: Manual setup
 
 **Step 1: Install hook scripts**
 

@@ -1,5 +1,7 @@
 # Installing the Memories Plugin
 
+This file covers the Claude Code plugin package in `plugin/`. For the repo-local Codex plugin shipped from this repository, use `.agents/plugins/marketplace.json` from the repo root and run `$memories:setup` inside Codex.
+
 ## Prerequisites
 
 - Claude Code CLI installed

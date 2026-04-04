@@ -1,0 +1,20 @@
+{
+  "name": "memories-local",
+  "interface": {
+    "displayName": "Memories Local"
+  },
+  "plugins": [
+    {
+      "name": "memories",
+      "source": {
+        "source": "local",
+        "path": "./plugins/memories"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

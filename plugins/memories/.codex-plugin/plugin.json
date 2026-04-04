@@ -1,0 +1,40 @@
+{
+  "name": "memories",
+  "version": "5.1.0",
+  "description": "Memories discipline and setup workflow for Codex in this repository.",
+  "author": {
+    "name": "Divyekant Gupta",
+    "email": "divyekantg@gmail.com",
+    "url": "https://github.com/divyekant"
+  },
+  "homepage": "https://github.com/divyekant/memories",
+  "repository": "https://github.com/divyekant/memories",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "memories",
+    "codex",
+    "mcp",
+    "productivity"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Memories",
+    "shortDescription": "Bootstrap and use Memories from Codex in this repo",
+    "longDescription": "Adds the Memories discipline skill plus a Codex-specific setup skill that bootstraps the existing hook and MCP integration from this repository checkout.",
+    "developerName": "Divyekant Gupta",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/divyekant/memories",
+    "privacyPolicyURL": "https://github.com/divyekant/memories",
+    "termsOfServiceURL": "https://github.com/divyekant/memories",
+    "defaultPrompt": [
+      "Set up Memories for this repo in Codex",
+      "Use the Memories skill when a decision should be stored"
+    ],
+    "brandColor": "#0F766E"
+  }
+}

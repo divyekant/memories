@@ -10,6 +10,10 @@
   - Backend version checking in recall hook — warns when running Docker version is behind expected
   - Standalone `docker-compose.standalone.yml` for zero-clone backend deployment
   - Plugin CLAUDE.md with behavioral overrides making memory non-optional
+- **Repo-local Codex Plugin** — lightweight Codex plugin at `plugins/memories` with repo marketplace entry in `.agents/plugins/marketplace.json`
+  - Reuses the `memories` skill for Codex without creating a second behavior fork
+  - Adds a Codex bootstrap skill (`$memories:setup`) that installs `mcp-server` deps and runs the canonical `./integrations/claude-code/install.sh --codex` flow from the local checkout
+  - Keeps Codex hook, MCP, and `developer_instructions` wiring in the existing installer instead of duplicating machine-specific paths in the cached plugin copy
 - Assertive injection framing — recalled memories now include "IMPORTANT: MUST be considered" prefix matching CC's native memory priority language
 
 ### Changed

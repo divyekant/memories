@@ -347,20 +347,24 @@ Events are emitted non-blocking from the calling thread. The bus maintains a bou
 
 ## 10) Hook System
 
-Ten shell hooks across eight Claude Code lifecycle events provide automatic memory capture and recall:
+The automatic memory layer uses 12 shell hooks across 10 Claude Code / Cursor lifecycle events, plus a reduced 5-hook Codex variant layered with MCP + developer instructions:
 
 | Event | Hook | Purpose |
 |---|---|---|
 | `SessionStart` | `memory-recall.sh` | Hydrate MEMORY.md from stored memories |
+| `SubagentStart` | `memory-subagent-recall.sh` | Inject project memories into spawned subagents |
 | `UserPromptSubmit` | `memory-query.sh` | Inject relevant memories into prompt context |
 | `Stop` | `memory-extract.sh` | Extract and store learnings from conversation |
 | `PreCompact` | `memory-flush.sh` | Flush pending memories before compaction |
 | `PostCompact` | `memory-rehydrate.sh` | Rehydrate MEMORY.md after compaction |
 | `PostToolUse` | `memory-observe.sh` | Observability for memory MCP tool calls |
+| `PostToolUse` | `memory-tool-observe.sh` | Record write/edit/bash context for richer extraction |
 | `PreToolUse` | `memory-guard.sh` | Guard MEMORY.md from direct Write/Edit |
 | `SubagentStop` | `memory-subagent-capture.sh` | Capture learnings from Plan/Explore subagents |
 | `ConfigChange` | `memory-config-guard.sh` | Watchdog for user settings changes |
 | `SessionEnd` | `memory-commit.sh` | Final extraction and cleanup |
+
+Codex installs `memory-recall.sh`, `memory-query.sh`, `memory-extract.sh`, `memory-observe.sh`, and `memory-guard.sh` via `~/.codex/hooks.json`; because Codex lacks `PreCompact` and `SessionEnd`, its `Stop` hook samples more transcript context.
 
 Hooks share a common library (`_lib.sh`) with logging, health checks, and log rotation. All hooks use guarded `_lib.sh` sourcing with no-op fallbacks for backward compatibility. Response hints use a JSON lookup table (`response-hints.json`) rather than shell case/esac. Hook behavior is configurable via 10 environment variables.
 

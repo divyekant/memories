@@ -313,6 +313,12 @@ curl -X POST https://memory.yourdomain.com/search \
 
 Codex supports MCP natively via `~/.codex/config.toml`.
 
+**Repo-local Codex plugin (optional):**
+
+This repository now includes a repo-local Codex plugin at `plugins/memories`, exposed through `.agents/plugins/marketplace.json`.
+If you're working inside this checkout, install the `memories` plugin from the repo marketplace and run `$memories:setup`.
+That skill bootstraps the canonical Codex installer from the repo root rather than duplicating machine-specific paths inside the cached plugin copy.
+
 **Setup:**
 
 1. Install dependencies:
@@ -353,7 +359,7 @@ cd ..
 ```
 
 This configures:
-- 5 Codex hooks in `~/.codex/settings.json` (`SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`, `SessionEnd`)
+- 5 Codex hooks in `~/.codex/hooks.json` (`SessionStart`, `UserPromptSubmit`, `Stop`, `PreToolUse`, `PostToolUse`)
 - hook scripts in `~/.codex/hooks/memory/`
 - MCP server registration in `~/.codex/config.toml`
 - default `developer_instructions` (if not already set) to bias `memory_search` usage on each turn
@@ -362,9 +368,9 @@ This configures:
 The installer requires `jq`, `curl`, and a running Memories service (`/health` must respond).
 For scoped API keys, set `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE` so hook reads/writes stay inside authorized prefixes.
 
-Codex uses `~/.codex/settings.json` for lifecycle hooks and `~/.codex/config.toml` for MCP + developer instructions.
+Codex uses `~/.codex/hooks.json` for lifecycle hooks, `~/.codex/settings.json` for permissions, and `~/.codex/config.toml` for MCP + developer instructions.
 
-**Multi-backend:** Codex uses the same hook scripts as Claude Code, so [multi-backend routing](#multi-backend-routing-optional) works automatically when configured.
+**Multi-backend:** Codex uses its own hook scripts in `integrations/codex/hooks/`, and they honor the same multi-backend routing env/config described in [multi-backend routing](#multi-backend-routing-optional).
 
 **Usage** (Codex will discover the tools automatically):
 
@@ -979,7 +985,7 @@ Default compose files now include:
 Memories supports automatic retrieval/extraction, with client-specific behavior:
 - Claude Code: full 12-hook lifecycle (session start, each prompt, after response, pre-compact, post-compact, subagent start, subagent stop, tool use, tool observe, file write guard, config change, session end)
 - Cursor: same 12-hook lifecycle via Third-party skills (loads from `~/.claude/settings.json`)
-- Codex: 5-hook lifecycle via `~/.codex/settings.json` + MCP/developer instructions in `~/.codex/config.toml`
+- Codex: 5-hook lifecycle via `~/.codex/hooks.json` + permissions in `~/.codex/settings.json` + MCP/developer instructions in `~/.codex/config.toml`
 - OpenClaw: skill-driven retrieval/extraction flow
 
 ### Claude Code / Cursor Hook Lifecycle
@@ -1005,14 +1011,14 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 
 | Event | Mechanism | What happens |
 |-------|-----------|--------------|
-| Session start | `settings.json` -> `memory-recall.sh` | Loads project-scoped memories and recall guidance for the session |
-| Every prompt | `settings.json` -> `memory-query.sh` | Retrieves relevant memories using transcript context for short follow-ups |
-| After response | `settings.json` -> `memory-extract.sh` | Extracts facts via AUDN |
-| Before compaction | `settings.json` -> `memory-flush.sh` | Aggressive extraction before context loss |
-| Session end | `settings.json` -> `memory-commit.sh` | Final extraction pass |
+| Session start | `hooks.json` -> `memory-recall.sh` | Loads project-scoped memories and recall guidance for the session |
+| Every prompt | `hooks.json` -> `memory-query.sh` | Retrieves relevant memories using transcript context for short follow-ups |
+| After response | `hooks.json` -> `memory-extract.sh` | Extracts facts via AUDN with beefier Stop sampling to compensate for missing compaction/session-end hooks |
+| Memory MCP tool calls | `hooks.json` -> `memory-observe.sh` (`PostToolUse` matcher `mcp__memories__`) | Logs memory MCP tool calls for observability |
+| File writes | `hooks.json` -> `memory-guard.sh` (`PreToolUse` matcher `Write|Edit`) | Blocks direct `MEMORY.md` edits |
 | On new turns | MCP tools + developer instructions | Encourages focused `memory_search` before implementation-heavy responses |
 
-Codex uses `~/.codex/settings.json` for these hooks and `~/.codex/config.toml` for MCP + developer instructions.
+Codex uses `~/.codex/hooks.json` for these hooks, `~/.codex/settings.json` for permissions, and `~/.codex/config.toml` for MCP + developer instructions. Its `Stop` hook is intentionally beefier because Codex does not expose `PreCompact` or `SessionEnd`.
 
 ### Quick setup
 
@@ -1033,10 +1039,11 @@ npm install
 
 This detects and configures any available targets on your machine:
 - Claude Code hooks (`~/.claude/settings.json`)
-- Codex hooks (`~/.codex/settings.json`) + MCP/developer instructions (`~/.codex/config.toml`)
+- Codex hooks (`~/.codex/hooks.json`) + permissions (`~/.codex/settings.json`) + MCP/developer instructions (`~/.codex/config.toml`)
 - OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
 
 Cursor is supported via manual MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`).
+If you're inside this repo, you can also install the repo-local Codex plugin from `.agents/plugins/marketplace.json` and run `$memories:setup`, which bootstraps the same `--codex` installer flow from the checkout root.
 
 The installer writes runtime config to:
 - `~/.config/memories/env` for hook vars (`MEMORIES_URL`, optional `MEMORIES_API_KEY`, optional `MEMORIES_SOURCE_PREFIXES` / `MEMORIES_EXTRACT_SOURCE` to override default source families)
@@ -1365,6 +1372,18 @@ memories/
     claude-code.md        # Claude Code guide
     openclaw-skill.md     # OpenClaw SKILL.md
     QUICKSTART-LLM.md     # LLM-friendly setup guide
+  .agents/
+    plugins/
+      marketplace.json    # Repo-local Codex plugin catalog
+  plugins/
+    memories/
+      .codex-plugin/
+        plugin.json       # Repo-local Codex plugin manifest
+      skills/
+        memories/
+          SKILL.md        # Shared Memories discipline skill for Codex plugin
+        setup/
+          SKILL.md        # Codex bootstrap skill that runs the canonical installer
   tests/
     test_memory_engine.py # Memory engine tests
     test_llm_provider.py  # LLM provider tests (incl. ChatGPT Subscription)

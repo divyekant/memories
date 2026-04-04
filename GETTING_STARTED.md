@@ -68,10 +68,11 @@ cd ..
 
 This auto-detects and configures:
 - Claude Code hooks (`~/.claude/settings.json`)
-- Codex hooks (`~/.codex/settings.json`) + MCP/developer instructions (`~/.codex/config.toml`)
+- Codex hooks (`~/.codex/hooks.json`) + permissions (`~/.codex/settings.json`) + MCP/developer instructions (`~/.codex/config.toml`)
 - OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
 
 Cursor is supported via MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`) and is currently manual.
+If you're working inside this repository, you can also install the repo-local Codex plugin from `.agents/plugins/marketplace.json` and run `$memories:setup`, which bootstraps the same `./integrations/claude-code/install.sh --codex` flow from the checkout root.
 
 Note for Codex: source defaults are `codex/{project},learning/{project},wip/{project}`
 for retrieval and `codex/{project}` for extraction. For scoped API keys, override them with
@@ -92,7 +93,9 @@ The installer offers an interactive multi-backend setup step, or see the [Multi-
 
 ## 5) Explore the hook system
 
-The installer configures 10 hooks for Claude Code:
+The installer wires the full automatic memory lifecycle for Claude Code / Cursor and a reduced native hook set for Codex.
+
+### Claude Code / Cursor
 
 | Hook | Event | Purpose |
 |------|-------|---------|
@@ -106,6 +109,18 @@ The installer configures 10 hooks for Claude Code:
 | `memory-guard.sh` | File write | Block direct MEMORY.md writes |
 | `memory-config-guard.sh` | Config change | Warn if hooks removed |
 | `memory-commit.sh` | Session end | Final extraction pass |
+
+### Codex
+
+| Hook | Event | Purpose |
+|------|-------|---------|
+| `memory-recall.sh` | Session start | Load project memories + recall guidance |
+| `memory-query.sh` | Each prompt | Search memories with transcript context |
+| `memory-extract.sh` | Stop | Extract facts via beefier sampling that compensates for missing compaction/session-end hooks |
+| `memory-observe.sh` | Memory MCP tool use | Log Memories MCP tool invocations |
+| `memory-guard.sh` | File write | Block direct `MEMORY.md` writes |
+
+Codex stores those hooks in `~/.codex/hooks.json`, keeps tool permissions in `~/.codex/settings.json`, and registers the MCP server plus developer instructions in `~/.codex/config.toml`.
 
 All hooks are configurable via env vars in `~/.config/memories/env`. See `docs/deployment.md` for details.
 
