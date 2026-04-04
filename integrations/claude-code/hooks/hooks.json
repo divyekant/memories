@@ -57,7 +57,7 @@
       }]
     }],
     "SubagentStop": [{
-      "matcher": "Plan|Explore",
+      "matcher": "",
       "hooks": [{
         "type": "command",
         "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-subagent-capture.sh",
