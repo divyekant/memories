@@ -513,7 +513,13 @@ install_codex_target() {
     merged=$(jq -s '
       .[0] as $existing |
       .[1] as $new |
-      $existing * {hooks: (($existing.hooks // {}) * $new.hooks)}
+      ($existing.hooks // {}) as $eh |
+      ($new.hooks // {}) as $nh |
+      $existing * {hooks: (
+        ($eh | keys) + ($nh | keys) | unique | map(. as $k |
+          {($k): (($eh[$k] // []) + ($nh[$k] // []) | unique_by(.hooks[0].command))}
+        ) | add // {}
+      )}
     ' "$codex_hooks_json" <(echo "$rendered_hooks"))
     echo "$merged" > "$codex_hooks_json"
   else
