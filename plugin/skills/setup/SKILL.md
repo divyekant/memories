@@ -1,5 +1,5 @@
 ---
-name: setup
+name: memories:setup
 description: "Set up or update the Memories backend. Use when the service is unreachable, when first installing, or to update the Docker containers. Triggers on 'memories setup', 'set up memories', 'install memories', or when SessionStart health check fails."
 ---
 
