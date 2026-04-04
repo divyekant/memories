@@ -17,7 +17,7 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
-  _default_source_prefixes() { echo 'claude-code/{project},learning/{project},wip/{project}'; }
+  _default_source_prefixes() { echo 'codex/{project},learning/{project},wip/{project}'; }
 fi
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
@@ -65,19 +65,30 @@ extract_recent_context() {
     return 0
   fi
 
+  # Flexible transcript parsing: supports Claude Code (.type + .message.content),
+  # Codex JSONL (.message.role + .content), and other layouts.
   tail -200 "$transcript_path" 2>/dev/null | jq -sr '
     [
       .[]
-      | select(.type == "user" or .type == "assistant")
+      | select(
+          ((.type // .message.role // "") | tostring) as $r |
+          ($r == "user" or $r == "assistant")
+        )
       | {
-          role: .type,
+          role: ((.type // .message.role // "") | tostring),
           text: (
-            if .message.content | type == "string" then
-              .message.content
-            elif .message.content | type == "array" then
-              [.message.content[] | select(.type == "text") | .text] | join(" ")
-            else
-              ""
+            if (.message.content // null) != null then
+              if (.message.content | type) == "string" then .message.content
+              elif (.message.content | type) == "array" then [.message.content[] | select(.type == "text") | .text] | join(" ")
+              else ""
+              end
+            elif (.content // null) != null then
+              if (.content | type) == "string" then .content
+              elif (.content | type) == "array" then [.content[] | select(.type == "text") | .text] | join(" ")
+              else ""
+              end
+            elif ((.text // null) | type) == "string" then .text
+            else ""
             end
           )
         }

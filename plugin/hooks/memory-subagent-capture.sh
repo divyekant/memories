@@ -5,7 +5,7 @@ MEMORIES_HOOK_NAME="memory-subagent-capture"
 
 [ -f "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}" ] && . "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
 
-_LIB="$(dirname "$0")/_lib.sh"
+_LIB="$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 if [ -f "$_LIB" ]; then
   source "$_LIB"
 else
@@ -26,11 +26,7 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.agent_transcript_path // .transcript_path // .transcriptPath // empty')
 TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
 
-# Only capture from Plan and Explore agents
-case "$AGENT_TYPE" in
-  Plan|Explore|plan|explore) ;;
-  *) exit 0 ;;
-esac
+# Capture from all subagent types — matcher in hooks.json controls which fire
 
 PROJECT=$(basename "${CWD:-unknown}")
 [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ] || [ -z "$PROJECT" ] && exit 0
@@ -50,7 +46,7 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
       elif (.message.content | type) == "array" then
         "\(.type): \([.message.content[] | select(.type == "text") | .text] | join(" "))"
       else empty end' 2>/dev/null | \
-    tail -6 | head -c 4000) || _log_warn "Failed to parse subagent transcript"
+    tail -12 | head -c 8000) || _log_warn "Failed to parse subagent transcript"
 fi
 
 [ -z "$MESSAGES" ] && { _log_info "No messages from $AGENT_TYPE subagent"; exit 0; }

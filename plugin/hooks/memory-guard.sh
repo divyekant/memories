@@ -6,7 +6,7 @@ set -euo pipefail
 
 MEMORIES_HOOK_NAME="memory-guard"
 
-_LIB="$(dirname "$0")/_lib.sh"
+_LIB="$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 if [ -f "$_LIB" ]; then
   source "$_LIB"
 else

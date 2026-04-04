@@ -230,6 +230,10 @@ ln -s /path/to/memories/skills/memories ~/.claude/skills/memories
 
 The skill teaches the assistant three responsibilities: *when* to search (proactive recall), *when* and *how* to store (hybrid `memory_add` + `memory_extract`), and *when* to maintain (updates, deletes, cleanup via AUDN). It adds ~11% token overhead but improves memory discipline by ~43% in eval benchmarks.
 
+5. (Recommended) Install the **CC plugin** for a single-step setup that bundles hooks, skills, and CLAUDE.md:
+
+Hooks, skills, and CLAUDE.md are now packaged as a Claude Code plugin in the `plugin/` directory. See [`plugin/INSTALL.md`](plugin/INSTALL.md) for details.
+
 **Usage** (Claude Code will call these automatically when relevant):
 
 - "Search my memory for authentication patterns"
@@ -873,7 +877,7 @@ GET  /metrics/failures?type=retrieval&limit=10
 
 ```
 POST /maintenance/reembed          # Migrate embedding model
-POST /maintenance/compact          # Find similar clusters (dry-run)
+POST /maintenance/compact          # Find similar clusters (dry-run); clusters tightened to prevent chain-connected outliers
 POST /maintenance/consolidate      # LLM-powered merge
 ```
 
@@ -973,8 +977,8 @@ Default compose files now include:
 ## Automatic Memory Layer
 
 Memories supports automatic retrieval/extraction, with client-specific behavior:
-- Claude Code: full 10-hook lifecycle (session start, each prompt, after response, pre-compact, post-compact, subagent stop, tool use, file write guard, config change, session end)
-- Cursor: same 10-hook lifecycle via Third-party skills (loads from `~/.claude/settings.json`)
+- Claude Code: full 12-hook lifecycle (session start, each prompt, after response, pre-compact, post-compact, subagent start, subagent stop, tool use, tool observe, file write guard, config change, session end)
+- Cursor: same 12-hook lifecycle via Third-party skills (loads from `~/.claude/settings.json`)
 - Codex: 5-hook lifecycle via `~/.codex/settings.json` + MCP/developer instructions in `~/.codex/config.toml`
 - OpenClaw: skill-driven retrieval/extraction flow
 
@@ -982,13 +986,15 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 
 | Event | Hook | What happens |
 |-------|------|-------------|
-| Session start | `memory-recall.sh` | Loads project-scoped memories, hydrates MEMORY.md, checks service health |
+| Session start | `memory-recall.sh` | Loads project-scoped memories, hydrates MEMORY.md, checks service health, warns if backend version is outdated |
 | Every prompt | `memory-query.sh` | Retrieves relevant memories with transcript context |
 | After response | `memory-extract.sh` | Extracts facts via AUDN |
 | Before compaction | `memory-flush.sh` | Aggressive extraction before context loss |
 | After compaction | `memory-rehydrate.sh` | Re-injects memories using compact summary |
+| Subagent start | `memory-subagent-recall.sh` | Injects project memories into subagents at spawn |
 | Subagent stop | `memory-subagent-capture.sh` | Captures decisions from Plan/Explore agents |
 | Tool use observed | `memory-observe.sh` | Logs MCP tool invocations (observability) |
+| Tool use (Write/Edit/Bash) | `memory-tool-observe.sh` | Logs tool observations to session file |
 | File write attempt | `memory-guard.sh` | Blocks direct MEMORY.md writes |
 | Config changed | `memory-config-guard.sh` | Warns if hooks removed from settings |
 | Session end | `memory-commit.sh` | Final extraction pass |
@@ -1085,6 +1091,11 @@ Why it matters:
 - cleaner memory store over time (less duplicate/stale data)
 - better retrieval quality in later sessions
 - less "memory drift" when decisions change
+
+**Recent extraction changes:**
+- Signal keyword filter removed — extraction now fires unconditionally on every response
+- Extraction window widened to 4 message pairs / 8K chars (up from previous defaults)
+- Assertive injection framing: recalled memories include "IMPORTANT: MUST be considered" prefix to strengthen recall adherence
 
 ### Cost vs quality
 
@@ -1341,7 +1352,7 @@ memories/
   integrations/
     claude-code/
       install.sh          # Auto-detect installer (Claude/Codex/Cursor/OpenClaw)
-      hooks/              # Claude Code 10-hook scripts + hooks.json
+      hooks/              # Claude Code 12-hook scripts + hooks.json
         _lib.sh               # Shared hook utilities (logging, health check)
         memory-rehydrate.sh   # PostCompact rehydration hook
         memory-observe.sh     # PostToolUse observability hook

@@ -1,8 +1,6 @@
 #!/bin/bash
-# memory-recall.sh — SessionStart hook
-# Loads project-relevant memories into Claude Code context.
-# Also hydrates auto-memory MEMORY.md with synced memories from MCP,
-# so the most important memories are always in context (200-line cap).
+# memory-recall.sh — SessionStart hook (Codex)
+# Loads project-relevant memories into Codex context.
 # Sync hook: blocks until done, injects additionalContext.
 
 MEMORIES_HOOK_NAME="memory-recall"
@@ -17,7 +15,7 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
-  _default_source_prefixes() { echo 'claude-code/{project},learning/{project},wip/{project}'; }
+  _default_source_prefixes() { echo 'codex/{project},learning/{project},wip/{project}'; }
 fi
 
 # Rotate log on session start
@@ -46,7 +44,10 @@ if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   exit 0
 fi
 
-_log_info "Session start for project=$PROJECT cwd=$CWD"
+# Parse Codex session source (startup, resume, clear)
+SESSION_SOURCE=$(echo "$INPUT" | jq -r '.source // "unknown"')
+
+_log_info "Session start for project=$PROJECT cwd=$CWD source=$SESSION_SOURCE"
 
 # Health check — warn if service unreachable
 HEALTH_WARNING=""
@@ -154,55 +155,7 @@ PLAYBOOK=$(cat <<EOF
 EOF
 )
 
-# --- Hydrate auto-memory MEMORY.md ---
-# Claude Code's auto-memory loads MEMORY.md into every conversation (first 200 lines).
-# We sync top memories from MCP into a marked section so they're always in context,
-# while preserving any manually-pinned content above the marker.
-SYNC_MARKER="<!-- SYNCED-FROM-MEMORIES-MCP -->"
-ENCODED_CWD=$(echo "$CWD" | tr '/' '-')
-MEMORY_DIR="$HOME/.claude/projects/${ENCODED_CWD}/memory"
-MEMORY_FILE="$MEMORY_DIR/MEMORY.md"
-
-# Create memory dir if it doesn't exist (enables auto-memory for all projects)
-mkdir -p "$MEMORY_DIR" 2>/dev/null || true
-
-MEMORY_RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
-  if length == 0 then
-    empty
-  else
-    map("- \(.text)") | join("\n")
-  end
-' 2>/dev/null) || true
-
-if [ -n "$MEMORY_RESULTS" ] && [ "$MEMORY_RESULTS" != "null" ]; then
-  MANUAL_SECTION=""
-  if [ -f "$MEMORY_FILE" ]; then
-    # Preserve everything above the sync marker (manual/pinned content)
-    MARKER_LINE=$(grep -Fn "$SYNC_MARKER" "$MEMORY_FILE" 2>/dev/null | head -1 | cut -d: -f1) || true
-    if [ -n "$MARKER_LINE" ]; then
-      if [ "$MARKER_LINE" -gt 1 ]; then
-        MANUAL_SECTION=$(head -n $((MARKER_LINE - 1)) "$MEMORY_FILE")
-      else
-        MANUAL_SECTION=""
-      fi
-    else
-      MANUAL_SECTION=$(cat "$MEMORY_FILE")
-    fi
-  fi
-
-  # Write: manual section (preserved) + sync marker + fresh memories
-  {
-    if [ -n "$MANUAL_SECTION" ]; then
-      printf '%s\n' "$MANUAL_SECTION"
-      echo ""
-    fi
-    echo "$SYNC_MARKER"
-    echo "## Synced from Memories"
-    echo "$MEMORY_RESULTS"
-  } > "$MEMORY_FILE"
-fi
-
-# --- Output context for Claude Code ---
+# --- Output context for Codex ---
 jq -n --arg memories "$CONTEXT_RESULTS" --arg playbook "$PLAYBOOK" --arg health_warning "$HEALTH_WARNING" --arg deferred "$DEFERRED_SECTION" '{
   hookSpecificOutput: {
     hookEventName: "SessionStart",

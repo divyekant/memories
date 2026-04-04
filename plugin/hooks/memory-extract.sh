@@ -8,7 +8,7 @@ MEMORIES_HOOK_NAME="memory-extract"
 set -euo pipefail
 
 [ -f "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}" ] && . "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
-_LIB="$(dirname "$0")/_lib.sh"
+_LIB="$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 if [ -f "$_LIB" ]; then
   source "$_LIB"
 else
@@ -22,8 +22,8 @@ MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 # Configurable thresholds (Task 1.2)
 TAIL_LINES="${MEMORIES_EXTRACT_TAIL_LINES:-200}"
-MSG_PAIRS="${MEMORIES_EXTRACT_MSG_PAIRS:-2}"
-MSG_CAP="${MEMORIES_EXTRACT_MSG_CAP:-4000}"
+MSG_PAIRS="${MEMORIES_EXTRACT_MSG_PAIRS:-4}"
+MSG_CAP="${MEMORIES_EXTRACT_MSG_CAP:-8000}"
 
 INPUT=$(cat)
 
@@ -79,11 +79,9 @@ fi
 # Cap at MSG_CAP chars (one pair is plenty for the Stop hook)
 MESSAGES="${MESSAGES:0:$MSG_CAP}"
 
-# Signal keyword pre-filter — skip extraction if no signals detected
-SIGNAL_KEYWORDS="${MEMORIES_SIGNAL_KEYWORDS:-decide|decision|chose|bug|fix|remember|architecture|convention|pattern|learning|mistake}"
-if [ -n "$SIGNAL_KEYWORDS" ] && [ -n "$MESSAGES" ] && ! echo "$MESSAGES" | grep -qiE "$SIGNAL_KEYWORDS"; then
-  exit 0
-fi
+# No pre-filter — extraction runs unconditionally on every Stop event.
+# The extraction LLM (AUDN) decides what's worth keeping.
+# Cost: ~$0.001/call. Missed memories are more expensive than the filter saves.
 
 _log_info "Extracting from $PROJECT (${#MESSAGES} chars, source=$SOURCE)"
 

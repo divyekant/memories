@@ -1,5 +1,20 @@
 # Changelog
 
+## [5.0.2] - 2026-03-28
+
+### Added
+- **Codex Native Hooks Integration** — full parallel to Claude Code hooks using Codex CLI's 5 hook events
+  - `SessionStart`: memory recall with project-scoped search and deferred-work surfacing (no MEMORY.md hydration)
+  - `UserPromptSubmit`: prompt-enriched memory search with flexible Codex transcript parsing
+  - `Stop`: beefier extraction (500 lines, 10 msg pairs, 8000 chars, no signal filter) compensating for no PreCompact/SessionEnd
+  - `PreToolUse`: MEMORY.md write guard
+  - `PostToolUse`: memory tool usage logging
+- Standalone `hooks.json` config for Codex (writes to `~/.codex/hooks.json`, not `settings.json`)
+- Installer updated: copies from `integrations/codex/hooks/`, writes standalone hooks config, safe uninstall by command path
+
+### Changed
+- Installer extracts `READONLY_MCP_TOOLS` to top-level constant (DRY)
+
 ## [5.0.1] - 2026-03-27
 
 ### Fixed

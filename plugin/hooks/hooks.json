@@ -4,7 +4,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-recall.sh",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-recall.sh",
         "timeout": 5
       }]
     }],
@@ -12,7 +12,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-query.sh",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-query.sh",
         "timeout": 3
       }]
     }],
@@ -20,7 +20,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-extract.sh",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-extract.sh",
         "timeout": 30
       }]
     }],
@@ -28,7 +28,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-flush.sh",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-flush.sh",
         "timeout": 30
       }]
     }],
@@ -36,7 +36,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-rehydrate.sh",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-rehydrate.sh",
         "timeout": 5
       }]
     }],
@@ -44,7 +44,14 @@
       "matcher": "mcp__memories__",
       "hooks": [{
         "type": "command",
-        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-observe.sh",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-observe.sh",
+        "timeout": 1
+      }]
+    }, {
+      "matcher": "Write|Edit|Bash",
+      "hooks": [{
+        "type": "command",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-tool-observe.sh",
         "timeout": 1
       }]
     }],
@@ -52,15 +59,23 @@
       "matcher": "Write|Edit",
       "hooks": [{
         "type": "command",
-        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-guard.sh",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-guard.sh",
         "timeout": 1
       }]
     }],
-    "SubagentStop": [{
-      "matcher": "Plan|Explore",
+    "SubagentStart": [{
+      "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-subagent-capture.sh",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-subagent-recall.sh",
+        "timeout": 5
+      }]
+    }],
+    "SubagentStop": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-subagent-capture.sh",
         "timeout": 30
       }]
     }],
@@ -68,7 +83,7 @@
       "matcher": "user_settings",
       "hooks": [{
         "type": "command",
-        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-config-guard.sh",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-config-guard.sh",
         "timeout": 2
       }]
     }],
@@ -76,7 +91,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "${MEMORIES_HOOKS_DIR:-~/.claude/hooks/memory}/memory-commit.sh",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-commit.sh",
         "timeout": 30
       }]
     }]
