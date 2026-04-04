@@ -229,8 +229,9 @@ For simple cases (2 clear, novel facts), individual `memory_add` calls are fine.
 
 ## Integration with Other Systems
 
+- **Backend provisioning**: Run `/memories:setup` to check service health, configure extraction providers, and write env files. Use this when entering a project where the Memories backend is not yet reachable.
 - **Auto-memory** handles project conventions and patterns in local files — let it do its job
-- **Session hooks** provide baseline context at startup — don't duplicate that work
+- **Session hooks** (12 hooks across 10 events) provide baseline context at startup — don't duplicate that work
 - **Hook-injected recall is a starting point, not a substitute for active recall.** If the
   retrieved memories look noisy, low-confidence, or obviously cross-project, run explicit
   `memory_search` calls yourself before answering.
@@ -252,15 +253,19 @@ The integration hooks fire at these Claude Code events, providing seamless memor
 | Hook | Event | What It Does |
 |------|-------|-------------|
 | `memory-recall.sh` | SessionStart | Loads project memories, hydrates MEMORY.md via sync marker, checks service health |
-| `memory-query.sh` | UserPromptSubmit | Searches for memories relevant to the current prompt using transcript context |
-| `memory-extract.sh` | Stop | Extracts facts from the last user+assistant pair (context: `stop`, ~4K chars) |
+| `memory-subagent-recall.sh` | SubagentStart | Injects project-scoped memories into subagents (Plan, Explore, code-reviewer, etc.) at spawn time for memory-aware subagents |
+| `memory-query.sh` | UserPromptSubmit | Searches for memories relevant to the current prompt using transcript context; uses assertive injection framing to ensure recalled memories influence the response |
+| `memory-extract.sh` | Stop | Extracts facts from the last user+assistant pair (context: `stop`, ~4K chars); fires unconditionally with no keyword filter |
+| `memory-tool-observe.sh` | PostToolUse (Write\|Edit\|Bash) | Logs tool observations (files changed, commands run) to a session-scoped JSONL file for richer extraction context |
 | `memory-flush.sh` | PreCompact | Aggressive extraction before context loss (context: `pre_compact`, ~12K chars) |
 | `memory-commit.sh` | SessionEnd | Final extraction pass (context: `session_end`, ~8K chars) |
 | `memory-rehydrate.sh` | PostCompact | Re-injects memories using the compact summary as a targeted search query |
-| `memory-subagent-capture.sh` | SubagentStop | Captures architectural decisions from Plan/Explore subagents |
-| `memory-observe.sh` | PostToolUse | Logs when memory MCP tools are called (observability) |
+| `memory-subagent-capture.sh` | SubagentStop | Captures architectural decisions from subagents |
+| `memory-observe.sh` | PostToolUse (mcp__memories__) | Logs when memory MCP tools are called (observability) |
 | `memory-guard.sh` | PreToolUse | Blocks direct writes to MEMORY.md (managed by sync) |
 | `memory-config-guard.sh` | ConfigChange | Warns if memory hooks are removed from settings |
+
+The Stop hook fires unconditionally on every turn — there is no signal keyword filter. This ensures all decisions and context are captured regardless of phrasing.
 
 The extraction `context` parameter controls aggressiveness:
 - `stop`: Standard — skips task completion details, commit hashes, metrics
