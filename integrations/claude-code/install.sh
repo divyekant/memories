@@ -251,7 +251,6 @@ if [ "$UNINSTALL" = true ]; then
   if [ "$TARGET_CODEX" = true ]; then
     remove_target "Codex hooks" "$HOME/.codex/hooks/memory"
     if [ -f "$HOME/.codex/hooks.json" ]; then
-      local cleaned
       cleaned=$(jq '
         .hooks |= with_entries(
           .value |= map(
