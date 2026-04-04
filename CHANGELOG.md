@@ -1,5 +1,31 @@
 # Changelog
 
+## [5.1.0] - 2026-04-04
+
+### Added
+- **Claude Code Plugin** — hooks, skills, and CLAUDE.md packaged as a CC plugin in `plugin/` directory with native auto-update via dk-marketplace (#66)
+  - SubagentStart recall hook (`memory-subagent-recall.sh`) — injects project memories into Plan, Explore, code-reviewer, and general-purpose subagents at spawn
+  - PostToolUse tool observation hook (`memory-tool-observe.sh`) — logs Write/Edit/Bash tool usage to session file for richer extraction context
+  - Setup skill (`/memories:setup`) — interactive backend provisioning with Docker, MCP config, and auto-update enforcement
+  - Backend version checking in recall hook — warns when running Docker version is behind expected
+  - Standalone `docker-compose.standalone.yml` for zero-clone backend deployment
+  - Plugin CLAUDE.md with behavioral overrides making memory non-optional
+- Assertive injection framing — recalled memories now include "IMPORTANT: MUST be considered" prefix matching CC's native memory priority language
+
+### Changed
+- Extraction fires unconditionally — removed signal keyword filter; the extraction LLM (AUDN) decides what's worth keeping
+- Extraction window widened from 2 message pairs / 4K to 4 pairs / 8K chars
+- SubagentStop capture widened from Plan/Explore only to all subagent types
+- Subagent capture window widened from 6 messages / 4K to 12 messages / 8K chars
+- Config guard skips `settings.json` check when running as a plugin (`CLAUDE_PLUGIN_ROOT` set)
+- All hook paths updated from `dirname "$0"` to `dirname "${BASH_SOURCE[0]}"` for reliable plugin resolution
+
+### Fixed
+- Compaction cluster semantics — `find_similar_clusters()` now tightens union-find clusters by removing members not similar to at least half the group, preventing chain-connected outliers (#38)
+- Codex uninstall `local` keyword used outside function scope in `install.sh`
+- Codex installer hook merge overwrote existing hooks instead of concatenating arrays
+- Hardcoded Plan/Explore filter in `memory-subagent-capture.sh` silently dropped other subagent types despite hooks.json matching all
+
 ## [5.0.2] - 2026-03-28
 
 ### Added
