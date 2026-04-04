@@ -9,7 +9,7 @@ MEMORIES_HOOK_NAME="memory-tool-observe"
 set -euo pipefail
 
 [ -f "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}" ] && . "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
-_LIB="$(dirname "$0")/_lib.sh"
+_LIB="$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 if [ -f "$_LIB" ]; then
   source "$_LIB"
 else

@@ -11,7 +11,7 @@ set -euo pipefail
 
 # Load from dedicated env file — avoids requiring shell profile changes
 [ -f "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}" ] && . "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
-_LIB="$(dirname "$0")/_lib.sh"
+_LIB="$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 if [ -f "$_LIB" ]; then
   source "$_LIB"
 else
@@ -43,7 +43,7 @@ TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
 
 build_response_hint() {
   local prompt_lower="$1"
-  local hints_file="$(dirname "$0")/response-hints.json"
+  local hints_file="$(dirname "${BASH_SOURCE[0]}")/response-hints.json"
 
   [ -f "$hints_file" ] || return
 
