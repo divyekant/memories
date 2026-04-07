@@ -1,5 +1,25 @@
 # Changelog
 
+## [5.2.0] - 2026-04-07
+
+### Added
+- **Auto-feature metrics** — graph search, temporal queries, and auto-linking now tracked in usage analytics
+  - `graph_search_events` table tracks activations, graph-influenced result counts, and average graph yield per search
+  - `temporal_search_events` table tracks since-only, until-only, and range query usage
+  - `links_created` column on `extraction_outcomes` with automatic DB migration
+  - `GET /metrics/graph-search` and `GET /metrics/temporal-search` admin endpoints
+  - `graph_search` and `temporal_search` sections added to `GET /metrics/quality-summary`
+- **Health page UI** — new stat cards (Graph Searches, Temporal Queries, Links Created) and Auto-Features quality panel with detailed breakdowns
+- **Extraction eval framework** — `eval/run_extraction_eval.py` and scenario runner for measuring extraction quality
+
+### Fixed
+- **Recall hook regression (v5.1.0)** — backend version check killed script with exit code 2 when service unreachable due to unguarded `curl` inside `set -euo pipefail`; now skips version check when health warning already present and guards pipeline with `|| fallback`
+- Test fake curl handles GET requests (no POST body) correctly
+
+### Changed
+- Extraction training pair collection refactored with richer context (system prompts, AUDN decisions, similar memory payloads)
+- Graph search metric counts both pure `graph` and `direct+graph` match types for complete picture of graph influence
+
 ## [5.1.0] - 2026-04-04
 
 ### Added

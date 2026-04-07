@@ -4,7 +4,7 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v5.1.0):**
+**Key capabilities (v5.2.0):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
 - **Graph-aware retrieval** — automatic `related_to` links between memories, PPR-scored multi-hop traversal, +20% retrieval lift on 2-hop benchmarks
 - **Temporal reasoning** — `document_at` timestamps, version preservation on UPDATE (archive + supersedes link), `since`/`until` date-range filters
