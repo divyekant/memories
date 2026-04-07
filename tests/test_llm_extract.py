@@ -1161,6 +1161,39 @@ class TestTrainingDataCollection:
             assert record["source"] == "eval/test"
             assert record["context"] == "stop"
             assert "ts" in record
+            assert record["extraction"]["user"] == record["input"]
+            assert record["extraction"]["assistant"] == record["output"]
+            assert "system" in record["extraction"]
+        finally:
+            llm_extract.TRAINING_DATA_DIR = orig
+
+    def test_saves_audn_payload_when_provided(self, tmp_path):
+        import llm_extract
+        orig = llm_extract.TRAINING_DATA_DIR
+        llm_extract.TRAINING_DATA_DIR = str(tmp_path)
+        try:
+            llm_extract._save_training_pair(
+                "User: replace Redis cache",
+                [{"category": "learning", "text": "Redis cache was removed."}],
+                "eval/test",
+                "stop",
+                audn_system="You are a memory manager. Output only valid JSON.",
+                audn_prompt='{"facts":[{"index":0,"text":"Redis cache was removed.","category":"learning"}]}',
+                audn_decisions=[{"action": "DELETE", "fact_index": 0, "old_id": 12}],
+                similar_per_fact={0: [{"id": 12, "text": "We use Redis for caching", "source": "eval/old", "rrf_score": 0.9}]},
+                extract_tokens={"input": 10, "output": 11},
+                audn_tokens={"input": 12, "output": 13},
+            )
+            files = list(tmp_path.glob("extraction-training-*.jsonl"))
+            assert len(files) == 1
+            record = json.loads(files[0].read_text().strip())
+            assert record["audn"]["system"] == "You are a memory manager. Output only valid JSON."
+            assert record["audn"]["user"].startswith('{"facts"')
+            assert record["audn"]["assistant"] == [{"action": "DELETE", "fact_index": 0, "old_id": 12}]
+            assert record["audn"]["similar_memories"]["0"][0]["id"] == 12
+            assert record["audn"]["similar_memories"]["0"][0]["source"] == "eval/old"
+            assert record["audn"]["tokens"] == {"input": 12, "output": 13}
+            assert record["extraction"]["tokens"] == {"input": 10, "output": 11}
         finally:
             llm_extract.TRAINING_DATA_DIR = orig
 

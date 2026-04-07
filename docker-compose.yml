@@ -55,6 +55,8 @@ services:
       - CHATGPT_REFRESH_TOKEN=${CHATGPT_REFRESH_TOKEN:-}
       - CHATGPT_CLIENT_ID=${CHATGPT_CLIENT_ID:-}
       - EXTRACT_FALLBACK_ADD=${EXTRACT_FALLBACK_ADD:-false}
+      # Training data collection (passive, for future fine-tuning)
+      - EXTRACT_TRAINING_DATA_DIR=${EXTRACT_TRAINING_DATA_DIR:-}
       # Usage analytics (opt-in)
       - USAGE_TRACKING=${USAGE_TRACKING:-}
       # Audit log (opt-in)

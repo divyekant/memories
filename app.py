@@ -777,6 +777,7 @@ async def _extract_worker(worker_id: int) -> None:
                 noop=noop_count,
                 conflict=result.get("conflict_count", 0),
                 fallback=result.get("fallback_count", 0),
+                links_created=len(result.get("links_created", [])),
             )
             tokens = result.get("tokens", {})
             for stage_name in ("extract", "audn"):
@@ -1699,6 +1700,28 @@ async def stale_memories_endpoint(
     return {"memories": usage_tracker.get_stale_memories(min_retrievals=min_retrievals, limit=limit)}
 
 
+@app.get("/metrics/graph-search")
+async def graph_search_metrics(
+    request: Request,
+    period: str = Query("7d", pattern="^(today|7d|30d|all)$"),
+):
+    """Graph search activation stats. Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    return usage_tracker.get_graph_search_stats(period=period)
+
+
+@app.get("/metrics/temporal-search")
+async def temporal_search_metrics(
+    request: Request,
+    period: str = Query("7d", pattern="^(today|7d|30d|all)$"),
+):
+    """Temporal filter usage stats. Admin only."""
+    auth = _get_auth(request)
+    _require_admin(auth)
+    return usage_tracker.get_temporal_search_stats(period=period)
+
+
 @app.get("/audit")
 async def get_audit_log(
     request: Request,
@@ -1957,6 +1980,23 @@ async def search(request_body: SearchRequest, request: Request):
                     rank=rank,
                     result_count=result_count,
                 )
+        # Track graph search activations
+        if request_body.graph_weight > 0:
+            graph_count = sum(1 for r in results if "graph" in (r.get("match_type") or ""))
+            usage_tracker.log_graph_search(
+                query=request_body.query[:200],
+                graph_weight=request_body.graph_weight,
+                direct_count=result_count - graph_count,
+                graph_count=graph_count,
+                total_results=result_count,
+            )
+        # Track temporal filter usage
+        if request_body.since or request_body.until:
+            usage_tracker.log_temporal_search(
+                query=request_body.query[:200],
+                has_since=request_body.since is not None,
+                has_until=request_body.until is not None,
+            )
         return {"query": request_body.query, "results": results, "count": result_count}
     except Exception as e:
         logger.exception("Search failed")
@@ -2966,6 +3006,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
                 noop=result.get("noop_count", 0),
                 conflict=result.get("conflict_count", 0),
                 fallback=result.get("fallback_count", 0),
+                links_created=len(result.get("links_created", [])),
             )
             logger.info(
                 "Extract fallback completed: job_id=%s source=%s context=%s extracted=%d stored=%d",

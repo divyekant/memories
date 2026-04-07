@@ -480,10 +480,14 @@ def get_models(filter_names: list[str] | None = None) -> dict:
 
     all_models = {
         "haiku": lambda: AnthropicProvider(api_key=api_key, model="claude-haiku-4-5-20251001"),
+        "qwen3:4b": lambda: NoThinkOllamaProvider(base_url="http://localhost:11434", model="qwen3:4b"),
         "qwen3.5:9b": lambda: NoThinkOllamaProvider(base_url="http://localhost:11434", model="qwen3.5:9b"),
+        "qwen3.5:4b": lambda: NoThinkOllamaProvider(base_url="http://localhost:11434", model="qwen3.5:4b"),
         "gemma3:12b": lambda: NoThinkOllamaProvider(base_url="http://localhost:11434", model="gemma3:12b"),
+        "gemma3:4b": lambda: NoThinkOllamaProvider(base_url="http://localhost:11434", model="gemma3:4b"),
         "nuextract": lambda: NoThinkOllamaProvider(base_url="http://localhost:11434", model="nuextract"),
         "qwen3:8b": lambda: NoThinkOllamaProvider(base_url="http://localhost:11434", model="qwen3:8b"),
+        "memex:1.7b": lambda: NoThinkOllamaProvider(base_url="http://localhost:11434", model="memex:1.7b"),
     }
 
     if filter_names:

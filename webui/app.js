@@ -3229,6 +3229,8 @@ registerPage("health", async (container) => {
     let failures = null; // null = not loaded (auth failed), [] = loaded empty
     let problemQueries = null; // null = not loaded (auth failed)
     let staleMemories = null; // null = not loaded (auth failed)
+    let graphStats = null;
+    let temporalStats = null;
 
     const results = await Promise.allSettled([
       api("/memory/conflicts"),
@@ -3237,6 +3239,8 @@ registerPage("health", async (container) => {
       api("/metrics/failures?type=extraction&limit=100"),
       api("/metrics/problem-queries"),
       api("/metrics/stale-memories"),
+      api(`/metrics/graph-search?period=${period}`),
+      api(`/metrics/temporal-search?period=${period}`),
     ]);
 
     if (results[0].status === "fulfilled") {
@@ -3257,6 +3261,8 @@ registerPage("health", async (container) => {
       const d = results[5].value;
       staleMemories = d.memories || [];
     }
+    if (results[6].status === "fulfilled") graphStats = results[6].value;
+    if (results[7].status === "fulfilled") temporalStats = results[7].value;
 
     // Stat cards
     const statGrid = h("div", { className: "health-stat-grid" });
@@ -3315,6 +3321,37 @@ registerPage("health", async (container) => {
         h("div", { className: "health-stat-label" }, "Failures"),
         h("div", { className: "health-stat-value", style: { fontSize: "0.875rem", color: "var(--color-text-faint)" } }, "Admin only"),
         h("div", { className: "health-stat-sub" }, "requires admin key")
+      ));
+    }
+
+    // Graph search stat
+    if (graphStats) {
+      const gs = graphStats.total_graph_searches || 0;
+      const gr = graphStats.total_graph_results || 0;
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Graph Searches"),
+        h("div", { className: "health-stat-value", style: { color: "var(--color-primary)" } }, String(gs)),
+        h("div", { className: "health-stat-sub" }, `${gr} graph-influenced results`)
+      ));
+    }
+
+    // Temporal search stat
+    if (temporalStats) {
+      const ts = temporalStats.total_temporal_searches || 0;
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Temporal Queries"),
+        h("div", { className: "health-stat-value", style: { color: "var(--color-primary)" } }, String(ts)),
+        h("div", { className: "health-stat-sub" }, `${temporalStats.range_queries || 0} range queries`)
+      ));
+    }
+
+    // Links created stat
+    if (extractionQuality && extractionQuality.totals) {
+      const lc = extractionQuality.totals.links_created || 0;
+      statGrid.appendChild(h("div", { className: "health-stat-card" },
+        h("div", { className: "health-stat-label" }, "Links Created"),
+        h("div", { className: "health-stat-value color-success" }, String(lc)),
+        h("div", { className: "health-stat-sub" }, "via auto-linking")
       ));
     }
 
@@ -3543,6 +3580,53 @@ registerPage("health", async (container) => {
       );
     }
     qualityGrid.appendChild(searchPanel);
+
+    // Auto-Features panel
+    const autoPanel = h("div", { className: "quality-panel" },
+      h("div", { className: "quality-panel-title" }, "Auto-Features")
+    );
+    if (graphStats || temporalStats || (extractionQuality && extractionQuality.totals)) {
+      if (graphStats) {
+        autoPanel.appendChild(h("div", { className: "quality-row" },
+          h("span", null, "Graph searches"),
+          h("span", { style: { color: "var(--color-primary)" } }, String(graphStats.total_graph_searches || 0))
+        ));
+        autoPanel.appendChild(h("div", { className: "quality-row" },
+          h("span", null, "Graph-influenced results"),
+          h("span", { style: { color: "var(--color-primary)" } }, String(graphStats.total_graph_results || 0))
+        ));
+        if (graphStats.total_graph_searches > 0) {
+          autoPanel.appendChild(h("div", { className: "quality-row" },
+            h("span", null, "Avg graph results/search"),
+            h("span", null, String(graphStats.avg_graph_results || 0))
+          ));
+        }
+      }
+      if (temporalStats) {
+        autoPanel.appendChild(h("div", { className: "quality-row" },
+          h("span", null, "Temporal searches"),
+          h("span", { style: { color: "var(--color-primary)" } }, String(temporalStats.total_temporal_searches || 0))
+        ));
+        if (temporalStats.total_temporal_searches > 0) {
+          autoPanel.appendChild(h("div", { className: "quality-row" },
+            h("span", null, "Since-only / Until-only / Range"),
+            h("span", null, `${temporalStats.since_only || 0} / ${temporalStats.until_only || 0} / ${temporalStats.range_queries || 0}`)
+          ));
+        }
+      }
+      if (extractionQuality && extractionQuality.totals) {
+        const lc = extractionQuality.totals.links_created || 0;
+        autoPanel.appendChild(h("div", { className: "quality-row" },
+          h("span", null, "Links created"),
+          h("span", { className: "color-success" }, String(lc))
+        ));
+      }
+    } else {
+      autoPanel.appendChild(
+        h("div", { style: { fontSize: "0.75rem", color: "var(--color-text-faint)" } }, "No auto-feature data yet")
+      );
+    }
+    qualityGrid.appendChild(autoPanel);
 
     container.appendChild(qualityGrid);
   }

@@ -45,6 +45,9 @@ for arg in "$@"; do
   esac
 done
 
+# GET requests have no body — use null for jq compatibility
+if [ -z "$body" ]; then body="null"; fi
+
 jq -nc --arg url "$url" --argjson body "$body" '{url: $url, body: $body}' >> "$FAKE_CURL_CALLS"
 
 jq -c --arg url "$url" --argjson body "$body" '
@@ -446,7 +449,8 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
     assert "Claude read hooks should search project-scoped memories" in memory_text
     assert "## Memory Playbook" not in memory_text
 
-    prefixes = [call["body"].get("source_prefix", "") for call in calls]
+    search_calls = [call for call in calls if call["body"] is not None]
+    prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     # 4th call is the dedicated deferred-work surfacing search
     assert prefixes == ["claude-code/memories", "learning/memories", "wip/memories", "wip/memories"]
 
@@ -524,7 +528,8 @@ def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp
     result, calls, _ = _run_hook(installed_recall, tmp_path, payload, responses)
 
     assert result.returncode == 0
-    prefixes = [call["body"].get("source_prefix", "") for call in calls]
+    search_calls = [call for call in calls if call["body"] is not None]
+    prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     # 4th call is the dedicated deferred-work surfacing search
     assert prefixes == ["codex/memories", "learning/memories", "wip/memories", "wip/memories"]
 

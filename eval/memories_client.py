@@ -51,11 +51,11 @@ class MemoriesClient:
             ids.extend(resp.json().get("ids", []))
         return ids
 
-    def clear_by_prefix(self, prefix: str) -> int:
+    def clear_by_prefix(self, prefix: str, *, skip_snapshot: bool = True) -> int:
         """POST /memory/delete-by-prefix. Returns number of deleted memories."""
         resp = self._client.post(
             "/memory/delete-by-prefix",
-            json={"source_prefix": prefix},
+            json={"source_prefix": prefix, "skip_snapshot": skip_snapshot},
         )
         resp.raise_for_status()
         data = resp.json()

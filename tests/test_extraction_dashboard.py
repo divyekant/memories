@@ -178,3 +178,111 @@ class TestFallbackMetrics:
         tracker.log_extraction_outcome(source="new", extracted=5, stored=3, fallback=1)
         quality = tracker.get_extraction_quality()
         assert quality["totals"]["fallback"] == 1
+
+
+class TestAutoFeatureMetrics:
+    """Metrics for links, graph search, and temporal queries."""
+
+    @pytest.fixture
+    def tracker(self, tmp_path):
+        from usage_tracker import UsageTracker
+        return UsageTracker(str(tmp_path / "usage.db"))
+
+    def test_links_created_tracked_in_extraction_outcome(self, tracker):
+        tracker.log_extraction_outcome(
+            source="claude-code/proj", extracted=5, stored=3, links_created=7,
+        )
+        quality = tracker.get_extraction_quality()
+        assert quality["totals"]["links_created"] == 7
+
+    def test_links_created_aggregates_across_batches(self, tracker):
+        tracker.log_extraction_outcome(source="a", extracted=3, stored=2, links_created=4)
+        tracker.log_extraction_outcome(source="b", extracted=4, stored=3, links_created=6)
+        quality = tracker.get_extraction_quality()
+        assert quality["totals"]["links_created"] == 10
+
+    def test_links_created_in_per_source_breakdown(self, tracker):
+        tracker.log_extraction_outcome(source="src-a", extracted=3, stored=2, links_created=5)
+        tracker.log_extraction_outcome(source="src-b", extracted=2, stored=1, links_created=3)
+        quality = tracker.get_extraction_quality()
+        assert quality["by_source"]["src-a"]["links_created"] == 5
+        assert quality["by_source"]["src-b"]["links_created"] == 3
+
+    def test_links_created_defaults_to_zero(self, tracker):
+        tracker.log_extraction_outcome(source="s", extracted=3, stored=2)
+        quality = tracker.get_extraction_quality()
+        assert quality["totals"]["links_created"] == 0
+
+    def test_log_graph_search(self, tracker):
+        tracker.log_graph_search(
+            query="extraction pipeline", graph_weight=0.3,
+            direct_count=3, graph_count=2, total_results=5,
+        )
+        stats = tracker.get_graph_search_stats()
+        assert stats["total_graph_searches"] == 1
+        assert stats["total_graph_results"] == 2
+
+    def test_graph_search_aggregates(self, tracker):
+        tracker.log_graph_search(query="q1", graph_weight=0.3, direct_count=3, graph_count=2, total_results=5)
+        tracker.log_graph_search(query="q2", graph_weight=0.1, direct_count=4, graph_count=1, total_results=5)
+        stats = tracker.get_graph_search_stats()
+        assert stats["total_graph_searches"] == 2
+        assert stats["total_graph_results"] == 3
+        assert stats["avg_graph_results"] == 1.5
+
+    def test_graph_search_in_quality_summary(self, tracker):
+        tracker.log_graph_search(query="q", graph_weight=0.3, direct_count=3, graph_count=2, total_results=5)
+        summary = tracker.get_quality_summary()
+        assert "graph_search" in summary
+        assert summary["graph_search"]["total_graph_searches"] == 1
+
+    def test_log_temporal_search(self, tracker):
+        tracker.log_temporal_search(query="arch decisions", has_since=True, has_until=False)
+        stats = tracker.get_temporal_search_stats()
+        assert stats["total_temporal_searches"] == 1
+        assert stats["since_only"] == 1
+        assert stats["until_only"] == 0
+
+    def test_temporal_search_range_queries(self, tracker):
+        tracker.log_temporal_search(query="q1", has_since=True, has_until=True)
+        tracker.log_temporal_search(query="q2", has_since=False, has_until=True)
+        stats = tracker.get_temporal_search_stats()
+        assert stats["total_temporal_searches"] == 2
+        assert stats["range_queries"] == 1
+        assert stats["until_only"] == 1
+
+    def test_temporal_search_in_quality_summary(self, tracker):
+        tracker.log_temporal_search(query="q", has_since=True, has_until=False)
+        summary = tracker.get_quality_summary()
+        assert "temporal_search" in summary
+        assert summary["temporal_search"]["total_temporal_searches"] == 1
+
+    def test_null_tracker_stubs(self):
+        from usage_tracker import NullTracker
+        t = NullTracker()
+        t.log_extraction_outcome(source="s", extracted=5, stored=3, links_created=2)
+        t.log_graph_search(query="q", graph_weight=0.3, direct_count=3, graph_count=2, total_results=5)
+        t.log_temporal_search(query="q", has_since=True, has_until=False)
+        assert t.get_graph_search_stats() == {}
+        assert t.get_temporal_search_stats() == {}
+
+    def test_db_migration_adds_links_created_column(self, tmp_path):
+        """Existing DB without links_created column should get it via migration."""
+        import sqlite3
+        db_path = str(tmp_path / "legacy.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""CREATE TABLE extraction_outcomes (
+            id INTEGER PRIMARY KEY,
+            ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            source TEXT DEFAULT '', extracted INTEGER DEFAULT 0,
+            stored INTEGER DEFAULT 0, updated INTEGER DEFAULT 0,
+            deleted INTEGER DEFAULT 0, noop INTEGER DEFAULT 0,
+            conflict INTEGER DEFAULT 0, fallback INTEGER DEFAULT 0
+        )""")
+        conn.commit()
+        conn.close()
+        from usage_tracker import UsageTracker
+        tracker = UsageTracker(db_path)
+        tracker.log_extraction_outcome(source="new", extracted=5, stored=3, links_created=4)
+        quality = tracker.get_extraction_quality()
+        assert quality["totals"]["links_created"] == 4

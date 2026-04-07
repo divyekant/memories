@@ -97,7 +97,7 @@ class TestClearByPrefix:
         assert deleted == 5
         mock_post.assert_called_once_with(
             "/memory/delete-by-prefix",
-            json={"source_prefix": "eval/test-001"},
+            json={"source_prefix": "eval/test-001", "skip_snapshot": True},
         )
 
 

@@ -23,36 +23,97 @@ TRAINING_DATA_DIR = os.environ.get("EXTRACT_TRAINING_DATA_DIR", "").strip()
 _TRAINING_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50MB rotation threshold
 
 
-def _save_training_pair(messages: str, facts: list[dict], source: str, context: str) -> None:
-    """Persist an (input, output) pair for future fine-tuning. Best-effort, never raises."""
+def _training_output_path(out_dir: Path, now: datetime) -> Path:
+    """Return the rotated JSONL output path for passive training data."""
+    path = out_dir / f"extraction-training-{now.strftime('%Y-%m-%d')}.jsonl"
+    try:
+        if path.stat().st_size > _TRAINING_MAX_FILE_BYTES:
+            seq = 1
+            while True:
+                rotated = out_dir / f"extraction-training-{now.strftime('%Y-%m-%d')}-{seq}.jsonl"
+                if not rotated.exists():
+                    return rotated
+                seq += 1
+    except OSError:
+        pass
+    return path
+
+
+def _build_extraction_system_prompt(source: str, context: str) -> str:
+    """Build the exact extraction system prompt used for a request."""
+    template = FACT_EXTRACTION_PROMPT_AGGRESSIVE if context == "pre_compact" else FACT_EXTRACTION_PROMPT
+    project = source.rsplit("/", 1)[-1] if "/" in source else source or "this"
+    return template.format(project=project)
+
+
+def _compact_similar_memories(similar_per_fact: dict) -> dict[str, list[dict]]:
+    """Reduce similar-memory payloads to the fields needed for fine-tuning."""
+    compact: dict[str, list[dict]] = {}
+    for idx, mems in similar_per_fact.items():
+        compact[str(idx)] = [
+            {
+                "id": m.get("id"),
+                "text": _clip_text(str(m.get("text", "")), EXTRACT_SIMILAR_TEXT_CHARS),
+                "source": m.get("source", ""),
+                "relevance": round(_mem_score(m), 6),
+            }
+            for m in mems[:EXTRACT_SIMILAR_PER_FACT]
+        ]
+    return compact
+
+
+def _save_training_pair(
+    messages: str,
+    facts: list[dict],
+    source: str,
+    context: str,
+    *,
+    audn_prompt: str | None = None,
+    audn_system: str | None = None,
+    audn_decisions: list[dict] | None = None,
+    similar_per_fact: dict | None = None,
+    extract_tokens: dict | None = None,
+    audn_tokens: dict | None = None,
+) -> None:
+    """Persist extraction and optional AUDN supervision for future fine-tuning.
+
+    Best-effort only: failures are logged at debug level and never raise.
+    """
     if not TRAINING_DATA_DIR:
         return
     try:
         out_dir = Path(TRAINING_DATA_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc)
-        path = out_dir / f"extraction-training-{now.strftime('%Y-%m-%d')}.jsonl"
-        # Rotate if file exceeds threshold (single stat call, no exists check)
-        try:
-            if path.stat().st_size > _TRAINING_MAX_FILE_BYTES:
-                seq = 1
-                while True:
-                    rotated = out_dir / f"extraction-training-{now.strftime('%Y-%m-%d')}-{seq}.jsonl"
-                    if not rotated.exists():
-                        path = rotated
-                        break
-                    seq += 1
-        except OSError:
-            pass  # File doesn't exist yet — use default path
-        record = json.dumps({
+        path = _training_output_path(out_dir, now)
+        record = {
             "input": messages,
             "output": facts,
             "source": source,
             "context": context,
             "ts": now.isoformat(),
-        }, ensure_ascii=False)
+            "extraction": {
+                "system": _build_extraction_system_prompt(source, context),
+                "user": messages,
+                "assistant": facts,
+            },
+        }
+        if extract_tokens is not None:
+            record["extraction"]["tokens"] = extract_tokens
+        if audn_prompt is not None and audn_system is not None and audn_decisions is not None:
+            audn_record = {
+                "system": audn_system,
+                "user": audn_prompt,
+                "assistant": audn_decisions,
+            }
+            if similar_per_fact is not None:
+                audn_record["similar_memories"] = _compact_similar_memories(similar_per_fact)
+            if audn_tokens is not None:
+                audn_record["tokens"] = audn_tokens
+            record["audn"] = audn_record
+        payload = json.dumps(record, ensure_ascii=False)
         with open(path, "a", encoding="utf-8") as f:
-            f.write(record + "\n")
+            f.write(payload + "\n")
     except Exception as e:
         logger.debug("Training data save failed (non-fatal): %s", e)
 
@@ -247,13 +308,7 @@ def extract_facts(
         list[dict], or tuple[list[dict], Optional[str], dict] when return_error=True.
         Each dict has {"category": str, "text": str}.
     """
-    if context == "pre_compact":
-        system = FACT_EXTRACTION_PROMPT_AGGRESSIVE
-    else:
-        system = FACT_EXTRACTION_PROMPT
-
-    project = source.rsplit("/", 1)[-1] if "/" in source else source or "this"
-    system = system.format(project=project)
+    system = _build_extraction_system_prompt(source, context)
 
     tokens = {"input": 0, "output": 0}
     try:
@@ -345,21 +400,6 @@ def run_audn(
         except Exception:
             similar_per_fact[i] = []
 
-    # Build audn_artifacts with similar_per_fact always present
-    audn_artifacts = {"similar_per_fact": dict(similar_per_fact)}
-    if debug:
-        audn_artifacts["debug_similar"] = {
-            i: [
-                {
-                    "id": m.get("id"),
-                    "text": _clip_text(str(m.get("text", "")), EXTRACT_SIMILAR_TEXT_CHARS),
-                    "similarity": round(float(m.get("similarity", m.get("rrf_score", 0.0))), 4),
-                }
-                for m in mems[:EXTRACT_SIMILAR_PER_FACT]
-            ]
-            for i, mems in similar_per_fact.items()
-        }
-
     facts_json = json.dumps(
         [{"index": i, "text": _clip_text(f["text"], EXTRACT_MAX_FACT_CHARS), "category": f.get("category", "detail")} for i, f in enumerate(facts)],
         separators=(",", ":"),
@@ -383,9 +423,29 @@ def run_audn(
     rules_section = _build_rules_section(rules)
     if rules_section:
         prompt = prompt + "\n\n" + rules_section
+    audn_system = "You are a memory manager. Output only valid JSON."
+    audn_artifacts = {
+        "similar_per_fact": dict(similar_per_fact),
+        "training_prompt": {
+            "system": audn_system,
+            "user": prompt,
+        },
+    }
+    if debug:
+        audn_artifacts["debug_similar"] = {
+            i: [
+                {
+                    "id": m.get("id"),
+                    "text": _clip_text(str(m.get("text", "")), EXTRACT_SIMILAR_TEXT_CHARS),
+                    "similarity": round(float(m.get("similarity", m.get("rrf_score", 0.0))), 4),
+                }
+                for m in mems[:EXTRACT_SIMILAR_PER_FACT]
+            ]
+            for i, mems in similar_per_fact.items()
+        }
 
     try:
-        result = provider.complete("You are a memory manager. Output only valid JSON.", prompt)
+        result = provider.complete(audn_system, prompt)
         tokens = {"input": result.input_tokens, "output": result.output_tokens}
         decisions = _parse_json_array(result.text)
         del result, prompt, facts_json, similar_json
@@ -855,9 +915,6 @@ def run_extraction(
             "tokens": {"extract": extract_tokens, "audn": {"input": 0, "output": 0}},
         }
 
-    # Passive training data collection (when EXTRACT_TRAINING_DATA_DIR is set)
-    _save_training_pair(messages, facts, source, context)
-
     # Step 2: AUDN decisions
     decisions, audn_tokens, audn_artifacts = run_audn(
         provider,
@@ -867,6 +924,21 @@ def run_extraction(
         allowed_prefixes=allowed_prefixes,
         debug=debug,
         rules=rules,
+    )
+
+    # Passive training data collection (when EXTRACT_TRAINING_DATA_DIR is set)
+    training_prompt = audn_artifacts.get("training_prompt", {})
+    _save_training_pair(
+        messages,
+        facts,
+        source,
+        context,
+        audn_prompt=training_prompt.get("user"),
+        audn_system=training_prompt.get("system"),
+        audn_decisions=decisions,
+        similar_per_fact=audn_artifacts.get("similar_per_fact"),
+        extract_tokens=extract_tokens,
+        audn_tokens=audn_tokens,
     )
 
     # Step 3: Dry-run intercept — return planned actions without executing

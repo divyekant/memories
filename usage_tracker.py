@@ -73,11 +73,24 @@ class NullTracker:
 
     def log_extraction_outcome(self, source: str = "", extracted: int = 0, stored: int = 0,
                                updated: int = 0, deleted: int = 0, noop: int = 0, conflict: int = 0,
-                               fallback: int = 0) -> None:
+                               fallback: int = 0, links_created: int = 0) -> None:
         pass
 
     def get_extraction_quality(self, period: str = "7d") -> Dict[str, Any]:
         return {"enabled": False}
+
+    def log_graph_search(self, query: str = "", graph_weight: float = 0.0,
+                         direct_count: int = 0, graph_count: int = 0, total_results: int = 0) -> None:
+        pass
+
+    def get_graph_search_stats(self, period: str = "7d") -> dict:
+        return {}
+
+    def log_temporal_search(self, query: str = "", has_since: bool = False, has_until: bool = False) -> None:
+        pass
+
+    def get_temporal_search_stats(self, period: str = "7d") -> dict:
+        return {}
 
     def get_quality_summary(self, period: str = "7d") -> Dict[str, Any]:
         return {"enabled": False}
@@ -157,9 +170,28 @@ class UsageTracker:
                 deleted INTEGER DEFAULT 0,
                 noop INTEGER DEFAULT 0,
                 conflict INTEGER DEFAULT 0,
-                fallback INTEGER DEFAULT 0
+                fallback INTEGER DEFAULT 0,
+                links_created INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_extraction_outcomes_ts ON extraction_outcomes(ts);
+            CREATE TABLE IF NOT EXISTS graph_search_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                query TEXT DEFAULT '',
+                graph_weight REAL DEFAULT 0.0,
+                direct_count INTEGER DEFAULT 0,
+                graph_count INTEGER DEFAULT 0,
+                total_results INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_search_ts ON graph_search_events(ts);
+            CREATE TABLE IF NOT EXISTS temporal_search_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                query TEXT DEFAULT '',
+                has_since INTEGER DEFAULT 0,
+                has_until INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_temporal_search_ts ON temporal_search_events(ts);
         """)
         # Migrate existing DBs: add rank/result_count columns if missing
         try:
@@ -170,11 +202,13 @@ class UsageTracker:
                 conn.execute("ALTER TABLE retrieval_log ADD COLUMN result_count INTEGER DEFAULT 0")
         except Exception:
             pass
-        # Migrate extraction_outcomes: add fallback column if missing
+        # Migrate extraction_outcomes: add fallback and links_created columns if missing
         try:
             cols = {row[1] for row in conn.execute("PRAGMA table_info(extraction_outcomes)").fetchall()}
             if "fallback" not in cols:
                 conn.execute("ALTER TABLE extraction_outcomes ADD COLUMN fallback INTEGER DEFAULT 0")
+            if "links_created" not in cols:
+                conn.execute("ALTER TABLE extraction_outcomes ADD COLUMN links_created INTEGER DEFAULT 0")
         except Exception:
             pass
         conn.close()
@@ -404,17 +438,87 @@ class UsageTracker:
 
     def log_extraction_outcome(self, source: str = "", extracted: int = 0, stored: int = 0,
                                updated: int = 0, deleted: int = 0, noop: int = 0, conflict: int = 0,
-                               fallback: int = 0) -> None:
+                               fallback: int = 0, links_created: int = 0) -> None:
         try:
             conn = self._get_conn()
             conn.execute(
-                "INSERT INTO extraction_outcomes (source, extracted, stored, updated, deleted, noop, conflict, fallback) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (source, extracted, stored, updated, deleted, noop, conflict, fallback),
+                "INSERT INTO extraction_outcomes (source, extracted, stored, updated, deleted, noop, conflict, fallback, links_created) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (source, extracted, stored, updated, deleted, noop, conflict, fallback, links_created),
             )
             conn.commit()
         except Exception:
             logger.debug("Failed to log extraction outcome", exc_info=True)
+
+    def log_graph_search(self, query: str = "", graph_weight: float = 0.0,
+                         direct_count: int = 0, graph_count: int = 0, total_results: int = 0) -> None:
+        try:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO graph_search_events (query, graph_weight, direct_count, graph_count, total_results) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (query[:500], graph_weight, direct_count, graph_count, total_results),
+            )
+            conn.commit()
+        except Exception:
+            logger.debug("Failed to log graph search event", exc_info=True)
+
+    def get_graph_search_stats(self, period: str = "7d") -> dict:
+        period_filter = PERIOD_SQL.get(period, PERIOD_SQL["7d"])
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) as cnt, "
+                f"COALESCE(SUM(graph_count), 0) as total_graph, "
+                f"COALESCE(SUM(direct_count), 0) as total_direct "
+                f"FROM graph_search_events WHERE 1=1 {period_filter}"
+            ).fetchone()
+            total = row["cnt"]
+            return {
+                "total_graph_searches": total,
+                "total_graph_results": row["total_graph"],
+                "total_direct_results": row["total_direct"],
+                "avg_graph_results": round(row["total_graph"] / total, 2) if total > 0 else 0.0,
+                "period": period,
+            }
+        finally:
+            conn.close()
+
+    def log_temporal_search(self, query: str = "", has_since: bool = False, has_until: bool = False) -> None:
+        try:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO temporal_search_events (query, has_since, has_until) VALUES (?, ?, ?)",
+                (query[:500], int(has_since), int(has_until)),
+            )
+            conn.commit()
+        except Exception:
+            logger.debug("Failed to log temporal search event", exc_info=True)
+
+    def get_temporal_search_stats(self, period: str = "7d") -> dict:
+        period_filter = PERIOD_SQL.get(period, PERIOD_SQL["7d"])
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) as cnt, "
+                f"COALESCE(SUM(has_since), 0) as with_since, "
+                f"COALESCE(SUM(has_until), 0) as with_until, "
+                f"COALESCE(SUM(CASE WHEN has_since=1 AND has_until=1 THEN 1 ELSE 0 END), 0) as range_q, "
+                f"COALESCE(SUM(CASE WHEN has_since=1 AND has_until=0 THEN 1 ELSE 0 END), 0) as since_only, "
+                f"COALESCE(SUM(CASE WHEN has_since=0 AND has_until=1 THEN 1 ELSE 0 END), 0) as until_only "
+                f"FROM temporal_search_events WHERE 1=1 {period_filter}"
+            ).fetchone()
+            return {
+                "total_temporal_searches": row["cnt"],
+                "since_only": row["since_only"],
+                "until_only": row["until_only"],
+                "range_queries": row["range_q"],
+                "period": period,
+            }
+        finally:
+            conn.close()
 
     def get_extraction_quality(self, period: str = "7d") -> Dict[str, Any]:
         period_filter = PERIOD_SQL.get(period, PERIOD_SQL["7d"])
@@ -430,7 +534,8 @@ class UsageTracker:
                 f"COALESCE(SUM(deleted), 0) as deleted, "
                 f"COALESCE(SUM(noop), 0) as noop, "
                 f"COALESCE(SUM(conflict), 0) as conflict, "
-                f"COALESCE(SUM(fallback), 0) as fallback "
+                f"COALESCE(SUM(fallback), 0) as fallback, "
+                f"COALESCE(SUM(links_created), 0) as links_created "
                 f"FROM extraction_outcomes WHERE 1=1 {period_filter}"
             ).fetchone()
             extraction_count = row["cnt"]
@@ -443,7 +548,8 @@ class UsageTracker:
                 f"SUM(extracted) as extracted, SUM(stored) as stored, "
                 f"SUM(updated) as updated, SUM(deleted) as deleted, "
                 f"SUM(noop) as noop, SUM(conflict) as conflict, "
-                f"SUM(fallback) as fallback, COUNT(*) as cnt "
+                f"SUM(fallback) as fallback, SUM(links_created) as links_created, "
+                f"COUNT(*) as cnt "
                 f"FROM extraction_outcomes WHERE 1=1 {period_filter} GROUP BY source"
             ).fetchall()
             by_source = {}
@@ -458,6 +564,7 @@ class UsageTracker:
                     "noop": sr["noop"],
                     "conflict": sr["conflict"],
                     "fallback": sr["fallback"],
+                    "links_created": sr["links_created"],
                 }
 
             return {
@@ -471,6 +578,7 @@ class UsageTracker:
                     "noop": row["noop"],
                     "conflict": row["conflict"],
                     "fallback": row["fallback"],
+                    "links_created": row["links_created"],
                     "noop_ratio": noop_ratio,
                 },
                 "by_source": by_source,
@@ -589,6 +697,19 @@ class UsageTracker:
             conflict_rate = round(ext_row["conflict"] / total_extracted, 4) if total_extracted > 0 else 0.0
             fallback_rate = round(ext_row["fallback"] / total_extracted, 4) if total_extracted > 0 else 0.0
 
+            # --- Graph search stats ---
+            graph_row = conn.execute(
+                f"SELECT COUNT(*) as cnt, "
+                f"COALESCE(SUM(graph_count), 0) as total_graph "
+                f"FROM graph_search_events WHERE 1=1 {period_filter}"
+            ).fetchone()
+
+            # --- Temporal search stats ---
+            temp_row = conn.execute(
+                f"SELECT COUNT(*) as cnt "
+                f"FROM temporal_search_events WHERE 1=1 {period_filter}"
+            ).fetchone()
+
             return {
                 "retrieval_precision": {
                     "positive_feedback_rate": positive_rate,
@@ -603,6 +724,13 @@ class UsageTracker:
                     "delete_rate": delete_rate,
                     "conflict_rate": conflict_rate,
                     "fallback_rate": fallback_rate,
+                },
+                "graph_search": {
+                    "total_graph_searches": graph_row["cnt"],
+                    "total_graph_results": graph_row["total_graph"],
+                },
+                "temporal_search": {
+                    "total_temporal_searches": temp_row["cnt"],
                 },
                 "period": period,
             }

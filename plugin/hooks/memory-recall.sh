@@ -60,11 +60,11 @@ HWEOF
 )
 fi
 
-# Backend version check
+# Backend version check — skip if service already unreachable
 EXPECTED_VERSION_FILE="$(dirname "${BASH_SOURCE[0]}")/../assets/BACKEND_VERSION"
-if [ -f "$EXPECTED_VERSION_FILE" ]; then
+if [ -z "$HEALTH_WARNING" ] && [ -f "$EXPECTED_VERSION_FILE" ]; then
   EXPECTED_VERSION=$(cat "$EXPECTED_VERSION_FILE" | tr -d '[:space:]')
-  RUNNING_VERSION=$(curl -sf --max-time 2 "$MEMORIES_URL/health" 2>/dev/null | jq -r '.version // empty')
+  RUNNING_VERSION=$(curl -sf --max-time 2 "$MEMORIES_URL/health" 2>/dev/null | jq -r '.version // empty') || RUNNING_VERSION=""
   if [ -n "$RUNNING_VERSION" ] && [ -n "$EXPECTED_VERSION" ] && [ "$RUNNING_VERSION" != "$EXPECTED_VERSION" ]; then
     _log_warn "Backend version mismatch: running=$RUNNING_VERSION expected=$EXPECTED_VERSION"
     VERSION_WARNING=$(printf '## Memories Backend Update Available\n\nRunning v%s, latest is v%s. Run `/memories:setup` to update, or: `cd ~/.config/memories && docker compose pull && docker compose up -d`' "$RUNNING_VERSION" "$EXPECTED_VERSION")
