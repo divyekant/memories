@@ -1248,7 +1248,7 @@ class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=10000)
     k: int = Field(5, ge=1, le=100)
     threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
-    hybrid: bool = Field(False, description="Use hybrid BM25+vector search")
+    hybrid: bool = Field(True, description="Use hybrid BM25+vector search")
     vector_weight: float = Field(0.7, ge=0.0, le=1.0)
     source_prefix: Optional[str] = Field(
         None,
@@ -1268,10 +1268,10 @@ class SearchRequest(BaseModel):
         description="Half-life in days for recency decay (default 30).",
     )
     feedback_weight: float = Field(
-        0.0,
+        0.1,
         ge=0.0,
         le=1.0,
-        description="Weight for feedback-based ranking signal (0=disabled)",
+        description="Weight for feedback-based ranking signal (0=disabled, default 0.1)",
     )
     confidence_weight: float = Field(
         0.0,
@@ -1280,10 +1280,10 @@ class SearchRequest(BaseModel):
         description="Weight for confidence-based ranking (0=disabled)",
     )
     graph_weight: float = Field(
-        0.0,
+        0.1,
         ge=0.0,
         le=1.0,
-        description="Weight for graph-based link expansion (0=disabled). When enabled, linked memories get a bonus score.",
+        description="Weight for graph-based link expansion (0=disabled, default 0.1). When enabled, linked memories get a bonus score.",
     )
     since: Optional[str] = Field(
         None,
@@ -1297,6 +1297,10 @@ class SearchRequest(BaseModel):
     )
     source: str = Field("", max_length=500, description="Caller source for usage tracking")
     include_archived: bool = Field(default=False, description="Include archived memories in search results")
+    auto_intent: bool = Field(
+        default=True,
+        description="Auto-detect temporal intent from query text. Set to False to disable.",
+    )
 
 
 class SearchBatchRequest(BaseModel):
@@ -1935,6 +1939,26 @@ async def search(request_body: SearchRequest, request: Request):
     """Search for similar memories (vector-only or hybrid)"""
     auth = _get_auth(request)
     logger.info("Search: q=%r k=%d hybrid=%s", request_body.query[:80], request_body.k, request_body.hybrid)
+    # -- Auto-detect query intent and adjust parameters ---
+    _auto_detected = False
+    if request_body.auto_intent and not request_body.since and not request_body.until:
+        from query_intent import classify_query
+        adj = classify_query(
+            query=request_body.query,
+            caller_since=request_body.since,
+            caller_until=request_body.until,
+            caller_graph_weight=None,  # let auto-detection decide
+        )
+        if adj.auto_detected:
+            _auto_detected = True
+            if adj.since:
+                request_body.since = adj.since
+            if adj.until:
+                request_body.until = adj.until
+            if adj.graph_weight is not None:
+                request_body.graph_weight = adj.graph_weight
+            if adj.recency_weight is not None and request_body.recency_weight == 0.0:
+                request_body.recency_weight = adj.recency_weight
     try:
         fb_scores = None
         if request_body.feedback_weight > 0:
