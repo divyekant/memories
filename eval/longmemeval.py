@@ -3,12 +3,16 @@
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("eval.longmemeval")
+
+# Pre-compiled pattern for extracting session index from source paths (e.g. ".../s42/c3")
+_SESSION_INDEX_RE = re.compile(r"/s(\d+)/c\d+$")
 
 
 @dataclass
@@ -18,7 +22,9 @@ class LongMemEvalResult:
     timestamp: str = ""
     judge: dict = field(default_factory=dict)
     overall: float = 0.0
+    recall_any_at_5: float = 0.0
     categories: dict = field(default_factory=dict)
+    recall_categories: dict = field(default_factory=dict)
     delta: dict = field(default_factory=dict)
     details: list = field(default_factory=list)
 
@@ -39,7 +45,6 @@ def _normalize_longmemeval_date(raw: str) -> str:
     Input: '2023/05/20 (Sat) 02:21'
     Output: '2023-05-20T02:21:00+00:00'
     """
-    import re
     try:
         # Strip day-of-week in parens: "2023/05/20 (Sat) 02:21" → "2023/05/20  02:21"
         clean = re.sub(r'\s*\([^)]*\)\s*', ' ', raw).strip()
@@ -246,18 +251,84 @@ class LongMemEvalRunner:
         """Delete a question's scoped memories from the eval store."""
         return self.client.clear_by_prefix(self._question_prefix(question, source_prefix))
 
+    @staticmethod
+    def compute_recall_at_k(
+        search_results: list[dict],
+        question: dict,
+        k: int = 5,
+    ) -> dict:
+        """Compute session-level recall@k matching MemPalace methodology.
+
+        MemPalace stores one doc per session, so R@5 = "is the gold session in
+        the top 5 docs?"  We chunk sessions into multiple memories, so we
+        deduplicate to unique sessions (by first appearance) before checking.
+
+        Returns dict with recall_any (binary), recall_all, and the unique
+        session indices found in the top-k unique sessions.
+        """
+        # Build gold set: map answer_session_ids → session indices
+        answer_sids = set(question.get("answer_session_ids", []))
+        haystack_sids = question.get("haystack_session_ids", [])
+        gold_indices = {
+            i for i, sid in enumerate(haystack_sids) if sid in answer_sids
+        }
+
+        if not gold_indices:
+            return {"recall_any": 0.0, "recall_all": 0.0, "top_sessions": []}
+
+        # Extract unique session indices from results in rank order.
+        # Each result has session_index in metadata (top-level key) or
+        # can be parsed from the source path (…/s{idx}/c{chunk}).
+        seen: set[int] = set()
+        unique_sessions: list[int] = []
+        for r in search_results:
+            sidx = r.get("session_index")
+            if sidx is None:
+                # Fallback: parse from source path
+                source = r.get("source", "")
+                m = _SESSION_INDEX_RE.search(source)
+                if m:
+                    sidx = int(m.group(1))
+            if sidx is not None and sidx not in seen:
+                seen.add(sidx)
+                unique_sessions.append(sidx)
+                if len(unique_sessions) >= k:
+                    break
+
+        top_k_set = set(unique_sessions[:k])
+        recall_any = float(any(g in top_k_set for g in gold_indices))
+        recall_all = float(all(g in top_k_set for g in gold_indices))
+
+        return {
+            "recall_any": recall_any,
+            "recall_all": recall_all,
+            "top_sessions": unique_sessions[:k],
+        }
+
     def run_question(self, question: dict, k: int = 5, source_prefix: str = "eval/longmemeval") -> dict:
         """Run retrieval for a single LongMemEval question against its scoped haystack."""
         query = str(question.get("question", ""))
+        # Retrieve more results to get enough unique sessions for R@k
+        retrieval_k = max(k, 50)
+        # Pass question_date as reference for temporal intent detection
+        ref_date = None
+        raw_date = question.get("question_date", "")
+        if raw_date:
+            ref_date = _normalize_longmemeval_date(raw_date)
         search_results = self.client.search(
             query=query,
-            k=k,
+            k=retrieval_k,
             hybrid=True,
             source_prefix=self._question_prefix(question, source_prefix),
+            reference_date=ref_date,
         )
         context = "\n".join(
             r.get("text", "") for r in search_results[: self.DEFAULT_CONTEXT_RESULTS]
         )
+
+        # Compute session-level recall metrics
+        recall = self.compute_recall_at_k(search_results, question, k=5)
+
         return {
             "question_id": self._question_id(question),
             "category": self._question_category(question),
@@ -266,6 +337,8 @@ class LongMemEvalRunner:
             "context": context,
             "search_results": search_results,
             "eval_mode": "tool",
+            "recall_any_at_5": recall["recall_any"],
+            "recall_all_at_5": recall["recall_all"],
         }
 
     def run_question_system(
@@ -448,12 +521,25 @@ class LongMemEvalRunner:
     def report(self, scored: list[dict], version: str = "", previous: Optional[str] = None, eval_mode: str = "tool") -> LongMemEvalResult:
         """Aggregate scored results into a report with optional regression delta."""
         by_category = {}
+        recall_by_category = {}
         for s in scored:
             cat = s.get("category", "unknown")
             by_category.setdefault(cat, []).append(s["score"])
+            if "recall_any_at_5" in s:
+                recall_by_category.setdefault(cat, []).append(s["recall_any_at_5"])
 
         categories = {cat: sum(scores) / len(scores) for cat, scores in by_category.items()}
         overall = sum(s["score"] for s in scored) / len(scored) if scored else 0.0
+
+        # Aggregate R@5 (session-level recall, matching MemPalace methodology)
+        recall_categories = {
+            cat: round(sum(scores) / len(scores), 4)
+            for cat, scores in recall_by_category.items()
+        }
+        recall_overall = (
+            sum(s.get("recall_any_at_5", 0.0) for s in scored) / len(scored)
+            if scored else 0.0
+        )
 
         delta = {}
         if previous and os.path.exists(previous):
@@ -479,7 +565,17 @@ class LongMemEvalRunner:
             timestamp=datetime.now(timezone.utc).isoformat(),
             judge={"provider": self.judge_provider, "model": self.judge_model or "default"},
             overall=round(overall, 4),
+            recall_any_at_5=round(recall_overall, 4),
             categories={k: round(v, 4) for k, v in categories.items()},
+            recall_categories=recall_categories,
             delta=delta,
-            details=[{"id": s["question_id"], "category": s["category"], "score": s["score"]} for s in scored],
+            details=[
+                {
+                    "id": s["question_id"],
+                    "category": s["category"],
+                    "score": s["score"],
+                    **({"recall_any_at_5": s["recall_any_at_5"]} if "recall_any_at_5" in s else {}),
+                }
+                for s in scored
+            ],
         )

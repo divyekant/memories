@@ -71,6 +71,7 @@ COPY key_store.py .
 COPY auth_context.py .
 COPY event_bus.py .
 COPY audit_log.py .
+COPY query_intent.py .
 COPY app.py .
 COPY cli/ cli/
 COPY webui ./webui

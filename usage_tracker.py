@@ -211,6 +211,13 @@ class UsageTracker:
                 conn.execute("ALTER TABLE extraction_outcomes ADD COLUMN links_created INTEGER DEFAULT 0")
         except Exception:
             pass
+        # Migrate temporal_search_events: add auto_detected column
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(temporal_search_events)").fetchall()}
+            if "auto_detected" not in cols:
+                conn.execute("ALTER TABLE temporal_search_events ADD COLUMN auto_detected INTEGER DEFAULT 0")
+        except Exception:
+            pass
         conn.close()
         logger.info("Usage tracker initialized: %s", db_path)
 
@@ -485,12 +492,14 @@ class UsageTracker:
         finally:
             conn.close()
 
-    def log_temporal_search(self, query: str = "", has_since: bool = False, has_until: bool = False) -> None:
+    def log_temporal_search(self, query: str = "", has_since: bool = False,
+                            has_until: bool = False, auto_detected: bool = False) -> None:
         try:
             conn = self._get_conn()
             conn.execute(
-                "INSERT INTO temporal_search_events (query, has_since, has_until) VALUES (?, ?, ?)",
-                (query[:500], int(has_since), int(has_until)),
+                "INSERT INTO temporal_search_events (query, has_since, has_until, auto_detected) "
+                "VALUES (?, ?, ?, ?)",
+                (query[:500], int(has_since), int(has_until), int(auto_detected)),
             )
             conn.commit()
         except Exception:
@@ -507,7 +516,8 @@ class UsageTracker:
                 f"COALESCE(SUM(has_until), 0) as with_until, "
                 f"COALESCE(SUM(CASE WHEN has_since=1 AND has_until=1 THEN 1 ELSE 0 END), 0) as range_q, "
                 f"COALESCE(SUM(CASE WHEN has_since=1 AND has_until=0 THEN 1 ELSE 0 END), 0) as since_only, "
-                f"COALESCE(SUM(CASE WHEN has_since=0 AND has_until=1 THEN 1 ELSE 0 END), 0) as until_only "
+                f"COALESCE(SUM(CASE WHEN has_since=0 AND has_until=1 THEN 1 ELSE 0 END), 0) as until_only, "
+                f"COALESCE(SUM(CASE WHEN auto_detected=1 THEN 1 ELSE 0 END), 0) as auto_cnt "
                 f"FROM temporal_search_events WHERE 1=1 {period_filter}"
             ).fetchone()
             return {
@@ -515,6 +525,8 @@ class UsageTracker:
                 "since_only": row["since_only"],
                 "until_only": row["until_only"],
                 "range_queries": row["range_q"],
+                "auto_detected": row["auto_cnt"],
+                "explicit": row["cnt"] - row["auto_cnt"],
                 "period": period,
             }
         finally:

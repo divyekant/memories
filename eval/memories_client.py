@@ -69,11 +69,14 @@ class MemoriesClient:
         except (httpx.HTTPError, Exception):
             return False
 
-    def search(self, query: str, k: int = 5, hybrid: bool = True, feedback_weight: float = 0.0, source_prefix: str | None = None) -> list[dict]:
+    def search(self, query: str, k: int = 5, hybrid: bool = True, feedback_weight: float = 0.0,
+               source_prefix: str | None = None, reference_date: str | None = None) -> list[dict]:
         """POST /search — returns results list."""
         body: dict = {"query": query, "k": k, "hybrid": hybrid, "feedback_weight": feedback_weight}
         if source_prefix is not None:
             body["source_prefix"] = source_prefix
+        if reference_date is not None:
+            body["reference_date"] = reference_date
         resp = self._client.post("/search", json=body)
         resp.raise_for_status()
         return resp.json().get("results", [])

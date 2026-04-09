@@ -328,3 +328,42 @@ class TestSearchEndpointIntegration:
         call_kwargs = mock.hybrid_search.call_args[1]
         assert call_kwargs.get("since") is None
         assert call_kwargs.get("until") is None
+
+
+class TestEndToEndClassification:
+    """Full-path tests: query text → classify → adjusted params."""
+
+    def test_last_week_produces_valid_iso_dates(self):
+        """Classified dates must be parseable ISO 8601."""
+        from datetime import date
+        adj = classify_query("what happened last week?", REF)
+        assert adj.auto_detected is True
+        # since/until must be valid date strings
+        since_d = date.fromisoformat(adj.since[:10])
+        until_d = date.fromisoformat(adj.until[:10])
+        assert since_d < until_d
+        assert since_d < REF.date()
+        assert until_d < REF.date()
+
+    def test_recency_only_sets_weight_no_dates(self):
+        adj = classify_query("show me the latest changes", REF)
+        assert adj.auto_detected is True
+        assert adj.recency_weight == 0.2
+        assert adj.since is None
+        assert adj.until is None
+        assert adj.graph_weight is None  # recency doesn't suppress graph
+
+    def test_multiple_temporal_signals_first_wins(self):
+        """When query has multiple temporal hints, first matching pattern wins."""
+        # "from July to October" (month range) should beat "last month"
+        adj = classify_query("from July to October changes last month", REF)
+        assert adj.auto_detected is True
+        # Month range matched first — July to October, not last month
+        assert "07" in adj.since
+        assert "10" in adj.until
+
+    def test_classify_with_no_reference_date_uses_now(self):
+        """Default reference_date is current UTC time."""
+        adj = classify_query("what happened yesterday")
+        assert adj.auto_detected is True
+        assert adj.since is not None

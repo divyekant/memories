@@ -1301,6 +1301,11 @@ class SearchRequest(BaseModel):
         default=True,
         description="Auto-detect temporal intent from query text. Set to False to disable.",
     )
+    reference_date: Optional[str] = Field(
+        None,
+        max_length=50,
+        description="Reference date for temporal intent detection (ISO 8601). Defaults to now.",
+    )
 
 
 class SearchBatchRequest(BaseModel):
@@ -1941,21 +1946,29 @@ async def search(request_body: SearchRequest, request: Request):
     logger.info("Search: q=%r k=%d hybrid=%s", request_body.query[:80], request_body.k, request_body.hybrid)
     # -- Auto-detect query intent and adjust parameters ---
     _auto_detected = False
-    if request_body.auto_intent and not request_body.since and not request_body.until:
+    if request_body.auto_intent:
         from query_intent import classify_query
+        from datetime import datetime as _dt, timezone as _tz
+        ref = None
+        if request_body.reference_date:
+            try:
+                ref = _dt.fromisoformat(request_body.reference_date.replace("Z", "+00:00"))
+            except ValueError:
+                pass
         adj = classify_query(
             query=request_body.query,
-            caller_since=request_body.since,
-            caller_until=request_body.until,
-            caller_graph_weight=None,  # let auto-detection decide
+            reference_date=ref,
+            caller_since=request_body.since or None,
+            caller_until=request_body.until or None,
+            caller_graph_weight=request_body.graph_weight if request_body.graph_weight != 0.1 else None,
         )
         if adj.auto_detected:
             _auto_detected = True
-            if adj.since:
+            if adj.since and not request_body.since:
                 request_body.since = adj.since
-            if adj.until:
+            if adj.until and not request_body.until:
                 request_body.until = adj.until
-            if adj.graph_weight is not None:
+            if adj.graph_weight is not None and request_body.graph_weight == 0.1:
                 request_body.graph_weight = adj.graph_weight
             if adj.recency_weight is not None and request_body.recency_weight == 0.0:
                 request_body.recency_weight = adj.recency_weight
@@ -2020,6 +2033,7 @@ async def search(request_body: SearchRequest, request: Request):
                 query=request_body.query[:200],
                 has_since=request_body.since is not None,
                 has_until=request_body.until is not None,
+                auto_detected=_auto_detected,
             )
         return {"query": request_body.query, "results": results, "count": result_count}
     except Exception as e:

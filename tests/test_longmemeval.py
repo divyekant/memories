@@ -124,9 +124,10 @@ def test_longmemeval_run_question_uses_question_scope_and_dataset_fields():
     }
     result = runner.run_question(question, k=3, source_prefix="eval/test")
 
+    # run_question bumps k to max(k, 50) for session dedup headroom
     client.search.assert_called_once_with(
         query="What major did I mention?",
-        k=3,
+        k=50,
         hybrid=True,
         source_prefix="eval/test/qe47becba",
     )

@@ -348,7 +348,7 @@ class TestSoftArchive:
         mock.search.return_value = []
         mock.hybrid_search.return_value = []
 
-        resp = tc.post("/search", json={"query": "test", "include_archived": True})
+        resp = tc.post("/search", json={"query": "test", "hybrid": False, "include_archived": True})
 
         assert resp.status_code == 200
         call_kwargs = mock.search.call_args[1]
@@ -359,7 +359,7 @@ class TestSoftArchive:
         tc, mock = client
         mock.search.return_value = []
 
-        resp = tc.post("/search", json={"query": "test"})
+        resp = tc.post("/search", json={"query": "test", "hybrid": False})
 
         assert resp.status_code == 200
         call_kwargs = mock.search.call_args[1]

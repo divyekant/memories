@@ -67,11 +67,13 @@ class TemporalIntent:
 
 
 def _iso(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%d")
+    """Start-of-day ISO 8601 with UTC timezone."""
+    return dt.strftime("%Y-%m-%dT00:00:00Z")
 
 
 def _iso_end(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT23:59:59")
+    """End-of-day ISO 8601 with UTC timezone."""
+    return dt.strftime("%Y-%m-%dT23:59:59Z")
 
 
 def _parse_number(s: str) -> int:
@@ -111,13 +113,13 @@ def detect_temporal_intent(
     if m:
         m1 = _MONTH_NAMES[m.group(1).lower()]
         m2 = _MONTH_NAMES[m.group(2).lower()]
-        year = now.year
-        # If end month is past current month, use previous year
-        if m2 > now.month:
-            year -= 1
+        # Determine years: assume most recent occurrence in the past
+        end_year = now.year if m2 <= now.month else now.year - 1
+        # If range wraps (e.g., Nov-Feb), start is the year before end
+        start_year = end_year - 1 if m1 > m2 else end_year
         return TemporalIntent(
-            since=_iso(_start_of_month(year, m1)),
-            until=_iso(_end_of_month(year, m2)),
+            since=_iso(_start_of_month(start_year, m1)),
+            until=_iso_end(_end_of_month(end_year, m2)),
             suppress_graph=True,
         )
 
@@ -128,7 +130,7 @@ def detect_temporal_intent(
         year = now.year if month_num <= now.month else now.year - 1
         return TemporalIntent(
             since=_iso(_start_of_month(year, month_num)),
-            until=_iso(_end_of_month(year, month_num)),
+            until=_iso_end(_end_of_month(year, month_num)),
             suppress_graph=True,
         )
 
@@ -137,7 +139,7 @@ def detect_temporal_intent(
         yesterday = now - timedelta(days=1)
         return TemporalIntent(
             since=_iso(yesterday),
-            until=_iso(yesterday),
+            until=_iso_end(yesterday),
             suppress_graph=True,
         )
 
@@ -151,7 +153,7 @@ def detect_temporal_intent(
             mon = _start_of_week(now) - timedelta(weeks=1)
             return TemporalIntent(
                 since=_iso(mon),
-                until=_iso(_end_of_week(mon)),
+                until=_iso_end(_end_of_week(mon)),
                 suppress_graph=True,
             )
         elif period == "month":
@@ -161,11 +163,11 @@ def detect_temporal_intent(
             else:
                 s = _start_of_month(now.year, now.month - 1)
                 e = _end_of_month(now.year, now.month - 1)
-            return TemporalIntent(since=_iso(s), until=_iso(e), suppress_graph=True)
+            return TemporalIntent(since=_iso(s), until=_iso_end(e), suppress_graph=True)
         elif period == "year":
             return TemporalIntent(
                 since=_iso(datetime(now.year - 1, 1, 1, tzinfo=timezone.utc)),
-                until=_iso(datetime(now.year - 1, 12, 31, tzinfo=timezone.utc)),
+                until=_iso_end(datetime(now.year - 1, 12, 31, tzinfo=timezone.utc)),
                 suppress_graph=True,
             )
 
@@ -178,7 +180,7 @@ def detect_temporal_intent(
             days_back = 7
         target = now - timedelta(days=days_back)
         return TemporalIntent(
-            since=_iso(target), until=_iso(target), suppress_graph=True,
+            since=_iso(target), until=_iso_end(target), suppress_graph=True,
         )
 
     # 6. N ago
@@ -189,23 +191,23 @@ def detect_temporal_intent(
         if unit == "day":
             target = now - timedelta(days=n)
             return TemporalIntent(
-                since=_iso(target), until=_iso(target), suppress_graph=True,
+                since=_iso(target), until=_iso_end(target), suppress_graph=True,
             )
         elif unit == "week":
             target_week = now - timedelta(weeks=n)
             mon = _start_of_week(target_week)
             return TemporalIntent(
-                since=_iso(mon), until=_iso(_end_of_week(mon)), suppress_graph=True,
+                since=_iso(mon), until=_iso_end(_end_of_week(mon)), suppress_graph=True,
             )
         elif unit == "month":
             target = now - timedelta(days=n * 30)
             return TemporalIntent(
-                since=_iso(target), until=_iso(target), suppress_graph=True,
+                since=_iso(target), until=_iso_end(target), suppress_graph=True,
             )
         elif unit == "year":
-            target = datetime(now.year - n, now.month, now.day, tzinfo=timezone.utc)
+            target = now - timedelta(days=n * 365)
             return TemporalIntent(
-                since=_iso(target), until=_iso(target), suppress_graph=True,
+                since=_iso(target), until=_iso_end(target), suppress_graph=True,
             )
 
     # 7. Past N
@@ -220,7 +222,7 @@ def detect_temporal_intent(
         elif unit == "month":
             since = now - timedelta(days=n * 30)
         elif unit == "year":
-            since = datetime(now.year - n, now.month, now.day, tzinfo=timezone.utc)
+            since = now - timedelta(days=n * 365)
         else:
             return None
         return TemporalIntent(since=_iso(since), suppress_graph=True)
@@ -249,3 +251,55 @@ def detect_temporal_intent(
         return TemporalIntent(recency_boost=True)
 
     return None
+
+
+@dataclass
+class SearchAdjustments:
+    """Parameter adjustments to apply to a search request."""
+    since: Optional[str] = None
+    until: Optional[str] = None
+    graph_weight: Optional[float] = None  # None = no change, 0.0 = suppress
+    recency_weight: Optional[float] = None  # None = no change
+    auto_detected: bool = False
+
+
+def classify_query(
+    query: str,
+    reference_date: Optional[datetime] = None,
+    caller_since: Optional[str] = None,
+    caller_until: Optional[str] = None,
+    caller_graph_weight: Optional[float] = None,
+) -> SearchAdjustments:
+    """Classify query and return search parameter adjustments.
+
+    Respects caller overrides: explicit since/until/graph_weight from caller
+    are preserved. Auto-detection only fills in gaps.
+    """
+    temporal = detect_temporal_intent(query, reference_date)
+    if temporal is None:
+        return SearchAdjustments(auto_detected=False)
+
+    adj = SearchAdjustments(auto_detected=True)
+
+    # Date range: detected values unless caller provided explicit ones
+    if temporal.since and caller_since is None:
+        adj.since = temporal.since
+    elif caller_since is not None:
+        adj.since = caller_since
+
+    if temporal.until and caller_until is None:
+        adj.until = temporal.until
+    elif caller_until is not None:
+        adj.until = caller_until
+
+    # Graph: suppress for temporal unless caller explicitly set it
+    if temporal.suppress_graph and caller_graph_weight is None:
+        adj.graph_weight = 0.0
+    elif caller_graph_weight is not None:
+        adj.graph_weight = caller_graph_weight
+
+    # Recency boost
+    if temporal.recency_boost:
+        adj.recency_weight = 0.2
+
+    return adj

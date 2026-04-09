@@ -138,8 +138,13 @@ def _process_question(
                 _log(f"  Judge failed: {e}")
                 score, reasoning = 0.0, str(e)
 
-        _log(f"  Score: {score:.2f} | Expected: {expected[:60]}")
-        return {"qid": qid, "type": qtype, "score": score, "reasoning": reasoning}
+        recall_any = question_result.get("recall_any_at_5", 0.0)
+        recall_all = question_result.get("recall_all_at_5", 0.0)
+        _log(f"  Score: {score:.2f} | R@5: {recall_any:.0f} | Expected: {expected[:60]}")
+        return {
+            "qid": qid, "type": qtype, "score": score, "reasoning": reasoning,
+            "recall_any_at_5": recall_any, "recall_all_at_5": recall_all,
+        }
     finally:
         try:
             thread_runner.clear_question(q, source_prefix=prefix)
@@ -260,15 +265,28 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
 
     # Report
     overall = sum(s["score"] for s in scores) / len(scores) if scores else 0
+    recall_overall = sum(s.get("recall_any_at_5", 0.0) for s in scores) / len(scores) if scores else 0
+
+    # Aggregate R@5 by category
+    recall_by_type = {}
+    for s in scores:
+        recall_by_type.setdefault(s["type"], []).append(s.get("recall_any_at_5", 0.0))
+
     _log(f"\n{'='*60}")
     _log(f"LongMemEval v4.0.0 ({datetime.now(timezone.utc).strftime('%Y-%m-%d')})")
     _log(f"Mode: {mode} | Workers: {workers} | Time: {elapsed:.0f}s ({elapsed/60:.1f}m)")
     _log(f"Questions: {len(scores)}")
-    _log(f"Overall: {overall*100:.1f}%")
+    _log(f"Overall (judge): {overall*100:.1f}%")
+    _log(f"Overall R@5:     {recall_overall*100:.1f}%  (MemPalace-comparable)")
     _log(f"{'='*60}")
-    for qtype, type_scores in sorted(by_type.items()):
-        avg = sum(type_scores) / len(type_scores) if type_scores else 0
-        _log(f"  {qtype}: {avg*100:.1f}% ({len(type_scores)} questions)")
+    _log(f"  {'category':<30s} {'judge':>8s} {'R@5':>8s}  {'n':>4s}")
+    _log(f"  {'-'*30} {'-'*8} {'-'*8}  {'-'*4}")
+    for qtype in sorted(set(list(by_type.keys()) + list(recall_by_type.keys()))):
+        type_scores = by_type.get(qtype, [])
+        type_recall = recall_by_type.get(qtype, [])
+        avg_judge = sum(type_scores) / len(type_scores) if type_scores else 0
+        avg_recall = sum(type_recall) / len(type_recall) if type_recall else 0
+        _log(f"  {qtype:<30s} {avg_judge*100:>7.1f}% {avg_recall*100:>7.1f}%  {len(type_scores):>4d}")
 
     # Save results
     if output_path:
@@ -281,8 +299,12 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "questions_run": len(scores),
             "overall": round(overall, 4),
+            "recall_any_at_5": round(recall_overall, 4),
             "categories": {
                 t: round(sum(s) / len(s), 4) for t, s in by_type.items()
+            },
+            "recall_categories": {
+                t: round(sum(s) / len(s), 4) for t, s in recall_by_type.items()
             },
             "details": scores,
         }
