@@ -1,5 +1,18 @@
 # Changelog
 
+## [5.3.0] - 2026-04-11
+
+### Added
+- **Enriched keyword-bag queries** — UserPromptSubmit hook now extracts a keyword-bag (project name, identifiers, version refs, domain nouns) from conversational prompts before searching, stripping filler words that dilute semantic similarity. Tested improvement: 6/10 to 9/10 relevance on real missed-recall prompts.
+- **Dual search strategy** — hook searches use two strategies per turn: enriched unscoped (k=6, cross-project) + enriched prefix-scoped (k=3, project-specific), replacing the previous 3x prefix-scoped approach. Catches cross-project context while maintaining project precision.
+- **Query intent classifier** — `/search` endpoint detects temporal, comparison, and aggregation intent in queries for smarter routing
+- **Temporal intent detection** — search queries with temporal signals (dates, "recent", "last week") are automatically enriched with date-range filters
+
+### Changed
+- **Stronger Memory Playbook** — SessionStart hook now injects mandatory recall directives with anti-rationalization table, replacing soft "run memory_search first" language. Pattern matches Anthropic's own memory tool directive style (`IMPORTANT: ALWAYS ... BEFORE`).
+- **Stronger CLAUDE.md recall directives** — plugin and global CLAUDE.md "Before responding" sections upgraded with `MUST NOT skip` language and explicit rationalization blockers
+- Hook search flow simplified: dropped separate `wip/` and `learning/` prefix-scoped searches (0 results in 95% of cases) in favor of unscoped semantic search that catches all prefix results naturally
+
 ## [5.2.0] - 2026-04-07
 
 ### Added
