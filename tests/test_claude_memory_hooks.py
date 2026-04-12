@@ -136,7 +136,7 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
                 json.dumps(
                     {
                         "type": "user",
-                        "message": {"content": "Let's design notifications for the billing service."},
+                        "message": {"content": "Let's design notifications for the BillingService."},
                     }
                 ),
                 json.dumps(
@@ -153,13 +153,12 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
     responses = [
         {
             "url_suffix": "/search",
-            "source_prefix": "wip/memories",
-            "query_contains": "notifications",
+            "source_prefix": "claude-code/memories",
             "response": {
                 "results": [
                     {
                         "id": 11,
-                        "source": "wip/memories",
+                        "source": "claude-code/memories",
                         "text": "Notification design is deferred until rate limiting is settled.",
                         "similarity": 0.86,
                     }
@@ -175,8 +174,8 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
                     {
                         "id": 99,
                         "source": "other/project",
-                        "text": "Unrelated global memory that should not appear.",
-                        "similarity": 0.9,
+                        "text": "Global memory about notification patterns.",
+                        "similarity": 0.75,
                     }
                 ],
                 "count": 1,
@@ -195,13 +194,19 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
     assert result.returncode == 0
     output = json.loads(result.stdout)
     ctx = output["hookSpecificOutput"]["additionalContext"]
+    # Dual strategy: both scoped and unscoped results appear
     assert "Notification design is deferred until rate limiting is settled." in ctx
-    assert "Unrelated global memory" not in ctx
     assert "## Retrieved Memories" in ctx
     assert "## Follow-up Response Hint" in ctx
     assert "Search memories for the new topic" in ctx
-    assert all(call["body"].get("source_prefix", "") != "" for call in calls)
-    assert any("notifications" in call["body"]["query"] for call in calls)
+    # Verify dual search: at least one scoped AND at least one unscoped
+    search_calls = [call for call in calls if call["body"] is not None]
+    prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
+    assert any(p == "" for p in prefixes), f"Expected unscoped search, got: {prefixes}"
+    assert any(p == "claude-code/memories" for p in prefixes), f"Expected scoped search, got: {prefixes}"
+    # Transcript context identifiers should appear in query (BillingService from transcript)
+    assert any("BillingService" in call["body"]["query"] for call in search_calls), \
+        f"Expected transcript identifier in query, queries were: {[c['body']['query'][:80] for c in search_calls]}"
 
 
 def test_memory_query_falls_back_to_global_search_when_scoped_is_empty(tmp_path: Path) -> None:
@@ -243,7 +248,6 @@ def test_memory_query_adds_confirmation_hint_for_confirmation_followups(tmp_path
         {
             "url_suffix": "/search",
             "source_prefix": "claude-code/memories",
-            "query_contains": "does that still apply?",
             "response": {
                 "results": [
                     {
@@ -278,7 +282,6 @@ def test_memory_query_adds_continuation_hint_for_resume_prompts(tmp_path: Path) 
         {
             "url_suffix": "/search",
             "source_prefix": "claude-code/memories",
-            "query_contains": "We're still on the local cache setup.",
             "response": {
                 "results": [
                     {
@@ -313,7 +316,6 @@ def test_memory_query_adds_switch_now_hint_for_change_prompts(tmp_path: Path) ->
         {
             "url_suffix": "/search",
             "source_prefix": "claude-code/memories",
-            "query_contains": "should we switch to Redis now?",
             "response": {
                 "results": [
                     {
@@ -348,7 +350,6 @@ def test_memory_query_adds_for_now_hint_for_simple_followups(tmp_path: Path) -> 
         {
             "url_suffix": "/search",
             "source_prefix": "claude-code/memories",
-            "query_contains": "is file-based storage okay for now?",
             "response": {
                 "results": [
                     {
@@ -628,3 +629,64 @@ build_keyword_bag "ok so the UserPrefs module uses fetch_config and the MAX_RETR
         # Check it's not present as a standalone word in output
         words = output.lower().split()
         assert filler not in words, f"Filler word '{filler}' should not be in output: {output!r}"
+
+
+def test_dual_search_strategy_unscoped_and_prefix_scoped(tmp_path: Path) -> None:
+    """Dual search fires one unscoped + one prefix-scoped (client/{project}), not learning/ or wip/."""
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "",
+            "response": {
+                "results": [
+                    {
+                        "id": 101,
+                        "source": "other/project",
+                        "text": "Global unscoped result about deploy patterns.",
+                        "similarity": 0.82,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 102,
+                        "source": "claude-code/memories",
+                        "text": "Project-scoped result about deploy hooks.",
+                        "similarity": 0.88,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    # Use a prompt that does NOT trigger intent-prefix biasing (not fix/debug/how/setup)
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "explain the deploy pipeline and the WebhookHandler architecture",
+    }
+
+    result, calls, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0, f"Script failed: {result.stderr}"
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+
+    # Both results should appear
+    assert "Global unscoped result" in ctx
+    assert "Project-scoped result" in ctx
+
+    # Verify search calls: at least one unscoped AND at least one scoped
+    search_calls = [call for call in calls if call["body"] is not None]
+    prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
+    assert any(p == "" for p in prefixes), f"Expected at least one unscoped search, got prefixes: {prefixes}"
+    assert any(p == "claude-code/memories" for p in prefixes), f"Expected claude-code/memories scoped search, got: {prefixes}"
+    # Should NOT have learning/ or wip/ scoped searches (those were the old prefix-iteration approach)
+    assert not any(p.startswith("learning/") for p in prefixes), f"Should not search learning/ prefix: {prefixes}"
+    assert not any(p.startswith("wip/") for p in prefixes), f"Should not search wip/ prefix: {prefixes}"
