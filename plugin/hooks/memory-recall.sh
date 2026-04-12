@@ -157,18 +157,35 @@ if [ "$WIP_COUNT" -gt 0 ] && [ "$WIP_COUNT" != "null" ]; then
   DEFERRED_SECTION="\n## Deferred Work\n$DEFERRED_ITEMS\n"
 fi
 
-PLAYBOOK=$(cat <<EOF
+read -r -d '' PLAYBOOK <<EOF || true
 ## Memory Playbook
 
-- Treat hook-injected memories as a starting point, not the full search space.
-- Before answering questions about prior decisions, deferred work, architecture, or conventions, run project-scoped \`memory_search\` first.
-- Prefer these scoped prefixes before broader searches: $SCOPED_PREFIX_LIST.
-- For short follow-up prompts, include recent conversation context in the query instead of searching with the raw prompt alone.
-- If the retrieved memories show deferred or blocked work, answer that directly with words like \`not yet\`, \`deferred\`, or \`blocked on\` before expanding.
-- When a memory includes a boundary condition such as \`until\`, \`unless\`, or \`because\`, carry that clause forward in the answer instead of compressing it away.
-- Do not ask the user to reconfirm a remembered decision before you answer whether it still applies.
+IMPORTANT: ALWAYS search memories BEFORE responding to any question about
+prior decisions, architecture, or system behavior. Hook-injected memories
+below are keyword-matched starting points — they are NOT complete context.
+
+MANDATORY FIRST ACTION: Load the memory search tool immediately:
+  ToolSearch("select:mcp__memories__memory_search")
+
+You MUST call memory_search when the user's message contains:
+- Questions about prior decisions ("weren't we...", "didn't we decide...")
+- Architecture questions ("how does X work", "what mode does X use")
+- Performance/debugging references ("is X still slow", "did we fix Y")
+- Release/version context ("what version", "what's deferred")
+- Continuation of prior work ("last time we...", "we were doing...")
+
+Do NOT rationalize skipping this step:
+| Thought | Reality |
+| "The injected memories cover it" | They are keyword-matched, not semantic |
+| "I can infer from the code" | Prior decisions aren't in code |
+| "It's a simple question" | Simple questions about past work need recall |
+
+After searching, use BOTH hook-injected AND searched memories.
+Prefer scoped prefixes: $SCOPED_PREFIX_LIST.
+When memories show deferred/blocked work, say "not yet" or "deferred" directly.
+Preserve boundary conditions (until/unless/because) verbatim.
+Do not ask the user to reconfirm a remembered decision.
 EOF
-)
 
 # --- Hydrate auto-memory MEMORY.md ---
 # Claude Code's auto-memory loads MEMORY.md into every conversation (first 200 lines).
