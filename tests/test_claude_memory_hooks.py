@@ -436,8 +436,8 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "## Relevant Memories" in ctx
     assert "## Memory Playbook" in ctx
-    assert "answer that directly with words like" in ctx
-    assert "carry that clause forward in the answer" in ctx
+    assert "IMPORTANT: ALWAYS search memories BEFORE responding" in ctx
+    assert "MANDATORY FIRST ACTION" in ctx
     assert "claude-code/memories" in ctx
     assert "learning/memories" in ctx
     assert "wip/memories" in ctx
@@ -456,6 +456,41 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
 
     # Deferred work section should appear when wip results exist
     assert "Deferred Work" in ctx
+
+
+def test_memory_recall_playbook_contains_mandatory_directives(tmp_path: Path) -> None:
+    """Playbook should use strong mandatory language, not soft suggestions."""
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 1,
+                        "source": "claude-code/memories",
+                        "text": "Test memory for playbook verification.",
+                        "similarity": 0.92,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+
+    payload = {"cwd": "/Users/example/memories"}
+    result, _, _ = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+
+    assert "IMPORTANT: ALWAYS search memories BEFORE responding" in ctx
+    assert "MANDATORY FIRST ACTION" in ctx
+    assert "ToolSearch" in ctx
+    assert "You MUST call memory_search" in ctx
+    assert "keyword-matched, not semantic" in ctx
+    assert "Prior decisions aren't in code" in ctx
 
 
 def test_memory_recall_replaces_existing_synced_block_without_duplication(tmp_path: Path) -> None:
@@ -549,3 +584,47 @@ def test_memory_extract_uses_codex_source_when_installed_under_codex(tmp_path: P
     assert calls
     body = calls[0]["body"]
     assert body["source"] == "codex/memories"
+
+
+def test_build_keyword_bag_strips_filler_keeps_domain_terms(tmp_path: Path) -> None:
+    """build_keyword_bag should strip filler words and keep domain terms + identifiers."""
+    # Extract just the function from the script and call it directly
+    test_script = tmp_path / "test_bag.sh"
+    test_script.write_text(
+        f"""#!/bin/bash
+set -euo pipefail
+# Extract and source only the build_keyword_bag function
+eval "$(sed -n '/^build_keyword_bag()/,/^}}/p' "{QUERY_SCRIPT}")"
+build_keyword_bag "ok so the UserPrefs module uses fetch_config and the MAX_RETRIES constant for v2.1.0 of PR-42" "myproject"
+"""
+    )
+    test_script.chmod(0o755)
+
+    env = os.environ.copy()
+    result = subprocess.run(
+        ["bash", str(test_script)],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    output = result.stdout.strip()
+
+    # Should contain the project name
+    assert "myproject" in output, f"Expected 'myproject' in output, got: {output!r}\nstderr: {result.stderr}"
+    # Should contain camelCase identifier
+    assert "UserPrefs" in output, f"Expected 'UserPrefs' in output, got: {output!r}"
+    # Should contain snake_case identifier
+    assert "fetch_config" in output, f"Expected 'fetch_config' in output, got: {output!r}"
+    # Should contain SCREAMING_SNAKE constant
+    assert "MAX_RETRIES" in output, f"Expected 'MAX_RETRIES' in output, got: {output!r}"
+    # Should contain version reference
+    assert "v2.1.0" in output, f"Expected 'v2.1.0' in output, got: {output!r}"
+    # Should contain PR reference
+    assert "PR-42" in output, f"Expected 'PR-42' in output, got: {output!r}"
+    # Should NOT contain filler words
+    for filler in ["ok", "so", "the", "uses", "and", "for", "of"]:
+        # Check it's not present as a standalone word in output
+        words = output.lower().split()
+        assert filler not in words, f"Filler word '{filler}' should not be in output: {output!r}"

@@ -59,6 +59,23 @@ build_response_hint() {
   done < <(jq -c '.patterns[]' "$hints_file")
 }
 
+build_keyword_bag() {
+  local prompt="$1"
+  local project="$2"
+  local bag="$project"
+  local identifiers
+  identifiers=$(echo "$prompt" | { grep -oE '[A-Z][a-z]+([A-Z][a-z]+)+|[a-z]+_[a-z_]+|[A-Z_]{3,}' 2>/dev/null || true; } | sort -u | head -10 | tr '\n' ' ')
+  local versions
+  versions=$(echo "$prompt" | { grep -oE 'v[0-9]+\.[0-9]+[0-9.]*|#[0-9]+|PR[- ]?[0-9]+' 2>/dev/null || true; } | sort -u | head -5 | tr '\n' ' ')
+  local nouns
+  local stopwords="ok okay wait wtf dammit hmm yes no sure right well so but and the this that is are was were we you i it a an of to in for on with from by at or not do does did dont doesnt didnt can cant could would should have has had been be will just also like think feel want need know see get got let lets go make made way thing stuff something there then than what when where which who how why about into more some only other its here very after before because being our them they these those out uses use used using"
+  nouns=$(echo "$prompt" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z' ' ' | tr -s ' ' | \
+    awk -v stops="$stopwords" 'BEGIN{n=split(stops,a," ");for(i=1;i<=n;i++)s[a[i]]=1} {for(i=1;i<=NF;i++)if(length($i)>=3 && !($i in s))print $i}' | \
+    sort -u | head -15 | tr '\n' ' ')
+  bag="$bag $identifiers $versions $nouns"
+  echo "$bag" | tr -s ' ' | sed 's/^ //;s/ $//'
+}
+
 extract_recent_context() {
   local transcript_path="$1"
   if [ -z "$transcript_path" ] || [ ! -f "$transcript_path" ]; then
