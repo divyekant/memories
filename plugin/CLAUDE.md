@@ -7,9 +7,13 @@ Your job is to USE the recalled context and STORE decisions at natural breakpoin
 ## Behavioral Rules (always active)
 
 ### Before responding
-- **Search memories BEFORE answering** any question about: prior decisions, architecture, conventions, deferred work, past bugs, project history, or resuming a topic. Do not guess from code alone when context may exist in memories.
+- **IMPORTANT: ALWAYS search memories BEFORE responding** to questions about prior decisions, architecture, conventions, deferred work, past bugs, project history, or resuming a topic. Do NOT rely solely on hook-injected context — it is keyword-matched and incomplete. Load the tool first if needed: ToolSearch("select:mcp__memories__memory_search")
 - **Search memories BEFORE asking a clarifying question.** The answer may already be stored. Check first.
-- When hooks inject `## Retrieved Memories`, read them carefully. They are curated context, not noise.
+- **You MUST NOT skip memory search.** Do not rationalize:
+  - "The Retrieved Memories section has what I need" — it may not
+  - "I can figure it out from the code" — prior decisions aren't in code
+  - "This is a simple question" — simple questions about past work need recall
+- When hooks inject `## Retrieved Memories` or `## Relevant Memories`, read them carefully. They are curated context, not noise.
 
 ### When responding with remembered context
 - **Lead with the answer in sentence one.** Do not preamble with "Based on memories..." or "Let me check what we decided..." — just answer.
