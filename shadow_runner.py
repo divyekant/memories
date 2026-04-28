@@ -13,7 +13,13 @@ unless SHADOW_LOG_DIR overrides the directory.
 """
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
+
+from llm_provider import LLMProvider, OllamaProvider, OMLXProvider
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -45,3 +51,38 @@ def parse_shadow_providers(env_value: str) -> list[ShadowProviderConfig]:
         else:
             configs.append(ShadowProviderConfig(provider_name=entry, model=None))
     return configs
+
+
+def _build_one(cfg: ShadowProviderConfig) -> LLMProvider:
+    """Construct a single shadow provider. Raises ValueError for unsupported types."""
+    if cfg.provider_name == "omlx":
+        base_url = os.environ.get("SHADOW_OMLX_URL", "").strip() or None
+        api_key = os.environ.get("SHADOW_OMLX_API_KEY", "").strip() or None
+        return OMLXProvider(base_url=base_url, api_key=api_key, model=cfg.model)
+    if cfg.provider_name == "ollama":
+        base_url = (
+            os.environ.get("SHADOW_OLLAMA_URL", "").strip()
+            or os.environ.get("OLLAMA_URL", "").strip()
+            or None
+        )
+        return OllamaProvider(base_url=base_url, model=cfg.model)
+    raise ValueError(
+        f"Shadow provider '{cfg.provider_name}' not supported in v1 "
+        "(supported: omlx, ollama)"
+    )
+
+
+def build_shadow_providers() -> list[LLMProvider]:
+    """Build all shadow providers from SHADOW_PROVIDERS env. Skips failures."""
+    env = os.environ.get("SHADOW_PROVIDERS", "").strip()
+    configs = parse_shadow_providers(env)
+    providers: list[LLMProvider] = []
+    for cfg in configs:
+        try:
+            providers.append(_build_one(cfg))
+        except Exception as e:
+            logger.warning(
+                "Failed to build shadow provider %s:%s — %s",
+                cfg.provider_name, cfg.model, e,
+            )
+    return providers
