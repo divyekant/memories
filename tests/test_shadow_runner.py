@@ -1,6 +1,9 @@
 """Tests for shadow_runner module."""
+import json
 import os
+import threading
 import pytest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 
@@ -109,3 +112,51 @@ class TestBuildShadowProviders:
                 providers = build_shadow_providers()
         assert len(providers) == 1
         assert isinstance(providers[0], OMLXProvider)
+
+
+class TestWriteShadowLog:
+    def test_writes_single_jsonl_line(self, tmp_path):
+        from shadow_runner import write_shadow_log
+        write_shadow_log(str(tmp_path), "qwen-2.5-3b", {"k": "v", "n": 1})
+        log_file = tmp_path / "memories-shadow-qwen-2.5-3b.log"
+        assert log_file.exists()
+        content = log_file.read_text().strip()
+        assert json.loads(content) == {"k": "v", "n": 1}
+
+    def test_appends_multiple_lines(self, tmp_path):
+        from shadow_runner import write_shadow_log
+        write_shadow_log(str(tmp_path), "m", {"i": 1})
+        write_shadow_log(str(tmp_path), "m", {"i": 2})
+        write_shadow_log(str(tmp_path), "m", {"i": 3})
+        lines = (tmp_path / "memories-shadow-m.log").read_text().strip().split("\n")
+        assert [json.loads(l)["i"] for l in lines] == [1, 2, 3]
+
+    def test_concurrent_writes_produce_intact_lines(self, tmp_path):
+        """Each write must result in a complete, parseable JSONL line."""
+        from shadow_runner import write_shadow_log
+
+        big_value = "x" * 8000
+
+        def writer(idx):
+            for i in range(20):
+                write_shadow_log(str(tmp_path), "m", {"writer": idx, "i": i, "pad": big_value})
+
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(8)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+
+        lines = (tmp_path / "memories-shadow-m.log").read_text().strip().split("\n")
+        assert len(lines) == 8 * 20
+        for line in lines:
+            parsed = json.loads(line)
+            assert parsed["pad"] == big_value
+            assert "writer" in parsed and "i" in parsed
+
+    def test_sanitizes_model_name_for_filename(self, tmp_path):
+        """Model names with slashes must not create subdirs."""
+        from shadow_runner import write_shadow_log
+        write_shadow_log(str(tmp_path), "mlx-community/qwen-2.5-3b", {"k": "v"})
+        files = list(tmp_path.iterdir())
+        assert len(files) == 1
+        assert files[0].is_file()
+        assert "/" not in files[0].name

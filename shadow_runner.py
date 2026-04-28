@@ -13,9 +13,13 @@ unless SHADOW_LOG_DIR overrides the directory.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
+import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 from llm_provider import LLMProvider, OllamaProvider, OMLXProvider
 
@@ -70,6 +74,41 @@ def _build_one(cfg: ShadowProviderConfig) -> LLMProvider:
         f"Shadow provider '{cfg.provider_name}' not supported in v1 "
         "(supported: omlx, ollama)"
     )
+
+
+# Per-file locks so concurrent writes to different model logs don't serialize
+# against each other.
+_log_locks: dict[str, threading.Lock] = {}
+_log_locks_guard = threading.Lock()
+
+
+def _get_log_lock(path: str) -> threading.Lock:
+    with _log_locks_guard:
+        if path not in _log_locks:
+            _log_locks[path] = threading.Lock()
+        return _log_locks[path]
+
+
+_FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sanitize_model_name(model: str) -> str:
+    return _FILENAME_SAFE.sub("_", model)
+
+
+def write_shadow_log(log_dir: str, model: str, record: dict) -> None:
+    """Append a single JSONL line for `model` to <log_dir>/memories-shadow-<model>.log.
+
+    Thread-safe: writes are serialized per-file by an internal lock so concurrent
+    writers from different shadow threads cannot produce torn lines.
+    """
+    safe_model = _sanitize_model_name(model)
+    path = str(Path(log_dir) / f"memories-shadow-{safe_model}.log")
+    line = json.dumps(record, default=str) + "\n"
+    lock = _get_log_lock(path)
+    with lock:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
 
 
 def build_shadow_providers() -> list[LLMProvider]:
