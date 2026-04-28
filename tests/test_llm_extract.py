@@ -1390,3 +1390,55 @@ class TestSingleCallShadowFanout:
         assert log_file.exists()
         rec = json.loads(log_file.read_text().strip())
         assert rec["call_type"] == "single_call"
+
+
+class TestPrimaryUnaffectedByShadowFailures:
+    """Primary path must survive any shadow-side failure mode."""
+
+    def test_extract_facts_succeeds_when_all_shadows_raise(self, tmp_path):
+        from llm_extract import extract_facts
+        from shadow_runner import wait_for_shadows
+
+        primary = MagicMock()
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"category": "decision", "text": "ok"}]',
+            input_tokens=10, output_tokens=5,
+        ))
+
+        def make_boom(model):
+            s = MagicMock()
+            s.provider_name = "omlx"
+            s.model = model
+            s.complete = MagicMock(side_effect=RuntimeError(f"{model} exploded"))
+            return s
+
+        shadows = [make_boom("a"), make_boom("b"), make_boom("c")]
+
+        with patch("llm_extract.build_shadow_providers", return_value=shadows):
+            with patch.dict(os.environ, {"SHADOW_LOG_DIR": str(tmp_path)}):
+                facts = extract_facts(primary, "msgs", source="src")
+        wait_for_shadows(timeout=5)
+
+        assert facts == [{"category": "decision", "text": "ok"}]
+
+        for model in ("a", "b", "c"):
+            log = tmp_path / f"memories-shadow-{model}.log"
+            assert log.exists()
+            rec = json.loads(log.read_text().strip())
+            assert rec["error"] == f"{model} exploded"
+            assert rec["shadow_text"] is None
+
+    def test_extract_facts_succeeds_when_build_shadow_providers_raises(self, tmp_path):
+        from llm_extract import extract_facts
+
+        primary = MagicMock()
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"category": "decision", "text": "ok"}]',
+            input_tokens=10, output_tokens=5,
+        ))
+
+        with patch("llm_extract.build_shadow_providers",
+                   side_effect=RuntimeError("build exploded")):
+            facts = extract_facts(primary, "msgs", source="src")
+
+        assert facts == [{"category": "decision", "text": "ok"}]
