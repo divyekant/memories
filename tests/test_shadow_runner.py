@@ -2,6 +2,7 @@
 import json
 import os
 import threading
+import time
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -160,3 +161,99 @@ class TestWriteShadowLog:
         assert len(files) == 1
         assert files[0].is_file()
         assert "/" not in files[0].name
+
+
+def _fake_provider(name="m", model="m", text="shadow-output", input_tokens=10, output_tokens=20, raises=None, sleep=0):
+    """Build a mock LLMProvider-like object for shadow tests."""
+    p = MagicMock()
+    p.provider_name = name
+    p.model = model
+
+    def _complete(system, user):
+        if sleep:
+            time.sleep(sleep)
+        if raises:
+            raise raises
+        from llm_provider import CompletionResult
+        return CompletionResult(text=text, input_tokens=input_tokens, output_tokens=output_tokens)
+    p.complete = _complete
+    return p
+
+
+class TestFanoutShadow:
+    def test_no_shadows_is_noop(self, tmp_path):
+        from shadow_runner import fanout_shadow_async, wait_for_shadows
+        fanout_shadow_async(
+            call_type="extract", system="s", user="u",
+            primary_text="primary", source="claude-code/foo",
+            shadows=[], log_dir=str(tmp_path),
+        )
+        wait_for_shadows(timeout=2)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_writes_one_log_line_per_shadow(self, tmp_path):
+        from shadow_runner import fanout_shadow_async, wait_for_shadows
+        s1 = _fake_provider(model="qwen", text="qwen-out")
+        s2 = _fake_provider(model="gemma", text="gemma-out")
+        fanout_shadow_async(
+            call_type="extract", system="s", user="u",
+            primary_text="primary", source="claude-code/foo",
+            shadows=[s1, s2], log_dir=str(tmp_path),
+        )
+        wait_for_shadows(timeout=5)
+        files = sorted(p.name for p in tmp_path.iterdir())
+        assert files == ["memories-shadow-gemma.log", "memories-shadow-qwen.log"]
+
+    def test_log_record_includes_required_fields(self, tmp_path):
+        from shadow_runner import fanout_shadow_async, wait_for_shadows
+        s1 = _fake_provider(model="qwen", text="qwen-out", input_tokens=5, output_tokens=7)
+        fanout_shadow_async(
+            call_type="audn", system="sys-prompt", user="user-prompt",
+            primary_text="primary-out", source="claude-code/foo",
+            shadows=[s1], log_dir=str(tmp_path),
+        )
+        wait_for_shadows(timeout=5)
+        line = (tmp_path / "memories-shadow-qwen.log").read_text().strip()
+        rec = json.loads(line)
+        assert rec["call_type"] == "audn"
+        assert rec["source"] == "claude-code/foo"
+        assert rec["primary_text"] == "primary-out"
+        assert rec["shadow_text"] == "qwen-out"
+        assert rec["shadow_input_tokens"] == 5
+        assert rec["shadow_output_tokens"] == 7
+        assert rec["error"] is None
+        assert isinstance(rec["latency_ms"], int) and rec["latency_ms"] >= 0
+        assert isinstance(rec["ts"], float)
+        assert isinstance(rec["prompt_hash"], str) and len(rec["prompt_hash"]) == 16
+
+    def test_shadow_exception_is_swallowed_and_logged(self, tmp_path):
+        from shadow_runner import fanout_shadow_async, wait_for_shadows
+        boom = _fake_provider(model="boom", raises=RuntimeError("boom!"))
+        ok = _fake_provider(model="ok", text="ok-out")
+        fanout_shadow_async(
+            call_type="extract", system="s", user="u",
+            primary_text="primary", source="src",
+            shadows=[boom, ok], log_dir=str(tmp_path),
+        )
+        wait_for_shadows(timeout=5)
+        boom_rec = json.loads((tmp_path / "memories-shadow-boom.log").read_text().strip())
+        assert boom_rec["error"] == "boom!"
+        assert boom_rec["shadow_text"] is None
+        ok_rec = json.loads((tmp_path / "memories-shadow-ok.log").read_text().strip())
+        assert ok_rec["shadow_text"] == "ok-out"
+        assert ok_rec["error"] is None
+
+    def test_does_not_block_caller(self, tmp_path):
+        """Slow shadows must not block the caller."""
+        from shadow_runner import fanout_shadow_async, wait_for_shadows
+        slow = _fake_provider(model="slow", sleep=0.5, text="slow-out")
+        t0 = time.time()
+        fanout_shadow_async(
+            call_type="extract", system="s", user="u",
+            primary_text="primary", source="src",
+            shadows=[slow], log_dir=str(tmp_path),
+        )
+        elapsed = time.time() - t0
+        assert elapsed < 0.1, f"fanout_shadow_async blocked for {elapsed:.3f}s"
+        wait_for_shadows(timeout=5)
+        assert (tmp_path / "memories-shadow-slow.log").exists()

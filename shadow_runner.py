@@ -13,11 +13,14 @@ unless SHADOW_LOG_DIR overrides the directory.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
 import threading
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -125,3 +128,103 @@ def build_shadow_providers() -> list[LLMProvider]:
                 cfg.provider_name, cfg.model, e,
             )
     return providers
+
+
+# Module-level daemon executor — submits return immediately; shadow work
+# runs on background threads. Track in-flight futures so tests (and graceful
+# shutdown) can wait deterministically.
+_SHADOW_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="shadow")
+_inflight: list[Future] = []
+_inflight_lock = threading.Lock()
+
+
+def _prompt_hash(system: str, user: str) -> str:
+    """Stable 16-char hex hash for correlating primary and shadow records."""
+    h = hashlib.sha256()
+    h.update(system.encode("utf-8"))
+    h.update(b"\x00")
+    h.update(user.encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def _run_one_shadow(
+    shadow: LLMProvider,
+    call_type: str,
+    system: str,
+    user: str,
+    primary_text: str,
+    prompt_hash: str,
+    source: str,
+    log_dir: str,
+) -> None:
+    """Execute a single shadow; never raises."""
+    model = shadow.model or shadow.provider_name
+    start = time.time()
+    record: dict = {
+        "ts": time.time(),
+        "call_type": call_type,
+        "source": source,
+        "prompt_hash": prompt_hash,
+        "primary_text": primary_text[:2000] if primary_text else None,
+        "shadow_text": None,
+        "shadow_input_tokens": 0,
+        "shadow_output_tokens": 0,
+        "latency_ms": 0,
+        "error": None,
+    }
+    try:
+        result = shadow.complete(system, user)
+        record["shadow_text"] = (result.text or "")[:2000]
+        record["shadow_input_tokens"] = result.input_tokens
+        record["shadow_output_tokens"] = result.output_tokens
+    except Exception as e:
+        record["error"] = str(e)
+    finally:
+        record["latency_ms"] = int((time.time() - start) * 1000)
+        try:
+            write_shadow_log(log_dir, model, record)
+        except Exception as e:
+            logger.warning("Shadow log write failed for %s: %s", model, e)
+
+
+def fanout_shadow_async(
+    call_type: str,
+    system: str,
+    user: str,
+    primary_text: str,
+    source: str,
+    shadows: list[LLMProvider],
+    log_dir: str = "/tmp",
+) -> None:
+    """Fan out the same prompt to all shadow providers. Returns immediately.
+
+    Never raises; all failures are caught and logged to JSONL.
+    """
+    if not shadows:
+        return
+    prompt_hash = _prompt_hash(system, user)
+    for shadow in shadows:
+        try:
+            fut = _SHADOW_EXECUTOR.submit(
+                _run_one_shadow,
+                shadow, call_type, system, user, primary_text,
+                prompt_hash, source, log_dir,
+            )
+            with _inflight_lock:
+                _inflight.append(fut)
+        except Exception as e:
+            logger.warning("Failed to submit shadow %s: %s", shadow, e)
+
+
+def wait_for_shadows(timeout: float = 30.0) -> None:
+    """Block until all in-flight shadow tasks complete. For tests + graceful shutdown."""
+    with _inflight_lock:
+        futures = list(_inflight)
+        _inflight.clear()
+    deadline = time.time() + timeout
+    for fut in futures:
+        remaining = max(0.0, deadline - time.time())
+        try:
+            fut.result(timeout=remaining)
+        except Exception:
+            pass
