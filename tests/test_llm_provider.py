@@ -413,3 +413,67 @@ class TestOpenAIProvider:
 
         call = mock_openai.OpenAI.return_value.chat.completions.create.call_args
         assert call.kwargs["temperature"] == 0.0
+
+
+class TestOMLXProvider:
+    def test_default_base_url_is_localhost_v1(self):
+        from llm_provider import OMLXProvider
+        mock_openai = MagicMock()
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            with patch.dict(os.environ, {}, clear=True):
+                p = OMLXProvider(model="fplv2")
+        assert p.base_url == "http://localhost:11434/v1"
+        assert p.model == "fplv2"
+        mock_openai.OpenAI.assert_called_once_with(
+            api_key="12345", base_url="http://localhost:11434/v1"
+        )
+
+    def test_explicit_base_url_and_key(self):
+        from llm_provider import OMLXProvider
+        mock_openai = MagicMock()
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            p = OMLXProvider(
+                base_url="http://10.0.0.5:11434/v1",
+                api_key="custom-key",
+                model="gemma26b-3bit",
+            )
+        assert p.base_url == "http://10.0.0.5:11434/v1"
+        assert p.api_key == "custom-key"
+        mock_openai.OpenAI.assert_called_once_with(
+            api_key="custom-key", base_url="http://10.0.0.5:11434/v1"
+        )
+
+    def test_supports_audn(self):
+        from llm_provider import OMLXProvider
+        mock_openai = MagicMock()
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            p = OMLXProvider(model="m")
+        assert p.supports_audn is True
+        assert p.provider_name == "omlx"
+
+    def test_complete_calls_chat_completions(self):
+        from llm_provider import OMLXProvider, CompletionResult
+        mock_openai_module = MagicMock()
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="hello"))]
+        mock_response.usage = MagicMock(prompt_tokens=12, completion_tokens=3)
+        mock_client.chat.completions.create = MagicMock(return_value=mock_response)
+        mock_openai_module.OpenAI = MagicMock(return_value=mock_client)
+
+        with patch.dict("sys.modules", {"openai": mock_openai_module}):
+            p = OMLXProvider(model="fplv2")
+            result = p.complete("sys", "usr")
+
+        assert isinstance(result, CompletionResult)
+        assert result.text == "hello"
+        assert result.input_tokens == 12
+        assert result.output_tokens == 3
+        mock_client.chat.completions.create.assert_called_once()
+        kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert kwargs["model"] == "fplv2"
+        assert kwargs["messages"] == [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "usr"},
+        ]
+        assert kwargs["temperature"] == 0.0
