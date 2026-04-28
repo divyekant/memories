@@ -1350,3 +1350,43 @@ class TestRunAudnShadowFanout:
         rec = json.loads(log_file.read_text().strip())
         assert rec["call_type"] == "audn"
         assert "NOOP" in rec["shadow_text"]
+
+
+class TestSingleCallShadowFanout:
+    """Tests for shadow fan-out wired into extract_and_decide_single_call."""
+
+    def test_single_call_writes_shadow_log_when_configured(self, tmp_path):
+        from llm_extract import extract_and_decide_single_call
+        from shadow_runner import wait_for_shadows
+
+        primary = MagicMock()
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"action": "ADD", "fact_index": 0, "category": "decision", "text": "x"}]',
+            input_tokens=300, output_tokens=40,
+        ))
+
+        engine = MagicMock()
+
+        shadow = MagicMock()
+        shadow.provider_name = "omlx"
+        shadow.model = "fplv2"
+        shadow.complete = MagicMock(return_value=CompletionResult(
+            text='[{"action": "ADD", "fact_index": 0, "category": "detail", "text": "y"}]',
+            input_tokens=290, output_tokens=35,
+        ))
+
+        with patch("llm_extract.build_shadow_providers", return_value=[shadow]):
+            with patch.dict(os.environ, {"SHADOW_LOG_DIR": str(tmp_path)}):
+                actions, usage, _ = extract_and_decide_single_call(
+                    primary, "msgs text", source="claude-code/foo", engine=engine,
+                )
+        wait_for_shadows(timeout=5)
+
+        assert len(actions) == 1
+        assert actions[0]["action"] == "ADD"
+        shadow.complete.assert_called_once()
+
+        log_file = tmp_path / "memories-shadow-fplv2.log"
+        assert log_file.exists()
+        rec = json.loads(log_file.read_text().strip())
+        assert rec["call_type"] == "single_call"

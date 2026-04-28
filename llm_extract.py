@@ -535,10 +535,22 @@ def extract_and_decide_single_call(
     rules_section = _build_rules_section(rules)
     prompt = SINGLE_CALL_PROMPT.format(rules_section=rules_section)
 
-    result = provider.complete(
-        system=prompt,
-        user=f"Extract and classify facts from this conversation:\n\n{messages[:max_facts * 500]}",
-    )
+    user_prompt = f"Extract and classify facts from this conversation:\n\n{messages[:max_facts * 500]}"
+    result = provider.complete(system=prompt, user=user_prompt)
+    try:
+        shadows = build_shadow_providers()
+        if shadows:
+            fanout_shadow_async(
+                call_type="single_call",
+                system=prompt,
+                user=user_prompt,
+                primary_text=result.text,
+                source=source,
+                shadows=shadows,
+                log_dir=os.environ.get("SHADOW_LOG_DIR", "/tmp"),
+            )
+    except Exception as _shadow_err:
+        logger.warning("Shadow fan-out (single_call) suppressed: %s", _shadow_err)
     usage = {"input_tokens": result.input_tokens, "output_tokens": result.output_tokens}
 
     try:
