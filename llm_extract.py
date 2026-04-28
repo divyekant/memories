@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from auth_context import source_matches_prefixes
+from shadow_runner import build_shadow_providers, fanout_shadow_async
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +314,20 @@ def extract_facts(
     tokens = {"input": 0, "output": 0}
     try:
         result = provider.complete(system, messages)
+        try:
+            shadows = build_shadow_providers()
+            if shadows:
+                fanout_shadow_async(
+                    call_type="extract",
+                    system=system,
+                    user=messages,
+                    primary_text=result.text,
+                    source=source,
+                    shadows=shadows,
+                    log_dir=os.environ.get("SHADOW_LOG_DIR", "/tmp"),
+                )
+        except Exception as _shadow_err:
+            logger.warning("Shadow fan-out (extract) suppressed: %s", _shadow_err)
         raw_facts = _parse_json_array(result.text)
         tokens = {"input": result.input_tokens, "output": result.output_tokens}
 

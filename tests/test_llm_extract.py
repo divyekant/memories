@@ -1,6 +1,8 @@
 """Tests for llm_extract module."""
+import os
 import pytest
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from llm_provider import CompletionResult
 
@@ -1247,3 +1249,60 @@ def _extract_action_definition(prompt: str, action: str) -> str:
                     parts.append(next_line)
             return " ".join(parts)
     return ""
+
+
+class TestExtractFactsShadowFanout:
+    """Tests for shadow fan-out wired into extract_facts."""
+
+    def test_extract_facts_writes_shadow_log_when_configured(self, tmp_path):
+        from llm_extract import extract_facts
+        from shadow_runner import wait_for_shadows
+
+        primary = MagicMock()
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"category": "decision", "text": "use sqlite for memory store"}]',
+            input_tokens=100, output_tokens=20,
+        ))
+
+        shadow = MagicMock()
+        shadow.provider_name = "omlx"
+        shadow.model = "fplv2"
+        shadow.complete = MagicMock(return_value=CompletionResult(
+            text='[{"category": "detail", "text": "shadow saw the same conversation"}]',
+            input_tokens=99, output_tokens=18,
+        ))
+
+        with patch("llm_extract.build_shadow_providers", return_value=[shadow]):
+            with patch.dict(os.environ, {"SHADOW_LOG_DIR": str(tmp_path)}):
+                facts = extract_facts(primary, "messages text", source="claude-code/foo")
+        wait_for_shadows(timeout=5)
+
+        assert facts == [{"category": "decision", "text": "use sqlite for memory store"}]
+        primary.complete.assert_called_once()
+        shadow.complete.assert_called_once()
+
+        log_file = tmp_path / "memories-shadow-fplv2.log"
+        assert log_file.exists()
+        rec = json.loads(log_file.read_text().strip())
+        assert rec["call_type"] == "extract"
+        assert rec["source"] == "claude-code/foo"
+        assert "shadow saw" in rec["shadow_text"]
+
+    def test_extract_facts_unaffected_when_no_shadows(self, tmp_path):
+        from llm_extract import extract_facts
+        from shadow_runner import wait_for_shadows
+
+        primary = MagicMock()
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"category": "decision", "text": "x"}]',
+            input_tokens=10, output_tokens=5,
+        ))
+
+        env = {"SHADOW_LOG_DIR": str(tmp_path)}
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("SHADOW_PROVIDERS", None)
+            facts = extract_facts(primary, "msgs", source="claude-code/foo")
+        wait_for_shadows(timeout=2)
+
+        assert facts == [{"category": "decision", "text": "x"}]
+        assert list(tmp_path.iterdir()) == []
