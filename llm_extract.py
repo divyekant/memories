@@ -461,6 +461,20 @@ def run_audn(
 
     try:
         result = provider.complete(audn_system, prompt)
+        try:
+            shadows = build_shadow_providers()
+            if shadows:
+                fanout_shadow_async(
+                    call_type="audn",
+                    system=audn_system,
+                    user=prompt,
+                    primary_text=result.text,
+                    source=source,
+                    shadows=shadows,
+                    log_dir=os.environ.get("SHADOW_LOG_DIR", "/tmp"),
+                )
+        except Exception as _shadow_err:
+            logger.warning("Shadow fan-out (audn) suppressed: %s", _shadow_err)
         tokens = {"input": result.input_tokens, "output": result.output_tokens}
         decisions = _parse_json_array(result.text)
         del result, prompt, facts_json, similar_json

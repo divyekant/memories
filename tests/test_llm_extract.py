@@ -1306,3 +1306,47 @@ class TestExtractFactsShadowFanout:
 
         assert facts == [{"category": "decision", "text": "x"}]
         assert list(tmp_path.iterdir()) == []
+
+
+class TestRunAudnShadowFanout:
+    """Tests for shadow fan-out wired into run_audn."""
+
+    def test_run_audn_writes_shadow_log_when_configured(self, tmp_path):
+        from llm_extract import run_audn
+        from shadow_runner import wait_for_shadows
+
+        primary = MagicMock()
+        primary.provider_name = "anthropic"
+        primary.supports_audn = True
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"action": "ADD", "fact_index": 0}]',
+            input_tokens=200, output_tokens=30,
+        ))
+
+        engine = MagicMock()
+        engine.hybrid_search = MagicMock(return_value=[])
+
+        shadow = MagicMock()
+        shadow.provider_name = "omlx"
+        shadow.model = "fplv2"
+        shadow.complete = MagicMock(return_value=CompletionResult(
+            text='[{"action": "NOOP", "fact_index": 0}]',
+            input_tokens=190, output_tokens=25,
+        ))
+
+        facts = [{"category": "decision", "text": "x"}]
+        with patch("llm_extract.build_shadow_providers", return_value=[shadow]):
+            with patch.dict(os.environ, {"SHADOW_LOG_DIR": str(tmp_path)}):
+                decisions, tokens, artifacts = run_audn(
+                    primary, engine, facts, source="claude-code/foo",
+                )
+        wait_for_shadows(timeout=5)
+
+        assert decisions == [{"action": "ADD", "fact_index": 0}]
+        shadow.complete.assert_called_once()
+
+        log_file = tmp_path / "memories-shadow-fplv2.log"
+        assert log_file.exists()
+        rec = json.loads(log_file.read_text().strip())
+        assert rec["call_type"] == "audn"
+        assert "NOOP" in rec["shadow_text"]
