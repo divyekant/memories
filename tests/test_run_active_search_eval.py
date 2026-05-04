@@ -4,7 +4,15 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from eval.active_search_eval import ActiveSearchCase
-from eval.run_active_search_eval import install_claude_product_read_hooks, load_cases, materialize_case, run_case
+from eval.run_active_search_eval import (
+    CodexExecutor,
+    install_claude_product_read_hooks,
+    install_codex_product_read_hooks,
+    load_cases,
+    materialize_case,
+    parse_codex_json_trace,
+    run_case,
+)
 
 
 def test_load_cases_parses_seed_memories_and_expected_prefixes(tmp_path: Path):
@@ -127,3 +135,93 @@ def test_install_claude_product_read_hooks_writes_project_settings(tmp_path: Pat
     assert str(hooks_dir / "memory-query.sh") in settings
     assert "memory-extract.sh" not in settings
     assert (project_dir / "CLAUDE.md").read_text(encoding="utf-8") == "# Memories\n"
+
+
+def test_install_codex_product_read_hooks_writes_temp_home(tmp_path: Path):
+    codex_home = tmp_path / ".codex"
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    mcp_server = tmp_path / "index.js"
+    mcp_server.write_text("", encoding="utf-8")
+
+    install_codex_product_read_hooks(
+        codex_home=str(codex_home),
+        hooks_dir=str(hooks_dir),
+        memories_url="http://localhost:8901",
+        api_key="test-key",
+        mcp_server_path=str(mcp_server),
+    )
+
+    hooks_json = (codex_home / "hooks.json").read_text(encoding="utf-8")
+    config_toml = (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert str(hooks_dir / "memory-recall.sh") in hooks_json
+    assert str(hooks_dir / "memory-query.sh") in hooks_json
+    assert "memory-extract.sh" not in hooks_json
+    assert "[mcp_servers.memories]" in config_toml
+    assert "http://localhost:8901" in config_toml
+    assert "test-key" in config_toml
+    assert "replace {project} with the current working directory basename" in config_toml
+    assert "Do not use broad family prefixes" in config_toml
+
+
+def test_parse_codex_json_trace_extracts_answer_and_memory_tool_calls():
+    stdout = "\n".join(
+        [
+            '{"type":"thread.started","thread_id":"t1"}',
+            '{"type":"item.completed","item":{"type":"mcp_tool_call","name":"mcp__memories__memory_search","arguments":{"query":"release gate","source_prefix":"codex/project"}}}',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"Release is gated."}}',
+        ]
+    )
+
+    answer, trace = parse_codex_json_trace(stdout)
+
+    assert answer == "Release is gated."
+    assert trace["tool_calls"] == [
+        {
+            "name": "mcp__memories__memory_search",
+            "query": "release gate",
+            "source_prefix": "codex/project",
+        }
+    ]
+
+
+def test_parse_codex_json_trace_extracts_current_mcp_tool_call_shape():
+    stdout = "\n".join(
+        [
+            '{"type":"thread.started","thread_id":"t1"}',
+            '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"memories","tool":"memory_search","arguments":{"query":"release gate","source_prefix":"codex/project","hybrid":true}}}',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"Release is gated."}}',
+        ]
+    )
+
+    answer, trace = parse_codex_json_trace(stdout)
+
+    assert answer == "Release is gated."
+    assert trace["tool_calls"] == [
+        {
+            "name": "mcp__memories__memory_search",
+            "query": "release gate",
+            "source_prefix": "codex/project",
+        }
+    ]
+
+
+def test_codex_executor_uses_raw_prompt(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def fake_run(cmd, capture_output, text, timeout, cwd, env):
+        calls.append({"cmd": cmd, "cwd": cwd, "env": env})
+        return MagicMock(
+            returncode=0,
+            stdout='{"type":"item.completed","item":{"type":"agent_message","text":"4"}}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr("eval.run_active_search_eval.subprocess.run", fake_run)
+    executor = CodexExecutor(codex_home=str(tmp_path / ".codex"), timeout=30)
+
+    answer = executor.run_prompt("What is 2 plus 2?", str(tmp_path))
+
+    assert answer == "4"
+    assert calls[0]["cmd"][-1] == "What is 2 plus 2?"
+    assert calls[0]["env"]["CODEX_HOME"] == str(tmp_path / ".codex")

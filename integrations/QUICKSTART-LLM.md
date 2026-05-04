@@ -482,7 +482,7 @@ curl -s https://memory.yourdomain.com/health   # prod
 
 | Hook | Event | Sync? | What It Does |
 |------|-------|-------|-------------|
-| `memory-recall.sh` | SessionStart | Sync | Searches project-scoped memories, injects top results, and adds a short recall playbook for the session |
+| `memory-recall.sh` | SessionStart | Sync | Searches project-scoped memories, injects candidate pointers, and adds a short recall playbook for the session |
 | `memory-query.sh` | UserPromptSubmit | Sync | Searches project-scoped memories first and uses recent transcript context so short follow-up prompts still retrieve useful memories |
 | `memory-subagent-recall.sh` | SubagentStart | Sync | Injects project-scoped memories into subagents (Plan, Explore, code-reviewer, etc.) at spawn time |
 | `memory-extract.sh` | Stop | Async | POSTs the last exchange to `/memory/extract` for fact extraction (fires unconditionally — no keyword filter) |
@@ -494,7 +494,7 @@ curl -s https://memory.yourdomain.com/health   # prod
 
 | Hook | Event | Sync? | What It Does |
 |------|-------|-------|-------------|
-| `memory-recall.sh` | SessionStart | Sync | Searches project-scoped memories, injects top results and recall playbook (no MEMORY.md hydration) |
+| `memory-recall.sh` | SessionStart | Sync | Searches project-scoped memories, injects candidate pointers and recall playbook (no MEMORY.md hydration) |
 | `memory-query.sh` | UserPromptSubmit | Sync | Searches project-scoped memories using transcript context and prompt enrichment |
 | `memory-extract.sh` | Stop | Async | Beefier extraction: 500 lines, 10 msg pairs, 8000 chars, no signal filter (compensates for no PreCompact/SessionEnd) |
 | `memory-guard.sh` | PreToolUse | Sync | Blocks writes to MEMORY.md files |

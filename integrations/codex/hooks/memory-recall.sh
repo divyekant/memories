@@ -1,6 +1,6 @@
 #!/bin/bash
 # memory-recall.sh — SessionStart hook (Codex)
-# Loads project-relevant memories into Codex context.
+# Loads project-relevant memory pointers into Codex context.
 # Sync hook: blocks until done, injects additionalContext.
 
 MEMORIES_HOOK_NAME="memory-recall"
@@ -128,7 +128,7 @@ CONTEXT_RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
   if length == 0 then
     empty
   else
-    map("- [\(.source)] \(.text)") | join("\n")
+    map("- [\(.source)] candidate memory id=\(.id // .memory_id // "unknown") found at session start; call memory_search with this source prefix before using it.") | join("\n")
   end
 ' 2>/dev/null) || true
 
@@ -140,7 +140,7 @@ WIP_RESULTS=$(search_memories "$WIP_QUERY" "wip/$PROJECT" 5 0.3)
 WIP_COUNT=$(echo "$WIP_RESULTS" | jq -r '.count // 0')
 DEFERRED_SECTION=""
 if [ "$WIP_COUNT" -gt 0 ] && [ "$WIP_COUNT" != "null" ]; then
-  DEFERRED_ITEMS=$(echo "$WIP_RESULTS" | jq -r '.results[:5][] | "- [\(.source)] \(.text[0:150])"')
+  DEFERRED_ITEMS=$(echo "$WIP_RESULTS" | jq -r '.results[:5][] | "- [\(.source)] deferred candidate memory id=\(.id // .memory_id // "unknown"); call memory_search with this source prefix before answering deferred-work questions."')
   DEFERRED_SECTION="\n## Deferred Work\n$DEFERRED_ITEMS\n"
 fi
 
@@ -166,8 +166,12 @@ Do NOT rationalize skipping this step:
 | "I can infer from the code" | Prior decisions aren't in code |
 | "It's a simple question" | Simple questions about past work need recall |
 
-After searching, use BOTH hook-injected AND searched memories.
+After searching, use searched memories as the answer source; use hook-injected pointers
+only to choose scoped prefixes and candidate ids.
 Prefer scoped prefixes: $SCOPED_PREFIX_LIST.
+Use exact source prefixes from candidate pointers first. Do not use family-wide
+prefixes like claude-code/, codex/, learning/, wip/, or unscoped search until the
+exact project prefixes have been tried.
 When memories show deferred/blocked work, say "not yet" or "deferred" directly.
 Preserve boundary conditions (until/unless/because) verbatim.
 Do not ask the user to reconfirm a remembered decision.

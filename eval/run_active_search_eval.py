@@ -12,8 +12,10 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -76,6 +78,202 @@ def install_claude_product_read_hooks(
 
     if instructions.exists():
         shutil.copy2(instructions, project / "CLAUDE.md")
+
+
+def install_codex_product_read_hooks(
+    *,
+    codex_home: str,
+    hooks_dir: str,
+    memories_url: str,
+    api_key: str,
+    mcp_server_path: str,
+) -> None:
+    """Install this worktree's Codex read hooks and MCP config into temp CODEX_HOME."""
+
+    home = Path(codex_home)
+    home.mkdir(parents=True, exist_ok=True)
+    hook_root = Path(hooks_dir)
+    hooks = {
+        "hooks": {
+            "SessionStart": [
+                {
+                    "matcher": "",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": str(hook_root / "memory-recall.sh"),
+                            "timeout": 5,
+                        }
+                    ],
+                }
+            ],
+            "UserPromptSubmit": [
+                {
+                    "matcher": "",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": str(hook_root / "memory-query.sh"),
+                            "timeout": 3,
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    (home / "hooks.json").write_text(json.dumps(hooks, indent=2, sort_keys=True), encoding="utf-8")
+    (home / "settings.json").write_text(
+        json.dumps(
+            {
+                "permissions": {
+                    "allow": [
+                        "mcp__memories__memory_search",
+                        "mcp__memories__memory_list",
+                        "mcp__memories__memory_count",
+                    ]
+                }
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (home / "memories-eval-env").write_text(
+        "\n".join(
+            [
+                f"export MEMORIES_URL={json.dumps(memories_url)}",
+                f"export MEMORIES_API_KEY={json.dumps(api_key)}",
+                "export MEMORIES_BACKENDS_FILE=__eval_single_backend__",
+                "export MEMORIES_DISABLED=0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (home / "config.toml").write_text(
+        "\n".join(
+            [
+                'developer_instructions = """',
+                "Use the Memories MCP tools as your memory layer.",
+                "READ: Run memory_search before implementation-heavy responses, clarifying questions, or any turn that depends on prior decisions, prior sessions, project history, deferred work, conventions, or cross-session context. Hook-injected memories are useful hints, not a substitute for active search.",
+                "Source prefixes: replace {project} with the current working directory basename. Search exact project-scoped prefixes first: codex/{project}, claude-code/{project}, learning/{project}, and wip/{project}. If hook candidate pointers list a source, use that exact source_prefix. Do not use broad family prefixes like codex/, claude-code/, learning/, wip/, or unscoped search until the exact project prefixes have been tried.",
+                '"""',
+                "",
+                "[mcp_servers.memories]",
+                'command = "node"',
+                f"args = [{json.dumps(mcp_server_path)}]",
+                "",
+                "[mcp_servers.memories.env]",
+                f"MEMORIES_URL = {json.dumps(memories_url)}",
+                f"MEMORIES_API_KEY = {json.dumps(api_key)}",
+                'MEMORIES_BACKENDS_FILE = "__eval_single_backend__"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def parse_codex_json_trace(stdout: str, stderr: str = "", returncode: int | None = None) -> tuple[str, dict[str, Any]]:
+    """Parse `codex exec --json` output into final answer text and tool trace."""
+
+    trace: dict[str, Any] = {
+        "output_format": "codex-json",
+        "event_count": 0,
+        "parse_errors": 0,
+        "tool_calls": [],
+        "stdout_chars": len(stdout or ""),
+        "stderr_chars": len(stderr or ""),
+        "stderr_excerpt": (stderr or "")[:1000],
+        "returncode": returncode,
+        "error_kind": "",
+    }
+    answer = ""
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            trace["parse_errors"] += 1
+            continue
+        if not isinstance(event, dict):
+            continue
+        trace["event_count"] += 1
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        item_type = str(item.get("type", ""))
+        if item_type == "agent_message" and isinstance(item.get("text"), str):
+            answer = item["text"].strip()
+        name = str(item.get("name") or item.get("tool_name") or "")
+        if not name and item.get("type") == "mcp_tool_call":
+            server = str(item.get("server") or "")
+            tool = str(item.get("tool") or "")
+            if server and tool:
+                name = f"mcp__{server}__{tool}"
+        if "memory_search" in name:
+            args = item.get("arguments") if isinstance(item.get("arguments"), dict) else item.get("input")
+            if not isinstance(args, dict):
+                args = {}
+            call = {"name": name}
+            if "query" in args:
+                call["query"] = str(args["query"])
+            if "source_prefix" in args:
+                call["source_prefix"] = str(args["source_prefix"])
+            trace["tool_calls"].append(call)
+    if returncode not in (0, None):
+        trace["error_kind"] = "agent_error"
+    return answer, trace
+
+
+class CodexExecutor:
+    """Runs prompts through Codex exec in an isolated CODEX_HOME."""
+
+    def __init__(self, *, codex_home: str, timeout: int = 180, model: str = "") -> None:
+        self.codex_home = codex_home
+        self.timeout = timeout
+        self.model = model
+        self.last_run_trace: dict[str, Any] = {}
+
+    def run_prompt(self, prompt: str, project_dir: str) -> str:
+        cmd = [
+            "codex",
+            "exec",
+            "--ephemeral",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "-C",
+            project_dir,
+        ]
+        if self.model:
+            cmd.extend(["--model", self.model])
+        cmd.append(prompt)
+        env = dict(os.environ)
+        env["CODEX_HOME"] = self.codex_home
+        env["MEMORIES_ENV_FILE"] = str(Path(self.codex_home) / "memories-eval-env")
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                cwd=project_dir,
+                env=env,
+            )
+            answer, self.last_run_trace = parse_codex_json_trace(
+                result.stdout or "",
+                stderr=result.stderr or "",
+                returncode=result.returncode,
+            )
+            return answer or (result.stderr or "").strip()
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+            stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+            _, self.last_run_trace = parse_codex_json_trace(stdout, stderr=stderr, returncode=None)
+            self.last_run_trace["error_kind"] = "timeout"
+            return f"[TIMEOUT] Codex timed out after {self.timeout}s"
 
 
 def load_cases(path: str | Path = DEFAULT_CASES_PATH) -> list[ActiveSearchCase]:
@@ -163,6 +361,7 @@ def run_case(
     result["project"] = project
     result["seeded_memories"] = len(materialized.seed_memories)
     result["prompt_contains_memory_instruction"] = "memory_search" in materialized.user_prompt
+    result["agent_trace"] = getattr(executor, "last_run_trace", {}) or {}
     return result
 
 
@@ -220,11 +419,73 @@ def run_live_claude_code(
     }
 
 
+def run_live_codex(
+    cases: list[ActiveSearchCase],
+    *,
+    client: MemoriesClient,
+    memories_url: str,
+    api_key: str,
+    mcp_server_path: str,
+    agent_model: str = "",
+    agent_timeout: int = 180,
+) -> dict[str, Any]:
+    """Run cases through Codex exec with worktree Codex hooks and MCP config."""
+
+    start = time.time()
+    root = Path(tempfile.mkdtemp(prefix="codex_active_eval_"))
+    codex_home = root / ".codex"
+    source_auth = Path.home() / ".codex" / "auth.json"
+    if source_auth.exists():
+        codex_home.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_auth, codex_home / "auth.json")
+    install_codex_product_read_hooks(
+        codex_home=str(codex_home),
+        hooks_dir=str(REPO_ROOT / "integrations" / "codex" / "hooks"),
+        memories_url=memories_url,
+        api_key=api_key,
+        mcp_server_path=mcp_server_path,
+    )
+    executor = CodexExecutor(codex_home=str(codex_home), timeout=agent_timeout, model=agent_model)
+
+    results: list[dict[str, Any]] = []
+    cleanup: list[dict[str, Any]] = []
+    try:
+        for case in cases:
+            project_dir = tempfile.mkdtemp(prefix="codex_eval_")
+            materialized = materialize_case(case, project=_project_name(project_dir))
+            try:
+                before_deleted = clear_case_memories(materialized, client)
+                result = run_case(case, client=client, executor=executor, project_dir=project_dir)
+                result["agent"] = "codex"
+                results.append(result)
+            finally:
+                after_deleted = clear_case_memories(materialized, client)
+                cleanup.append({
+                    "case_id": case.case_id,
+                    "before_deleted": before_deleted,
+                    "after_deleted": after_deleted,
+                })
+                shutil.rmtree(project_dir, ignore_errors=True)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+    return {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "eval": "active-search",
+        "agent": "codex",
+        "agent_model": agent_model or "default",
+        "duration_seconds": round(time.time() - start, 3),
+        "summary": summarize_results(results),
+        "results": results,
+        "cleanup": cleanup,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run active memory-search behavior evals")
     parser.add_argument("--cases", default=str(DEFAULT_CASES_PATH), help="JSON case file")
     parser.add_argument("--output", default="", help="Output JSON path")
-    parser.add_argument("--agent", default="claude-code", choices=["claude-code"], help="Agent runner")
+    parser.add_argument("--agent", default="claude-code", choices=["claude-code", "codex"], help="Agent runner")
     parser.add_argument("--agent-model", default="", help="Optional model passed to Claude Code")
     parser.add_argument("--agent-timeout", type=int, default=180, help="Agent timeout seconds")
     args = parser.parse_args()
@@ -241,12 +502,15 @@ def main() -> None:
         require_api_key=True,
         mcp_server_path=mcp_server_path,
         require_mcp=True,
-        require_claude=True,
+        require_claude=args.agent == "claude-code",
         allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",
     )
     if not setup_report.ok:
         for error in setup_report.errors:
             print(f"ERROR: {error}", file=sys.stderr)
+        sys.exit(2)
+    if args.agent == "codex" and shutil.which("codex") is None:
+        print("ERROR: codex CLI not found in PATH; active-search eval cannot run.", file=sys.stderr)
         sys.exit(2)
 
     client = MemoriesClient(url=memories_url, api_key=api_key)
@@ -257,15 +521,26 @@ def main() -> None:
         sys.exit(1)
 
     cases = load_cases(args.cases)
-    report = run_live_claude_code(
-        cases,
-        client=client,
-        memories_url=memories_url,
-        api_key=api_key,
-        mcp_server_path=mcp_server_path,
-        agent_model=args.agent_model,
-        agent_timeout=args.agent_timeout,
-    )
+    if args.agent == "codex":
+        report = run_live_codex(
+            cases,
+            client=client,
+            memories_url=memories_url,
+            api_key=api_key,
+            mcp_server_path=mcp_server_path,
+            agent_model=args.agent_model,
+            agent_timeout=args.agent_timeout,
+        )
+    else:
+        report = run_live_claude_code(
+            cases,
+            client=client,
+            memories_url=memories_url,
+            api_key=api_key,
+            mcp_server_path=mcp_server_path,
+            agent_model=args.agent_model,
+            agent_timeout=args.agent_timeout,
+        )
     report["setup_validation"] = {
         "ok": setup_report.ok,
         "info": list(setup_report.info),

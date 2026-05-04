@@ -277,7 +277,7 @@ jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
-	    "IMPORTANT: hook-injected memories are keyword-matched starting points, not a substitute for active search.\n\nMANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, deferred work, conventions, or continuation of prior work, you MUST call memory_search before answering. Do not answer from injected memories alone.\n\n## Retrieved Memories\n" + $memories +
+	    "IMPORTANT: hook-injected memories are keyword-matched starting points, not a substitute for active search.\n\nMANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, deferred work, conventions, or continuation of prior work, you MUST call memory_search before answering. Do not answer from injected memories alone. Use exact source prefixes shown below before broad family prefixes or unscoped search.\n\n## Retrieved Memories\n" + $memories +
 	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
 	  )
 	}

@@ -353,12 +353,12 @@ The automatic memory layer uses 12 shell hooks across 10 Claude Code / Cursor li
 
 | Event | Hook | Purpose |
 |---|---|---|
-| `SessionStart` | `memory-recall.sh` | Hydrate MEMORY.md from stored memories |
+| `SessionStart` | `memory-recall.sh` | Inject scoped memory pointers and sync MEMORY.md pointers |
 | `SubagentStart` | `memory-subagent-recall.sh` | Inject project memories into spawned subagents |
 | `UserPromptSubmit` | `memory-query.sh` | Inject relevant memories into prompt context |
 | `Stop` | `memory-extract.sh` | Extract and store learnings from conversation |
 | `PreCompact` | `memory-flush.sh` | Flush pending memories before compaction |
-| `PostCompact` | `memory-rehydrate.sh` | Rehydrate MEMORY.md after compaction |
+| `PostCompact` | `memory-rehydrate.sh` | Refresh MEMORY.md pointers after compaction |
 | `PostToolUse` | `memory-observe.sh` | Observability for memory MCP tool calls |
 | `PostToolUse` | `memory-tool-observe.sh` | Record write/edit/bash context for richer extraction |
 | `PreToolUse` | `memory-guard.sh` | Guard MEMORY.md from direct Write/Edit |

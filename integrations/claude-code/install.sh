@@ -565,7 +565,7 @@ EOF
     echo -e "  ${GREEN}[OK]${NC} Added Codex MCP config in $codex_config"
   fi
 
-  # Developer instructions (unchanged)
+  # Developer instructions
   if grep -Eq '^[[:space:]]*developer_instructions[[:space:]]*=' "$codex_config"; then
     echo -e "  ${YELLOW}[SKIP]${NC} developer_instructions already configured in $codex_config"
   else
@@ -578,7 +578,7 @@ Use the Memories MCP tools as your memory layer with three responsibilities:
 2. WRITE: Use memory_add for single clear facts (check memory_is_novel first). Use memory_extract for rich conversations, decision changes, or deferred work updates — it handles Add/Update/Delete/Noop automatically via AUDN. For scoped keys, always pass a non-empty source on memory_extract.
 3. MAINTAIN: Use memory_delete for explicit forget requests. memory_extract handles most lifecycle updates automatically. For bulk cleanup with scoped keys, prefer prefix-based deletion patterns that stay inside authorized sources.
 
-Source prefixes: search the active client project prefix first, then the sibling client prefix and shared learning/wip prefixes. Defaults are codex/{project}, claude-code/{project}, learning/{project}, and wip/{project}; use only authorized prefixes when scoped keys restrict access.
+Source prefixes: replace {project} with the current working directory basename. Search exact project-scoped prefixes first: codex/{project}, claude-code/{project}, learning/{project}, and wip/{project}. If hook candidate pointers list a source, use that exact source_prefix. Do not use broad family prefixes like codex/, claude-code/, learning/, wip/, or unscoped search until the exact project prefixes have been tried. Use only authorized prefixes when scoped keys restrict access.
 """
 EOF
 )

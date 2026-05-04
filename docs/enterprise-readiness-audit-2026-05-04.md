@@ -27,8 +27,9 @@ Transcript handling: this audit summarizes local session evidence and cites sess
 - Scoped conflict safety: `CONFLICT` extraction actions now verify `old_id` is inside allowed source prefixes before creating conflict metadata.
 - Generic MCP compatibility: stdio smoke now validates `memory_search`, `memory_get`, `memory_evidence`, `memory_timeline`, `memory_count`, and read-only behavior.
 - Generic MCP write compatibility: isolated fake-backend stdio smoke now validates `memory_add` and `memory_extract` routing, payload shape, document timestamps, extraction polling, and Codex-authored source hygiene without touching production.
-- Active-search behavior eval: `eval/run_active_search_eval.py` runs realistic prompts that do not say `memory_search`, installs this worktree's read hooks/instructions into isolated Claude Code eval projects, captures stream-json tool traces, scores active search, source-prefix quality, answer use, passive-hook-only failures, and no-memory controls.
-- Active-search hook reinforcement: `UserPromptSubmit` recall now searches all default client/shared source families and, for explicit prior-context prompts, injects candidate pointers instead of full memory text so agents must call `memory_search` for details.
+- Active-search behavior eval: `eval/run_active_search_eval.py` runs realistic prompts that do not say `memory_search`, installs this worktree's read hooks/instructions into isolated Claude Code projects and isolated Codex homes, captures stream-json tool traces, scores active search, source-prefix quality, answer use, passive-hook-only failures, and no-memory controls.
+- Active-search hook reinforcement: `SessionStart`, `UserPromptSubmit`, and post-compaction MEMORY.md sync now use candidate pointers instead of full memory text for prior-context prompts so agents must call `memory_search` for details.
+- Active-search source hygiene: hook playbooks, Codex developer instructions, and installer output now tell agents to search exact project-scoped prefixes from candidate pointers before broad family prefixes or unscoped search.
 - Cross-client source defaults: Claude Code now searches `claude-code/{project},codex/{project},learning/{project},wip/{project}` by default; Codex searches `codex/{project},claude-code/{project},learning/{project},wip/{project}` by default. Extraction still writes to the active client prefix.
 
 ## Why Prior Evals Missed Active-Search Failures
@@ -36,15 +37,24 @@ Transcript handling: this audit summarizes local session evidence and cites sess
 - Retrieval/tool evals call `/search` directly, so they measure whether the engine can retrieve evidence after search is invoked. They do not test whether an agent chooses to search.
 - LongMemEval system mode explicitly tells the agent to use Memories tools and gives the source prefix. That evaluates answer quality and temporal reasoning after the search gate is already opened.
 - Real product failures happen earlier: a user asks a context-dependent question, hooks inject relevant memory text, and the agent answers from passive context without making an auditable `memory_search` call.
-- The active-search eval now targets that missing gate by using realistic prompts that do not mention `memory_search`, installing this worktree's read hooks/instructions into isolated Claude Code projects, and failing when required-search turns produce passive-hook-only answers.
+- The active-search eval now targets that missing gate by using realistic prompts that do not mention `memory_search`, installing this worktree's read hooks/instructions into isolated Claude Code projects and isolated Codex homes, and failing when required-search turns produce passive-hook-only answers or broad/unscoped source-prefix use.
 
 ## Verification Evidence
 
-- Full Python suite: `.venv/bin/pytest -q` -> 1341 passed, 1 local-Qdrant warning.
+- Full Python suite: `.venv/bin/pytest -q` -> 1346 passed, 1 local-Qdrant warning.
 - MCP syntax: `node --check mcp-server/index.js` -> exit 0.
 - MCP generic smoke: `npm run smoke` -> `generic_mcp_stdio_smoke=ok`.
 - MCP generic write smoke: `npm run smoke:write` -> `generic_mcp_write_smoke=ok`.
-- Active-search behavior eval: `eval/results/active-search-enterprise-20260504-redacted-hook.json` (local ignored artifact).
+- Claude Code active-search behavior eval: `eval/results/active-search-enterprise-20260504-claude-after-source-guidance.json` (local ignored artifact).
+  - `active_search_rate`: 1.0 over 3 required-search cases
+  - `passive_hook_only_failures`: 0
+  - `wrong_source_prefix_failures`: 0
+  - `unnecessary_memory_searches`: 0 for the no-memory control
+  - `overall_active_search_score`: 1.0
+  - `ready_before`: `qdrant_count=0`, `metadata_count=0`
+  - `ready_after`: `qdrant_count=0`, `metadata_count=0`
+  - `setup_validation`: target URL, API key presence, MCP path, and Claude CLI presence recorded as OK
+- Codex active-search behavior eval: `eval/results/active-search-enterprise-20260504-codex-after-source-guidance.json` (local ignored artifact).
   - `active_search_rate`: 1.0 over 3 required-search cases
   - `passive_hook_only_failures`: 0
   - `wrong_source_prefix_failures`: 0

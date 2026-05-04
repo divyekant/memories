@@ -13,6 +13,7 @@ HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "claude-code"
 CODEX_HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "codex" / "hooks"
 QUERY_SCRIPT = HOOKS_DIR / "memory-query.sh"
 RECALL_SCRIPT = HOOKS_DIR / "memory-recall.sh"
+REHYDRATE_SCRIPT = HOOKS_DIR / "memory-rehydrate.sh"
 EXTRACT_SCRIPT = HOOKS_DIR / "memory-extract.sh"
 
 
@@ -259,6 +260,7 @@ def test_memory_query_redacts_details_for_active_search_required_prompts(tmp_pat
     output = json.loads(result.stdout)
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "MUST call memory_search" in ctx
+    assert "Use exact source prefixes shown below" in ctx
     assert "candidate memory id=42" in ctx
     assert "setup validation and production write isolation" not in ctx
 
@@ -512,12 +514,16 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
     assert "codex/memories" in ctx
     assert "learning/memories" in ctx
     assert "wip/memories" in ctx
+    assert "candidate memory id=1" in ctx
+    assert "Claude read hooks should search project-scoped memories" not in ctx
+    assert "Deferred: tighten Claude session-start recall" not in ctx
 
     memory_file = home_dir / ".claude" / "projects" / "-Users-example-memories" / "memory" / "MEMORY.md"
     assert memory_file.exists()
     memory_text = memory_file.read_text()
     assert "## Synced from Memories" in memory_text
-    assert "Claude read hooks should search project-scoped memories" in memory_text
+    assert "candidate memory id=1" in memory_text
+    assert "Claude read hooks should search project-scoped memories" not in memory_text
     assert "## Memory Playbook" not in memory_text
 
     search_calls = [call for call in calls if call["body"] is not None]
@@ -566,6 +572,8 @@ def test_memory_recall_playbook_contains_mandatory_directives(tmp_path: Path) ->
     assert "MANDATORY FIRST ACTION" in ctx
     assert "ToolSearch" in ctx
     assert "You MUST call memory_search" in ctx
+    assert "Use exact source prefixes from candidate pointers first" in ctx
+    assert "family-wide" in ctx
     assert "keyword-matched, not semantic" in ctx
     assert "Prior decisions aren't in code" in ctx
 
@@ -602,6 +610,49 @@ def test_memory_recall_replaces_existing_synced_block_without_duplication(tmp_pa
     updated = memory_file.read_text()
     assert updated.count("<!-- SYNCED-FROM-MEMORIES-MCP -->") == 1
     assert updated.count("## Synced from Memories") == 1
+
+
+def test_memory_rehydrate_syncs_pointers_not_full_memory_text(tmp_path: Path) -> None:
+    memory_file = (
+        tmp_path
+        / "home"
+        / ".claude"
+        / "projects"
+        / "Users-example-memories"
+        / "memory"
+        / "MEMORY.md"
+    )
+    memory_file.parent.mkdir(parents=True)
+    memory_file.write_text(
+        "# Manual note\n\n<!-- SYNCED-FROM-MEMORIES-MCP -->\n## Synced from Memories\n- stale\n",
+        encoding="utf-8",
+    )
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 9,
+                        "source": "claude-code/memories",
+                        "text": "Compaction should not rehydrate full memory text into auto-memory.",
+                        "similarity": 0.91,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+
+    payload = {"cwd": "/Users/example/memories", "compact_summary": "memory rehydrate behavior"}
+    result, _, _ = _run_hook(REHYDRATE_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    updated = memory_file.read_text(encoding="utf-8")
+    assert "# Manual note" in updated
+    assert "candidate memory id=9" in updated
+    assert "Compaction should not rehydrate full memory text" not in updated
 
 
 def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp_path: Path) -> None:
@@ -645,6 +696,10 @@ def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp
     result, calls, _ = _run_hook(installed_recall, tmp_path, payload, responses)
 
     assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=1" in ctx
+    assert "Codex sessions should recall project decisions" not in ctx
     search_calls = [call for call in calls if call["body"] is not None]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     # 4th call is the dedicated deferred-work surfacing search
