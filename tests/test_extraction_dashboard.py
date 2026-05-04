@@ -262,7 +262,7 @@ class TestAutoFeatureMetrics:
         t = NullTracker()
         t.log_extraction_outcome(source="s", extracted=5, stored=3, links_created=2)
         t.log_graph_search(query="q", graph_weight=0.3, direct_count=3, graph_count=2, total_results=5)
-        t.log_temporal_search(query="q", has_since=True, has_until=False)
+        t.log_temporal_search(query="q", has_since=True, has_until=False, auto_detected=True)
         assert t.get_graph_search_stats() == {}
         assert t.get_temporal_search_stats() == {}
 

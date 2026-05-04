@@ -8,7 +8,7 @@ Phase 3: Single cleanup at end
 This eliminates the Qdrant mmap thrash that crashed the eval at 220/1000.
 
 Usage:
-    MEMORIES_URL=http://localhost:8901 MEMORIES_API_KEY=god-is-an-astronaut \
+    MEMORIES_URL=http://localhost:8901 MEMORIES_API_KEY="$MEMORIES_API_KEY" \
     python eval/run_musique_preload.py --questions 100 [--hops 3] [--output path.json]
 """
 
@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 
 import httpx
+
+from eval.setup_validation import DEFAULT_EVAL_MEMORIES_URL, resolve_eval_memories_url, validate_eval_setup
 
 logger = logging.getLogger("eval.musique")
 PREFIX = "eval/musique"
@@ -269,14 +271,26 @@ def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    url = os.environ.get("MEMORIES_URL", "http://localhost:8900")
+    url = resolve_eval_memories_url(DEFAULT_EVAL_MEMORIES_URL)
     key = os.environ.get("MEMORIES_API_KEY", "")
+    setup_report = validate_eval_setup(
+        memories_url=url,
+        api_key=key,
+        require_api_key=True,
+        require_mcp=False,
+        require_claude=False,
+        allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",
+    )
+    if not setup_report.ok:
+        for message in setup_report.errors:
+            logger.error(message)
+        sys.exit(2)
     client = httpx.Client(base_url=url, headers={"X-API-Key": key, "Content-Type": "application/json"}, timeout=60)
 
     try:
-        r = client.get("/health")
+        r = client.get("/health/ready")
         r.raise_for_status()
-        logger.info("Connected to %s (%s)", url, r.json().get("version", "?"))
+        logger.info("Connected to %s (ready)", url)
     except Exception as e:
         logger.error("Cannot reach %s: %s", url, e)
         sys.exit(1)

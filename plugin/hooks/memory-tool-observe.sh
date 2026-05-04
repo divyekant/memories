@@ -16,6 +16,8 @@ else
   _log_info() { :; }; _log_error() { :; }
 fi
 
+_exit_if_disabled 2>/dev/null || true
+
 INPUT=$(cat)
 
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')

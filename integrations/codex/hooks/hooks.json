@@ -13,7 +13,7 @@
       "hooks": [{
         "type": "command",
         "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-query.sh",
-        "timeout": 3
+        "timeout": 10
       }]
     }],
     "Stop": [{

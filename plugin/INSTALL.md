@@ -17,7 +17,7 @@ This file covers the Claude Code plugin package in `plugin/`. For the repo-local
    {
      "name": "memories",
      "description": "Persistent, searchable memory across sessions via Memories MCP. Auto-recalls project context, extracts decisions, and makes memory non-optional.",
-     "version": "5.3.0",
+     "version": "5.4.0",
      "source": "./plugins/memories",
      "category": "memory",
      "strict": false

@@ -280,26 +280,27 @@ The extraction `context` parameter controls aggressiveness:
 
 | Hook | Event | What It Does |
 |------|-------|-------------|
-| `memory-recall.sh` | SessionStart | Loads project memories and emits recall guidance for the session |
+| `memory-recall.sh` | SessionStart | Loads project memory pointers and emits recall guidance for the session |
 | `memory-query.sh` | UserPromptSubmit | Searches for memories relevant to the current prompt using transcript context |
 | `memory-extract.sh` | Stop | Extracts facts from a larger transcript sample (~8K chars, 500 tail lines, 10 message pairs) to compensate for missing `PreCompact` / `SessionEnd` hooks |
 | `memory-observe.sh` | PostToolUse (`mcp__memories__`) | Logs when memory MCP tools are called (observability) |
 | `memory-guard.sh` | PreToolUse (`Write\|Edit`) | Blocks direct writes to `MEMORY.md` if attempted |
 
 Codex stores those hooks in `~/.codex/hooks.json`, uses `~/.codex/settings.json` for tool permissions, and relies on `~/.codex/config.toml` for MCP registration plus developer instructions that bias `memory_search` usage.
+Active-search monitoring writes privacy-safe local telemetry to `~/.config/memories/active-search.jsonl`; summarize it with `.venv/bin/python scripts/active_search_metrics.py --log ~/.config/memories/active-search.jsonl`.
 
 ## Auto-Memory Hydration (Claude Code / Cursor)
 
-On every session start, `memory-recall.sh` syncs top memories into Claude Code's auto-memory file at `~/.claude/projects/{encoded-cwd}/memory/MEMORY.md`.
+On every session start, `memory-recall.sh` syncs top memory pointers into Claude Code's auto-memory file at `~/.claude/projects/{encoded-cwd}/memory/MEMORY.md`.
 
 The sync uses a marker comment: `<!-- SYNCED-FROM-MEMORIES-MCP -->`
 
 - Everything **above** the marker is preserved (your manual/pinned content)
-- Everything **below** the marker is replaced with fresh memories from MCP
+- Everything **below** the marker is replaced with fresh memory pointers from MCP
 - Claude Code loads the first 200 lines of MEMORY.md at session start — synced content counts against this limit
 - To pin important context, write it above the marker manually
 
-This ensures the most relevant memories are always in Claude's context window, even before the skill triggers any active recall.
+This gives Claude scoped memory starting points without putting full memory text into passive context; call `memory_search` with the listed source prefix before using remembered details.
 
 Codex does not have a `MEMORY.md` auto-memory file. It relies on `memory-recall.sh`, `memory-query.sh`, the Memories MCP server, and developer instructions instead.
 

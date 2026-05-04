@@ -13,6 +13,8 @@ else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
 fi
 
+_exit_if_disabled 2>/dev/null || true
+
 INPUT=$(cat)
 FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 

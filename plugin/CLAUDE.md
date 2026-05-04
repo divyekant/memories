@@ -8,8 +8,10 @@ Your job is to USE the recalled context and STORE decisions at natural breakpoin
 
 ### Before responding
 - **IMPORTANT: ALWAYS search memories BEFORE responding** to questions about prior decisions, architecture, conventions, deferred work, past bugs, project history, or resuming a topic. Do NOT rely solely on hook-injected context — it is keyword-matched and incomplete. Load the tool first if needed: ToolSearch("select:mcp__memories__memory_search")
+- **Do not search for self-contained prompts** that do not depend on prior/project context, such as arithmetic, translation, formatting, or generic facts.
 - **Search memories BEFORE asking a clarifying question.** The answer may already be stored. Check first.
-- **You MUST NOT skip memory search.** Do not rationalize:
+- **Use exact project-scoped source prefixes first.** If hooks list candidate sources, pass that exact `source_prefix` to `memory_search`. Do not start with broad prefixes like `claude-code/`, `codex/`, `learning/`, `wip/`, or unscoped search unless the exact project prefixes return nothing.
+- **You MUST NOT skip memory search for prior-work prompts.** Do not rationalize:
   - "The Retrieved Memories section has what I need" — it may not
   - "I can figure it out from the code" — prior decisions aren't in code
   - "This is a simple question" — simple questions about past work need recall

@@ -83,6 +83,31 @@ class TestAddBatch:
         assert len(first_batch) == 1000
         assert len(second_batch) == 2
 
+    def test_add_batch_retries_transient_server_error(self, client, monkeypatch):
+        request = httpx.Request("POST", "http://localhost:8900/memory/add-batch")
+        error = httpx.HTTPStatusError(
+            "server disconnected",
+            request=request,
+            response=httpx.Response(500, request=request),
+        )
+        failed = MagicMock(status_code=500)
+        failed.raise_for_status.side_effect = error
+        success = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"ids": [1]}),
+        )
+        success.raise_for_status.return_value = None
+        mock_post = MagicMock(side_effect=[failed, success])
+        monkeypatch.setattr("eval.memories_client.time.sleep", lambda _: None)
+
+        with patch.object(client._client, "post", mock_post):
+            ids = client.add_batch([
+                {"text": "SQLite chosen over Postgres", "source": "eval/test-001"},
+            ])
+
+        assert ids == [1]
+        assert mock_post.call_count == 2
+
 
 class TestClearByPrefix:
     def test_clear_by_prefix(self, client):
@@ -113,6 +138,26 @@ class TestHealthCheck:
         mock_get = MagicMock(side_effect=httpx.ConnectError("connection refused"))
         with patch.object(client._client, "get", mock_get):
             assert client.health_check() is False
+
+    def test_ready_status_returns_json_payload(self, client):
+        mock_get = MagicMock()
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"ready": True, "qdrant_count": 0}),
+        )
+        with patch.object(client._client, "get", mock_get):
+            result = client.ready_status()
+
+        assert result == {"ready": True, "qdrant_count": 0, "status_code": 200}
+
+    def test_ready_status_returns_error_payload(self, client):
+        mock_get = MagicMock(side_effect=httpx.ConnectError("connection refused"))
+        with patch.object(client._client, "get", mock_get):
+            result = client.ready_status()
+
+        assert result["ready"] is False
+        assert result["status"] == "unreachable"
+        assert "connection refused" in result["error"]
 
 
 class TestGetStats:

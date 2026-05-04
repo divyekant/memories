@@ -95,6 +95,30 @@ class TestExecuteConflictAction:
         # Should still store, just without conflicts_with
         assert result["stored_count"] == 1
 
+    def test_conflict_old_id_must_be_inside_allowed_prefixes(self, engine):
+        """Scoped extraction must not attach conflicts to out-of-scope memories."""
+        engine.get_memory.return_value = {
+            "id": 10,
+            "text": "We chose Postgres",
+            "source": "other-project/decisions",
+        }
+        facts = [{"category": "decision", "text": "We chose SQLite"}]
+        actions = [{"action": "CONFLICT", "fact_index": 0, "old_id": 10}]
+
+        result = execute_actions(
+            engine,
+            actions,
+            facts,
+            source="allowed-project/decisions",
+            allowed_prefixes=["allowed-project/"],
+        )
+
+        engine.add_memories.assert_not_called()
+        assert result["stored_count"] == 0
+        assert result["conflict_count"] == 0
+        assert result["actions"][0]["action"] == "error"
+        assert "old_id not authorized for conflict" in result["actions"][0]["error"]
+
 
 class TestConflictsEndpoint:
     """Test the /memory/conflicts API endpoint."""

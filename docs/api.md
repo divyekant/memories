@@ -119,6 +119,29 @@ Semantic or hybrid search over memories.
 }
 ```
 
+### POST /search/evidence
+
+Search memories and return the same result list plus an agent-facing evidence packet. Use this for current/latest/temporal questions where the caller needs the newest candidate, older evidence, source/date trail, confidence, and follow-up queries instead of a flat hit list.
+
+The request body is the same as `POST /search`.
+
+**Response:**
+```json
+{
+  "query": "latest deploy target",
+  "count": 2,
+  "results": [{"id": 2, "text": "..."}],
+  "evidence_packet": {
+    "current_answer": {"id": 2, "source": "codex/project", "date": "2026-04-01T00:00:00Z", "text": "..."},
+    "supporting_memories": [],
+    "older_conflicting_memories": [{"id": 1, "source": "codex/project", "date": "2026-02-01T00:00:00Z", "text": "..."}],
+    "source_date_trail": [{"id": 2, "relation": "current"}, {"id": 1, "relation": "older"}],
+    "confidence": {"level": "medium", "reasons": ["Packet includes older evidence that may conflict or be superseded."]},
+    "follow_up_queries": ["latest deploy target"]
+  }
+}
+```
+
 ### POST /search/batch
 
 Execute multiple search queries in one request.

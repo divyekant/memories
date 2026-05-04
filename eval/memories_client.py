@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import httpx
 
 
@@ -9,8 +11,9 @@ class MemoriesClient:
     """Thin wrapper around the Memories REST API."""
 
     MAX_BATCH_MEMORIES = 1000
+    MAX_WRITE_RETRIES = 2
 
-    def __init__(self, url: str = "http://localhost:8900", api_key: str = "") -> None:
+    def __init__(self, url: str = "http://localhost:8901", api_key: str = "") -> None:
         self._client = httpx.Client(
             base_url=url,
             headers={"X-API-Key": api_key},
@@ -43,13 +46,31 @@ class MemoriesClient:
         ids: list[int] = []
         for start in range(0, len(memories), self.MAX_BATCH_MEMORIES):
             batch = memories[start:start + self.MAX_BATCH_MEMORIES]
-            resp = self._client.post(
-                "/memory/add-batch",
-                json={"memories": batch, "deduplicate": deduplicate},
-            )
-            resp.raise_for_status()
-            ids.extend(resp.json().get("ids", []))
+            ids.extend(self._post_add_batch_with_retry(batch, deduplicate=deduplicate))
         return ids
+
+    @staticmethod
+    def _is_retryable_http_error(exc: Exception) -> bool:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return exc.response.status_code >= 500
+        return isinstance(exc, httpx.TransportError)
+
+    def _post_add_batch_with_retry(self, batch: list[dict], *, deduplicate: bool) -> list[int]:
+        last_error: Exception | None = None
+        for attempt in range(self.MAX_WRITE_RETRIES + 1):
+            try:
+                resp = self._client.post(
+                    "/memory/add-batch",
+                    json={"memories": batch, "deduplicate": deduplicate},
+                )
+                resp.raise_for_status()
+                return resp.json().get("ids", [])
+            except Exception as exc:
+                if not self._is_retryable_http_error(exc) or attempt >= self.MAX_WRITE_RETRIES:
+                    raise
+                last_error = exc
+                time.sleep(0.25 * (attempt + 1))
+        raise last_error or RuntimeError("add-batch failed without an exception")
 
     def clear_by_prefix(self, prefix: str, *, skip_snapshot: bool = True) -> int:
         """POST /memory/delete-by-prefix. Returns number of deleted memories."""
@@ -68,6 +89,24 @@ class MemoriesClient:
             return resp.status_code == 200
         except (httpx.HTTPError, Exception):
             return False
+
+    def ready_status(self) -> dict:
+        """GET /health/ready and return an artifact-friendly status payload."""
+        try:
+            resp = self._client.get("/health/ready")
+            data = resp.json() if resp.content else {}
+            if not isinstance(data, dict):
+                data = {"raw": data}
+            data["status_code"] = resp.status_code
+            if resp.status_code != 200:
+                data.setdefault("ready", False)
+            return data
+        except Exception as e:
+            return {
+                "ready": False,
+                "status": "unreachable",
+                "error": str(e),
+            }
 
     def search(self, query: str, k: int = 5, hybrid: bool = True, feedback_weight: float = 0.0,
                source_prefix: str | None = None, reference_date: str | None = None) -> list[dict]:

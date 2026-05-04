@@ -151,6 +151,8 @@ def test_codex_install_writes_standalone_hooks_json(tmp_path: Path) -> None:
     config_toml = (home / ".codex" / "config.toml").read_text()
     assert "[mcp_servers.memories]" in config_toml
     assert "developer_instructions" in config_toml
+    assert "replace {project} with the current working directory basename" in config_toml
+    assert "Do not use broad family prefixes" in config_toml
     assert "notify =" not in config_toml
 
     hook_dir = home / ".codex" / "hooks" / "memory"

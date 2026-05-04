@@ -86,7 +86,8 @@ class NullTracker:
     def get_graph_search_stats(self, period: str = "7d") -> dict:
         return {}
 
-    def log_temporal_search(self, query: str = "", has_since: bool = False, has_until: bool = False) -> None:
+    def log_temporal_search(self, query: str = "", has_since: bool = False,
+                            has_until: bool = False, auto_detected: bool = False) -> None:
         pass
 
     def get_temporal_search_stats(self, period: str = "7d") -> dict:

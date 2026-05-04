@@ -201,6 +201,7 @@ def test_run_question_system_calls_cc_executor():
     from eval.longmemeval import LongMemEvalRunner
 
     client = MagicMock()
+    client.search.return_value = []
     runner = LongMemEvalRunner(client=client)
 
     cc_executor = MagicMock()
@@ -223,11 +224,240 @@ def test_run_question_system_calls_cc_executor():
     assert result["question_id"] == "sys1"
 
 
+def test_run_question_system_computes_diagnostic_recall():
+    """System eval should report raw retrieval R@5 alongside agent answer score."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.search.return_value = [
+        {"text": "wrong session", "source": "eval/test/qsys1/s0/c0"},
+        {"text": "answer session", "source": "eval/test/qsys1/s1/c0"},
+    ]
+    runner = LongMemEvalRunner(client=client)
+
+    cc_executor = MagicMock()
+    cc_executor.create_isolated_project.return_value = "/tmp/cc_eval_test"
+    cc_executor.run_prompt.return_value = "Business Administration"
+
+    question = {
+        "question_id": "sys1",
+        "question_type": "single-session-user",
+        "question": "What degree did I get?",
+        "answer": "Business Administration",
+        "haystack_session_ids": ["session-a", "session-b"],
+        "answer_session_ids": ["session-b"],
+    }
+    result = runner.run_question_system(question, cc_executor=cc_executor, source_prefix="eval/test")
+
+    client.search.assert_called_once_with(
+        query="What degree did I get?",
+        k=50,
+        hybrid=True,
+        source_prefix="eval/test/qsys1",
+    )
+    assert result["context"] == "Business Administration"
+    assert result["search_results"] == client.search.return_value
+    assert result["recall_any_at_5"] == 1.0
+    assert result["recall_all_at_5"] == 1.0
+
+
+def test_run_question_system_preserves_agent_trace_and_top_sessions():
+    """System eval should keep tool-call trace and raw recall evidence for audits."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.search.return_value = [
+        {"text": "answer session", "source": "eval/test/qsys1/s1/c0"},
+        {"text": "wrong session", "source": "eval/test/qsys1/s0/c0"},
+    ]
+    runner = LongMemEvalRunner(client=client)
+
+    class FakeExecutor:
+        def create_isolated_project(self, with_memories=False):
+            return "/tmp/cc_eval_test"
+
+        def run_prompt(self, prompt, project_dir, require_memories=False):
+            assert require_memories is True
+            self.last_run_trace = {
+                "output_format": "stream-json",
+                "tool_calls": [
+                    {
+                        "name": "mcp__memories__memory_evidence",
+                        "source_prefix": "eval/test/qsys1",
+                    }
+                ],
+                "error_kind": "",
+            }
+            return "Business Administration"
+
+        def cleanup_project(self, project_dir):
+            self.cleaned = project_dir
+
+    question = {
+        "question_id": "sys1",
+        "question_type": "single-session-user",
+        "question": "What degree did I get?",
+        "answer": "Business Administration",
+        "haystack_session_ids": ["session-a", "session-b"],
+        "answer_session_ids": ["session-b"],
+    }
+    result = runner.run_question_system(
+        question,
+        cc_executor=FakeExecutor(),
+        source_prefix="eval/test",
+    )
+
+    assert result["agent_trace"]["tool_calls"][0]["name"] == "mcp__memories__memory_evidence"
+    assert result["recall_top_sessions_at_5"] == [1, 0]
+
+
+def test_run_question_system_prompt_directs_reference_date_for_temporal_queries():
+    """System eval prompt should tell agents how to anchor relative temporal searches."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.search.return_value = []
+    runner = LongMemEvalRunner(client=client)
+
+    cc_executor = MagicMock()
+    cc_executor.create_isolated_project.return_value = "/tmp/cc_eval_test"
+    cc_executor.run_prompt.return_value = "7 days"
+
+    question = {
+        "question_id": "sys-temporal",
+        "question_type": "temporal-reasoning",
+        "question": "How many days ago did I attend the class?",
+        "answer": "7 days",
+        "question_date": "2023/05/20 (Sat) 02:21",
+    }
+    runner.run_question_system(question, cc_executor=cc_executor, source_prefix="eval/test")
+
+    prompt = cc_executor.run_prompt.call_args.args[0]
+    assert "memory_evidence" in prompt
+    assert "memory_timeline" in prompt
+    assert "user_facts_only=true" in prompt
+    assert "reference_date" in prompt
+    assert "2023-05-20T02:21:00+00:00" in prompt
+
+
+def test_run_question_system_prompt_directs_event_anchored_ago_questions():
+    """System eval prompt should prevent event-anchored "ago" math mistakes."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.search.return_value = []
+    runner = LongMemEvalRunner(client=client)
+
+    cc_executor = MagicMock()
+    cc_executor.create_isolated_project.return_value = "/tmp/cc_eval_test"
+    cc_executor.run_prompt.return_value = "21 days"
+
+    question = {
+        "question_id": "sys-temporal-anchor",
+        "question_type": "temporal-reasoning",
+        "question": "How many days ago did I attend a baking class when I made my friend's birthday cake?",
+        "answer": "21 days",
+        "question_date": "2022/04/15 (Fri) 18:46",
+    }
+    runner.run_question_system(question, cc_executor=cc_executor, source_prefix="eval/test")
+
+    prompt = cc_executor.run_prompt.call_args.args[0]
+    assert "when I" in prompt
+    assert "event date as the anchor" in prompt
+    assert "question date" in prompt
+    assert "even if the two events appear separate" in prompt
+    assert "do not include alternate interpretations" in prompt
+
+
+def test_run_question_system_prompt_distinguishes_user_events_from_assistant_plans():
+    """System eval should avoid treating assistant suggestions as user history."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.search.return_value = []
+    runner = LongMemEvalRunner(client=client)
+
+    cc_executor = MagicMock()
+    cc_executor.create_isolated_project.return_value = "/tmp/cc_eval_test"
+    cc_executor.run_prompt.return_value = "Muir Woods, Big Sur, Yosemite"
+
+    question = {
+        "question_id": "sys-user-events",
+        "question_type": "temporal-reasoning",
+        "question": "What is the order of the three trips I took in the past three months?",
+        "answer": "Muir Woods, Big Sur, Yosemite",
+        "question_date": "2023/06/01 (Thu) 03:56",
+    }
+    runner.run_question_system(question, cc_executor=cc_executor, source_prefix="eval/test")
+
+    prompt = cc_executor.run_prompt.call_args.args[0]
+    assert "user-stated completed events" in prompt
+    assert "assistant-authored suggestions" in prompt
+    assert "I took" in prompt
+    assert "day hikes and outings count as trips" in prompt
+
+
+def test_run_question_system_prompt_directs_whole_unit_temporal_answers():
+    """System eval should not hedge when the question asks for whole weeks/months."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.search.return_value = []
+    runner = LongMemEvalRunner(client=client)
+
+    cc_executor = MagicMock()
+    cc_executor.create_isolated_project.return_value = "/tmp/cc_eval_test"
+    cc_executor.run_prompt.return_value = "3 weeks ago"
+
+    question = {
+        "question_id": "sys-weeks",
+        "question_type": "temporal-reasoning",
+        "question": "How many weeks ago did I start using Ibotta?",
+        "answer": "3 weeks ago",
+        "question_date": "2023/05/06 (Sat) 09:18",
+    }
+    runner.run_question_system(question, cc_executor=cc_executor, source_prefix="eval/test")
+
+    prompt = cc_executor.run_prompt.call_args.args[0]
+    assert "round to the nearest whole requested unit" in prompt
+    assert "Do not hedge with ranges" in prompt
+
+
+def test_run_question_system_prompt_prefers_direct_dated_event_evidence():
+    """System eval should prefer direct dated event mentions over indirect recency."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.search.return_value = []
+    runner = LongMemEvalRunner(client=client)
+
+    cc_executor = MagicMock()
+    cc_executor.create_isolated_project.return_value = "/tmp/cc_eval_test"
+    cc_executor.run_prompt.return_value = "Muir Woods, Big Sur, Yosemite"
+
+    question = {
+        "question_id": "sys-order",
+        "question_type": "temporal-reasoning",
+        "question": "What is the order of the three trips I took in the past three months?",
+        "answer": "Muir Woods, Big Sur, Yosemite",
+        "question_date": "2023/06/01 (Thu) 03:56",
+    }
+    runner.run_question_system(question, cc_executor=cc_executor, source_prefix="eval/test")
+
+    prompt = cc_executor.run_prompt.call_args.args[0]
+    assert "direct dated user evidence" in prompt
+    assert "incidental recency mentions" in prompt
+    assert "same event" in prompt
+    assert "Deduplicate repeated mentions" in prompt
+    assert "call memory_timeline" in prompt
+
+
 def test_run_question_system_cleanup_on_error():
     """CCExecutor project should be cleaned up even if run_prompt raises."""
     from eval.longmemeval import LongMemEvalRunner
 
     client = MagicMock()
+    client.search.return_value = []
     runner = LongMemEvalRunner(client=client)
 
     cc_executor = MagicMock()

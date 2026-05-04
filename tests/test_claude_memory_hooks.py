@@ -10,9 +10,12 @@ from pathlib import Path
 
 
 HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "claude-code" / "hooks"
+CODEX_HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "codex" / "hooks"
 QUERY_SCRIPT = HOOKS_DIR / "memory-query.sh"
 RECALL_SCRIPT = HOOKS_DIR / "memory-recall.sh"
+REHYDRATE_SCRIPT = HOOKS_DIR / "memory-rehydrate.sh"
 EXTRACT_SCRIPT = HOOKS_DIR / "memory-extract.sh"
+OBSERVE_SCRIPT = HOOKS_DIR / "memory-observe.sh"
 
 
 def _write_fake_curl(bin_dir: Path) -> Path:
@@ -168,6 +171,11 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
         },
         {
             "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
             "source_prefix": "",
             "response": {
                 "results": [
@@ -197,6 +205,9 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
     # Dual strategy: both scoped and unscoped results appear
     assert "Notification design is deferred until rate limiting is settled." in ctx
     assert "## Retrieved Memories" in ctx
+    assert "MANDATORY FIRST ACTION" in ctx
+    assert "MUST call memory_search" in ctx
+    assert "not a substitute for active search" in ctx
     assert "## Follow-up Response Hint" in ctx
     assert "Search memories for the new topic" in ctx
     # Verify dual search: at least one scoped AND at least one unscoped
@@ -204,9 +215,269 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     assert any(p == "" for p in prefixes), f"Expected unscoped search, got: {prefixes}"
     assert any(p == "claude-code/memories" for p in prefixes), f"Expected scoped search, got: {prefixes}"
+    assert any(p == "codex/memories" for p in prefixes), f"Expected cross-client scoped search, got: {prefixes}"
     # Transcript context identifiers should appear in query (BillingService from transcript)
     assert any("BillingService" in call["body"]["query"] for call in search_calls), \
         f"Expected transcript identifier in query, queries were: {[c['body']['query'][:80] for c in search_calls]}"
+
+
+def test_memory_query_redacts_details_for_active_search_required_prompts(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 42,
+                        "source": "codex/memories",
+                        "text": "Decision: release is gated by setup validation and production write isolation.",
+                        "similarity": 0.91,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "Did we already decide how release should be gated?",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "MUST call memory_search" in ctx
+    assert "Use exact source prefixes shown below" in ctx
+    assert "candidate memory from codex/memories" in ctx
+    assert "memory_get" in ctx
+    assert "id=42" not in ctx
+    assert "setup validation and production write isolation" not in ctx
+
+
+def test_memory_query_active_search_trigger_covers_remember_prompts(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 77,
+                        "source": "claude-code/memories",
+                        "text": "Temporal eval gating requires setup validation.",
+                        "similarity": 0.86,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "Do you remember how we handled temporal eval gating?",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "MUST call memory_search" in ctx
+    assert "candidate memory from claude-code/memories" in ctx
+    assert "Temporal eval gating requires setup validation" not in ctx
+
+
+def test_memory_query_logs_active_search_prompt_metrics_without_text(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 42,
+                        "source": "codex/memories",
+                        "text": "Decision: release is gated by setup validation and production write isolation.",
+                        "similarity": 0.91,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    payload = {
+        "session_id": "session-1",
+        "cwd": "/Users/example/memories",
+        "prompt": "Did we already decide how release should be gated?",
+    }
+
+    result, _, _ = _run_hook(
+        QUERY_SCRIPT,
+        tmp_path,
+        payload,
+        responses,
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert len(events) == 1
+    event = events[0]
+    assert event["event"] == "prompt_evaluated"
+    assert event["client"] == "claude-code"
+    assert event["session_id"] == "session-1"
+    assert event["project"] == "memories"
+    assert event["active_search_required"] is True
+    assert event["candidate_count"] == 1
+    assert event["hook_results_injected"] is True
+    assert event["source_prefixes"] == ["codex/memories"]
+    assert len(event["prompt_hash"]) == 64
+    assert "release should be gated" not in json.dumps(event)
+    assert "setup validation" not in json.dumps(event)
+
+
+def test_memory_query_logs_metrics_write_failures_to_hook_log(tmp_path: Path) -> None:
+    hook_log = tmp_path / "hook.log"
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 42,
+                        "source": "claude-code/memories",
+                        "text": "A private release decision.",
+                        "similarity": 0.91,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+    payload = {
+        "session_id": "session-1",
+        "cwd": "/Users/example/memories",
+        "prompt": "Do you remember the release decision?",
+    }
+
+    result, _, _ = _run_hook(
+        QUERY_SCRIPT,
+        tmp_path,
+        payload,
+        responses,
+        extra_env={
+            "MEMORIES_ACTIVE_SEARCH_LOG": str(tmp_path),
+            "MEMORIES_LOG": str(hook_log),
+        },
+    )
+
+    assert result.returncode == 0
+    assert "Active-search metrics log unavailable" in hook_log.read_text(encoding="utf-8")
+
+
+def test_memory_query_logs_required_prompt_metrics_even_without_candidates(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    responses = [
+        {"url_suffix": "/search", "source_prefix": "", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "claude-code/memories", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "codex/memories", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "learning/memories", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "wip/memories", "response": {"results": [], "count": 0}},
+    ]
+
+    payload = {
+        "session_id": "session-empty",
+        "cwd": "/Users/example/memories",
+        "prompt": "What did we decide about the release gate?",
+    }
+
+    result, _, _ = _run_hook(
+        QUERY_SCRIPT,
+        tmp_path,
+        payload,
+        responses,
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert len(events) == 1
+    assert events[0]["active_search_required"] is True
+    assert events[0]["candidate_count"] == 0
+    assert events[0]["hook_results_injected"] is False
+    assert events[0]["source_prefixes"] == []
+
+
+def test_memory_observe_logs_memory_search_tool_metrics_without_query_text(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    payload = {
+        "session_id": "session-1",
+        "cwd": "/Users/example/memories",
+        "tool_name": "mcp__memories__memory_search",
+        "tool_input": {
+            "query": "private release gate query",
+            "source_prefix": "codex/memories/feature",
+        },
+    }
+
+    result, _, _ = _run_hook(
+        OBSERVE_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert len(events) == 1
+    event = events[0]
+    assert event["event"] == "tool_call"
+    assert event["client"] == "claude-code"
+    assert event["session_id"] == "session-1"
+    assert event["project"] == "memories"
+    assert event["tool_name"] == "mcp__memories__memory_search"
+    assert event["source_prefix"] == "codex/memories/feature"
+    assert event["source_prefix_quality"] == "exact_project"
+    assert "private release gate query" not in json.dumps(event)
 
 
 def test_memory_query_falls_back_to_global_search_when_scoped_is_empty(tmp_path: Path) -> None:
@@ -398,6 +669,21 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
         },
         {
             "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 4,
+                        "source": "codex/memories",
+                        "text": "Codex had relevant prior project context for this repository.",
+                        "similarity": 0.85,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+        {
+            "url_suffix": "/search",
             "source_prefix": "learning/memories",
             "response": {
                 "results": [
@@ -437,23 +723,35 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "## Relevant Memories" in ctx
     assert "## Memory Playbook" in ctx
-    assert "IMPORTANT: ALWAYS search memories BEFORE responding" in ctx
-    assert "MANDATORY FIRST ACTION" in ctx
+    assert "IMPORTANT: Search memories BEFORE responding" in ctx
+    assert "ACTIVE SEARCH ACTION" in ctx
+    assert "self-contained prompts" in ctx
     assert "claude-code/memories" in ctx
+    assert "codex/memories" in ctx
     assert "learning/memories" in ctx
     assert "wip/memories" in ctx
+    assert "candidate memory id=1" in ctx
+    assert "Claude read hooks should search project-scoped memories" not in ctx
+    assert "Deferred: tighten Claude session-start recall" not in ctx
 
     memory_file = home_dir / ".claude" / "projects" / "-Users-example-memories" / "memory" / "MEMORY.md"
     assert memory_file.exists()
     memory_text = memory_file.read_text()
     assert "## Synced from Memories" in memory_text
-    assert "Claude read hooks should search project-scoped memories" in memory_text
+    assert "candidate memory id=1" in memory_text
+    assert "Claude read hooks should search project-scoped memories" not in memory_text
     assert "## Memory Playbook" not in memory_text
 
     search_calls = [call for call in calls if call["body"] is not None]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     # 4th call is the dedicated deferred-work surfacing search
-    assert prefixes == ["claude-code/memories", "learning/memories", "wip/memories", "wip/memories"]
+    assert prefixes == [
+        "claude-code/memories",
+        "codex/memories",
+        "learning/memories",
+        "wip/memories",
+        "wip/memories",
+    ]
 
     # Deferred work section should appear when wip results exist
     assert "Deferred Work" in ctx
@@ -486,10 +784,13 @@ def test_memory_recall_playbook_contains_mandatory_directives(tmp_path: Path) ->
     output = json.loads(result.stdout)
     ctx = output["hookSpecificOutput"]["additionalContext"]
 
-    assert "IMPORTANT: ALWAYS search memories BEFORE responding" in ctx
-    assert "MANDATORY FIRST ACTION" in ctx
+    assert "IMPORTANT: Search memories BEFORE responding" in ctx
+    assert "ACTIVE SEARCH ACTION" in ctx
+    assert "self-contained prompts" in ctx
     assert "ToolSearch" in ctx
     assert "You MUST call memory_search" in ctx
+    assert "Use exact source prefixes from candidate pointers first" in ctx
+    assert "family-wide" in ctx
     assert "keyword-matched, not semantic" in ctx
     assert "Prior decisions aren't in code" in ctx
 
@@ -528,6 +829,49 @@ def test_memory_recall_replaces_existing_synced_block_without_duplication(tmp_pa
     assert updated.count("## Synced from Memories") == 1
 
 
+def test_memory_rehydrate_syncs_pointers_not_full_memory_text(tmp_path: Path) -> None:
+    memory_file = (
+        tmp_path
+        / "home"
+        / ".claude"
+        / "projects"
+        / "Users-example-memories"
+        / "memory"
+        / "MEMORY.md"
+    )
+    memory_file.parent.mkdir(parents=True)
+    memory_file.write_text(
+        "# Manual note\n\n<!-- SYNCED-FROM-MEMORIES-MCP -->\n## Synced from Memories\n- stale\n",
+        encoding="utf-8",
+    )
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 9,
+                        "source": "claude-code/memories",
+                        "text": "Compaction should not rehydrate full memory text into auto-memory.",
+                        "similarity": 0.91,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+
+    payload = {"cwd": "/Users/example/memories", "compact_summary": "memory rehydrate behavior"}
+    result, _, _ = _run_hook(REHYDRATE_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    updated = memory_file.read_text(encoding="utf-8")
+    assert "# Manual note" in updated
+    assert "candidate memory id=9" in updated
+    assert "Compaction should not rehydrate full memory text" not in updated
+
+
 def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     installed_recall = _install_hook_fixture(home_dir, "memory-recall.sh")
@@ -550,6 +894,11 @@ def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp
         },
         {
             "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
             "source_prefix": "learning/memories",
             "response": {"results": [], "count": 0},
         },
@@ -564,10 +913,20 @@ def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp
     result, calls, _ = _run_hook(installed_recall, tmp_path, payload, responses)
 
     assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=1" in ctx
+    assert "Codex sessions should recall project decisions" not in ctx
     search_calls = [call for call in calls if call["body"] is not None]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     # 4th call is the dedicated deferred-work surfacing search
-    assert prefixes == ["codex/memories", "learning/memories", "wip/memories", "wip/memories"]
+    assert prefixes == [
+        "codex/memories",
+        "claude-code/memories",
+        "learning/memories",
+        "wip/memories",
+        "wip/memories",
+    ]
 
 
 def test_memory_extract_uses_codex_source_when_installed_under_codex(tmp_path: Path) -> None:
@@ -631,8 +990,8 @@ build_keyword_bag "ok so the UserPrefs module uses fetch_config and the MAX_RETR
         assert filler not in words, f"Filler word '{filler}' should not be in output: {output!r}"
 
 
-def test_dual_search_strategy_unscoped_and_prefix_scoped(tmp_path: Path) -> None:
-    """Dual search fires one unscoped + one prefix-scoped (client/{project}), not learning/ or wip/."""
+def test_dual_search_strategy_unscoped_and_all_default_prefixes(tmp_path: Path) -> None:
+    """Dual search fires unscoped plus all default project source families."""
     responses = [
         {
             "url_suffix": "/search",
@@ -682,11 +1041,45 @@ def test_dual_search_strategy_unscoped_and_prefix_scoped(tmp_path: Path) -> None
     assert "Global unscoped result" in ctx
     assert "Project-scoped result" in ctx
 
-    # Verify search calls: at least one unscoped AND at least one scoped
+    # Verify search calls: at least one unscoped and each default project family.
     search_calls = [call for call in calls if call["body"] is not None]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     assert any(p == "" for p in prefixes), f"Expected at least one unscoped search, got prefixes: {prefixes}"
     assert any(p == "claude-code/memories" for p in prefixes), f"Expected claude-code/memories scoped search, got: {prefixes}"
-    # Should NOT have learning/ or wip/ scoped searches (those were the old prefix-iteration approach)
-    assert not any(p.startswith("learning/") for p in prefixes), f"Should not search learning/ prefix: {prefixes}"
-    assert not any(p.startswith("wip/") for p in prefixes), f"Should not search wip/ prefix: {prefixes}"
+    assert any(p == "codex/memories" for p in prefixes), f"Expected codex/memories scoped search, got: {prefixes}"
+    assert any(p == "learning/memories" for p in prefixes), f"Expected learning/memories scoped search, got: {prefixes}"
+    assert any(p == "wip/memories" for p in prefixes), f"Expected wip/memories scoped search, got: {prefixes}"
+
+
+def test_memory_hooks_honor_disabled_flag(tmp_path: Path) -> None:
+    """MEMORIES_DISABLED lets eval and sandboxed agents suppress global hooks."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "What should I remember?"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_DISABLED": "1"},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""
+
+
+def test_codex_memory_hooks_honor_disabled_flag(tmp_path: Path) -> None:
+    """Codex hooks must also suppress global recall when eval disables memories."""
+    payload = {"cwd": "/Users/example/memories", "source": "startup"}
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_DISABLED": "1"},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""

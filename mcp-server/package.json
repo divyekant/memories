@@ -1,14 +1,16 @@
 {
   "name": "memories-mcp",
-  "version": "5.3.0",
+  "version": "5.4.0",
   "description": "MCP server for Memories — semantic search, add, extract, delete, browse",
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "smoke": "node smoke.mjs",
+    "smoke:write": "node smoke-write.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "js-yaml": "^4.1.1"
   }
 }

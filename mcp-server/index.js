@@ -141,14 +141,54 @@ async function memoriesRequest(reqPath, options = {}, op = "search") {
 
 const server = new McpServer({
   name: "memories",
-  version: "5.0.1",
+  version: "5.4.0",
 });
 
 // -- Tools -------------------------------------------------------------------
 
+function memoryId(memory) {
+  return memory.id ?? memory.memory_id ?? "unknown";
+}
+
+function memoryDate(memory) {
+  return memory.document_at || memory.date || memory.created_at || "";
+}
+
+function snippet(text, maxChars = 220) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (clean.length <= maxChars) return clean;
+  return `${clean.slice(0, maxChars).trim()}...`;
+}
+
+function chronologicalValue(memory) {
+  const date = memoryDate(memory);
+  const parsed = Date.parse(date);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+function hasUserFact(memory) {
+  const text = String(memory?.text || "");
+  if (!text.trim()) return false;
+  if (/^\s*user\s*:/im.test(text)) return true;
+  if (/^\s*assistant\s*:/im.test(text)) return false;
+  return true;
+}
+
+function timelineQueryVariants(query) {
+  const clean = String(query || "").trim();
+  const variants = [
+    clean,
+    `${clean} user confirmed dated event evidence completed happened`,
+  ];
+  if (/\b(trip|trips|travel|vacation|visited|went|outing|hike|hikes)\b/i.test(clean)) {
+    variants.push(`${clean} trip travel vacation day hike outing excursion just got back returned`);
+  }
+  return [...new Set(variants.filter(Boolean))];
+}
+
 server.tool(
   "memory_search",
-  "Search memories using semantic similarity. Use hybrid mode for best results (combines meaning + keyword matching). Returns the most relevant memories.",
+  "Search memories using semantic similarity. Use hybrid mode for best results (combines meaning + keyword matching). Returns the most relevant memories. When memories contain conversation transcript text, treat user: lines as user-stated facts; assistant: lines may be suggestions, plans, or examples unless a user message confirms they happened. For temporal ordering, prefer direct dated user evidence over vague incidental recency mentions, deduplicate repeated mentions of the same event, and include user-confirmed outings such as day hikes when the query asks about trips.",
   {
     query: z.string().describe("Natural language search query"),
     k: z.number().int().min(1).max(50).default(5).describe("Number of results to return"),
@@ -160,9 +200,11 @@ server.tool(
     graph_weight: z.number().min(0).max(1).default(0.1).describe("Weight for graph-based link expansion (0=disabled, default 0.1). Linked memories get bonus score."),
     since: z.string().optional().describe("Filter memories at or after this ISO date (e.g. 2023-01-01T00:00:00Z)"),
     until: z.string().optional().describe("Filter memories at or before this ISO date"),
+    reference_date: z.string().optional().describe("Reference date for relative temporal queries such as today, yesterday, or past three months"),
     include_archived: z.boolean().default(false).describe("Include archived/superseded memories (needed for version history queries)"),
+    compact: z.boolean().default(false).describe("Return compact snippets with IDs. Use memory_get on a selected ID for full text."),
   },
-  async ({ query, k = 5, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, include_archived }) => {
+  async ({ query, k = 5, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived, compact = false }) => {
     const body = { query, k, hybrid };
     if (threshold !== undefined) body.threshold = threshold;
     if (source_prefix) body.source_prefix = source_prefix;
@@ -171,6 +213,7 @@ server.tool(
     if (graph_weight !== undefined) body.graph_weight = graph_weight;
     if (since) body.since = since;
     if (until) body.until = until;
+    if (reference_date) body.reference_date = reference_date;
     if (include_archived) body.include_archived = true;
 
     const data = await memoriesRequest("/search", {
@@ -180,6 +223,24 @@ server.tool(
 
     if (data.count === 0) {
       return { content: [{ type: "text", text: `No memories found for: "${query}"` }] };
+    }
+
+    if (compact) {
+      const lines = data.results.map((r, i) => {
+        const score = r.similarity ?? r.rrf_score;
+        const pct = score !== undefined ? ` (${(score * 100).toFixed(0)}%)` : "";
+        const id = memoryId(r);
+        const date = memoryDate(r);
+        const dateText = date ? ` ${date}` : "";
+        return `[${i + 1}] id=${id}${pct} ${r.source || "unknown-source"}${dateText}\n${snippet(r.text)}\nUse memory_get id=${id} for full text.`;
+      });
+
+      return {
+        content: [{
+          type: "text",
+          text: `Found ${data.count} compact memories for "${query}":\n\n${lines.join("\n\n")}`,
+        }],
+      };
     }
 
     const lines = data.results.map((r, i) => {
@@ -194,6 +255,177 @@ server.tool(
         text: `Found ${data.count} memories for "${query}":\n\n${lines.join("\n\n---\n\n")}`,
       }],
     };
+  }
+);
+
+server.tool(
+  "memory_timeline",
+  "Search memories and return compact results sorted chronologically. Use for temporal ordering, date math, and multi-event questions. Treat user: lines as user-stated facts; assistant: lines may be suggestions or plans unless a user message confirms they happened. Prefer direct dated user evidence over vague incidental recency mentions.",
+  {
+    query: z.string().describe("Natural language search query"),
+    k: z.number().int().min(1).max(50).default(20).describe("Number of results to consider"),
+    hybrid: z.boolean().default(true).describe("Use hybrid BM25+vector search"),
+    threshold: z.number().min(0).max(1).optional().describe("Minimum similarity score (0-1)"),
+    source_prefix: z.string().optional().describe("Filter by source prefix"),
+    feedback_weight: z.number().min(0).max(1).default(0.1).describe("Weight for feedback-based ranking signal"),
+    confidence_weight: z.number().min(0).max(1).default(0).describe("Weight for confidence-based ranking"),
+    graph_weight: z.number().min(0).max(1).default(0.1).describe("Weight for graph-based link expansion"),
+    since: z.string().optional().describe("Filter memories at or after this ISO date"),
+    until: z.string().optional().describe("Filter memories at or before this ISO date"),
+    reference_date: z.string().optional().describe("Reference date for relative temporal queries such as today, yesterday, or past three months"),
+    include_archived: z.boolean().default(false).describe("Include archived/superseded memories"),
+    user_facts_only: z.boolean().default(false).describe("Keep only results containing user: transcript facts. Use for questions about what the user did, took, bought, visited, or decided."),
+  },
+  async ({ query, k = 20, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived, user_facts_only = false }) => {
+    const seen = new Set();
+    const merged = [];
+    const searches = timelineQueryVariants(query).map(async (variant) => {
+      const body = { query: variant, k, hybrid };
+      if (threshold !== undefined) body.threshold = threshold;
+      if (source_prefix) body.source_prefix = source_prefix;
+      if (feedback_weight !== undefined) body.feedback_weight = feedback_weight;
+      if (confidence_weight !== undefined && confidence_weight > 0) body.confidence_weight = confidence_weight;
+      if (graph_weight !== undefined) body.graph_weight = graph_weight;
+      if (since) body.since = since;
+      if (until) body.until = until;
+      if (reference_date) body.reference_date = reference_date;
+      if (include_archived) body.include_archived = true;
+
+      const data = await memoriesRequest("/search", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }, "search");
+      return data.results || [];
+    });
+    for (const results of await Promise.all(searches)) {
+      for (const result of results) {
+        if (user_facts_only && !hasUserFact(result)) continue;
+        const key = `${memoryId(result)}:${result.source || ""}:${memoryDate(result)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(result);
+      }
+    }
+    const results = merged.sort((a, b) => chronologicalValue(a) - chronologicalValue(b));
+
+    if (!results.length) {
+      return { content: [{ type: "text", text: `No timeline memories found for: "${query}"` }] };
+    }
+
+    const lines = results.map((r, i) => {
+      const id = memoryId(r);
+      const date = memoryDate(r) || "unknown-date";
+      const score = r.similarity ?? r.rrf_score;
+      const pct = score !== undefined ? ` score=${(score * 100).toFixed(0)}%` : "";
+      const fact = hasUserFact(r) ? "user-fact" : "assistant-or-mixed";
+      return `[${i + 1}] ${date} id=${id}${pct} fact=${fact} ${r.source || "unknown-source"}\n${snippet(r.text, 360)}`;
+    });
+
+    return {
+      content: [{
+        type: "text",
+        text: `Timeline for "${query}" (chronological; verify user-stated facts before answering):\n\n${lines.join("\n\n")}`,
+      }],
+    };
+  }
+);
+
+server.tool(
+  "memory_get",
+  "Fetch one memory by ID. Use after compact memory_search results when you need the full text and metadata for a selected memory.",
+  {
+    id: z.number().int().min(0).describe("Memory ID to fetch"),
+  },
+  async ({ id }) => {
+    const data = await memoriesRequest(`/memory/${id}`, {}, "manage");
+    const date = memoryDate(data);
+    const lines = [
+      `[${data.id ?? id}] ${data.source || "unknown-source"}${date ? ` ${date}` : ""}`,
+      "",
+      data.text || "",
+    ];
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  }
+);
+
+server.tool(
+  "memory_evidence",
+  "Search memories and return an agent-facing evidence packet with the current candidate, older evidence, source/date trail, confidence, and follow-up queries. Use for latest/current/temporal questions where a flat hit list is easy to misread. When memories contain conversation transcript text, treat user: lines as user-stated facts; assistant: lines may be suggestions, plans, or examples unless a user message confirms they happened. For temporal ordering, prefer direct dated user evidence over vague incidental recency mentions, deduplicate repeated mentions of the same event, and include user-confirmed outings such as day hikes when the query asks about trips.",
+  {
+    query: z.string().describe("Natural language search query"),
+    k: z.number().int().min(1).max(50).default(8).describe("Number of results to consider"),
+    hybrid: z.boolean().default(true).describe("Use hybrid BM25+vector search"),
+    threshold: z.number().min(0).max(1).optional().describe("Minimum similarity score (0-1)"),
+    source_prefix: z.string().optional().describe("Filter by source prefix"),
+    feedback_weight: z.number().min(0).max(1).default(0.1).describe("Weight for feedback-based ranking signal"),
+    confidence_weight: z.number().min(0).max(1).default(0).describe("Weight for confidence-based ranking"),
+    graph_weight: z.number().min(0).max(1).default(0.1).describe("Weight for graph-based link expansion"),
+    since: z.string().optional().describe("Filter memories at or after this ISO date"),
+    until: z.string().optional().describe("Filter memories at or before this ISO date"),
+    reference_date: z.string().optional().describe("Reference date for relative temporal queries such as today, yesterday, or past three months"),
+    include_archived: z.boolean().default(false).describe("Include archived/superseded memories"),
+  },
+  async ({ query, k = 8, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived }) => {
+    const body = { query, k, hybrid };
+    if (threshold !== undefined) body.threshold = threshold;
+    if (source_prefix) body.source_prefix = source_prefix;
+    if (feedback_weight !== undefined) body.feedback_weight = feedback_weight;
+    if (confidence_weight !== undefined && confidence_weight > 0) body.confidence_weight = confidence_weight;
+    if (graph_weight !== undefined) body.graph_weight = graph_weight;
+    if (since) body.since = since;
+    if (until) body.until = until;
+    if (reference_date) body.reference_date = reference_date;
+    if (include_archived) body.include_archived = true;
+
+    const data = await memoriesRequest("/search/evidence", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }, "search");
+
+    const packet = data.evidence_packet || {};
+    const lines = [];
+    lines.push(`Evidence packet for "${query}"`);
+    lines.push(`Confidence: ${packet.confidence?.level || "unknown"}`);
+    for (const reason of packet.confidence?.reasons || []) {
+      lines.push(`- ${reason}`);
+    }
+
+    if (packet.current_answer) {
+      const current = packet.current_answer;
+      lines.push("");
+      lines.push("Current candidate:");
+      lines.push(`[${current.id}] ${current.source} ${current.date || ""}`);
+      lines.push(current.text || "");
+    } else {
+      lines.push("");
+      lines.push("Current candidate: none");
+    }
+
+    const olderEvidence = packet.older_evidence || packet.older_conflicting_memories || [];
+    if (olderEvidence.length) {
+      lines.push("");
+      lines.push("Older evidence:");
+      for (const item of olderEvidence) {
+        lines.push(`[${item.id}] ${item.source} ${item.date || ""}`);
+        lines.push(item.text || "");
+      }
+    }
+
+    if (packet.source_date_trail?.length) {
+      lines.push("");
+      lines.push("Source/date trail:");
+      for (const item of packet.source_date_trail) {
+        lines.push(`[${item.relation || "memory"}] ${item.source} ${item.date || ""}`);
+      }
+    }
+
+    if (packet.follow_up_queries?.length) {
+      lines.push("");
+      lines.push("Follow-up queries:");
+      for (const q of packet.follow_up_queries) lines.push(`- ${q}`);
+    }
+
+    return { content: [{ type: "text", text: lines.join("\n") }] };
   }
 );
 

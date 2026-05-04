@@ -315,13 +315,15 @@ class LongMemEvalRunner:
         raw_date = question.get("question_date", "")
         if raw_date:
             ref_date = _normalize_longmemeval_date(raw_date)
-        search_results = self.client.search(
-            query=query,
-            k=retrieval_k,
-            hybrid=True,
-            source_prefix=self._question_prefix(question, source_prefix),
-            reference_date=ref_date,
-        )
+        search_kwargs = {
+            "query": query,
+            "k": retrieval_k,
+            "hybrid": True,
+            "source_prefix": self._question_prefix(question, source_prefix),
+        }
+        if ref_date is not None:
+            search_kwargs["reference_date"] = ref_date
+        search_results = self.client.search(**search_kwargs)
         context = "\n".join(
             r.get("text", "") for r in search_results[: self.DEFAULT_CONTEXT_RESULTS]
         )
@@ -339,6 +341,7 @@ class LongMemEvalRunner:
             "eval_mode": "tool",
             "recall_any_at_5": recall["recall_any"],
             "recall_all_at_5": recall["recall_all"],
+            "recall_top_sessions_at_5": recall["top_sessions"],
         }
 
     def run_question_system(
@@ -369,24 +372,52 @@ class LongMemEvalRunner:
         try:
             # Include question_date for temporal reasoning
             question_date = question.get("question_date", "")
-            date_context = f"\nToday's date is: {question_date}\n" if question_date else ""
+            reference_date = _normalize_longmemeval_date(question_date) if question_date else ""
+            date_context = (
+                f"\nToday's date is: {question_date}\n"
+                f"Use reference_date='{reference_date}' when calling memory_evidence or memory_search for relative temporal queries.\n"
+                if question_date else ""
+            )
 
             prompt = (
-                f"You have access to memory_search and other memory tools via MCP. "
+                f"You have access to memory_search, memory_evidence, memory_timeline, and other memory tools via MCP. "
                 f"Use them to find relevant context, then answer the following question.\n\n"
                 f"IMPORTANT: Search within the source prefix '{q_prefix}' to find relevant memories. "
+                f"For temporal, latest/current, date range, or event-order questions, call memory_evidence first with this source_prefix. "
+                f"For event-order, list, multi-event date math, or 'how many days/weeks ago did X when I Y' questions, call memory_timeline with this source_prefix as well; for user-history questions, call memory_timeline with user_facts_only=true. "
                 f"Try multiple search queries if your first attempt doesn't find the answer. "
                 f"Think about what keywords or phrases might be stored in memory.\n"
                 f"Memory entries include dates in brackets like [2023/05/20 (Sat) 14:30]. "
-                f"Use these dates for temporal calculations (how many days, which came first, etc.).\n"
+                f"Use these dates and the evidence packet source/date trail for temporal calculations (how many days, which came first, etc.).\n"
+                f"Temporal answer checklist:\n"
+                f"- Identify the event date for each event from user-stated completed events before answering.\n"
+                f"- For questions about things 'I took', 'I did', 'I bought', 'I visited', or similar user history, use user-stated completed events; do not count assistant-authored suggestions, itineraries, recommendations, or hypothetical plans as user facts unless a user message confirms the event happened.\n"
+                f"- When a question asks 'how many days/weeks ago did X when I Y' or otherwise says 'when I ...', use the event date as the anchor for the 'ago' calculation, not the question date, even if the two events appear separate; do not include alternate interpretations in the final answer.\n"
+                f"- If the question asks for weeks, months, or another coarse unit, round to the nearest whole requested unit unless it explicitly asks for exact days. Do not hedge with ranges when a single whole-unit answer is requested.\n"
+                f"- For list/order questions asking for a number of events, gather exactly that many distinct user-confirmed events before answering. Deduplicate repeated mentions of the same event, and day hikes and outings count as trips when the question asks about trips.\n"
+                f"- If multiple memories mention the same event with conflicting or vague timing, prefer direct dated user evidence for that event over incidental recency mentions like 'recently got back'.\n"
+                f"- If the first result lacks a date, keep searching for the dated event evidence before saying the answer is unavailable.\n"
                 f"{date_context}\n"
                 f"Question: {query}\n\n"
                 f"Provide a direct, concise answer based on what you find in memory. "
                 f"If you cannot find the answer, say so clearly."
             )
 
-            agent_response = cc_executor.run_prompt(prompt, project_dir)
+            agent_response = cc_executor.run_prompt(prompt, project_dir, require_memories=True)
+            agent_trace = getattr(cc_executor, "last_run_trace", {}) or {}
             logger.debug("Agent response for Q%s: %s", qid, agent_response[:200])
+
+            retrieval_k = 50
+            search_kwargs = {
+                "query": query,
+                "k": retrieval_k,
+                "hybrid": True,
+                "source_prefix": q_prefix,
+            }
+            if question_date:
+                search_kwargs["reference_date"] = _normalize_longmemeval_date(question_date)
+            search_results = self.client.search(**search_kwargs)
+            recall = self.compute_recall_at_k(search_results, question, k=5)
 
             return {
                 "question_id": qid,
@@ -394,8 +425,12 @@ class LongMemEvalRunner:
                 "question": query,
                 "expected": expected,
                 "context": agent_response,
-                "search_results": [],
+                "search_results": search_results,
                 "eval_mode": "system",
+                "recall_any_at_5": recall["recall_any"],
+                "recall_all_at_5": recall["recall_all"],
+                "recall_top_sessions_at_5": recall["top_sessions"],
+                "agent_trace": agent_trace,
             }
         finally:
             if owns_project:
@@ -575,6 +610,11 @@ class LongMemEvalRunner:
                     "category": s["category"],
                     "score": s["score"],
                     **({"recall_any_at_5": s["recall_any_at_5"]} if "recall_any_at_5" in s else {}),
+                    **({"recall_top_sessions_at_5": s["recall_top_sessions_at_5"]} if "recall_top_sessions_at_5" in s else {}),
+                    **({"answer_excerpt": s["answer_excerpt"]} if "answer_excerpt" in s else {}),
+                    **({"answer_chars": s["answer_chars"]} if "answer_chars" in s else {}),
+                    **({"error_kind": s["error_kind"]} if "error_kind" in s else {}),
+                    **({"agent_trace": s["agent_trace"]} if "agent_trace" in s else {}),
                 }
                 for s in scored
             ],

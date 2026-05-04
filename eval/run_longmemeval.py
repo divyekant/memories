@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from eval.longmemeval import LongMemEvalRunner
 from eval.memories_client import MemoriesClient
+from eval.setup_validation import DEFAULT_EVAL_MEMORIES_URL, resolve_eval_memories_url, validate_eval_setup
 
 # Thread-local storage for per-thread MemoriesClient instances.
 # httpx.Client is not thread-safe — each worker needs its own.
@@ -53,6 +54,65 @@ def _get_thread_client(url: str, api_key: str) -> MemoriesClient:
     if not hasattr(_thread_local, "client"):
         _thread_local.client = MemoriesClient(url=url, api_key=api_key)
     return _thread_local.client
+
+
+def _answer_excerpt(text: str, limit: int = 1000) -> str:
+    """Bound stored answer/context text in eval result details."""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _classify_agent_context(context: str) -> str:
+    """Separate agent infrastructure failures from answer-quality failures."""
+    text = (context or "").strip()
+    lower = text.lower()
+    if not text:
+        return "empty"
+    if text.startswith("[TIMEOUT]"):
+        return "timeout"
+    if "invalid api key" in lower or "authentication_error" in lower:
+        return "auth_error"
+    if text.startswith("[STDERR]"):
+        return "agent_stderr"
+    if text.startswith("[ERROR]"):
+        return "agent_error"
+    return ""
+
+
+def _retryable_agent_error(error_kind: str) -> bool:
+    return error_kind in {"auth_error", "agent_error", "agent_stderr", "timeout"}
+
+
+def _setup_report_evidence(report) -> dict:
+    """Serialize eval preflight evidence without credentials."""
+    return {
+        "ok": bool(report.ok),
+        "info": list(report.info),
+        "warnings": list(report.warnings),
+        "errors": list(report.errors),
+    }
+
+
+def _select_dataset(
+    dataset: list[dict],
+    category: str | None = None,
+    question_ids: list[str] | None = None,
+    max_questions: int = 0,
+) -> list[dict]:
+    """Apply eval dataset filters in a deterministic order."""
+    selected = list(dataset)
+    if category:
+        selected = [q for q in selected if q.get("question_type") == category]
+    if question_ids:
+        wanted = {str(qid) for qid in question_ids}
+        selected = [
+            q for q in selected
+            if str(q.get("question_id") or q.get("id") or "") in wanted
+        ]
+    if max_questions > 0:
+        selected = selected[:max_questions]
+    return selected
 
 
 def _process_question(
@@ -85,8 +145,12 @@ def _process_question(
 
     # Acquire exclusive project dir for system mode
     project_dir = ""
+    owns_project_dir = False
     if project_queue is not None:
         project_dir = project_queue.get()
+    elif mode == "system" and cc_executor and hasattr(cc_executor, "create_isolated_project"):
+        project_dir = cc_executor.create_isolated_project(with_memories=True)
+        owns_project_dir = True
 
     # Use per-thread client for parallel safety (httpx.Client is not thread-safe)
     if client_url:
@@ -105,14 +169,29 @@ def _process_question(
 
         _log(f"  Seeded {seeded} memory chunks")
 
+        retried = False
+        first_error_kind = ""
         try:
             if mode == "system" and cc_executor:
-                question_result = thread_runner.run_question_system(
-                    q,
-                    cc_executor=cc_executor,
-                    source_prefix=prefix,
-                    project_dir=project_dir,
+                def run_system_question():
+                    return thread_runner.run_question_system(
+                        q,
+                        cc_executor=cc_executor,
+                        source_prefix=prefix,
+                        project_dir=project_dir,
+                    )
+
+                question_result = run_system_question()
+                first_error = question_result.get("error_kind") or _classify_agent_context(
+                    str(question_result.get("context", ""))
                 )
+                if _retryable_agent_error(first_error):
+                    retried = True
+                    first_error_kind = first_error
+                    _log(f"  Agent infra error ({first_error}); retrying once")
+                    if project_dir and hasattr(cc_executor, "reset_project"):
+                        cc_executor.reset_project(project_dir)
+                    question_result = run_system_question()
                 _log(f"  Agent responded: {len(question_result['context'])} chars")
             else:
                 question_result = thread_runner.run_question(q, k=10, source_prefix=prefix)
@@ -125,11 +204,19 @@ def _process_question(
             question_result = {
                 "question": question,
                 "expected": expected,
-                "context": "",
+                "context": f"[ERROR] {e}",
                 "eval_mode": mode,
+                "error_kind": "agent_exception" if mode == "system" else "search_exception",
             }
 
-        if not question_result.get("context"):
+        context = str(question_result.get("context", ""))
+        error_kind = question_result.get("error_kind") or (
+            _classify_agent_context(context) if mode == "system" else ("empty" if not context.strip() else "")
+        )
+
+        if error_kind:
+            score, reasoning = 0.0, f"Agent error: {error_kind}" if mode == "system" else "No context retrieved"
+        elif not context:
             score, reasoning = 0.0, "No context retrieved"
         else:
             try:
@@ -142,8 +229,22 @@ def _process_question(
         recall_all = question_result.get("recall_all_at_5", 0.0)
         _log(f"  Score: {score:.2f} | R@5: {recall_any:.0f} | Expected: {expected[:60]}")
         return {
-            "qid": qid, "type": qtype, "score": score, "reasoning": reasoning,
-            "recall_any_at_5": recall_any, "recall_all_at_5": recall_all,
+            "qid": qid,
+            "type": qtype,
+            "question": question,
+            "expected": expected,
+            "score": score,
+            "reasoning": reasoning,
+            "recall_any_at_5": recall_any,
+            "recall_all_at_5": recall_all,
+            "recall_top_sessions_at_5": question_result.get("recall_top_sessions_at_5", []),
+            "answer_chars": len(context),
+            "answer_excerpt": _answer_excerpt(context),
+            "error_kind": error_kind,
+            "agent_trace": question_result.get("agent_trace", {}),
+            "seeded_chunks": seeded,
+            "retried": retried,
+            "first_error_kind": first_error_kind,
         }
     finally:
         try:
@@ -154,16 +255,48 @@ def _process_question(
             if cc_executor:
                 cc_executor.reset_project(project_dir)
             project_queue.put(project_dir)
+        elif owns_project_dir and cc_executor and project_dir and hasattr(cc_executor, "cleanup_project"):
+            cc_executor.cleanup_project(project_dir)
 
 
-def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "tool", workers: int = 1, agent_model: str = ""):
+def run_benchmark(
+    max_questions: int = 0,
+    output_path: str = "",
+    mode: str = "tool",
+    workers: int = 1,
+    agent_model: str = "",
+    category: str | None = None,
+    question_ids: list[str] | None = None,
+    agent_timeout: int = 180,
+):
     _load_local_env()
-    url = os.environ.get("MEMORIES_URL", "http://localhost:8900")
+    url = resolve_eval_memories_url(DEFAULT_EVAL_MEMORIES_URL)
     api_key = os.environ.get("MEMORIES_API_KEY", "")
+    mcp_server_path = os.environ.get(
+        "EVAL_MCP_SERVER_PATH",
+        str(Path(__file__).parent.parent / "mcp-server" / "index.js"),
+    )
+    setup_report = validate_eval_setup(
+        memories_url=url,
+        api_key=api_key,
+        require_api_key=True,
+        mcp_server_path=mcp_server_path,
+        require_mcp=mode == "system",
+        require_claude=mode == "system",
+        require_judge=True,
+        judge_provider="anthropic",
+        allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",
+    )
+    if not setup_report.ok:
+        for message in setup_report.errors:
+            _log(f"ERROR: {message}")
+        sys.exit(2)
 
     client = MemoriesClient(url=url, api_key=api_key)
-    if not client.health_check():
+    ready_before = client.ready_status()
+    if not ready_before.get("ready", ready_before.get("status_code") == 200):
         _log("ERROR: Memories service not reachable")
+        _log(json.dumps(ready_before, sort_keys=True))
         sys.exit(1)
 
     runner = LongMemEvalRunner(client=client, judge_provider="anthropic")
@@ -171,13 +304,17 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     dataset = runner.load_dataset()
     _log(f"Loaded {len(dataset)} questions")
 
-    # Filter by category if specified
-    if args.category:
-        dataset = [q for q in dataset if q.get("question_type") == args.category]
-        _log(f"Filtered to category '{args.category}': {len(dataset)} questions")
-
+    dataset = _select_dataset(
+        dataset,
+        category=category,
+        question_ids=question_ids,
+        max_questions=max_questions,
+    )
+    if category:
+        _log(f"Filtered to category '{category}': {len(dataset)} questions")
+    if question_ids:
+        _log(f"Filtered to question id(s): {', '.join(question_ids)} -> {len(dataset)} questions")
     if max_questions > 0:
-        dataset = dataset[:max_questions]
         _log(f"Running subset: {max_questions} questions")
 
     _log("Initializing LLM judge...")
@@ -192,16 +329,13 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     project_queue = None
     if mode == "system":
         from eval.cc_executor import CCExecutor
-        mcp_server_path = os.environ.get(
-            "EVAL_MCP_SERVER_PATH",
-            str(Path(__file__).parent.parent / "mcp-server" / "index.js"),
-        )
         cc_executor = CCExecutor(
-            timeout=120,
+            timeout=agent_timeout,
             memories_url=url,
             memories_api_key=api_key,
             mcp_server_path=mcp_server_path,
             model=agent_model,
+            capture_trace=True,
         )
         CCExecutor.cleanup_stale_auto_memory()
         project_queue = queue.Queue()
@@ -262,6 +396,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
                     break
 
     elapsed = time.time() - start_time
+    ready_after = client.ready_status()
 
     # Report
     overall = sum(s["score"] for s in scores) / len(scores) if scores else 0
@@ -294,9 +429,13 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
             "version": "4.0.0",
             "eval_mode": mode,
             "agent_model": agent_model or "default",
+            "agent_timeout_seconds": agent_timeout if mode == "system" else None,
             "workers": workers,
             "elapsed_seconds": round(elapsed, 1),
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "setup_validation": _setup_report_evidence(setup_report),
+            "eval_ready_before": ready_before,
+            "eval_ready_after": ready_after,
             "questions_run": len(scores),
             "overall": round(overall, 4),
             "recall_any_at_5": round(recall_overall, 4),
@@ -328,7 +467,20 @@ if __name__ == "__main__":
                         help="Number of parallel workers, 1-32 (default: 1).")
     parser.add_argument("--agent-model", default="",
                         help="Claude model for system eval agent (e.g. sonnet, haiku, opus). Empty = default.")
+    parser.add_argument("--agent-timeout", type=int, default=180,
+                        help="Claude Code timeout in seconds for system eval mode (default: 180).")
+    parser.add_argument("--question-id", action="append", default=None,
+                        help="Run only a specific LongMemEval question id. May be repeated.")
     args = parser.parse_args()
     model_suffix = f"-{args.agent_model}" if args.agent_model else ""
     output = args.output or f"eval/results/longmemeval-v4.0.0-{args.mode}{model_suffix}.json"
-    run_benchmark(max_questions=args.questions, output_path=output, mode=args.mode, workers=args.workers, agent_model=args.agent_model)
+    run_benchmark(
+        max_questions=args.questions,
+        output_path=output,
+        mode=args.mode,
+        workers=args.workers,
+        agent_model=args.agent_model,
+        category=args.category,
+        question_ids=args.question_id,
+        agent_timeout=args.agent_timeout,
+    )

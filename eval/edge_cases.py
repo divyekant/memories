@@ -7,10 +7,7 @@ detect regressions in search ranking, link integrity, and memory lifecycle.
 
 Usage:
     # Against eval instance:
-    python eval/edge_cases.py --url http://localhost:8901 --key god-is-an-astronaut
-
-    # Against production (read-heavy, still creates/deletes test memories):
-    python eval/edge_cases.py --url http://localhost:8900 --key KEY
+    python eval/edge_cases.py --url http://localhost:8901 --key "$MEMORIES_API_KEY"
 
     # JSON output for CI:
     python eval/edge_cases.py --url http://localhost:8901 --key KEY --json
@@ -19,10 +16,13 @@ Usage:
 import argparse
 import concurrent.futures
 import json
+import os
 import sys
 import time
 
 import httpx
+
+from eval.setup_validation import validate_eval_setup
 
 
 class EdgeCaseEval:
@@ -348,7 +348,7 @@ class EdgeCaseEval:
 
         # Health check
         try:
-            r = self.c.get("/health")
+            r = self.c.get("/health/ready")
             assert r.status_code == 200
         except Exception:
             print(f"\n  ERROR: Cannot reach {self.base_url}")
@@ -397,9 +397,22 @@ class EdgeCaseEval:
 def main():
     parser = argparse.ArgumentParser(description="Memories Edge Case Eval")
     parser.add_argument("--url", default="http://localhost:8901", help="Memories API URL")
-    parser.add_argument("--key", default="god-is-an-astronaut", help="API key")
+    parser.add_argument("--key", default=os.environ.get("MEMORIES_API_KEY", ""), help="API key")
     parser.add_argument("--json", action="store_true", help="JSON output")
     args = parser.parse_args()
+
+    setup_report = validate_eval_setup(
+        memories_url=args.url,
+        api_key=args.key,
+        require_api_key=True,
+        require_mcp=False,
+        require_claude=False,
+        allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",
+    )
+    if not setup_report.ok:
+        for message in setup_report.errors:
+            print(f"ERROR: {message}", file=sys.stderr)
+        sys.exit(2)
 
     ev = EdgeCaseEval(args.url, args.key)
     result = ev.run_all()

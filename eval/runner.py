@@ -49,53 +49,56 @@ class EvalRunner:
         7. If judge exists, fill in LLM-judged rubrics (score==-1 sentinel)
         8. Return ScenarioResult with both scores
         """
-        # --- Phase 1: Without memories ---
-        self.memories.clear_by_prefix(EVAL_PREFIX)
-
-        project_without = self.executor.create_isolated_project(with_memories=False)
         try:
-            output_without = self.executor.run_prompt(scenario.prompt, project_without)
-        finally:
-            self.executor.cleanup_project(project_without)
+            # --- Phase 1: Without memories ---
+            self.memories.clear_by_prefix(EVAL_PREFIX)
 
-        score_without, details_without = score_all_rubrics(scenario.expected, output_without)
+            project_without = self.executor.create_isolated_project(with_memories=False)
+            try:
+                output_without = self.executor.run_prompt(scenario.prompt, project_without)
+            finally:
+                self.executor.cleanup_project(project_without)
 
-        # --- Phase 2: With memories ---
-        self.memories.clear_by_prefix(EVAL_PREFIX)
-        self.memories.seed_memories(
-            [{"text": m.text, "source": m.source} for m in scenario.memories]
-        )
+            score_without, details_without = score_all_rubrics(scenario.expected, output_without)
 
-        project_with = self.executor.create_isolated_project(with_memories=True)
-        try:
-            output_with = self.executor.run_prompt(scenario.prompt, project_with)
-        finally:
-            self.executor.cleanup_project(project_with)
-
-        score_with, details_with = score_all_rubrics(scenario.expected, output_with)
-
-        # --- Phase 3: LLM judge for pending rubrics (both outputs) ---
-        if self.judge:
-            details_without = self._resolve_judge_rubrics(
-                details_without, scenario, output_without
+            # --- Phase 2: With memories ---
+            self.memories.clear_by_prefix(EVAL_PREFIX)
+            self.memories.seed_memories(
+                [{"text": m.text, "source": m.source} for m in scenario.memories]
             )
-            score_without = self._weighted_avg(details_without)
 
-            details_with = self._resolve_judge_rubrics(
-                details_with, scenario, output_with
+            project_with = self.executor.create_isolated_project(with_memories=True)
+            try:
+                output_with = self.executor.run_prompt(scenario.prompt, project_with)
+            finally:
+                self.executor.cleanup_project(project_with)
+
+            score_with, details_with = score_all_rubrics(scenario.expected, output_with)
+
+            # --- Phase 3: LLM judge for pending rubrics (both outputs) ---
+            if self.judge:
+                details_without = self._resolve_judge_rubrics(
+                    details_without, scenario, output_without
+                )
+                score_without = self._weighted_avg(details_without)
+
+                details_with = self._resolve_judge_rubrics(
+                    details_with, scenario, output_with
+                )
+                score_with = self._weighted_avg(details_with)
+
+            return ScenarioResult(
+                scenario_id=scenario.id,
+                scenario_name=scenario.name,
+                category=scenario.category,
+                score_with_memory=score_with,
+                score_without_memory=score_without,
+                output_with_memory=output_with,
+                output_without_memory=output_without,
+                rubric_details=details_with,
             )
-            score_with = self._weighted_avg(details_with)
-
-        return ScenarioResult(
-            scenario_id=scenario.id,
-            scenario_name=scenario.name,
-            category=scenario.category,
-            score_with_memory=score_with,
-            score_without_memory=score_without,
-            output_with_memory=output_with,
-            output_without_memory=output_without,
-            rubric_details=details_with,
-        )
+        finally:
+            self.memories.clear_by_prefix(EVAL_PREFIX)
 
     def run_all(self, scenarios: list[Scenario]) -> EvalReport:
         """Run all scenarios, aggregate into EvalReport."""

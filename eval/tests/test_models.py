@@ -80,6 +80,7 @@ expected:
 class TestEvalConfig:
     def test_default_weights(self):
         c = EvalConfig()
+        assert c.memories_url == "http://localhost:8901"
         assert c.category_weights == {"coding": 0.40, "recall": 0.35, "compounding": 0.25}
 
     def test_custom_weights(self):

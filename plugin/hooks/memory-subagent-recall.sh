@@ -16,8 +16,10 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _health_check() { return 0; }
-  _default_source_prefixes() { echo 'claude-code/{project},learning/{project},wip/{project}'; }
+  _default_source_prefixes() { echo 'claude-code/{project},codex/{project},learning/{project},wip/{project}'; }
 fi
+
+_exit_if_disabled 2>/dev/null || true
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"

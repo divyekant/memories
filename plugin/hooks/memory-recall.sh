@@ -1,8 +1,8 @@
 #!/bin/bash
 # memory-recall.sh — SessionStart hook
-# Loads project-relevant memories into Claude Code context.
-# Also hydrates auto-memory MEMORY.md with synced memories from MCP,
-# so the most important memories are always in context (200-line cap).
+# Loads project-relevant memory pointers into Claude Code context.
+# Also syncs MEMORY.md with pointers from MCP rather than full memory text,
+# so auto-memory cannot become a passive answer source.
 # Sync hook: blocks until done, injects additionalContext.
 
 MEMORIES_HOOK_NAME="memory-recall"
@@ -17,8 +17,10 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
-  _default_source_prefixes() { echo 'claude-code/{project},learning/{project},wip/{project}'; }
+  _default_source_prefixes() { echo 'claude-code/{project},codex/{project},learning/{project},wip/{project}'; }
 fi
+
+_exit_if_disabled 2>/dev/null || true
 
 # Rotate log on session start
 _rotate_log
@@ -141,7 +143,7 @@ CONTEXT_RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
   if length == 0 then
     empty
   else
-    map("- [\(.source)] \(.text)") | join("\n")
+    map("- [\(.source)] candidate memory id=\(.id // .memory_id // "unknown") found at session start; call memory_search with this source prefix before using it.") | join("\n")
   end
 ' 2>/dev/null) || true
 
@@ -153,19 +155,25 @@ WIP_RESULTS=$(search_memories "$WIP_QUERY" "wip/$PROJECT" 5 0.3)
 WIP_COUNT=$(echo "$WIP_RESULTS" | jq -r '.count // 0')
 DEFERRED_SECTION=""
 if [ "$WIP_COUNT" -gt 0 ] && [ "$WIP_COUNT" != "null" ]; then
-  DEFERRED_ITEMS=$(echo "$WIP_RESULTS" | jq -r '.results[:5][] | "- [\(.source)] \(.text[0:150])"')
+  DEFERRED_ITEMS=$(echo "$WIP_RESULTS" | jq -r '.results[:5][] | "- [\(.source)] deferred candidate memory id=\(.id // .memory_id // "unknown"); call memory_search with this source prefix before answering deferred-work questions."')
   DEFERRED_SECTION="\n## Deferred Work\n$DEFERRED_ITEMS\n"
 fi
 
 read -r -d '' PLAYBOOK <<EOF || true
 ## Memory Playbook
 
-IMPORTANT: ALWAYS search memories BEFORE responding to any question about
-prior decisions, architecture, or system behavior. Hook-injected memories
-below are keyword-matched starting points — they are NOT complete context.
+IMPORTANT: Search memories BEFORE responding to questions about prior
+decisions, architecture, project conventions, deferred work, past bugs, project
+history, or resuming a topic. Hook-injected memories below are keyword-matched
+starting points — they are NOT complete context.
 
-MANDATORY FIRST ACTION: Load the memory search tool immediately:
-  ToolSearch("select:mcp__memories__memory_search")
+For self-contained prompts that do not depend on prior/project context
+(arithmetic, translation, formatting, generic facts), answer normally without
+calling memory_search.
+
+ACTIVE SEARCH ACTION for applicable prompts: Load the memory search tool if
+needed with ToolSearch("select:mcp__memories__memory_search"), then call
+memory_search before answering.
 
 You MUST call memory_search when the user's message contains:
 - Questions about prior decisions ("weren't we...", "didn't we decide...")
@@ -174,23 +182,27 @@ You MUST call memory_search when the user's message contains:
 - Release/version context ("what version", "what's deferred")
 - Continuation of prior work ("last time we...", "we were doing...")
 
-Do NOT rationalize skipping this step:
+Do NOT rationalize skipping this step for prior-work prompts:
 | Thought | Reality |
 | "The injected memories cover it" | They are keyword-matched, not semantic |
 | "I can infer from the code" | Prior decisions aren't in code |
 | "It's a simple question" | Simple questions about past work need recall |
 
-After searching, use BOTH hook-injected AND searched memories.
+After searching, use searched memories as the answer source; use hook-injected pointers
+only to choose scoped prefixes and candidate ids.
 Prefer scoped prefixes: $SCOPED_PREFIX_LIST.
+Use exact source prefixes from candidate pointers first. Do not use family-wide
+prefixes like claude-code/, codex/, learning/, wip/, or unscoped search until the
+exact project prefixes have been tried.
 When memories show deferred/blocked work, say "not yet" or "deferred" directly.
 Preserve boundary conditions (until/unless/because) verbatim.
 Do not ask the user to reconfirm a remembered decision.
 EOF
 
-# --- Hydrate auto-memory MEMORY.md ---
+# --- Sync auto-memory MEMORY.md pointers ---
 # Claude Code's auto-memory loads MEMORY.md into every conversation (first 200 lines).
-# We sync top memories from MCP into a marked section so they're always in context,
-# while preserving any manually-pinned content above the marker.
+# We sync pointers instead of full memory text so models must call memory_search to
+# inspect stored facts, while preserving manually-pinned content above the marker.
 SYNC_MARKER="<!-- SYNCED-FROM-MEMORIES-MCP -->"
 ENCODED_CWD=$(echo "$CWD" | tr '/' '-')
 MEMORY_DIR="$HOME/.claude/projects/${ENCODED_CWD}/memory"
@@ -203,7 +215,7 @@ MEMORY_RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
   if length == 0 then
     empty
   else
-    map("- \(.text)") | join("\n")
+    map("- [\(.source)] candidate memory id=\(.id // .memory_id // "unknown"); call memory_search with this source prefix before using it.") | join("\n")
   end
 ' 2>/dev/null) || true
 

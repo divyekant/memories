@@ -17,8 +17,10 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
-  _default_source_prefixes() { echo 'claude-code/{project},learning/{project},wip/{project}'; }
+  _default_source_prefixes() { echo 'claude-code/{project},codex/{project},learning/{project},wip/{project}'; }
 fi
+
+_exit_if_disabled 2>/dev/null || true
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
@@ -120,6 +122,11 @@ search_memories() {
 
 CONTEXT=$(extract_recent_context "$TRANSCRIPT_PATH")
 PROMPT_LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
+ACTIVE_SEARCH_REQUIRED=0
+ACTIVE_SEARCH_PATTERN='(^|[^a-z])(did we already|do you remember|remember (how|what|where|when|why|the)|recall|already decide|where did we|how did we|what did we|what was the last|where we left|left off|resume|continue where|previous|prior|earlier|last (fix|time|decision|session|run)|deferred|blocked|follow.?up|next steps|what.?s the plan|what is the plan|current plan|existing plan|release gate|gated)([^a-z]|$)'
+if printf '%s' "$PROMPT_LOWER" | grep -qiE "$ACTIVE_SEARCH_PATTERN"; then
+  ACTIVE_SEARCH_REQUIRED=1
+fi
 
 # File context extraction — grep recent transcript for Read/Edit/Write tool calls
 FILE_CONTEXT=""
@@ -184,31 +191,48 @@ fi
 
 # --- Dual search strategy ---
 RAW_RESPONSES=""
+SEARCH_TMPDIR=$(mktemp -d 2>/dev/null || mktemp -d -t memories-query)
+SEARCH_JOBS=()
+SEARCH_INDEX=0
+
+queue_search() {
+  local query="$1" prefix="$2" limit="$3" threshold="$4"
+  local outfile="$SEARCH_TMPDIR/result_${SEARCH_INDEX}.json"
+  SEARCH_INDEX=$((SEARCH_INDEX + 1))
+  (
+    search_memories "$query" "$prefix" "$limit" "$threshold" > "$outfile" || true
+  ) &
+  SEARCH_JOBS+=("$!")
+}
 
 # Strategy A: enriched unscoped (cross-project, semantic)
-UNSCOPED_RESPONSE=$(search_memories "$ENRICHED_QUERY" "" 6 0.30)
-if [ -n "$UNSCOPED_RESPONSE" ]; then
-  RAW_RESPONSES="$UNSCOPED_RESPONSE"
-fi
+queue_search "$ENRICHED_QUERY" "" 6 0.30
 
-# Strategy B: enriched prefix-scoped (project-specific precision)
+# Strategy B: enriched prefix-scoped (project-specific precision across client families)
 if [ -n "$PROJECT" ]; then
-  CLIENT_PREFIX=$(_memory_client_prefix)
-  SCOPED_RESPONSE=$(search_memories "$ENRICHED_QUERY" "${CLIENT_PREFIX}/${PROJECT}" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD")
-  if [ -n "$SCOPED_RESPONSE" ]; then
-    RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$SCOPED_RESPONSE")
-  fi
+  IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
+  for raw_prefix in "${prefix_templates[@]}"; do
+    prefix=$(printf '%s' "$raw_prefix" | sed "s/{project}/$PROJECT/g" | xargs)
+    [ -z "$prefix" ] && continue
+    queue_search "$ENRICHED_QUERY" "$prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD"
+  done
 fi
 
 # Intent-based prefix biasing (additional search for fix/debug/setup prompts)
 if [ -n "$INTENT_PREFIXES" ] && [ -n "$PROJECT" ]; then
   for intent_prefix in $INTENT_PREFIXES; do
-    response=$(search_memories "$ENRICHED_QUERY" "$intent_prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD")
-    if [ -n "$response" ]; then
-      RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
-    fi
+    queue_search "$ENRICHED_QUERY" "$intent_prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD"
   done
 fi
+
+for job in "${SEARCH_JOBS[@]}"; do
+  wait "$job" || true
+done
+
+if ls "$SEARCH_TMPDIR"/result_*.json >/dev/null 2>&1; then
+  RAW_RESPONSES=$(cat "$SEARCH_TMPDIR"/result_*.json 2>/dev/null || true)
+fi
+rm -rf "$SEARCH_TMPDIR"
 
 # Merge, deduplicate, cap at 6
 RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr '
@@ -226,13 +250,45 @@ if [ "$RESULTS_JSON" = "[]" ]; then
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
 fi
 
-RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
-  if length == 0 then
-    empty
-  else
-    map("- [\(.source)] \(.text)") | join("\n")
-  end
-' 2>/dev/null) || true
+if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
+  RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
+    if length == 0 then
+      empty
+    else
+      map("- candidate memory from \(.source): call memory_search with source_prefix=\"\(.source)\" before answering. Do not use memory_get as a substitute.") | join("\n")
+    end
+  ' 2>/dev/null) || true
+else
+  RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
+    if length == 0 then
+      empty
+    else
+      map("- [\(.source)] \(.text)") | join("\n")
+    end
+  ' 2>/dev/null) || true
+fi
+
+if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
+  SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
+  CLIENT=$(_memory_client_prefix 2>/dev/null || echo "claude-code")
+  PROMPT_HASH=$(_hash_for_metrics "$PROMPT")
+  CANDIDATE_COUNT=$(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0)
+  HOOK_RESULTS_INJECTED=0
+  [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ] && HOOK_RESULTS_INJECTED=1
+  SOURCE_PREFIXES_JSON=$(printf '%s' "$RESULTS_JSON" | jq -c '[.[].source // empty | select(. != "")] | unique' 2>/dev/null || echo '[]')
+  METRICS_EVENT=$(jq -nc \
+    --arg ts "$(date -u +%FT%TZ)" \
+    --arg client "$CLIENT" \
+    --arg session_id "$SESSION_ID" \
+    --arg project "${PROJECT:-unknown}" \
+    --arg prompt_hash "$PROMPT_HASH" \
+    --argjson active_search_required true \
+    --argjson candidate_count "$CANDIDATE_COUNT" \
+    --argjson hook_results_injected "$HOOK_RESULTS_INJECTED" \
+    --argjson source_prefixes "$SOURCE_PREFIXES_JSON" \
+    '{ts: $ts, event: "prompt_evaluated", client: $client, session_id: $session_id, project: $project, prompt_hash: $prompt_hash, active_search_required: $active_search_required, candidate_count: $candidate_count, hook_results_injected: ($hook_results_injected == 1), source_prefixes: $source_prefixes}')
+  _active_search_metrics_log "$METRICS_EVENT"
+fi
 
 if [ -z "$RESULTS" ] || [ "$RESULTS" = "null" ]; then
   exit 0
@@ -243,11 +299,11 @@ _log_info "Query returned $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/
 RESPONSE_HINT=$(build_response_hint "$PROMPT_LOWER")
 
 jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
-  hookSpecificOutput: {
-    hookEventName: "UserPromptSubmit",
-    additionalContext: (
-      "IMPORTANT: The following memories from prior sessions are relevant to this prompt. These represent prior decisions and context that MUST be considered before responding. Do not contradict stored decisions without explicitly acknowledging the change.\n\n## Retrieved Memories\n" + $memories +
-      (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
-    )
-  }
+	hookSpecificOutput: {
+	  hookEventName: "UserPromptSubmit",
+	  additionalContext: (
+	    "IMPORTANT: The following memories from prior sessions are relevant to this prompt. These represent prior decisions and context that MUST be considered before responding. Do not contradict stored decisions without explicitly acknowledging the change.\n\nActive search requirement: hook-injected memories are keyword-matched starting points, not a substitute for active search.\n\nMANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, deferred work, conventions, or continuation of prior work, load the tool if needed with ToolSearch(\"select:mcp__memories__memory_search\"), then MUST call memory_search before answering. Do not answer from injected memories alone. Do not use memory_get as a substitute for memory_search. Use exact source prefixes shown below before broad family prefixes or unscoped search.\n\n## Retrieved Memories\n" + $memories +
+	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
+	  )
+	}
 }'

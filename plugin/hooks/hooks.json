@@ -13,7 +13,7 @@
       "hooks": [{
         "type": "command",
         "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-query.sh",
-        "timeout": 3
+        "timeout": 10
       }]
     }],
     "Stop": [{

@@ -273,6 +273,7 @@ The `eval/` package provides a benchmark framework to measure how much Memories 
 
 ```text
 eval/__main__.py (CLI) / eval/run.sh (wrapper)
+  -> setup_validation.py                         — reject unsafe targets before eval work
   -> EvalRunner (runner.py)
      -> CCExecutor.cleanup_stale_auto_memory()  — purge prior run artifacts
      -> MemoriesClient (memories_client.py)      — seed/clear test memories
@@ -297,11 +298,12 @@ eval/__main__.py (CLI) / eval/run.sh (wrapper)
 
 ### Isolation strategy
 
-Isolation operates at three levels:
+Isolation operates at four levels:
 
-1. **MCP isolation** — `--strict-mcp-config` ensures Claude loads **only** the provided MCP config, ignoring global `~/.claude/settings.json` and project `.mcp.json` files
-2. **Project isolation** — Fresh temp directory per run with no CLAUDE.md, no `.claude/`, no conversation history
-3. **Auto-memory cleanup** — `cleanup_stale_auto_memory()` removes `~/.claude/projects/` dirs matching `cc_eval` or `cc-eval` (Claude Code mangles underscores to hyphens in path names)
+1. **Setup validation** — `eval.setup_validation` rejects the normal local production target (`localhost:8900`) by default, requires an existing MCP server path, and the wrapper requires `/health/ready` before scenario execution
+2. **MCP isolation** — `--strict-mcp-config` ensures Claude loads **only** the provided MCP config, ignoring global `~/.claude/settings.json` and project `.mcp.json` files
+3. **Project isolation** — Fresh temp directory per run with no CLAUDE.md, no `.claude/`, no conversation history
+4. **Hook isolation and cleanup** — `CCExecutor` writes an eval-scoped hook env file that points with-memory runs at the eval backend and sets `MEMORIES_DISABLED=1` for without-memory runs; `cleanup_stale_auto_memory()` removes `~/.claude/projects/` dirs matching `cc_eval` or `cc-eval` (Claude Code mangles underscores to hyphens in path names)
 
 ### Scenario design
 
@@ -351,12 +353,12 @@ The automatic memory layer uses 12 shell hooks across 10 Claude Code / Cursor li
 
 | Event | Hook | Purpose |
 |---|---|---|
-| `SessionStart` | `memory-recall.sh` | Hydrate MEMORY.md from stored memories |
+| `SessionStart` | `memory-recall.sh` | Inject scoped memory pointers and sync MEMORY.md pointers |
 | `SubagentStart` | `memory-subagent-recall.sh` | Inject project memories into spawned subagents |
 | `UserPromptSubmit` | `memory-query.sh` | Inject relevant memories into prompt context |
 | `Stop` | `memory-extract.sh` | Extract and store learnings from conversation |
 | `PreCompact` | `memory-flush.sh` | Flush pending memories before compaction |
-| `PostCompact` | `memory-rehydrate.sh` | Rehydrate MEMORY.md after compaction |
+| `PostCompact` | `memory-rehydrate.sh` | Refresh MEMORY.md pointers after compaction |
 | `PostToolUse` | `memory-observe.sh` | Observability for memory MCP tool calls |
 | `PostToolUse` | `memory-tool-observe.sh` | Record write/edit/bash context for richer extraction |
 | `PreToolUse` | `memory-guard.sh` | Guard MEMORY.md from direct Write/Edit |

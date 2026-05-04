@@ -2,7 +2,7 @@
 # memory-rehydrate.sh — PostCompact hook
 # Fires after context compaction. Uses compact_summary as a targeted
 # search query to refresh the MEMORY.md sync section with the most
-# relevant memories for the post-compaction context.
+# relevant memory pointers for the post-compaction context.
 #
 # PostCompact does not support additionalContext injection, so this hook
 # updates the synced MEMORY.md section instead (same mechanism as
@@ -20,8 +20,10 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
-  _default_source_prefixes() { echo 'claude-code/{project},learning/{project},wip/{project}'; }
+  _default_source_prefixes() { echo 'claude-code/{project},codex/{project},learning/{project},wip/{project}'; }
 fi
+
+_exit_if_disabled 2>/dev/null || true
 
 INPUT=$(cat)
 
@@ -57,9 +59,9 @@ for tpl in $(echo "$PREFIXES" | tr ',' ' '); do
   fi
 done
 
-# Hydrate MEMORY.md with post-compaction results (same sync-marker approach as recall)
+# Sync MEMORY.md with post-compaction pointers (same sync-marker approach as recall)
 if [ -n "$RESULTS" ] && [ "$RESULTS" != "[]" ] && [ "$RESULTS" != "null" ]; then
-  FORMATTED=$(echo "$RESULTS" | jq -r '.[] | "- [\(.source // "unknown")] \(.text)"' 2>/dev/null)
+  FORMATTED=$(echo "$RESULTS" | jq -r '.[] | "- [\(.source // "unknown")] candidate memory id=\(.id // .memory_id // "unknown"); call memory_search with this source prefix before using it."' 2>/dev/null)
   if [ -n "$FORMATTED" ]; then
     SYNC_MARKER="<!-- SYNCED-FROM-MEMORIES-MCP -->"
     ENCODED_CWD=$(echo "$CWD" | sed 's|/|-|g; s|^-||')

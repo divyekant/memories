@@ -15,6 +15,78 @@ _log_info() { _log "INFO" "$1"; }
 _log_error() { _log "ERROR" "$1"; }
 _log_warn() { _log "WARN" "$1"; }
 
+_active_search_metrics_enabled() {
+  case "${MEMORIES_ACTIVE_SEARCH_METRICS:-1}" in
+    0|false|FALSE|no|NO|off|OFF) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+_active_search_metrics_log() {
+  _active_search_metrics_enabled || return 0
+  local event_json="$1"
+  local metrics_log="${MEMORIES_ACTIVE_SEARCH_LOG:-$HOME/.config/memories/active-search.jsonl}"
+  local metrics_dir
+  metrics_dir=$(dirname "$metrics_log")
+  if ! [ -d "$metrics_dir" ] && ! mkdir -p "$metrics_dir" 2>/dev/null; then
+    _log_warn "Active-search metrics log unavailable: cannot create $metrics_dir"
+    return 0
+  fi
+  if ! printf '%s\n' "$event_json" >> "$metrics_log" 2>/dev/null; then
+    _log_warn "Active-search metrics log unavailable: cannot write $metrics_log"
+  fi
+}
+
+_hash_for_metrics() {
+  local value="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$value" | shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$value" | sha256sum | awk '{print $1}'
+  else
+    printf ''
+  fi
+}
+
+_source_prefix_quality() {
+  local source_prefix="${1:-}"
+  local project="${2:-}"
+  if [ -z "$source_prefix" ]; then
+    printf 'broad_or_unscoped'
+    return 0
+  fi
+  if [ -n "$project" ]; then
+    case "$source_prefix" in
+      "claude-code/$project"|"claude-code/$project/"*|"codex/$project"|"codex/$project/"*|"learning/$project"|"learning/$project/"*|"wip/$project"|"wip/$project/"*)
+        printf 'exact_project'
+        return 0
+        ;;
+    esac
+  fi
+  case "$source_prefix" in
+    claude-code/|codex/|learning/|wip/|claude-code|codex|learning|wip)
+      printf 'broad_or_unscoped'
+      ;;
+    *)
+      printf 'other'
+      ;;
+  esac
+}
+
+_memories_disabled() {
+  case "${MEMORIES_DISABLED:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_exit_if_disabled() {
+  if _memories_disabled; then
+    _log_info "Hook disabled by MEMORIES_DISABLED"
+    exit 0
+  fi
+}
+
 # Rotate log if over 1000 lines (called from SessionStart only)
 _rotate_log() {
   if [ -f "$MEMORIES_LOG" ] && [ "$(wc -l < "$MEMORIES_LOG" 2>/dev/null)" -gt 1000 ]; then
@@ -30,13 +102,30 @@ _memory_client_prefix() {
 _default_source_prefixes() {
   local client_prefix
   client_prefix="$(_memory_client_prefix)"
-  printf '%s/{project},learning/{project},wip/{project}' "$client_prefix"
+  printf 'codex/{project},claude-code/{project},learning/{project},wip/{project}'
 }
 
 _default_extract_source() {
   local client_prefix
   client_prefix="$(_memory_client_prefix)"
   printf '%s/{project}' "$client_prefix"
+}
+
+_resolve_env_reference() {
+  local raw="$1"
+  local env_var
+  env_var=$(printf '%s' "$raw" | sed -n 's/.*${\([A-Za-z_][A-Za-z0-9_]*\)}.*/\1/p')
+  if [ -z "$env_var" ]; then
+    printf '%s' "$raw"
+    return 0
+  fi
+  local env_value
+  env_value=$(printenv "$env_var" 2>/dev/null || true)
+  if [ -n "$env_value" ]; then
+    printf '%s' "$env_value"
+  else
+    printf '%s' "$raw"
+  fi
 }
 
 # Health check — returns 0 if service is reachable
@@ -59,20 +148,10 @@ _parse_backends_yaml() {
 
   _flush_backend() {
     if [ -n "$current_name" ] && [ -n "$url" ]; then
-      # Resolve ${VAR} references in api_key
-      local resolved_key="$api_key"
-      local env_var
-      env_var=$(printf '%s' "$api_key" | sed -n 's/.*\${\([A-Za-z_][A-Za-z0-9_]*\)}.*/\1/p')
-      if [ -n "$env_var" ]; then
-        resolved_key="${!env_var:-$api_key}"
-      fi
-      # Resolve ${VAR} references in url
-      local resolved_url="$url"
-      local url_env_var
-      url_env_var=$(printf '%s' "$url" | sed -n 's/.*\${\([A-Za-z_][A-Za-z0-9_]*\)}.*/\1/p')
-      if [ -n "$url_env_var" ]; then
-        resolved_url="${!url_env_var:-$url}"
-      fi
+      # Resolve ${VAR} references without bash 4 indirect expansion.
+      local resolved_key resolved_url
+      resolved_key="$(_resolve_env_reference "$api_key")"
+      resolved_url="$(_resolve_env_reference "$url")"
       backends_json=$(printf '%s' "$backends_json" | jq -c --arg n "$current_name" \
         --arg u "$resolved_url" --arg k "$resolved_key" --arg s "$scenario" \
         '. + [{name: $n, url: $u, api_key: $k, scenario: $s}]')

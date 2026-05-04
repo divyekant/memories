@@ -1,0 +1,145 @@
+[
+  {
+    "case_id": "cross-client-prior-decision",
+    "agent": "claude-code",
+    "user_prompt": "Did we already decide how active-search evals should be gated before release?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "setup validation",
+      "production"
+    ],
+    "seed_memories": [
+      {
+        "source": "codex/{project}",
+        "text": "Decision: active-search evals are release-gated by setup validation, tool-trace evidence, cleanup proof, and a hard prohibition on production data writes."
+      }
+    ]
+  },
+  {
+    "case_id": "deferred-work-recall",
+    "agent": "claude-code",
+    "user_prompt": "Where did we leave the generic MCP client work?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "write smoke",
+      "memory_extract"
+    ],
+    "seed_memories": [
+      {
+        "source": "wip/{project}",
+        "text": "Deferred work: generic MCP readiness still needs an isolated write smoke that exercises memory_add and memory_extract without touching production."
+      }
+    ]
+  },
+  {
+    "case_id": "prior-fix-recall",
+    "agent": "claude-code",
+    "user_prompt": "What was the last fix for temporal memory answers?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "memory_timeline",
+      "user_facts_only"
+    ],
+    "seed_memories": [
+      {
+        "source": "learning/{project}",
+        "text": "Temporal answer fix: use memory_timeline with user_facts_only=true so agents reason over dated user-confirmed events instead of assistant-authored plans."
+      }
+    ]
+  },
+  {
+    "case_id": "remember-temporal-gate",
+    "agent": "claude-code",
+    "user_prompt": "Do you remember how we handled temporal eval gating?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "setup validation",
+      "temporal"
+    ],
+    "seed_memories": [
+      {
+        "source": "codex/{project}",
+        "text": "Decision: temporal eval gating depends on setup validation, dated evidence, and user-fact filtering before any release."
+      }
+    ]
+  },
+  {
+    "case_id": "monitoring-plan-recall",
+    "agent": "claude-code",
+    "user_prompt": "What's the plan for checking whether active memory search keeps working?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "exact project",
+      "passive-risk"
+    ],
+    "seed_memories": [
+      {
+        "source": "wip/{project}",
+        "text": "Monitoring plan: review active-search metrics for required prompts, exact project searches, broad searches, and passive-risk prompts after rollout."
+      }
+    ]
+  },
+  {
+    "case_id": "cross-client-mcp-compatibility",
+    "agent": "claude-code",
+    "user_prompt": "How did we handle cross-client MCP compatibility?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "generic MCP",
+      "write smoke"
+    ],
+    "seed_memories": [
+      {
+        "source": "claude-code/{project}",
+        "text": "Compatibility decision: generic MCP clients must pass read and write smoke tests, including memory_add and memory_extract, without depending on Claude Code or Codex-specific wrappers."
+      }
+    ]
+  },
+  {
+    "case_id": "no-memory-control",
+    "agent": "claude-code",
+    "user_prompt": "What is 2 plus 2?",
+    "should_search": false,
+    "expected_source_prefixes": [],
+    "expected_answer_terms": [
+      "4"
+    ],
+    "seed_memories": []
+  }
+]

@@ -75,7 +75,7 @@ services:
       - EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS=${EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS:-2}
       - EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH=${EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH:-0}
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if 200 <= urllib.request.urlopen('http://localhost:8000/health', timeout=3).getcode() < 400 else 1)"]
+      test: ["CMD", "python", "-c", "import os,sys,urllib.request; req=urllib.request.Request('http://localhost:8000/health/ready', headers={'X-API-Key': os.environ.get('API_KEY', '')}); sys.exit(0 if 200 <= urllib.request.urlopen(req, timeout=3).getcode() < 400 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3

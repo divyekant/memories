@@ -565,7 +565,7 @@ EOF
     echo -e "  ${GREEN}[OK]${NC} Added Codex MCP config in $codex_config"
   fi
 
-  # Developer instructions (unchanged)
+  # Developer instructions
   if grep -Eq '^[[:space:]]*developer_instructions[[:space:]]*=' "$codex_config"; then
     echo -e "  ${YELLOW}[SKIP]${NC} developer_instructions already configured in $codex_config"
   else
@@ -574,11 +574,11 @@ EOF
 developer_instructions = """
 Use the Memories MCP tools as your memory layer with three responsibilities:
 
-1. READ: Run memory_search before implementation-heavy responses or clarifying questions.
+1. READ: Run memory_search before implementation-heavy responses, clarifying questions, or any turn that depends on prior decisions, prior sessions, project history, deferred work, conventions, or cross-session context. Hook-injected memories are useful hints, not a substitute for active search.
 2. WRITE: Use memory_add for single clear facts (check memory_is_novel first). Use memory_extract for rich conversations, decision changes, or deferred work updates — it handles Add/Update/Delete/Noop automatically via AUDN. For scoped keys, always pass a non-empty source on memory_extract.
 3. MAINTAIN: Use memory_delete for explicit forget requests. memory_extract handles most lifecycle updates automatically. For bulk cleanup with scoped keys, prefer prefix-based deletion patterns that stay inside authorized sources.
 
-Source prefixes: codex/{project} for decisions (or another authorized decision prefix when using scoped keys), learning/{project} for fixes, wip/{project} for deferred work.
+Source prefixes: replace {project} with the current working directory basename. Search exact project-scoped prefixes first: codex/{project}, claude-code/{project}, learning/{project}, and wip/{project}. If hook candidate pointers list a source, use that exact source_prefix. Do not use broad family prefixes like codex/, claude-code/, learning/, wip/, or unscoped search until the exact project prefixes have been tried. Use only authorized prefixes when scoped keys restrict access.
 """
 EOF
 )
