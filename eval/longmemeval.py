@@ -390,14 +390,28 @@ class LongMemEvalRunner:
             agent_response = cc_executor.run_prompt(prompt, project_dir)
             logger.debug("Agent response for Q%s: %s", qid, agent_response[:200])
 
+            retrieval_k = 50
+            search_kwargs = {
+                "query": query,
+                "k": retrieval_k,
+                "hybrid": True,
+                "source_prefix": q_prefix,
+            }
+            if question_date:
+                search_kwargs["reference_date"] = _normalize_longmemeval_date(question_date)
+            search_results = self.client.search(**search_kwargs)
+            recall = self.compute_recall_at_k(search_results, question, k=5)
+
             return {
                 "question_id": qid,
                 "category": category,
                 "question": query,
                 "expected": expected,
                 "context": agent_response,
-                "search_results": [],
+                "search_results": search_results,
                 "eval_mode": "system",
+                "recall_any_at_5": recall["recall_any"],
+                "recall_all_at_5": recall["recall_all"],
             }
         finally:
             if owns_project:

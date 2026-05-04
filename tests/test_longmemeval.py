@@ -201,6 +201,7 @@ def test_run_question_system_calls_cc_executor():
     from eval.longmemeval import LongMemEvalRunner
 
     client = MagicMock()
+    client.search.return_value = []
     runner = LongMemEvalRunner(client=client)
 
     cc_executor = MagicMock()
@@ -223,11 +224,49 @@ def test_run_question_system_calls_cc_executor():
     assert result["question_id"] == "sys1"
 
 
+def test_run_question_system_computes_diagnostic_recall():
+    """System eval should report raw retrieval R@5 alongside agent answer score."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.search.return_value = [
+        {"text": "wrong session", "source": "eval/test/qsys1/s0/c0"},
+        {"text": "answer session", "source": "eval/test/qsys1/s1/c0"},
+    ]
+    runner = LongMemEvalRunner(client=client)
+
+    cc_executor = MagicMock()
+    cc_executor.create_isolated_project.return_value = "/tmp/cc_eval_test"
+    cc_executor.run_prompt.return_value = "Business Administration"
+
+    question = {
+        "question_id": "sys1",
+        "question_type": "single-session-user",
+        "question": "What degree did I get?",
+        "answer": "Business Administration",
+        "haystack_session_ids": ["session-a", "session-b"],
+        "answer_session_ids": ["session-b"],
+    }
+    result = runner.run_question_system(question, cc_executor=cc_executor, source_prefix="eval/test")
+
+    client.search.assert_called_once_with(
+        query="What degree did I get?",
+        k=50,
+        hybrid=True,
+        source_prefix="eval/test/qsys1",
+    )
+    assert result["context"] == "Business Administration"
+    assert result["search_results"] == client.search.return_value
+    assert result["recall_any_at_5"] == 1.0
+    assert result["recall_all_at_5"] == 1.0
+
+
 def test_run_question_system_cleanup_on_error():
     """CCExecutor project should be cleaned up even if run_prompt raises."""
     from eval.longmemeval import LongMemEvalRunner
 
     client = MagicMock()
+    client.search.return_value = []
     runner = LongMemEvalRunner(client=client)
 
     cc_executor = MagicMock()
