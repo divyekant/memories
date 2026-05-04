@@ -1,5 +1,31 @@
 # Changelog
 
+## [5.4.0] - 2026-05-04
+
+### Added
+- **Enterprise eval isolation** — eval runners now validate setup before execution, require eval-scoped API keys, reject unsafe production targets by default, and record ready-before/after evidence so eval runs can prove they did not contaminate production data.
+- **Active-search behavior evals** — added realistic Codex and Claude Code eval coverage that checks required `memory_search` use, exact project source prefixes, passive-hook-only failures, unnecessary control-case searches, and whether retrieved memory affected the answer.
+- **Active-search monitoring** — hooks now emit privacy-safe local JSONL telemetry for required prompts and memory tool calls, with `scripts/active_search_metrics.py` summarizing follow-up rate, passive-risk prompts, exact project searches, and broad/unscoped searches.
+- **Temporal evidence surfaces** — added `memory_evidence` and `memory_timeline` support for evidence packets, source/date trails, reference dates, chronological user-fact evidence, and compact MCP retrieval flows.
+- **Generic MCP smoke coverage** — added read and write smoke tests for generic MCP clients, including `memory_search`, `memory_get`, `memory_evidence`, `memory_timeline`, `memory_add`, and `memory_extract`.
+- **Enterprise audit artifacts** — added the 30-day session audit, active-search monitoring guide, and PR review closure matrix under `docs/`.
+
+### Changed
+- Hook recall/search behavior now prefers exact project-scoped prefixes across Claude Code, Codex, learning, and WIP sources before broad family prefixes or unscoped fallback.
+- UserPromptSubmit search fan-out now runs unscoped, scoped, and intent-biased searches concurrently, with active-search hook timeout raised to 10 seconds.
+- SessionStart guidance now requires active memory search only for prior-work/project-context prompts and explicitly skips self-contained prompts such as arithmetic, translation, formatting, or generic facts.
+- Evidence packets now expose honest `older_evidence`, separate dated evidence when the current candidate is undated, prefer dated recency for latest/current queries, and de-duplicate follow-up queries.
+- `memory_timeline` query expansion now preserves the original query, includes generic user-confirmed dated-event evidence, accepts cleaned extracted memories for `user_facts_only`, and sorts undated evidence as an explicit unknown-date group.
+
+### Fixed
+- Closed the active-search `memory_get` bypass by removing candidate memory IDs from active-search-required hook context and keeping `memory_get` non-compliant in the eval scorer.
+- Fixed active-search scorer brittleness around passive-hook-only detection, empty expected answer terms, Codex tool-name parsing, and unnecessary memory searches in control cases.
+- Fixed active-search metrics over-crediting by matching each memory search to at most one prompt, and made telemetry write failures visible in the hook log.
+- Fixed eval contamination risks by stripping model-provider credentials from Codex and Claude Code eval subprocess environments and failing loudly when required MCP config is missing.
+- Fixed LongMemEval retry accounting and single-mode isolation by recording retry metadata, resetting owned temp projects before retry, and cleaning them after completion.
+- Fixed setup validation gaps around unknown judge providers and configurable local production ports.
+- Replaced bash 4 indirect expansion in hook YAML parsing with `printenv` for macOS bash compatibility.
+
 ## [5.3.0] - 2026-04-11
 
 ### Added

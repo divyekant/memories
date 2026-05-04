@@ -141,7 +141,7 @@ async function memoriesRequest(reqPath, options = {}, op = "search") {
 
 const server = new McpServer({
   name: "memories",
-  version: "5.0.1",
+  version: "5.4.0",
 });
 
 // -- Tools -------------------------------------------------------------------
