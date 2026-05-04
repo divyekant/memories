@@ -14,6 +14,8 @@ else
   _rotate_log() { :; }; _health_check() { return 0; }
 fi
 
+_exit_if_disabled 2>/dev/null || true
+
 INPUT=$(cat)
 FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 

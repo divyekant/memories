@@ -14,6 +14,7 @@ from eval.reporter import save_report, format_summary
 from eval.memories_client import MemoriesClient
 from eval.cc_executor import CCExecutor
 from eval.judge import LLMJudge
+from eval.setup_validation import validate_eval_setup
 
 logger = logging.getLogger("eval")
 
@@ -40,7 +41,13 @@ def main():
     # Override with env vars
     config_data["memories_url"] = os.getenv("MEMORIES_URL") or config_data.get("memories_url", "")
     config_data["memories_api_key"] = os.getenv("MEMORIES_API_KEY") or config_data.get("memories_api_key", "")
-    mcp_server_path = os.getenv("EVAL_MCP_SERVER_PATH") or config_data.pop("mcp_server_path", "")
+    configured_mcp_path = config_data.pop("mcp_server_path", "")
+    default_mcp_path = os.path.abspath("mcp-server/index.js")
+    mcp_server_path = (
+        os.getenv("EVAL_MCP_SERVER_PATH")
+        or configured_mcp_path
+        or (default_mcp_path if os.path.exists(default_mcp_path) else "")
+    )
     config = EvalConfig(**config_data)
 
     # Load scenarios
@@ -53,6 +60,18 @@ def main():
         sys.exit(1)
 
     logger.info("Loaded %d scenarios", len(scenarios))
+
+    setup_report = validate_eval_setup(
+        memories_url=config.memories_url,
+        mcp_server_path=mcp_server_path,
+        allow_unsafe_target=os.getenv("EVAL_ALLOW_UNSAFE_TARGET") == "1",
+    )
+    for message in setup_report.warnings:
+        logger.warning(message)
+    if not setup_report.ok:
+        for message in setup_report.errors:
+            logger.error(message)
+        sys.exit(2)
 
     # Build dependencies
     memories = MemoriesClient(url=config.memories_url, api_key=config.memories_api_key)

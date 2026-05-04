@@ -21,7 +21,7 @@ def eval_group():
 @click.option("--compare", default=None, help="Previous results file for regression delta")
 @click.option("--questions", default=0, type=int, help="Limit to N questions (0=all)")
 @click.option("--k", default=5, help="Number of search results per question")
-@click.option("--url", default="http://localhost:8900", help="Memories service URL")
+@click.option("--url", default="http://localhost:8901", help="Memories service URL")
 @click.option("--api-key", default="", help="API key")
 @click.option("--mode", type=click.Choice(["tool", "system"]), default="tool",
               help="Eval mode: 'tool' = raw API search, 'system' = agent + MCP tools")
@@ -30,6 +30,7 @@ def longmemeval(judge_provider, judge_model, output, compare, questions, k, url,
     import os
     from eval.memories_client import MemoriesClient
     from eval.longmemeval import LongMemEvalRunner
+    from eval.setup_validation import validate_eval_setup
     try:
         from dotenv import load_dotenv
         load_dotenv()
@@ -37,7 +38,22 @@ def longmemeval(judge_provider, judge_model, output, compare, questions, k, url,
         pass
 
     api_key = api_key or os.getenv("MEMORIES_API_KEY", "")
-    url = os.getenv("MEMORIES_URL", url)
+    url = os.getenv("EVAL_MEMORIES_URL") or os.getenv("MEMORIES_URL") or url
+    mcp_server_path = os.getenv(
+        "EVAL_MCP_SERVER_PATH",
+        str(Path(__file__).parent.parent.parent / "mcp-server" / "index.js"),
+    )
+    setup_report = validate_eval_setup(
+        memories_url=url,
+        mcp_server_path=mcp_server_path,
+        require_mcp=mode == "system",
+        require_claude=mode == "system",
+        allow_unsafe_target=os.getenv("EVAL_ALLOW_UNSAFE_TARGET") == "1",
+    )
+    for message in setup_report.warnings:
+        click.echo(f"WARN: {message}", err=True)
+    if not setup_report.ok:
+        raise click.ClickException("; ".join(setup_report.errors))
 
     client = MemoriesClient(url=url, api_key=api_key)
     runner = LongMemEvalRunner(client=client, judge_provider=judge_provider, judge_model=judge_model)
@@ -60,10 +76,6 @@ def longmemeval(judge_provider, judge_model, output, compare, questions, k, url,
     cc_executor = None
     if mode == "system":
         from eval.cc_executor import CCExecutor
-        mcp_server_path = os.getenv(
-            "EVAL_MCP_SERVER_PATH",
-            str(Path(__file__).parent.parent.parent / "mcp-server" / "index.js"),
-        )
         cc_executor = CCExecutor(
             timeout=120,
             memories_url=url,

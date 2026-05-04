@@ -273,6 +273,7 @@ The `eval/` package provides a benchmark framework to measure how much Memories 
 
 ```text
 eval/__main__.py (CLI) / eval/run.sh (wrapper)
+  -> setup_validation.py                         — reject unsafe targets before eval work
   -> EvalRunner (runner.py)
      -> CCExecutor.cleanup_stale_auto_memory()  — purge prior run artifacts
      -> MemoriesClient (memories_client.py)      — seed/clear test memories
@@ -297,11 +298,12 @@ eval/__main__.py (CLI) / eval/run.sh (wrapper)
 
 ### Isolation strategy
 
-Isolation operates at three levels:
+Isolation operates at four levels:
 
-1. **MCP isolation** — `--strict-mcp-config` ensures Claude loads **only** the provided MCP config, ignoring global `~/.claude/settings.json` and project `.mcp.json` files
-2. **Project isolation** — Fresh temp directory per run with no CLAUDE.md, no `.claude/`, no conversation history
-3. **Auto-memory cleanup** — `cleanup_stale_auto_memory()` removes `~/.claude/projects/` dirs matching `cc_eval` or `cc-eval` (Claude Code mangles underscores to hyphens in path names)
+1. **Setup validation** — `eval.setup_validation` rejects the normal local production target (`localhost:8900`) by default, requires an existing MCP server path, and the wrapper requires `/health/ready` before scenario execution
+2. **MCP isolation** — `--strict-mcp-config` ensures Claude loads **only** the provided MCP config, ignoring global `~/.claude/settings.json` and project `.mcp.json` files
+3. **Project isolation** — Fresh temp directory per run with no CLAUDE.md, no `.claude/`, no conversation history
+4. **Hook isolation and cleanup** — `CCExecutor` writes an eval-scoped hook env file that points with-memory runs at the eval backend and sets `MEMORIES_DISABLED=1` for without-memory runs; `cleanup_stale_auto_memory()` removes `~/.claude/projects/` dirs matching `cc_eval` or `cc-eval` (Claude Code mangles underscores to hyphens in path names)
 
 ### Scenario design
 

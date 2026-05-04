@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from eval.memories_client import MemoriesClient
+from eval.setup_validation import DEFAULT_EVAL_MEMORIES_URL, resolve_eval_memories_url, validate_eval_setup
 
 
 def load_scenarios(scenarios_dir: str = "eval/scenarios") -> list[dict]:
@@ -123,9 +124,19 @@ def run_eval(extraction_model: str = "", output_path: str = ""):
     except ImportError:
         pass
 
-    url = os.environ.get("MEMORIES_URL", "http://localhost:8901")
+    url = resolve_eval_memories_url(DEFAULT_EVAL_MEMORIES_URL)
     api_key = os.environ.get("MEMORIES_API_KEY", "god-is-an-astronaut")
     mcp_server_path = str(Path(__file__).parent.parent / "mcp-server" / "index.js")
+    setup_report = validate_eval_setup(
+        memories_url=url,
+        mcp_server_path=mcp_server_path,
+        require_claude=True,
+        allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",
+    )
+    if not setup_report.ok:
+        for message in setup_report.errors:
+            print(f"ERROR: {message}")
+        sys.exit(2)
 
     client = MemoriesClient(url=url, api_key=api_key)
     if not client.health_check():

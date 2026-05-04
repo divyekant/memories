@@ -19,6 +19,8 @@ else
   _default_extract_source() { echo 'codex/{project}'; }
 fi
 
+_exit_if_disabled 2>/dev/null || true
+
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 

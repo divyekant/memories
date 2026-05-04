@@ -20,6 +20,8 @@ else
   _default_source_prefixes() { echo 'claude-code/{project},learning/{project},wip/{project}'; }
 fi
 
+_exit_if_disabled 2>/dev/null || true
+
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 MEMORIES_SOURCE_PREFIXES="${MEMORIES_SOURCE_PREFIXES:-}"

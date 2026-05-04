@@ -127,7 +127,7 @@ class TestRunSingleScenario:
 
 class TestMemoriesInteraction:
     def test_clears_memories_before_each_run(self, scenario, mock_deps, config):
-        """memories.clear_by_prefix should be called before each phase."""
+        """memories.clear_by_prefix should bracket phases and clean after the scenario."""
         memories, executor, judge = mock_deps
         runner = EvalRunner(
             config=config,
@@ -138,8 +138,8 @@ class TestMemoriesInteraction:
 
         runner.run_scenario(scenario)
 
-        # Called at least twice: before without-memory run and before with-memory run
-        assert memories.clear_by_prefix.call_count >= 2
+        # Called before each phase and once more in final cleanup.
+        assert memories.clear_by_prefix.call_count >= 3
         memories.clear_by_prefix.assert_any_call("eval/")
 
     def test_seeds_memories_for_with_run(self, scenario, mock_deps, config):

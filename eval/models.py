@@ -41,7 +41,7 @@ class Scenario(BaseModel):
 
 
 class EvalConfig(BaseModel):
-    memories_url: str = "http://localhost:8900"
+    memories_url: str = "http://localhost:8901"
     memories_api_key: str = ""
     judge_provider: str = "anthropic"
     cc_timeout: int = 120

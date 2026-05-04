@@ -18,6 +18,8 @@ else
   _default_source_prefixes() { echo 'codex/{project},learning/{project},wip/{project}'; }
 fi
 
+_exit_if_disabled 2>/dev/null || true
+
 # Rotate log on session start
 _rotate_log
 

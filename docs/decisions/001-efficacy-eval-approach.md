@@ -25,11 +25,13 @@ The difference in scores (efficacy delta) quantifies the value Memories adds.
 
 2. **Full project isolation** — Each run uses a fresh temp directory with no CLAUDE.md, no `.claude/`, and no conversation history to prevent contamination.
 
-3. **Fictional project context** — Scenarios use project-specific, non-generalizable facts (e.g., fictional "Voltis" project with team decisions) to avoid confounds from Claude's training data.
+3. **Fail-closed setup validation** — Eval entrypoints reject the normal local production service (`localhost:8900`), require an explicit MCP server path, and require the eval service readiness check before scenario execution.
 
-4. **Deterministic + LLM-judged rubrics** — Simple checks (string contains, no retry questions) scored programmatically; complex quality judgments delegated to LLM-as-judge.
+4. **Fictional project context** — Scenarios use project-specific, non-generalizable facts (e.g., fictional "Voltis" project with team decisions) to avoid confounds from Claude's training data.
 
-5. **Category-weighted aggregation** — coding (40%), recall (35%), compounding (25%) with renormalization for present categories.
+5. **Deterministic + LLM-judged rubrics** — Simple checks (string contains, no retry questions) scored programmatically; complex quality judgments delegated to LLM-as-judge.
+
+6. **Category-weighted aggregation** — coding (40%), recall (35%), compounding (25%) with renormalization for present categories.
 
 ## Alternatives Considered
 

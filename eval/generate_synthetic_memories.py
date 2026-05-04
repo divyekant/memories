@@ -19,12 +19,24 @@ import sys
 import time
 from pathlib import Path
 
+from eval.setup_validation import DEFAULT_EVAL_MEMORIES_URL, resolve_eval_memories_url, validate_eval_setup
+
 PREFIX = "eval/graph/synth"
 
 
 def _client():
-    url = os.environ.get("MEMORIES_URL", "http://localhost:8900")
+    url = resolve_eval_memories_url(DEFAULT_EVAL_MEMORIES_URL)
     key = os.environ.get("MEMORIES_API_KEY", "")
+    setup_report = validate_eval_setup(
+        memories_url=url,
+        require_mcp=False,
+        require_claude=False,
+        allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",
+    )
+    if not setup_report.ok:
+        for message in setup_report.errors:
+            print(f"ERROR: {message}", file=sys.stderr)
+        sys.exit(2)
     return httpx.Client(base_url=url, headers={"X-API-Key": key, "Content-Type": "application/json"}, timeout=30)
 
 
@@ -400,8 +412,9 @@ def main():
 
     # Health check
     try:
-        r = client.get("/health")
-        print(f"Connected: {r.json().get('version', '?')}")
+        r = client.get("/health/ready")
+        r.raise_for_status()
+        print("Connected: ready")
     except Exception as e:
         print(f"ERROR: {e}")
         sys.exit(1)

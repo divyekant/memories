@@ -102,6 +102,52 @@ class TestStrictMcpConfig:
         finally:
             executor.cleanup_project(project_dir)
 
+    @patch("eval.cc_executor.subprocess.run")
+    def test_without_memory_disables_global_memory_hooks(self, mock_run):
+        """Without-memory eval runs must not let global hooks recall or write memories."""
+        mock_run.return_value = MagicMock(stdout="response")
+        executor = CCExecutor(
+            memories_url="http://localhost:8901",
+            memories_api_key="eval-key",
+            mcp_server_path="/path/to/mcp/server.js",
+        )
+        project_dir = executor.create_isolated_project(with_memories=False)
+        try:
+            executor.run_prompt("test", project_dir)
+            env = mock_run.call_args.kwargs["env"]
+            assert env["MEMORIES_DISABLED"] == "1"
+            assert env["MEMORIES_URL"] == "http://localhost:8901"
+            assert env["MEMORIES_API_KEY"] == "eval-key"
+            assert env["MEMORIES_BACKENDS_FILE"] == "__eval_single_backend__"
+            assert env["MEMORIES_ENV_FILE"].startswith(project_dir)
+            assert os.path.exists(env["MEMORIES_ENV_FILE"])
+        finally:
+            executor.cleanup_project(project_dir)
+
+    @patch("eval.cc_executor.subprocess.run")
+    def test_with_memory_forces_hooks_to_eval_backend(self, mock_run):
+        """With-memory eval runs may use hooks, but only against the eval backend."""
+        mock_run.return_value = MagicMock(stdout="response")
+        executor = CCExecutor(
+            memories_url="http://localhost:8901",
+            memories_api_key="eval-key",
+            mcp_server_path="/path/to/mcp/server.js",
+        )
+        project_dir = executor.create_isolated_project(with_memories=True)
+        try:
+            executor.run_prompt("test", project_dir)
+            env = mock_run.call_args.kwargs["env"]
+            assert env["MEMORIES_DISABLED"] == "0"
+            assert env["MEMORIES_URL"] == "http://localhost:8901"
+            assert env["MEMORIES_API_KEY"] == "eval-key"
+            assert env["MEMORIES_BACKENDS_FILE"] == "__eval_single_backend__"
+            assert env["MEMORIES_ENV_FILE"].startswith(project_dir)
+            env_text = open(env["MEMORIES_ENV_FILE"]).read()
+            assert "MEMORIES_URL=http://localhost:8901" in env_text
+            assert "MEMORIES_DISABLED=0" in env_text
+        finally:
+            executor.cleanup_project(project_dir)
+
 
 class TestRunPrompt:
     @patch("eval.cc_executor.subprocess.run")

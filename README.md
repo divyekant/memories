@@ -1424,8 +1424,13 @@ Memories includes a built-in eval harness that measures how much Memories improv
 # Start the isolated eval stack in OrbStack/Docker
 docker compose -f docker-compose.eval.yml up -d --build
 
-# Verify the eval instance is healthy (separate from the main service on :8900)
-curl http://localhost:8901/health
+# Verify the eval instance is ready (separate from the main service on :8900)
+curl -H "X-API-Key: ${MEMORIES_API_KEY}" http://localhost:8901/health/ready
+
+# Vet static isolation before a direct Python run
+python -m eval.setup_validation \
+  --memories-url http://localhost:8901 \
+  --mcp-server-path "$(pwd)/mcp-server/index.js"
 
 # Run all scenarios (via wrapper script)
 ./eval/run.sh
@@ -1440,7 +1445,7 @@ python -m eval --category coding
 python -m eval --scenario coding-001 -v
 ```
 
-The eval defaults target `http://localhost:8901`, which is the isolated instance from [`docker-compose.eval.yml`](/Users/dk/projects/memories/docker-compose.eval.yml). `./eval/run.sh` intentionally ignores your normal `MEMORIES_URL` from `~/.config/memories/env` so it does not accidentally hit the main service. Override the wrapper with `EVAL_MEMORIES_URL=http://host:port ./eval/run.sh ...`, or use `MEMORIES_URL=http://host:port python -m eval ...` for direct Python runs.
+The eval defaults target `http://localhost:8901`, which is the isolated instance from [`docker-compose.eval.yml`](/Users/dk/projects/memories/docker-compose.eval.yml). `./eval/run.sh` intentionally ignores your normal `MEMORIES_URL` from `~/.config/memories/env` so it does not accidentally hit the main service. The wrapper and direct Python entrypoint both run setup validation first: `localhost:8900` is rejected by default, the MCP server path must exist, and the eval service must pass `/health/ready` before scenarios run. Override the wrapper with `EVAL_MEMORIES_URL=http://host:port ./eval/run.sh ...`, or use `MEMORIES_URL=http://host:port EVAL_MCP_SERVER_PATH=/path/to/index.js python -m eval ...` for direct Python runs.
 
 ### Results
 
@@ -1469,6 +1474,7 @@ The eval defaults target `http://localhost:8901`, which is the isolated instance
 ### Isolation strategy
 - `--strict-mcp-config` ensures Claude loads **only** the MCP config provided (or none), ignoring global settings
 - Fresh temp directories per run — no CLAUDE.md, no `.claude/`, no conversation history
+- Eval hook env forces global Memories hooks to the eval backend during with-memory runs and disables them during without-memory runs
 - Auto-memory cleanup removes `~/.claude/projects/cc_eval*` dirs at startup and after each run
 - Scenario memories cleared before each run via Memories API
 

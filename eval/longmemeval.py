@@ -315,13 +315,15 @@ class LongMemEvalRunner:
         raw_date = question.get("question_date", "")
         if raw_date:
             ref_date = _normalize_longmemeval_date(raw_date)
-        search_results = self.client.search(
-            query=query,
-            k=retrieval_k,
-            hybrid=True,
-            source_prefix=self._question_prefix(question, source_prefix),
-            reference_date=ref_date,
-        )
+        search_kwargs = {
+            "query": query,
+            "k": retrieval_k,
+            "hybrid": True,
+            "source_prefix": self._question_prefix(question, source_prefix),
+        }
+        if ref_date is not None:
+            search_kwargs["reference_date"] = ref_date
+        search_results = self.client.search(**search_kwargs)
         context = "\n".join(
             r.get("text", "") for r in search_results[: self.DEFAULT_CONTEXT_RESULTS]
         )

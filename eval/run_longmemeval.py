@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from eval.longmemeval import LongMemEvalRunner
 from eval.memories_client import MemoriesClient
+from eval.setup_validation import DEFAULT_EVAL_MEMORIES_URL, resolve_eval_memories_url, validate_eval_setup
 
 # Thread-local storage for per-thread MemoriesClient instances.
 # httpx.Client is not thread-safe — each worker needs its own.
@@ -158,8 +159,23 @@ def _process_question(
 
 def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "tool", workers: int = 1, agent_model: str = ""):
     _load_local_env()
-    url = os.environ.get("MEMORIES_URL", "http://localhost:8900")
+    url = resolve_eval_memories_url(DEFAULT_EVAL_MEMORIES_URL)
     api_key = os.environ.get("MEMORIES_API_KEY", "")
+    mcp_server_path = os.environ.get(
+        "EVAL_MCP_SERVER_PATH",
+        str(Path(__file__).parent.parent / "mcp-server" / "index.js"),
+    )
+    setup_report = validate_eval_setup(
+        memories_url=url,
+        mcp_server_path=mcp_server_path,
+        require_mcp=mode == "system",
+        require_claude=mode == "system",
+        allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",
+    )
+    if not setup_report.ok:
+        for message in setup_report.errors:
+            _log(f"ERROR: {message}")
+        sys.exit(2)
 
     client = MemoriesClient(url=url, api_key=api_key)
     if not client.health_check():
@@ -192,10 +208,6 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     project_queue = None
     if mode == "system":
         from eval.cc_executor import CCExecutor
-        mcp_server_path = os.environ.get(
-            "EVAL_MCP_SERVER_PATH",
-            str(Path(__file__).parent.parent / "mcp-server" / "index.js"),
-        )
         cc_executor = CCExecutor(
             timeout=120,
             memories_url=url,

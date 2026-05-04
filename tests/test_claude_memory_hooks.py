@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "claude-code" / "hooks"
+CODEX_HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "codex" / "hooks"
 QUERY_SCRIPT = HOOKS_DIR / "memory-query.sh"
 RECALL_SCRIPT = HOOKS_DIR / "memory-recall.sh"
 EXTRACT_SCRIPT = HOOKS_DIR / "memory-extract.sh"
@@ -690,3 +691,37 @@ def test_dual_search_strategy_unscoped_and_prefix_scoped(tmp_path: Path) -> None
     # Should NOT have learning/ or wip/ scoped searches (those were the old prefix-iteration approach)
     assert not any(p.startswith("learning/") for p in prefixes), f"Should not search learning/ prefix: {prefixes}"
     assert not any(p.startswith("wip/") for p in prefixes), f"Should not search wip/ prefix: {prefixes}"
+
+
+def test_memory_hooks_honor_disabled_flag(tmp_path: Path) -> None:
+    """MEMORIES_DISABLED lets eval and sandboxed agents suppress global hooks."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "What should I remember?"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_DISABLED": "1"},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""
+
+
+def test_codex_memory_hooks_honor_disabled_flag(tmp_path: Path) -> None:
+    """Codex hooks must also suppress global recall when eval disables memories."""
+    payload = {"cwd": "/Users/example/memories", "source": "startup"}
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_DISABLED": "1"},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""

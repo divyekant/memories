@@ -14,6 +14,8 @@ else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
 fi
 
+_exit_if_disabled 2>/dev/null || true
+
 INPUT=$(cat)
 TOOL=$(echo "$INPUT" | jq -r '.tool_name // "unknown"')
 USAGE_LOG="${MEMORIES_TOOL_LOG:-$HOME/.config/memories/tool-usage.log}"

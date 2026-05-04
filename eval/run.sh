@@ -28,10 +28,23 @@ if [[ ! -x "$PYTHON" ]]; then
   exit 1
 fi
 
-# Check Memories service
-EVAL_HEALTH_URL="${MEMORIES_URL%/}/health"
-if ! curl -sf "$EVAL_HEALTH_URL" > /dev/null 2>&1; then
-  echo "Error: Memories service not reachable at ${MEMORIES_URL}" >&2
+# Validate static isolation before touching the service or launching Claude.
+VALIDATE_ARGS=(
+  --memories-url "$MEMORIES_URL"
+  --mcp-server-path "${EVAL_MCP_SERVER_PATH:-}"
+)
+if [[ "${EVAL_ALLOW_UNSAFE_TARGET:-}" == "1" ]]; then
+  VALIDATE_ARGS+=(--allow-unsafe-target)
+fi
+"$PYTHON" -m eval.setup_validation "${VALIDATE_ARGS[@]}"
+
+# Check Memories service readiness. /health can be OK while Qdrant and
+# metadata are out of sync, so the eval wrapper requires /health/ready.
+EVAL_READY_URL="${MEMORIES_URL%/}/health/ready"
+if ! curl -sf -H "X-API-Key: ${MEMORIES_API_KEY}" "$EVAL_READY_URL" > /dev/null 2>&1; then
+  echo "Error: Memories eval service is not ready at ${MEMORIES_URL}" >&2
+  curl -s -H "X-API-Key: ${MEMORIES_API_KEY}" "$EVAL_READY_URL" >&2 || true
+  echo "" >&2
   exit 1
 fi
 
@@ -42,7 +55,7 @@ if ! command -v claude > /dev/null 2>&1; then
 fi
 
 echo "=== Memories Efficacy Eval ==="
-echo "Memories: ${MEMORIES_URL} (healthy)"
+echo "Memories: ${MEMORIES_URL} (ready)"
 if [[ -n "${MEMORIES_API_KEY:-}" ]]; then echo "API Key:  [set]"; else echo "API Key:  NOT SET"; fi
 echo "MCP Path: ${EVAL_MCP_SERVER_PATH:-not set}"
 echo "Args:     $*"

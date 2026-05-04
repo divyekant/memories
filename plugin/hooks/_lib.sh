@@ -15,6 +15,20 @@ _log_info() { _log "INFO" "$1"; }
 _log_error() { _log "ERROR" "$1"; }
 _log_warn() { _log "WARN" "$1"; }
 
+_memories_disabled() {
+  case "${MEMORIES_DISABLED:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_exit_if_disabled() {
+  if _memories_disabled; then
+    _log_info "Hook disabled by MEMORIES_DISABLED"
+    exit 0
+  fi
+}
+
 # Rotate log if over 1000 lines (called from SessionStart only)
 _rotate_log() {
   if [ -f "$MEMORIES_LOG" ] && [ "$(wc -l < "$MEMORIES_LOG" 2>/dev/null)" -gt 1000 ]; then

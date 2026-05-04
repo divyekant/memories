@@ -23,6 +23,8 @@ else
   _default_source_prefixes() { echo 'claude-code/{project},learning/{project},wip/{project}'; }
 fi
 
+_exit_if_disabled 2>/dev/null || true
+
 INPUT=$(cat)
 
 # Extract compact summary

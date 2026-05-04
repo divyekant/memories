@@ -10,7 +10,7 @@ class MemoriesClient:
 
     MAX_BATCH_MEMORIES = 1000
 
-    def __init__(self, url: str = "http://localhost:8900", api_key: str = "") -> None:
+    def __init__(self, url: str = "http://localhost:8901", api_key: str = "") -> None:
         self._client = httpx.Client(
             base_url=url,
             headers={"X-API-Key": api_key},

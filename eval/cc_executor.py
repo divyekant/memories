@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import shutil
+import shlex
 import subprocess
 import tempfile
 
@@ -16,7 +17,7 @@ class CCExecutor:
     def __init__(
         self,
         timeout: int = 120,
-        memories_url: str = "http://localhost:8900",
+        memories_url: str = "http://localhost:8901",
         memories_api_key: str = "",
         mcp_server_path: str = "",
         model: str = "",
@@ -64,6 +65,22 @@ class CCExecutor:
         """Remove temp project dir and its Claude Code auto-memory."""
         shutil.rmtree(project_dir, ignore_errors=True)
         self._cleanup_auto_memory(project_dir)
+
+    def _write_hook_env_file(self, project_dir: str, with_memories: bool) -> str:
+        """Write an eval-scoped env file for global hooks that may still fire."""
+        env_path = os.path.join(project_dir, ".memories-eval-env")
+        values = {
+            "MEMORIES_URL": self.memories_url,
+            "MEMORIES_API_KEY": self.memories_api_key,
+            "MEMORIES_BACKENDS_FILE": "__eval_single_backend__",
+            "MEMORIES_DISABLED": "0" if with_memories else "1",
+            "MEMORIES_LOG": os.path.join(project_dir, ".memories-hook.log"),
+        }
+        with open(env_path, "w") as f:
+            for key, value in values.items():
+                f.write(f"export {key}={shlex.quote(str(value))}\n")
+        os.chmod(env_path, 0o600)
+        return env_path
 
     def reset_project(self, project_dir: str) -> None:
         """Scrub Claude Code auto-memory for a reusable project dir.
@@ -122,8 +139,10 @@ class CCExecutor:
         mcp_path = os.path.join(project_dir, ".mcp.json")
         if os.path.exists(mcp_path):
             mcp_arg = mcp_path
+            with_memories = True
         else:
             mcp_arg = json.dumps({"mcpServers": {}})
+            with_memories = False
 
         cmd = [
             "claude",
@@ -143,6 +162,13 @@ class CCExecutor:
         home = os.environ.get("HOME", "")
         env["PATH"] = os.environ.get("PATH", f"{home}/.local/bin:/usr/local/bin:/usr/bin:/bin")
         env["HOME"] = home
+        hook_env_file = self._write_hook_env_file(project_dir, with_memories=with_memories)
+        env["MEMORIES_URL"] = self.memories_url
+        env["MEMORIES_API_KEY"] = self.memories_api_key
+        env["MEMORIES_BACKENDS_FILE"] = "__eval_single_backend__"
+        env["MEMORIES_ENV_FILE"] = hook_env_file
+        env["MEMORIES_LOG"] = os.path.join(project_dir, ".memories-hook.log")
+        env["MEMORIES_DISABLED"] = "0" if with_memories else "1"
         try:
             result = subprocess.run(
                 cmd,
