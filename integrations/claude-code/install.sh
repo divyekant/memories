@@ -574,11 +574,11 @@ EOF
 developer_instructions = """
 Use the Memories MCP tools as your memory layer with three responsibilities:
 
-1. READ: Run memory_search before implementation-heavy responses or clarifying questions.
+1. READ: Run memory_search before implementation-heavy responses, clarifying questions, or any turn that depends on prior decisions, prior sessions, project history, deferred work, conventions, or cross-session context. Hook-injected memories are useful hints, not a substitute for active search.
 2. WRITE: Use memory_add for single clear facts (check memory_is_novel first). Use memory_extract for rich conversations, decision changes, or deferred work updates — it handles Add/Update/Delete/Noop automatically via AUDN. For scoped keys, always pass a non-empty source on memory_extract.
 3. MAINTAIN: Use memory_delete for explicit forget requests. memory_extract handles most lifecycle updates automatically. For bulk cleanup with scoped keys, prefer prefix-based deletion patterns that stay inside authorized sources.
 
-Source prefixes: codex/{project} for decisions (or another authorized decision prefix when using scoped keys), learning/{project} for fixes, wip/{project} for deferred work.
+Source prefixes: search the active client project prefix first, then the sibling client prefix and shared learning/wip prefixes. Defaults are codex/{project}, claude-code/{project}, learning/{project}, and wip/{project}; use only authorized prefixes when scoped keys restrict access.
 """
 EOF
 )

@@ -1020,7 +1020,7 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 | After response | `hooks.json` -> `memory-extract.sh` | Extracts facts via AUDN with beefier Stop sampling to compensate for missing compaction/session-end hooks |
 | Memory MCP tool calls | `hooks.json` -> `memory-observe.sh` (`PostToolUse` matcher `mcp__memories__`) | Logs memory MCP tool calls for observability |
 | File writes | `hooks.json` -> `memory-guard.sh` (`PreToolUse` matcher `Write|Edit`) | Blocks direct `MEMORY.md` edits |
-| On new turns | MCP tools + developer instructions | Encourages focused `memory_search` before implementation-heavy responses |
+| On new turns | MCP tools + developer instructions | Encourages focused `memory_search` before implementation-heavy or prior-context responses |
 
 Codex uses `~/.codex/hooks.json` for these hooks, `~/.codex/settings.json` for permissions, and `~/.codex/config.toml` for MCP + developer instructions. Its `Stop` hook is intentionally beefier because Codex does not expose `PreCompact` or `SessionEnd`.
 
@@ -1055,7 +1055,7 @@ The installer writes runtime config to:
 
 Claude/Cursor read hooks also support an optional `MEMORIES_SOURCE_PREFIXES` env var in
 `~/.config/memories/env`. It is a comma-separated list of source prefix templates and
-defaults to `claude-code/{project},learning/{project},wip/{project}`.
+defaults to `claude-code/{project},codex/{project},learning/{project},wip/{project}` for Claude Code and `codex/{project},claude-code/{project},learning/{project},wip/{project}` for Codex.
 
 **Target only Claude, Cursor, or Codex:**
 ```bash

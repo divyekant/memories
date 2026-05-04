@@ -1,0 +1,79 @@
+[
+  {
+    "case_id": "cross-client-prior-decision",
+    "agent": "claude-code",
+    "user_prompt": "Did we already decide how active-search evals should be gated before release?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "setup validation",
+      "production"
+    ],
+    "seed_memories": [
+      {
+        "source": "codex/{project}",
+        "text": "Decision: active-search evals are release-gated by setup validation, tool-trace evidence, cleanup proof, and a hard prohibition on production data writes."
+      }
+    ]
+  },
+  {
+    "case_id": "deferred-work-recall",
+    "agent": "claude-code",
+    "user_prompt": "Where did we leave the generic MCP client work?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "write smoke",
+      "memory_extract"
+    ],
+    "seed_memories": [
+      {
+        "source": "wip/{project}",
+        "text": "Deferred work: generic MCP readiness still needs an isolated write smoke that exercises memory_add and memory_extract without touching production."
+      }
+    ]
+  },
+  {
+    "case_id": "prior-fix-recall",
+    "agent": "claude-code",
+    "user_prompt": "What was the last fix for temporal memory answers?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "memory_timeline",
+      "user_facts_only"
+    ],
+    "seed_memories": [
+      {
+        "source": "learning/{project}",
+        "text": "Temporal answer fix: use memory_timeline with user_facts_only=true so agents reason over dated user-confirmed events instead of assistant-authored plans."
+      }
+    ]
+  },
+  {
+    "case_id": "no-memory-control",
+    "agent": "claude-code",
+    "user_prompt": "What is 2 plus 2?",
+    "should_search": false,
+    "expected_source_prefixes": [],
+    "expected_answer_terms": [
+      "4"
+    ],
+    "seed_memories": []
+  }
+]

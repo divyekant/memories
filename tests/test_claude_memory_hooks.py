@@ -169,6 +169,11 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
         },
         {
             "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
             "source_prefix": "",
             "response": {
                 "results": [
@@ -198,6 +203,9 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
     # Dual strategy: both scoped and unscoped results appear
     assert "Notification design is deferred until rate limiting is settled." in ctx
     assert "## Retrieved Memories" in ctx
+    assert "MANDATORY FIRST ACTION" in ctx
+    assert "MUST call memory_search" in ctx
+    assert "not a substitute for active search" in ctx
     assert "## Follow-up Response Hint" in ctx
     assert "Search memories for the new topic" in ctx
     # Verify dual search: at least one scoped AND at least one unscoped
@@ -205,9 +213,54 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     assert any(p == "" for p in prefixes), f"Expected unscoped search, got: {prefixes}"
     assert any(p == "claude-code/memories" for p in prefixes), f"Expected scoped search, got: {prefixes}"
+    assert any(p == "codex/memories" for p in prefixes), f"Expected cross-client scoped search, got: {prefixes}"
     # Transcript context identifiers should appear in query (BillingService from transcript)
     assert any("BillingService" in call["body"]["query"] for call in search_calls), \
         f"Expected transcript identifier in query, queries were: {[c['body']['query'][:80] for c in search_calls]}"
+
+
+def test_memory_query_redacts_details_for_active_search_required_prompts(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 42,
+                        "source": "codex/memories",
+                        "text": "Decision: release is gated by setup validation and production write isolation.",
+                        "similarity": 0.91,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "Did we already decide how release should be gated?",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "MUST call memory_search" in ctx
+    assert "candidate memory id=42" in ctx
+    assert "setup validation and production write isolation" not in ctx
 
 
 def test_memory_query_falls_back_to_global_search_when_scoped_is_empty(tmp_path: Path) -> None:
@@ -399,6 +452,21 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
         },
         {
             "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 4,
+                        "source": "codex/memories",
+                        "text": "Codex had relevant prior project context for this repository.",
+                        "similarity": 0.85,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+        {
+            "url_suffix": "/search",
             "source_prefix": "learning/memories",
             "response": {
                 "results": [
@@ -441,6 +509,7 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
     assert "IMPORTANT: ALWAYS search memories BEFORE responding" in ctx
     assert "MANDATORY FIRST ACTION" in ctx
     assert "claude-code/memories" in ctx
+    assert "codex/memories" in ctx
     assert "learning/memories" in ctx
     assert "wip/memories" in ctx
 
@@ -454,7 +523,13 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
     search_calls = [call for call in calls if call["body"] is not None]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     # 4th call is the dedicated deferred-work surfacing search
-    assert prefixes == ["claude-code/memories", "learning/memories", "wip/memories", "wip/memories"]
+    assert prefixes == [
+        "claude-code/memories",
+        "codex/memories",
+        "learning/memories",
+        "wip/memories",
+        "wip/memories",
+    ]
 
     # Deferred work section should appear when wip results exist
     assert "Deferred Work" in ctx
@@ -551,6 +626,11 @@ def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp
         },
         {
             "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
             "source_prefix": "learning/memories",
             "response": {"results": [], "count": 0},
         },
@@ -568,7 +648,13 @@ def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp
     search_calls = [call for call in calls if call["body"] is not None]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     # 4th call is the dedicated deferred-work surfacing search
-    assert prefixes == ["codex/memories", "learning/memories", "wip/memories", "wip/memories"]
+    assert prefixes == [
+        "codex/memories",
+        "claude-code/memories",
+        "learning/memories",
+        "wip/memories",
+        "wip/memories",
+    ]
 
 
 def test_memory_extract_uses_codex_source_when_installed_under_codex(tmp_path: Path) -> None:
@@ -632,8 +718,8 @@ build_keyword_bag "ok so the UserPrefs module uses fetch_config and the MAX_RETR
         assert filler not in words, f"Filler word '{filler}' should not be in output: {output!r}"
 
 
-def test_dual_search_strategy_unscoped_and_prefix_scoped(tmp_path: Path) -> None:
-    """Dual search fires one unscoped + one prefix-scoped (client/{project}), not learning/ or wip/."""
+def test_dual_search_strategy_unscoped_and_all_default_prefixes(tmp_path: Path) -> None:
+    """Dual search fires unscoped plus all default project source families."""
     responses = [
         {
             "url_suffix": "/search",
@@ -683,14 +769,14 @@ def test_dual_search_strategy_unscoped_and_prefix_scoped(tmp_path: Path) -> None
     assert "Global unscoped result" in ctx
     assert "Project-scoped result" in ctx
 
-    # Verify search calls: at least one unscoped AND at least one scoped
+    # Verify search calls: at least one unscoped and each default project family.
     search_calls = [call for call in calls if call["body"] is not None]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     assert any(p == "" for p in prefixes), f"Expected at least one unscoped search, got prefixes: {prefixes}"
     assert any(p == "claude-code/memories" for p in prefixes), f"Expected claude-code/memories scoped search, got: {prefixes}"
-    # Should NOT have learning/ or wip/ scoped searches (those were the old prefix-iteration approach)
-    assert not any(p.startswith("learning/") for p in prefixes), f"Should not search learning/ prefix: {prefixes}"
-    assert not any(p.startswith("wip/") for p in prefixes), f"Should not search wip/ prefix: {prefixes}"
+    assert any(p == "codex/memories" for p in prefixes), f"Expected codex/memories scoped search, got: {prefixes}"
+    assert any(p == "learning/memories" for p in prefixes), f"Expected learning/memories scoped search, got: {prefixes}"
+    assert any(p == "wip/memories" for p in prefixes), f"Expected wip/memories scoped search, got: {prefixes}"
 
 
 def test_memory_hooks_honor_disabled_flag(tmp_path: Path) -> None:

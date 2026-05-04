@@ -53,7 +53,11 @@ _memory_client_prefix() {
 _default_source_prefixes() {
   local client_prefix
   client_prefix="$(_memory_client_prefix)"
-  printf '%s/{project},learning/{project},wip/{project}' "$client_prefix"
+  if [ "$client_prefix" = "codex" ]; then
+    printf 'codex/{project},claude-code/{project},learning/{project},wip/{project}'
+  else
+    printf 'claude-code/{project},codex/{project},learning/{project},wip/{project}'
+  fi
 }
 
 _default_extract_source() {

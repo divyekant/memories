@@ -269,7 +269,7 @@ The installer will:
 5. Add default `developer_instructions` (if not already set) to bias `memory_search` usage
 
 The hooks load `MEMORIES_URL` / `MEMORIES_API_KEY` from `~/.config/memories/env` (or `MEMORIES_ENV_FILE` override).
-Default scoped prefixes are `codex/{project},learning/{project},wip/{project}` for retrieval and `codex/{project}` for extraction.
+Default scoped retrieval prefixes are `codex/{project},claude-code/{project},learning/{project},wip/{project}` for Codex and `claude-code/{project},codex/{project},learning/{project},wip/{project}` for Claude Code. Extraction still writes to the active client prefix by default.
 For scoped API keys, override them with `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE`.
 
 ### Option C: Manual setup
@@ -499,7 +499,7 @@ curl -s https://memory.yourdomain.com/health   # prod
 | `memory-extract.sh` | Stop | Async | Beefier extraction: 500 lines, 10 msg pairs, 8000 chars, no signal filter (compensates for no PreCompact/SessionEnd) |
 | `memory-guard.sh` | PreToolUse | Sync | Blocks writes to MEMORY.md files |
 | `memory-observe.sh` | PostToolUse | Async | Logs memory MCP tool usage with `[codex]` tag |
-| MCP tools + developer instructions | Each new user turn | — | Drives `memory_search` usage before implementation-heavy responses |
+| MCP tools + developer instructions | Each new user turn | — | Drives active `memory_search` usage before implementation-heavy or prior-context responses |
 
 Codex uses `~/.codex/hooks.json` for hooks, `~/.codex/settings.json` for tool permissions, and `~/.codex/config.toml` for MCP + developer instructions. The legacy `memory-codex-notify.sh` (config.toml notify hook) is preserved for backward compatibility but superseded by native hooks.
 
@@ -531,7 +531,7 @@ Codex uses `~/.codex/hooks.json` for hooks, `~/.codex/settings.json` for tool pe
 | `MEMORIES_URL` | `http://localhost:8900` | Memories service URL |
 | `MEMORIES_API_KEY` | (empty) | API key for Memories service auth |
 | `MEMORIES_ENV_FILE` | `~/.config/memories/env` | Hook env file path for Claude/Codex hooks and OpenClaw QMD sync snippets |
-| `MEMORIES_SOURCE_PREFIXES` | client-specific | Retrieval prefixes for settings-based hooks. Defaults to `claude-code/{project},learning/{project},wip/{project}` for Claude/Cursor and `codex/{project},learning/{project},wip/{project}` under `~/.codex/hooks/memory`. |
+| `MEMORIES_SOURCE_PREFIXES` | client-specific | Retrieval prefixes for settings-based hooks. Defaults to `claude-code/{project},codex/{project},learning/{project},wip/{project}` for Claude/Cursor and `codex/{project},claude-code/{project},learning/{project},wip/{project}` under `~/.codex/hooks/memory`. |
 | `MEMORIES_EXTRACT_SOURCE` | client-specific | Extraction source for settings-based hooks. Defaults to `claude-code/{project}` for Claude/Cursor and `codex/{project}` under `~/.codex/hooks/memory`. |
 | `MEMORIES_SOURCE_PREFIX` | `codex` | Legacy notify-hook prefix used only by `memory-codex-notify.sh` |
 | `MEMORIES_SOURCE` | (empty) | Legacy notify-hook full source override used only by `memory-codex-notify.sh` |

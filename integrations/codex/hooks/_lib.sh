@@ -44,7 +44,7 @@ _memory_client_prefix() {
 _default_source_prefixes() {
   local client_prefix
   client_prefix="$(_memory_client_prefix)"
-  printf '%s/{project},learning/{project},wip/{project}' "$client_prefix"
+  printf 'codex/{project},claude-code/{project},learning/{project},wip/{project}'
 }
 
 _default_extract_source() {

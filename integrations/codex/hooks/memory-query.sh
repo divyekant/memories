@@ -17,7 +17,7 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
-  _default_source_prefixes() { echo 'codex/{project},learning/{project},wip/{project}'; }
+  _default_source_prefixes() { echo 'codex/{project},claude-code/{project},learning/{project},wip/{project}'; }
 fi
 
 _exit_if_disabled 2>/dev/null || true
@@ -133,6 +133,10 @@ search_memories() {
 
 CONTEXT=$(extract_recent_context "$TRANSCRIPT_PATH")
 PROMPT_LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
+ACTIVE_SEARCH_REQUIRED=0
+if printf '%s' "$PROMPT_LOWER" | grep -qiE '(^|[^a-z])(did we already|already decide|where did we|where we left|left off|last fix|last time|continue where|previous decision|prior decision|deferred|blocked|what was the last|what did we decide|release gate|release should be gated)([^a-z]|$)'; then
+  ACTIVE_SEARCH_REQUIRED=1
+fi
 
 # File context extraction — grep recent transcript for Read/Edit/Write tool calls
 FILE_CONTEXT=""
@@ -204,13 +208,17 @@ if [ -n "$UNSCOPED_RESPONSE" ]; then
   RAW_RESPONSES="$UNSCOPED_RESPONSE"
 fi
 
-# Strategy B: enriched prefix-scoped (project-specific precision)
+# Strategy B: enriched prefix-scoped (project-specific precision across client families)
 if [ -n "$PROJECT" ]; then
-  CLIENT_PREFIX=$(_memory_client_prefix)
-  SCOPED_RESPONSE=$(search_memories "$ENRICHED_QUERY" "${CLIENT_PREFIX}/${PROJECT}" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD")
-  if [ -n "$SCOPED_RESPONSE" ]; then
-    RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$SCOPED_RESPONSE")
-  fi
+  IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
+  for raw_prefix in "${prefix_templates[@]}"; do
+    prefix=$(printf '%s' "$raw_prefix" | sed "s/{project}/$PROJECT/g" | xargs)
+    [ -z "$prefix" ] && continue
+    SCOPED_RESPONSE=$(search_memories "$ENRICHED_QUERY" "$prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD")
+    if [ -n "$SCOPED_RESPONSE" ]; then
+      RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$SCOPED_RESPONSE")
+    fi
+  done
 fi
 
 # Intent-based prefix biasing (additional search for fix/debug/setup prompts)
@@ -239,13 +247,23 @@ if [ "$RESULTS_JSON" = "[]" ]; then
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
 fi
 
-RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
-  if length == 0 then
-    empty
-  else
-    map("- [\(.source)] \(.text)") | join("\n")
-  end
-' 2>/dev/null) || true
+if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
+  RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
+    if length == 0 then
+      empty
+    else
+      map("- [\(.source)] candidate memory id=\(.id // .memory_id // "unknown") found by hook; call memory_search with this source prefix before answering.") | join("\n")
+    end
+  ' 2>/dev/null) || true
+else
+  RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
+    if length == 0 then
+      empty
+    else
+      map("- [\(.source)] \(.text)") | join("\n")
+    end
+  ' 2>/dev/null) || true
+fi
 
 if [ -z "$RESULTS" ] || [ "$RESULTS" = "null" ]; then
   exit 0
@@ -256,11 +274,11 @@ _log_info "Query returned $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/
 RESPONSE_HINT=$(build_response_hint "$PROMPT_LOWER")
 
 jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
-  hookSpecificOutput: {
-    hookEventName: "UserPromptSubmit",
-    additionalContext: (
-      "## Retrieved Memories\n" + $memories +
-      (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
-    )
-  }
+	hookSpecificOutput: {
+	  hookEventName: "UserPromptSubmit",
+	  additionalContext: (
+	    "IMPORTANT: hook-injected memories are keyword-matched starting points, not a substitute for active search.\n\nMANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, deferred work, conventions, or continuation of prior work, you MUST call memory_search before answering. Do not answer from injected memories alone.\n\n## Retrieved Memories\n" + $memories +
+	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
+	  )
+	}
 }'

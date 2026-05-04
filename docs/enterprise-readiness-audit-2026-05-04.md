@@ -1,15 +1,17 @@
 # Memories Enterprise Readiness Audit - 2026-05-04
 
-Scope: previous 30 days of local Codex and Claude Code sessions related to `/Users/dk/projects/memories`.
+Scope: previous 30 days of local Codex and Claude Code sessions, with Memories-specific turn-level usefulness classification for user asks, agent searches, retrieved memories, answer use, passive-hook-only behavior, and next-user correction signals.
 
 Transcript handling: this audit summarizes local session evidence and cites session ids only. It does not copy private transcript content.
 
 ## Session Evidence
 
-- Codex sessions inspected: 10 Memories-related sessions from the last 30 days.
-- Claude Code sessions inspected: 74 Memories-related JSONL files under Claude project storage, including subagent traces.
-- Relevant Codex session ids included `019d56af-a4d8-7f92-96dd-d95aaa028339`, `019d700b-ef21-7a81-ad3b-29ddf4f95073`, `019dd193-2565-74d0-b019-49bd04fd27a8`, `019df094-5e32-78c3-831a-e733e73940b4`, and `019df0b8-c431-7433-a0fe-abd88203612b`.
-- Relevant Claude session ids included sessions covering temporal reasoning, graph/temporal decisioning, Codex plugin setup, extraction auth, progressive disclosure, scoped conflicts, and shadow extraction evaluation.
+- Local session files scanned: 41 Codex JSONL files, 2,195 Claude Code JSONL files, and filtered Claude local-app session descriptors since 2026-04-04.
+- Direct Memories MCP calls found: 243 Codex calls across 16 sessions and 758 Claude Code calls across 104 sessions.
+- Turn-level parent direct-read classifications: 180 useful/direct, 5 useful after fallback, 22 empty or missed/no data, 18 harmful/error, 15 retrieved but not obviously used, and 2 likely not useful or wrong.
+- Passive-hook-only behavior dominated: 2,126 parent turns had hook-injected memory context but no direct memory read. The highest-priority product gap was active-search reinforcement, not raw search transport.
+- Historical write-path gap: one Claude Code fplguru worktree session showed 7 MCP write/read failures (`memory_add`/`memory_extract` 422s and one `memory_search` 405), which requires isolated MCP write-path regression coverage.
+- Cross-client namespace gap: Codex and Claude Code defaulted to separate `codex/{project}` and `claude-code/{project}` search families, causing useful fallback behavior but missed first-pass recall when history lived under the sibling client prefix.
 
 ## Gaps Closed In This Branch
 
@@ -24,12 +26,33 @@ Transcript handling: this audit summarizes local session evidence and cites sess
 - MCP temporal timeline: generic MCP clients can call `memory_timeline` for chronological evidence. It supports user-fact filtering and travel/event query expansion so agents can separate user-confirmed events from assistant-only plans.
 - Scoped conflict safety: `CONFLICT` extraction actions now verify `old_id` is inside allowed source prefixes before creating conflict metadata.
 - Generic MCP compatibility: stdio smoke now validates `memory_search`, `memory_get`, `memory_evidence`, `memory_timeline`, `memory_count`, and read-only behavior.
+- Generic MCP write compatibility: isolated fake-backend stdio smoke now validates `memory_add` and `memory_extract` routing, payload shape, document timestamps, extraction polling, and Codex-authored source hygiene without touching production.
+- Active-search behavior eval: `eval/run_active_search_eval.py` runs realistic prompts that do not say `memory_search`, installs this worktree's read hooks/instructions into isolated Claude Code eval projects, captures stream-json tool traces, scores active search, source-prefix quality, answer use, passive-hook-only failures, and no-memory controls.
+- Active-search hook reinforcement: `UserPromptSubmit` recall now searches all default client/shared source families and, for explicit prior-context prompts, injects candidate pointers instead of full memory text so agents must call `memory_search` for details.
+- Cross-client source defaults: Claude Code now searches `claude-code/{project},codex/{project},learning/{project},wip/{project}` by default; Codex searches `codex/{project},claude-code/{project},learning/{project},wip/{project}` by default. Extraction still writes to the active client prefix.
+
+## Why Prior Evals Missed Active-Search Failures
+
+- Retrieval/tool evals call `/search` directly, so they measure whether the engine can retrieve evidence after search is invoked. They do not test whether an agent chooses to search.
+- LongMemEval system mode explicitly tells the agent to use Memories tools and gives the source prefix. That evaluates answer quality and temporal reasoning after the search gate is already opened.
+- Real product failures happen earlier: a user asks a context-dependent question, hooks inject relevant memory text, and the agent answers from passive context without making an auditable `memory_search` call.
+- The active-search eval now targets that missing gate by using realistic prompts that do not mention `memory_search`, installing this worktree's read hooks/instructions into isolated Claude Code projects, and failing when required-search turns produce passive-hook-only answers.
 
 ## Verification Evidence
 
-- Full Python suite: `uv run pytest -q` -> 1323 passed, 1 local-Qdrant warning.
+- Full Python suite: `.venv/bin/pytest -q` -> 1341 passed, 1 local-Qdrant warning.
 - MCP syntax: `node --check mcp-server/index.js` -> exit 0.
 - MCP generic smoke: `npm run smoke` -> `generic_mcp_stdio_smoke=ok`.
+- MCP generic write smoke: `npm run smoke:write` -> `generic_mcp_write_smoke=ok`.
+- Active-search behavior eval: `eval/results/active-search-enterprise-20260504-redacted-hook.json` (local ignored artifact).
+  - `active_search_rate`: 1.0 over 3 required-search cases
+  - `passive_hook_only_failures`: 0
+  - `wrong_source_prefix_failures`: 0
+  - `unnecessary_memory_searches`: 0 for the no-memory control
+  - `overall_active_search_score`: 1.0
+  - `ready_before`: `qdrant_count=0`, `metadata_count=0`
+  - `ready_after`: `qdrant_count=0`, `metadata_count=0`
+  - `setup_validation`: target URL, API key presence, and MCP path recorded as OK
 - Dependency audit: `npm audit --json` -> 0 vulnerabilities.
 - Whitespace: `git diff --check` -> exit 0.
 - Trusted temporal system eval: `eval/results/longmemeval-enterprise-temporal-20q-system-timeline-env-isolated.json`.
