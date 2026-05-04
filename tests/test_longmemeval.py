@@ -261,6 +261,33 @@ def test_run_question_system_computes_diagnostic_recall():
     assert result["recall_all_at_5"] == 1.0
 
 
+def test_run_question_system_prompt_directs_reference_date_for_temporal_queries():
+    """System eval prompt should tell agents how to anchor relative temporal searches."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.search.return_value = []
+    runner = LongMemEvalRunner(client=client)
+
+    cc_executor = MagicMock()
+    cc_executor.create_isolated_project.return_value = "/tmp/cc_eval_test"
+    cc_executor.run_prompt.return_value = "7 days"
+
+    question = {
+        "question_id": "sys-temporal",
+        "question_type": "temporal-reasoning",
+        "question": "How many days ago did I attend the class?",
+        "answer": "7 days",
+        "question_date": "2023/05/20 (Sat) 02:21",
+    }
+    runner.run_question_system(question, cc_executor=cc_executor, source_prefix="eval/test")
+
+    prompt = cc_executor.run_prompt.call_args.args[0]
+    assert "memory_evidence" in prompt
+    assert "reference_date" in prompt
+    assert "2023-05-20T02:21:00+00:00" in prompt
+
+
 def test_run_question_system_cleanup_on_error():
     """CCExecutor project should be cleaned up even if run_prompt raises."""
     from eval.longmemeval import LongMemEvalRunner

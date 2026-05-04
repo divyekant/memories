@@ -13,7 +13,8 @@ function assert(condition, message) {
 function startFakeMemoriesApi() {
   const requests = [];
   const server = http.createServer((req, res) => {
-    requests.push({ method: req.method, url: req.url });
+    const record = { method: req.method, url: req.url };
+    requests.push(record);
     if (req.method === "GET" && req.url.startsWith("/memories/count")) {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ count: 0 }));
@@ -26,6 +27,7 @@ function startFakeMemoriesApi() {
       });
       req.on("end", () => {
         const parsed = JSON.parse(body || "{}");
+        record.body = parsed;
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
           query: parsed.query,
@@ -92,10 +94,18 @@ async function main() {
 
     const evidence = await client.callTool({
       name: "memory_evidence",
-      arguments: { query: "latest deployment target", source_prefix: "eval/mcp-smoke" },
+      arguments: {
+        query: "latest deployment target",
+        source_prefix: "eval/mcp-smoke",
+        reference_date: "2023-05-20T00:00:00+00:00",
+      },
     });
     const evidenceText = evidence.content.map((item) => item.text || "").join("\n");
     assert(evidenceText.includes("Confidence: missing"), "unexpected memory_evidence response");
+    assert(
+      fakeApi.requests.some((req) => req.body?.reference_date === "2023-05-20T00:00:00+00:00"),
+      `memory_evidence reference_date was not forwarded: ${JSON.stringify(fakeApi.requests)}`,
+    );
 
     const writes = fakeApi.requests.filter(
       (req) => req.method !== "GET" && req.url !== "/search/evidence",

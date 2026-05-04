@@ -160,9 +160,10 @@ server.tool(
     graph_weight: z.number().min(0).max(1).default(0.1).describe("Weight for graph-based link expansion (0=disabled, default 0.1). Linked memories get bonus score."),
     since: z.string().optional().describe("Filter memories at or after this ISO date (e.g. 2023-01-01T00:00:00Z)"),
     until: z.string().optional().describe("Filter memories at or before this ISO date"),
+    reference_date: z.string().optional().describe("Reference date for relative temporal queries such as today, yesterday, or past three months"),
     include_archived: z.boolean().default(false).describe("Include archived/superseded memories (needed for version history queries)"),
   },
-  async ({ query, k = 5, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, include_archived }) => {
+  async ({ query, k = 5, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived }) => {
     const body = { query, k, hybrid };
     if (threshold !== undefined) body.threshold = threshold;
     if (source_prefix) body.source_prefix = source_prefix;
@@ -171,6 +172,7 @@ server.tool(
     if (graph_weight !== undefined) body.graph_weight = graph_weight;
     if (since) body.since = since;
     if (until) body.until = until;
+    if (reference_date) body.reference_date = reference_date;
     if (include_archived) body.include_archived = true;
 
     const data = await memoriesRequest("/search", {
@@ -211,9 +213,10 @@ server.tool(
     graph_weight: z.number().min(0).max(1).default(0.1).describe("Weight for graph-based link expansion"),
     since: z.string().optional().describe("Filter memories at or after this ISO date"),
     until: z.string().optional().describe("Filter memories at or before this ISO date"),
+    reference_date: z.string().optional().describe("Reference date for relative temporal queries such as today, yesterday, or past three months"),
     include_archived: z.boolean().default(false).describe("Include archived/superseded memories"),
   },
-  async ({ query, k = 8, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, include_archived }) => {
+  async ({ query, k = 8, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived }) => {
     const body = { query, k, hybrid };
     if (threshold !== undefined) body.threshold = threshold;
     if (source_prefix) body.source_prefix = source_prefix;
@@ -222,6 +225,7 @@ server.tool(
     if (graph_weight !== undefined) body.graph_weight = graph_weight;
     if (since) body.since = since;
     if (until) body.until = until;
+    if (reference_date) body.reference_date = reference_date;
     if (include_archived) body.include_archived = true;
 
     const data = await memoriesRequest("/search/evidence", {
@@ -254,6 +258,14 @@ server.tool(
       for (const item of packet.older_conflicting_memories) {
         lines.push(`[${item.id}] ${item.source} ${item.date || ""}`);
         lines.push(item.text || "");
+      }
+    }
+
+    if (packet.source_date_trail?.length) {
+      lines.push("");
+      lines.push("Source/date trail:");
+      for (const item of packet.source_date_trail) {
+        lines.push(`[${item.relation || "memory"}] ${item.source} ${item.date || ""}`);
       }
     }
 

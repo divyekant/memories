@@ -371,16 +371,23 @@ class LongMemEvalRunner:
         try:
             # Include question_date for temporal reasoning
             question_date = question.get("question_date", "")
-            date_context = f"\nToday's date is: {question_date}\n" if question_date else ""
+            reference_date = _normalize_longmemeval_date(question_date) if question_date else ""
+            date_context = (
+                f"\nToday's date is: {question_date}\n"
+                f"Use reference_date='{reference_date}' when calling memory_evidence or memory_search for relative temporal queries.\n"
+                if question_date else ""
+            )
 
             prompt = (
-                f"You have access to memory_search and other memory tools via MCP. "
+                f"You have access to memory_search, memory_evidence, and other memory tools via MCP. "
                 f"Use them to find relevant context, then answer the following question.\n\n"
                 f"IMPORTANT: Search within the source prefix '{q_prefix}' to find relevant memories. "
+                f"For temporal, latest/current, date range, or event-order questions, call memory_evidence first with this source_prefix. "
                 f"Try multiple search queries if your first attempt doesn't find the answer. "
                 f"Think about what keywords or phrases might be stored in memory.\n"
                 f"Memory entries include dates in brackets like [2023/05/20 (Sat) 14:30]. "
-                f"Use these dates for temporal calculations (how many days, which came first, etc.).\n"
+                f"Use these dates and the evidence packet source/date trail for temporal calculations (how many days, which came first, etc.). "
+                f"If the first result lacks a date, keep searching for the dated event evidence before saying the answer is unavailable.\n"
                 f"{date_context}\n"
                 f"Question: {query}\n\n"
                 f"Provide a direct, concise answer based on what you find in memory. "
