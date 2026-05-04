@@ -78,6 +78,40 @@ def test_summarize_active_search_followup_rate_and_prefix_quality(tmp_path: Path
     assert summary["by_client"]["claude-code"]["broad_or_unscoped_searches"] == 1
 
 
+def test_summarize_active_search_matches_one_search_to_one_recent_prompt() -> None:
+    events = [
+        {
+            "ts": "2026-05-04T15:00:00Z",
+            "event": "prompt_evaluated",
+            "client": "codex",
+            "session_id": "s1",
+            "active_search_required": True,
+        },
+        {
+            "ts": "2026-05-04T15:03:20Z",
+            "event": "prompt_evaluated",
+            "client": "codex",
+            "session_id": "s1",
+            "active_search_required": True,
+        },
+        {
+            "ts": "2026-05-04T15:04:10Z",
+            "event": "tool_call",
+            "client": "codex",
+            "session_id": "s1",
+            "tool_name": "mcp__memories__memory_search",
+            "source_prefix_quality": "exact_project",
+        },
+    ]
+
+    summary = summarize_events(events, followup_window_seconds=300)
+
+    assert summary["required_prompts"] == 2
+    assert summary["required_prompts_with_memory_search"] == 1
+    assert summary["active_search_followup_rate"] == 0.5
+    assert summary["passive_risk_prompts"] == 1
+
+
 def test_load_events_skips_invalid_jsonl(tmp_path: Path) -> None:
     log = tmp_path / "active-search.jsonl"
     log.write_text('{"event":"prompt_evaluated"}\nnot-json\n{"event":"tool_call"}\n', encoding="utf-8")

@@ -276,7 +276,8 @@ def test_run_question_system_preserves_agent_trace_and_top_sessions():
         def create_isolated_project(self, with_memories=False):
             return "/tmp/cc_eval_test"
 
-        def run_prompt(self, prompt, project_dir):
+        def run_prompt(self, prompt, project_dir, require_memories=False):
+            assert require_memories is True
             self.last_run_trace = {
                 "output_format": "stream-json",
                 "tool_calls": [

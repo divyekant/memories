@@ -262,7 +262,7 @@ class CCExecutor:
             return value.decode(errors="replace")
         return str(value)
 
-    def run_prompt(self, prompt: str, project_dir: str) -> str:
+    def run_prompt(self, prompt: str, project_dir: str, require_memories: bool = False) -> str:
         """Run prompt via claude -p with strict MCP isolation.
 
         Uses --strict-mcp-config to override ALL MCP configurations:
@@ -276,6 +276,10 @@ class CCExecutor:
             mcp_arg = mcp_path
             with_memories = True
         else:
+            if require_memories:
+                raise RuntimeError(
+                    "System eval requires Memories MCP config, but .mcp.json is missing"
+                )
             mcp_arg = json.dumps({"mcpServers": {}})
             with_memories = False
 
@@ -380,3 +384,8 @@ class CCExecutor:
                 "returncode": None,
             }
             return "[ERROR] Claude Code CLI not found. Ensure 'claude' is on PATH."
+        finally:
+            try:
+                os.unlink(hook_env_file)
+            except OSError:
+                pass

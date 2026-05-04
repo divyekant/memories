@@ -103,6 +103,17 @@ class TestStrictMcpConfig:
             executor.cleanup_project(project_dir)
 
     @patch("eval.cc_executor.subprocess.run")
+    def test_require_memories_raises_when_mcp_config_missing(self, mock_run, executor):
+        """System-mode evals must fail loudly if MCP config was not installed."""
+        project_dir = executor.create_isolated_project(with_memories=False)
+        try:
+            with pytest.raises(RuntimeError, match="requires Memories MCP"):
+                executor.run_prompt("test", project_dir, require_memories=True)
+            mock_run.assert_not_called()
+        finally:
+            executor.cleanup_project(project_dir)
+
+    @patch("eval.cc_executor.subprocess.run")
     def test_without_memory_disables_global_memory_hooks(self, mock_run):
         """Without-memory eval runs must not let global hooks recall or write memories."""
         mock_run.return_value = MagicMock(stdout="response")
@@ -120,7 +131,7 @@ class TestStrictMcpConfig:
             assert env["MEMORIES_API_KEY"] == "eval-key"
             assert env["MEMORIES_BACKENDS_FILE"] == "__eval_single_backend__"
             assert env["MEMORIES_ENV_FILE"].startswith(project_dir)
-            assert os.path.exists(env["MEMORIES_ENV_FILE"])
+            assert not os.path.exists(env["MEMORIES_ENV_FILE"])
             assert env["MEMORIES_ACTIVE_SEARCH_LOG"].startswith(project_dir)
         finally:
             executor.cleanup_project(project_dir)
@@ -128,7 +139,14 @@ class TestStrictMcpConfig:
     @patch("eval.cc_executor.subprocess.run")
     def test_with_memory_forces_hooks_to_eval_backend(self, mock_run):
         """With-memory eval runs may use hooks, but only against the eval backend."""
-        mock_run.return_value = MagicMock(stdout="response")
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            env = kwargs["env"]
+            captured["env_text"] = open(env["MEMORIES_ENV_FILE"]).read()
+            return MagicMock(stdout="response")
+
+        mock_run.side_effect = fake_run
         executor = CCExecutor(
             memories_url="http://localhost:8901",
             memories_api_key="eval-key",
@@ -143,7 +161,8 @@ class TestStrictMcpConfig:
             assert env["MEMORIES_API_KEY"] == "eval-key"
             assert env["MEMORIES_BACKENDS_FILE"] == "__eval_single_backend__"
             assert env["MEMORIES_ENV_FILE"].startswith(project_dir)
-            env_text = open(env["MEMORIES_ENV_FILE"]).read()
+            assert not os.path.exists(env["MEMORIES_ENV_FILE"])
+            env_text = captured["env_text"]
             assert "MEMORIES_URL=http://localhost:8901" in env_text
             assert "MEMORIES_DISABLED=0" in env_text
             assert "MEMORIES_ACTIVE_SEARCH_LOG=" in env_text

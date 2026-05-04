@@ -28,8 +28,13 @@ _active_search_metrics_log() {
   local metrics_log="${MEMORIES_ACTIVE_SEARCH_LOG:-$HOME/.config/memories/active-search.jsonl}"
   local metrics_dir
   metrics_dir=$(dirname "$metrics_log")
-  [ -d "$metrics_dir" ] || mkdir -p "$metrics_dir" 2>/dev/null || return 0
-  printf '%s\n' "$event_json" >> "$metrics_log" 2>/dev/null || true
+  if ! [ -d "$metrics_dir" ] && ! mkdir -p "$metrics_dir" 2>/dev/null; then
+    _log_warn "Active-search metrics log unavailable: cannot create $metrics_dir"
+    return 0
+  fi
+  if ! printf '%s\n' "$event_json" >> "$metrics_log" 2>/dev/null; then
+    _log_warn "Active-search metrics log unavailable: cannot write $metrics_log"
+  fi
 }
 
 _hash_for_metrics() {
@@ -119,6 +124,23 @@ _default_extract_source() {
   printf '%s/{project}' "$client_prefix"
 }
 
+_resolve_env_reference() {
+  local raw="$1"
+  local env_var
+  env_var=$(printf '%s' "$raw" | sed -n 's/.*${\([A-Za-z_][A-Za-z0-9_]*\)}.*/\1/p')
+  if [ -z "$env_var" ]; then
+    printf '%s' "$raw"
+    return 0
+  fi
+  local env_value
+  env_value=$(printenv "$env_var" 2>/dev/null || true)
+  if [ -n "$env_value" ]; then
+    printf '%s' "$env_value"
+  else
+    printf '%s' "$raw"
+  fi
+}
+
 # Health check — returns 0 if service is reachable
 _health_check() {
   local url="${MEMORIES_URL:-http://localhost:8900}"
@@ -139,20 +161,10 @@ _parse_backends_yaml() {
 
   _flush_backend() {
     if [ -n "$current_name" ] && [ -n "$url" ]; then
-      # Resolve ${VAR} references in api_key
-      local resolved_key="$api_key"
-      local env_var
-      env_var=$(printf '%s' "$api_key" | sed -n 's/.*\${\([A-Za-z_][A-Za-z0-9_]*\)}.*/\1/p')
-      if [ -n "$env_var" ]; then
-        resolved_key="${!env_var:-$api_key}"
-      fi
-      # Resolve ${VAR} references in url
-      local resolved_url="$url"
-      local url_env_var
-      url_env_var=$(printf '%s' "$url" | sed -n 's/.*\${\([A-Za-z_][A-Za-z0-9_]*\)}.*/\1/p')
-      if [ -n "$url_env_var" ]; then
-        resolved_url="${!url_env_var:-$url}"
-      fi
+      # Resolve ${VAR} references without bash 4 indirect expansion.
+      local resolved_key resolved_url
+      resolved_key="$(_resolve_env_reference "$api_key")"
+      resolved_url="$(_resolve_env_reference "$url")"
       backends_json=$(printf '%s' "$backends_json" | jq -c --arg n "$current_name" \
         --arg u "$resolved_url" --arg k "$resolved_key" --arg s "$scenario" \
         '. + [{name: $n, url: $u, api_key: $k, scenario: $s}]')

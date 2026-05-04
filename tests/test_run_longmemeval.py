@@ -182,3 +182,5 @@ def test_process_question_retries_transient_agent_auth_error():
     assert result["score"] == 0.95
     assert result["error_kind"] == ""
     assert result["answer_excerpt"] == "You attended on May 1."
+    assert result["retried"] is True
+    assert result["first_error_kind"] == "auth_error"

@@ -134,7 +134,8 @@ search_memories() {
 CONTEXT=$(extract_recent_context "$TRANSCRIPT_PATH")
 PROMPT_LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
 ACTIVE_SEARCH_REQUIRED=0
-if printf '%s' "$PROMPT_LOWER" | grep -qiE '(^|[^a-z])(did we already|already decide|where did we|where we left|left off|last fix|last time|continue where|previous decision|prior decision|deferred|blocked|what was the last|what did we decide|release gate|release should be gated)([^a-z]|$)'; then
+ACTIVE_SEARCH_PATTERN='(^|[^a-z])(did we already|do you remember|remember (how|what|where|when|why|the)|recall|already decide|where did we|how did we|what did we|what was the last|where we left|left off|resume|continue where|previous|prior|earlier|last (fix|time|decision|session|run)|deferred|blocked|follow.?up|next steps|what.?s the plan|what is the plan|current plan|existing plan|release gate|gated)([^a-z]|$)'
+if printf '%s' "$PROMPT_LOWER" | grep -qiE "$ACTIVE_SEARCH_PATTERN"; then
   ACTIVE_SEARCH_REQUIRED=1
 fi
 
@@ -252,7 +253,7 @@ if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
     if length == 0 then
       empty
     else
-      map("- [\(.source)] candidate memory id=\(.id // .memory_id // "unknown") found by hook; call memory_search with this source prefix before answering.") | join("\n")
+      map("- candidate memory from \(.source): call memory_search with source_prefix=\"\(.source)\" before answering. Do not use memory_get as a substitute.") | join("\n")
     end
   ' 2>/dev/null) || true
 else
@@ -299,7 +300,7 @@ jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
-	    "IMPORTANT: hook-injected memories are keyword-matched starting points, not a substitute for active search.\n\nMANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, deferred work, conventions, or continuation of prior work, you MUST call memory_search before answering. Do not answer from injected memories alone. Use exact source prefixes shown below before broad family prefixes or unscoped search.\n\n## Retrieved Memories\n" + $memories +
+	    "IMPORTANT: hook-injected memories are keyword-matched starting points, not a substitute for active search.\n\nMANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, deferred work, conventions, or continuation of prior work, you MUST call memory_search before answering. Do not answer from injected memories alone. Do not use memory_get as a substitute for memory_search. Use exact source prefixes shown below before broad family prefixes or unscoped search.\n\n## Retrieved Memories\n" + $memories +
 	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
 	  )
 	}

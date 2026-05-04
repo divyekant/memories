@@ -14,6 +14,12 @@ def test_localhost_8900_is_rejected_as_production_target() -> None:
     assert not is_local_production_url("http://localhost:8901")
 
 
+def test_local_production_ports_can_be_configured(monkeypatch) -> None:
+    monkeypatch.setenv("EVAL_LOCAL_PRODUCTION_PORTS", "8900,8902")
+
+    assert is_local_production_url("http://localhost:8902")
+
+
 def test_validation_rejects_production_target(tmp_path: Path) -> None:
     mcp_server = tmp_path / "index.js"
     mcp_server.write_text("console.log('mcp');")
@@ -98,6 +104,22 @@ def test_validation_rejects_missing_anthropic_judge_api_key(tmp_path: Path, monk
 
     assert not report.ok
     assert any("ANTHROPIC_API_KEY" in error for error in report.errors)
+
+
+def test_validation_rejects_unknown_judge_provider(tmp_path: Path) -> None:
+    mcp_server = tmp_path / "index.js"
+    mcp_server.write_text("console.log('mcp');")
+
+    report = validate_eval_setup(
+        memories_url="http://localhost:8901",
+        mcp_server_path=str(mcp_server),
+        require_claude=False,
+        require_judge=True,
+        judge_provider="custom",
+    )
+
+    assert not report.ok
+    assert any("Unknown judge provider" in error for error in report.errors)
 
 
 def test_validation_records_judge_provider_when_available(tmp_path: Path, monkeypatch) -> None:

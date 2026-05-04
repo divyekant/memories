@@ -39,9 +39,12 @@ def _tool_calls(trace: dict[str, Any] | None) -> list[dict[str, Any]]:
     return [call for call in calls if isinstance(call, dict)]
 
 
-def _is_memory_search_call(call: dict[str, Any]) -> bool:
-    name = str(call.get("name", ""))
+def is_memory_search_tool_name(name: str) -> bool:
     return name in MEMORY_SEARCH_TOOL_NAMES or name.endswith("__memory_search")
+
+
+def _is_memory_search_call(call: dict[str, Any]) -> bool:
+    return is_memory_search_tool_name(str(call.get("name", "")))
 
 
 def _source_matches(source_prefix: str, expected_prefixes: tuple[str, ...]) -> bool:
@@ -53,11 +56,18 @@ def _source_matches(source_prefix: str, expected_prefixes: tuple[str, ...]) -> b
     return False
 
 
-def _answer_contains_terms(answer: str, expected_terms: tuple[str, ...]) -> bool:
+def _answer_contains_all_terms(answer: str, expected_terms: tuple[str, ...]) -> bool:
+    if not expected_terms:
+        return True
+    folded = answer.lower()
+    return all(term.lower() in folded for term in expected_terms)
+
+
+def _answer_contains_any_term(answer: str, expected_terms: tuple[str, ...]) -> bool:
     if not expected_terms:
         return False
     folded = answer.lower()
-    return all(term.lower() in folded for term in expected_terms)
+    return any(term.lower() in folded for term in expected_terms)
 
 
 def score_turn(
@@ -84,8 +94,16 @@ def score_turn(
             for prefix in searched_source_prefixes
         ) else 0.0
 
-    answer_used_memory = _answer_contains_terms(agent_response or "", case.expected_answer_terms)
-    passive_hook_only_failure = bool(case.should_search and not memory_search_called and answer_used_memory)
+    answer_used_memory = _answer_contains_all_terms(agent_response or "", case.expected_answer_terms)
+    answer_matched_any_expected_term = _answer_contains_any_term(
+        agent_response or "",
+        case.expected_answer_terms,
+    )
+    passive_hook_only_failure = bool(
+        case.should_search
+        and not memory_search_called
+        and answer_matched_any_expected_term
+    )
 
     issues: list[str] = []
     if case.should_search and not memory_search_called:
@@ -108,6 +126,7 @@ def score_turn(
         active_search_score = 1.0
         if memory_search_called:
             issues.append("unnecessary_memory_search")
+            active_search_score = 0.0
 
     return {
         "case_id": case.case_id,
@@ -119,6 +138,7 @@ def score_turn(
         "expected_source_prefixes": list(case.expected_source_prefixes),
         "source_prefix_score": source_prefix_score,
         "answer_used_memory": answer_used_memory,
+        "answer_matched_any_expected_term": answer_matched_any_expected_term,
         "passive_hook_only_failure": passive_hook_only_failure,
         "active_search_score": round(active_search_score, 4),
         "issues": issues,

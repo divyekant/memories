@@ -165,6 +165,8 @@ def _process_question(
 
         _log(f"  Seeded {seeded} memory chunks")
 
+        retried = False
+        first_error_kind = ""
         try:
             if mode == "system" and cc_executor:
                 def run_system_question():
@@ -180,6 +182,8 @@ def _process_question(
                     str(question_result.get("context", ""))
                 )
                 if _retryable_agent_error(first_error):
+                    retried = True
+                    first_error_kind = first_error
                     _log(f"  Agent infra error ({first_error}); retrying once")
                     if project_dir and hasattr(cc_executor, "reset_project"):
                         cc_executor.reset_project(project_dir)
@@ -235,6 +239,8 @@ def _process_question(
             "error_kind": error_kind,
             "agent_trace": question_result.get("agent_trace", {}),
             "seeded_chunks": seeded,
+            "retried": retried,
+            "first_error_kind": first_error_kind,
         }
     finally:
         try:

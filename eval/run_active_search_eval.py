@@ -22,8 +22,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from eval.active_search_eval import ActiveSearchCase, score_turn, summarize_results
-from eval.cc_executor import CCExecutor
+from eval.active_search_eval import (
+    ActiveSearchCase,
+    is_memory_search_tool_name,
+    score_turn,
+    summarize_results,
+)
+from eval.cc_executor import AGENT_ENV_BLOCKLIST, CCExecutor
 from eval.memories_client import MemoriesClient
 from eval.setup_validation import DEFAULT_EVAL_MEMORIES_URL, resolve_eval_memories_url, validate_eval_setup
 
@@ -157,6 +162,7 @@ def install_codex_product_read_hooks(
                 'developer_instructions = """',
                 "Use the Memories MCP tools as your memory layer.",
                 "READ: Run memory_search before implementation-heavy responses, clarifying questions, or any turn that depends on prior decisions, prior sessions, project history, deferred work, conventions, or cross-session context. Hook-injected memories are useful hints, not a substitute for active search.",
+                "SKIP: Do not call memory_search for self-contained prompts that do not depend on prior/project context, such as arithmetic, translation, formatting, or generic facts.",
                 "Source prefixes: replace {project} with the current working directory basename. Search exact project-scoped prefixes first: codex/{project}, claude-code/{project}, learning/{project}, and wip/{project}. If hook candidate pointers list a source, use that exact source_prefix. Do not use broad family prefixes like codex/, claude-code/, learning/, wip/, or unscoped search until the exact project prefixes have been tried.",
                 '"""',
                 "",
@@ -212,7 +218,7 @@ def parse_codex_json_trace(stdout: str, stderr: str = "", returncode: int | None
             tool = str(item.get("tool") or "")
             if server and tool:
                 name = f"mcp__{server}__{tool}"
-        if "memory_search" in name:
+        if is_memory_search_tool_name(name):
             args = item.get("arguments") if isinstance(item.get("arguments"), dict) else item.get("input")
             if not isinstance(args, dict):
                 args = {}
@@ -236,7 +242,16 @@ class CodexExecutor:
         self.model = model
         self.last_run_trace: dict[str, Any] = {}
 
-    def run_prompt(self, prompt: str, project_dir: str) -> str:
+    def run_prompt(self, prompt: str, project_dir: str, require_memories: bool = False) -> str:
+        if require_memories:
+            config_path = Path(self.codex_home) / "config.toml"
+            if not config_path.exists() or "[mcp_servers.memories]" not in config_path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            ):
+                raise RuntimeError(
+                    "Active-search eval requires Memories MCP config in isolated CODEX_HOME"
+                )
         cmd = [
             "codex",
             "exec",
@@ -251,7 +266,11 @@ class CodexExecutor:
         if self.model:
             cmd.extend(["--model", self.model])
         cmd.append(prompt)
-        env = dict(os.environ)
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in AGENT_ENV_BLOCKLIST and key != "MCP_CONTEXT"
+        }
         env["CODEX_HOME"] = self.codex_home
         env["MEMORIES_ENV_FILE"] = str(Path(self.codex_home) / "memories-eval-env")
         env["MEMORIES_ACTIVE_SEARCH_LOG"] = str(Path(self.codex_home) / "active-search.jsonl")
@@ -358,7 +377,7 @@ def run_case(
     if materialized.seed_memories:
         client.seed_memories(list(materialized.seed_memories))
 
-    response = executor.run_prompt(materialized.user_prompt, project_dir)
+    response = executor.run_prompt(materialized.user_prompt, project_dir, require_memories=True)
     result = score_turn(materialized, response, getattr(executor, "last_run_trace", {}) or {})
     result["project"] = project
     result["seeded_memories"] = len(materialized.seed_memories)

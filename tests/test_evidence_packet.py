@@ -34,11 +34,70 @@ def test_evidence_packet_selects_latest_answer_and_keeps_older_evidence() -> Non
 
     assert packet["current_answer"]["id"] == 2
     assert packet["current_answer"]["date"] == "2026-04-01T00:00:00+00:00"
+    assert [item["id"] for item in packet["older_evidence"]] == [1]
     assert [item["id"] for item in packet["older_conflicting_memories"]] == [1]
     assert [item["id"] for item in packet["source_date_trail"]] == [2, 1]
     assert packet["confidence"]["level"] == "medium"
     assert any("older evidence" in reason for reason in packet["confidence"]["reasons"])
     assert packet["follow_up_queries"]
+
+
+def test_evidence_packet_recency_beats_stale_latest_flag() -> None:
+    results = [
+        {
+            "id": 1,
+            "text": "The deploy target is hvt-v1.",
+            "source": "codex/project",
+            "document_at": "2026-02-01T00:00:00+00:00",
+            "rrf_score": 0.02,
+            "is_latest": True,
+        },
+        {
+            "id": 2,
+            "text": "The deploy target is hvt-v2.",
+            "source": "codex/project",
+            "document_at": "2026-04-01T00:00:00+00:00",
+            "rrf_score": 0.01,
+        },
+    ]
+
+    packet = build_evidence_packet("latest deploy target", results)
+
+    assert packet["current_answer"]["id"] == 2
+    assert packet["older_evidence"][0]["id"] == 1
+
+
+def test_evidence_packet_separates_dated_evidence_when_current_is_undated() -> None:
+    results = [
+        {
+            "id": 1,
+            "text": "The deploy target is hvt-v2.",
+            "source": "codex/project",
+            "rrf_score": 0.02,
+        },
+        {
+            "id": 2,
+            "text": "The deploy target used to be hvt-v1.",
+            "source": "codex/project",
+            "document_at": "2026-02-01T00:00:00+00:00",
+            "rrf_score": 0.01,
+        },
+    ]
+
+    packet = build_evidence_packet("deploy target", results)
+
+    assert packet["current_answer"]["id"] == 1
+    assert packet["supporting_memories"] == []
+    assert packet["older_evidence"][0]["id"] == 2
+    assert packet["older_evidence"][0]["relation"] == "dated_unranked"
+    assert packet["confidence"]["level"] == "low"
+
+
+def test_evidence_packet_followups_do_not_duplicate_temporal_words() -> None:
+    packet = build_evidence_packet("latest deploy target", [])
+
+    assert "latest latest deploy target" not in packet["follow_up_queries"]
+    assert len(packet["follow_up_queries"]) == len(set(packet["follow_up_queries"]))
 
 
 def test_evidence_packet_marks_missing_when_no_results() -> None:

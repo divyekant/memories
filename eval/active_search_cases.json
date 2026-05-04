@@ -66,6 +66,72 @@
     ]
   },
   {
+    "case_id": "remember-temporal-gate",
+    "agent": "claude-code",
+    "user_prompt": "Do you remember how we handled temporal eval gating?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "setup validation",
+      "temporal"
+    ],
+    "seed_memories": [
+      {
+        "source": "codex/{project}",
+        "text": "Decision: temporal eval gating depends on setup validation, dated evidence, and user-fact filtering before any release."
+      }
+    ]
+  },
+  {
+    "case_id": "monitoring-plan-recall",
+    "agent": "claude-code",
+    "user_prompt": "What's the plan for checking whether active memory search keeps working?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "exact project",
+      "passive-risk"
+    ],
+    "seed_memories": [
+      {
+        "source": "wip/{project}",
+        "text": "Monitoring plan: review active-search metrics for required prompts, exact project searches, broad searches, and passive-risk prompts after rollout."
+      }
+    ]
+  },
+  {
+    "case_id": "cross-client-mcp-compatibility",
+    "agent": "claude-code",
+    "user_prompt": "How did we handle cross-client MCP compatibility?",
+    "should_search": true,
+    "expected_source_prefixes": [
+      "claude-code/{project}",
+      "codex/{project}",
+      "learning/{project}",
+      "wip/{project}"
+    ],
+    "expected_answer_terms": [
+      "generic MCP",
+      "write smoke"
+    ],
+    "seed_memories": [
+      {
+        "source": "claude-code/{project}",
+        "text": "Compatibility decision: generic MCP clients must pass read and write smoke tests, including memory_add and memory_extract, without depending on Claude Code or Codex-specific wrappers."
+      }
+    ]
+  },
+  {
     "case_id": "no-memory-control",
     "agent": "claude-code",
     "user_prompt": "What is 2 plus 2?",

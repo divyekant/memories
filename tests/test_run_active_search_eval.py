@@ -112,6 +112,7 @@ def test_run_case_uses_realistic_prompt_without_memory_tool_instruction():
     )
     assert result["memory_search_called"] is True
     assert result["active_search_score"] == 1.0
+    assert executor.run_prompt.call_args.kwargs["require_memories"] is True
 
 
 def test_install_claude_product_read_hooks_writes_project_settings(tmp_path: Path):
@@ -161,6 +162,7 @@ def test_install_codex_product_read_hooks_writes_temp_home(tmp_path: Path):
     assert "http://localhost:8901" in config_toml
     assert "test-key" in config_toml
     assert "replace {project} with the current working directory basename" in config_toml
+    assert "self-contained prompts" in config_toml
     assert "Do not use broad family prefixes" in config_toml
     assert "MEMORIES_ACTIVE_SEARCH_LOG" in (codex_home / "memories-eval-env").read_text(encoding="utf-8")
 
@@ -207,6 +209,20 @@ def test_parse_codex_json_trace_extracts_current_mcp_tool_call_shape():
     ]
 
 
+def test_parse_codex_json_trace_does_not_count_memory_search_substrings():
+    stdout = "\n".join(
+        [
+            '{"type":"item.completed","item":{"type":"mcp_tool_call","name":"mcp__memories__memory_search_v2","arguments":{"query":"release gate"}}}',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"Release is gated."}}',
+        ]
+    )
+
+    answer, trace = parse_codex_json_trace(stdout)
+
+    assert answer == "Release is gated."
+    assert trace["tool_calls"] == []
+
+
 def test_codex_executor_uses_raw_prompt(monkeypatch, tmp_path: Path):
     calls = []
 
@@ -226,3 +242,33 @@ def test_codex_executor_uses_raw_prompt(monkeypatch, tmp_path: Path):
     assert answer == "4"
     assert calls[0]["cmd"][-1] == "What is 2 plus 2?"
     assert calls[0]["env"]["CODEX_HOME"] == str(tmp_path / ".codex")
+
+
+def test_codex_executor_strips_judge_provider_env(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def fake_run(cmd, capture_output, text, timeout, cwd, env):
+        calls.append({"cmd": cmd, "cwd": cwd, "env": env})
+        return MagicMock(
+            returncode=0,
+            stdout='{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n',
+            stderr="",
+        )
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "judge-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-judge-key")
+    monkeypatch.setenv("CHATGPT_REFRESH_TOKEN", "refresh-token")
+    monkeypatch.setenv("EXTRACT_PROVIDER", "anthropic")
+    monkeypatch.setattr("eval.run_active_search_eval.subprocess.run", fake_run)
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text("[mcp_servers.memories]\n", encoding="utf-8")
+    executor = CodexExecutor(codex_home=str(codex_home), timeout=30)
+
+    executor.run_prompt("hello", str(tmp_path), require_memories=True)
+
+    env = calls[0]["env"]
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "CHATGPT_REFRESH_TOKEN" not in env
+    assert "EXTRACT_PROVIDER" not in env

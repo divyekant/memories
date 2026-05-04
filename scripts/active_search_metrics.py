@@ -97,28 +97,47 @@ def summarize_events(
             broad_or_unscoped_searches += 1
             by_client[client]["broad_or_unscoped_searches"] += 1
 
-    prompts_with_search = 0
-    passive_risk_prompts = 0
+    prompt_records: list[dict[str, Any]] = []
     for prompt in prompt_events:
         client = str(prompt.get("client") or "unknown")
         by_client.setdefault(client, _empty_client_summary())
         by_client[client]["required_prompts"] += 1
-        prompt_ts = _parse_ts(str(prompt.get("ts") or ""))
-        session_id = str(prompt.get("session_id") or "")
-        has_followup_search = False
-        for tool_event in tool_events:
-            if not _is_memory_search(tool_event):
+        prompt_records.append({
+            "event": prompt,
+            "ts": _parse_ts(str(prompt.get("ts") or "")),
+            "matched": False,
+        })
+
+    for tool_event in tool_events:
+        if not _is_memory_search(tool_event):
+            continue
+        tool_ts = _parse_ts(str(tool_event.get("ts") or ""))
+        if tool_ts is None:
+            continue
+        tool_session_id = str(tool_event.get("session_id") or "")
+        candidates: list[tuple[datetime, int]] = []
+        for index, record in enumerate(prompt_records):
+            if record["matched"]:
                 continue
-            if session_id and str(tool_event.get("session_id") or "") != session_id:
+            prompt_ts = record["ts"]
+            if prompt_ts is None:
                 continue
-            tool_ts = _parse_ts(str(tool_event.get("ts") or ""))
-            if prompt_ts is None or tool_ts is None:
+            prompt = record["event"]
+            if str(prompt.get("session_id") or "") != tool_session_id:
                 continue
             delta = (tool_ts - prompt_ts).total_seconds()
             if 0 <= delta <= followup_window_seconds:
-                has_followup_search = True
-                break
-        if has_followup_search:
+                candidates.append((prompt_ts, index))
+        if candidates:
+            _, matched_index = max(candidates, key=lambda candidate: candidate[0])
+            prompt_records[matched_index]["matched"] = True
+
+    prompts_with_search = 0
+    passive_risk_prompts = 0
+    for record in prompt_records:
+        prompt = record["event"]
+        client = str(prompt.get("client") or "unknown")
+        if record["matched"]:
             prompts_with_search += 1
             by_client[client]["required_prompts_with_memory_search"] += 1
         else:

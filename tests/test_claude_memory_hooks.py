@@ -262,8 +262,48 @@ def test_memory_query_redacts_details_for_active_search_required_prompts(tmp_pat
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "MUST call memory_search" in ctx
     assert "Use exact source prefixes shown below" in ctx
-    assert "candidate memory id=42" in ctx
+    assert "candidate memory from codex/memories" in ctx
+    assert "memory_get" in ctx
+    assert "id=42" not in ctx
     assert "setup validation and production write isolation" not in ctx
+
+
+def test_memory_query_active_search_trigger_covers_remember_prompts(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 77,
+                        "source": "claude-code/memories",
+                        "text": "Temporal eval gating requires setup validation.",
+                        "similarity": 0.86,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "Do you remember how we handled temporal eval gating?",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "MUST call memory_search" in ctx
+    assert "candidate memory from claude-code/memories" in ctx
+    assert "Temporal eval gating requires setup validation" not in ctx
 
 
 def test_memory_query_logs_active_search_prompt_metrics_without_text(tmp_path: Path) -> None:
@@ -325,6 +365,51 @@ def test_memory_query_logs_active_search_prompt_metrics_without_text(tmp_path: P
     assert len(event["prompt_hash"]) == 64
     assert "release should be gated" not in json.dumps(event)
     assert "setup validation" not in json.dumps(event)
+
+
+def test_memory_query_logs_metrics_write_failures_to_hook_log(tmp_path: Path) -> None:
+    hook_log = tmp_path / "hook.log"
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 42,
+                        "source": "claude-code/memories",
+                        "text": "A private release decision.",
+                        "similarity": 0.91,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+    payload = {
+        "session_id": "session-1",
+        "cwd": "/Users/example/memories",
+        "prompt": "Do you remember the release decision?",
+    }
+
+    result, _, _ = _run_hook(
+        QUERY_SCRIPT,
+        tmp_path,
+        payload,
+        responses,
+        extra_env={
+            "MEMORIES_ACTIVE_SEARCH_LOG": str(tmp_path),
+            "MEMORIES_LOG": str(hook_log),
+        },
+    )
+
+    assert result.returncode == 0
+    assert "Active-search metrics log unavailable" in hook_log.read_text(encoding="utf-8")
 
 
 def test_memory_query_logs_required_prompt_metrics_even_without_candidates(tmp_path: Path) -> None:
@@ -638,8 +723,9 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "## Relevant Memories" in ctx
     assert "## Memory Playbook" in ctx
-    assert "IMPORTANT: ALWAYS search memories BEFORE responding" in ctx
-    assert "MANDATORY FIRST ACTION" in ctx
+    assert "IMPORTANT: Search memories BEFORE responding" in ctx
+    assert "ACTIVE SEARCH ACTION" in ctx
+    assert "self-contained prompts" in ctx
     assert "claude-code/memories" in ctx
     assert "codex/memories" in ctx
     assert "learning/memories" in ctx
@@ -698,8 +784,9 @@ def test_memory_recall_playbook_contains_mandatory_directives(tmp_path: Path) ->
     output = json.loads(result.stdout)
     ctx = output["hookSpecificOutput"]["additionalContext"]
 
-    assert "IMPORTANT: ALWAYS search memories BEFORE responding" in ctx
-    assert "MANDATORY FIRST ACTION" in ctx
+    assert "IMPORTANT: Search memories BEFORE responding" in ctx
+    assert "ACTIVE SEARCH ACTION" in ctx
+    assert "self-contained prompts" in ctx
     assert "ToolSearch" in ctx
     assert "You MUST call memory_search" in ctx
     assert "Use exact source prefixes from candidate pointers first" in ctx

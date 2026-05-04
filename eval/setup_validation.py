@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"}
-LOCAL_PRODUCTION_PORTS = {8900}
+DEFAULT_LOCAL_PRODUCTION_PORTS = {8900}
 DEFAULT_EVAL_MEMORIES_URL = "http://localhost:8901"
 JUDGE_PROVIDER_MODULES = {
     "anthropic": "anthropic",
@@ -36,11 +36,25 @@ class EvalSetupReport:
         return not self.errors
 
 
+def _local_production_ports() -> set[int]:
+    raw = os.getenv("EVAL_LOCAL_PRODUCTION_PORTS", "")
+    ports = set(DEFAULT_LOCAL_PRODUCTION_PORTS)
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            ports.add(int(item))
+        except ValueError:
+            continue
+    return ports
+
+
 def is_local_production_url(url: str) -> bool:
     """Return True when a URL points at the normal local production service."""
     parsed = urlparse(url)
     host = parsed.hostname or ""
-    return host in LOCAL_HOSTS and parsed.port in LOCAL_PRODUCTION_PORTS
+    return host in LOCAL_HOSTS and parsed.port in _local_production_ports()
 
 
 def resolve_eval_memories_url(default: str = DEFAULT_EVAL_MEMORIES_URL) -> str:
@@ -102,6 +116,11 @@ def validate_eval_setup(
         if not provider:
             report.errors.append("Judge provider is required for this eval run.")
         else:
+            known_providers = set(JUDGE_PROVIDER_ENV_KEYS) | set(JUDGE_PROVIDER_MODULES)
+            if provider not in known_providers:
+                report.errors.append(
+                    f"Unknown judge provider {provider}; supported providers: {', '.join(sorted(known_providers))}."
+                )
             env_key = JUDGE_PROVIDER_ENV_KEYS.get(provider)
             if env_key and not os.getenv(env_key, "").strip():
                 report.errors.append(f"{env_key} is required when judge_provider={provider}.")

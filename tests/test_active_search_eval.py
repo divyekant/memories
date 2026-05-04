@@ -54,6 +54,69 @@ def test_detects_passive_hook_only_failure_even_when_answer_is_right():
     assert "missing_memory_search" in result["issues"]
 
 
+def test_detects_passive_hook_only_failure_when_any_expected_term_leaks():
+    case = ActiveSearchCase(
+        case_id="temporal-paraphrase",
+        user_prompt="did we solve the temporal issue?",
+        should_search=True,
+        expected_source_prefixes=("codex/memories",),
+        expected_answer_terms=("memory_timeline", "user_facts_only"),
+    )
+
+    result = score_turn(case, "Use memory_timeline with user fact filtering.", {"tool_calls": []})
+
+    assert result["memory_search_called"] is False
+    assert result["passive_hook_only_failure"] is True
+    assert result["answer_used_memory"] is False
+    assert "passive_hook_only_failure" in result["issues"]
+
+
+def test_memory_get_does_not_satisfy_active_search_gate():
+    case = ActiveSearchCase(
+        case_id="memory-get-bypass",
+        user_prompt="where did we leave this?",
+        should_search=True,
+        expected_source_prefixes=("codex/memories",),
+        expected_answer_terms=("release gate",),
+    )
+    trace = {
+        "tool_calls": [
+            {
+                "name": "mcp__memories__memory_get",
+                "memory_id": "42",
+            }
+        ]
+    }
+
+    result = score_turn(case, "The release gate was setup validation.", trace)
+
+    assert result["memory_search_called"] is False
+    assert result["tool_calls"] == []
+    assert "missing_memory_search" in result["issues"]
+
+
+def test_empty_expected_terms_count_as_answer_not_required():
+    case = ActiveSearchCase(
+        case_id="no-answer-terms",
+        user_prompt="what was the project decision?",
+        should_search=True,
+        expected_source_prefixes=("codex/memories",),
+    )
+    trace = {
+        "tool_calls": [
+            {
+                "name": "mcp__memories__memory_search",
+                "source_prefix": "codex/memories",
+            }
+        ]
+    }
+
+    result = score_turn(case, "Found the relevant decision.", trace)
+
+    assert result["answer_used_memory"] is True
+    assert result["active_search_score"] == 1.0
+
+
 def test_wrong_source_prefix_is_scored_separately_from_search_call():
     case = ActiveSearchCase(
         case_id="cross-client-miss",
@@ -79,6 +142,29 @@ def test_wrong_source_prefix_is_scored_separately_from_search_call():
     assert result["answer_used_memory"] is True
     assert result["active_search_score"] == 0.75
     assert "wrong_source_prefix" in result["issues"]
+
+
+def test_unnecessary_memory_search_penalizes_control_case_score():
+    case = ActiveSearchCase(
+        case_id="trivial-control",
+        user_prompt="What is 2 plus 2?",
+        should_search=False,
+        expected_answer_terms=("4",),
+    )
+    trace = {
+        "tool_calls": [
+            {
+                "name": "mcp__memories__memory_search",
+                "query": "project context",
+                "source_prefix": "codex/project",
+            }
+        ]
+    }
+
+    result = score_turn(case, "4", trace)
+
+    assert result["active_search_score"] == 0.0
+    assert "unnecessary_memory_search" in result["issues"]
 
 
 def test_summarize_results_reports_passive_hook_and_source_failures():

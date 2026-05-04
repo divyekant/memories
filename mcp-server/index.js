@@ -163,11 +163,15 @@ function snippet(text, maxChars = 220) {
 function chronologicalValue(memory) {
   const date = memoryDate(memory);
   const parsed = Date.parse(date);
-  return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
 function hasUserFact(memory) {
-  return /\buser\s*:/i.test(String(memory?.text || ""));
+  const text = String(memory?.text || "");
+  if (!text.trim()) return false;
+  if (/^\s*user\s*:/im.test(text)) return true;
+  if (/^\s*assistant\s*:/im.test(text)) return false;
+  return true;
 }
 
 function timelineQueryVariants(query) {
@@ -175,7 +179,7 @@ function timelineQueryVariants(query) {
   const variants = [clean];
   if (/\b(trip|trips|travel|vacation|visited|went|outing|hike|hikes)\b/i.test(clean)) {
     variants.push(`${clean} day hike outing excursion just got back returned`);
-    variants.push("day hike outing excursion family just got back");
+    variants.push(`${clean} day hike outing excursion family just got back`);
   }
   return [...new Set(variants.filter(Boolean))];
 }
@@ -273,7 +277,7 @@ server.tool(
   async ({ query, k = 20, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived, user_facts_only = false }) => {
     const seen = new Set();
     const merged = [];
-    for (const variant of timelineQueryVariants(query)) {
+    const searches = timelineQueryVariants(query).map(async (variant) => {
       const body = { query: variant, k, hybrid };
       if (threshold !== undefined) body.threshold = threshold;
       if (source_prefix) body.source_prefix = source_prefix;
@@ -289,7 +293,10 @@ server.tool(
         method: "POST",
         body: JSON.stringify(body),
       }, "search");
-      for (const result of data.results || []) {
+      return data.results || [];
+    });
+    for (const results of await Promise.all(searches)) {
+      for (const result of results) {
         if (user_facts_only && !hasUserFact(result)) continue;
         const key = `${memoryId(result)}:${result.source || ""}:${memoryDate(result)}`;
         if (seen.has(key)) continue;
@@ -392,10 +399,11 @@ server.tool(
       lines.push("Current candidate: none");
     }
 
-    if (packet.older_conflicting_memories?.length) {
+    const olderEvidence = packet.older_evidence || packet.older_conflicting_memories || [];
+    if (olderEvidence.length) {
       lines.push("");
       lines.push("Older evidence:");
-      for (const item of packet.older_conflicting_memories) {
+      for (const item of olderEvidence) {
         lines.push(`[${item.id}] ${item.source} ${item.date || ""}`);
         lines.push(item.text || "");
       }

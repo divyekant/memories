@@ -403,7 +403,7 @@ class LongMemEvalRunner:
                 f"If you cannot find the answer, say so clearly."
             )
 
-            agent_response = cc_executor.run_prompt(prompt, project_dir)
+            agent_response = cc_executor.run_prompt(prompt, project_dir, require_memories=True)
             agent_trace = getattr(cc_executor, "last_run_trace", {}) or {}
             logger.debug("Agent response for Q%s: %s", qid, agent_response[:200])
 

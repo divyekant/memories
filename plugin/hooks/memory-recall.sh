@@ -162,12 +162,18 @@ fi
 read -r -d '' PLAYBOOK <<EOF || true
 ## Memory Playbook
 
-IMPORTANT: ALWAYS search memories BEFORE responding to any question about
-prior decisions, architecture, or system behavior. Hook-injected memories
-below are keyword-matched starting points — they are NOT complete context.
+IMPORTANT: Search memories BEFORE responding to questions about prior
+decisions, architecture, project conventions, deferred work, past bugs, project
+history, or resuming a topic. Hook-injected memories below are keyword-matched
+starting points — they are NOT complete context.
 
-MANDATORY FIRST ACTION: Load the memory search tool immediately:
-  ToolSearch("select:mcp__memories__memory_search")
+For self-contained prompts that do not depend on prior/project context
+(arithmetic, translation, formatting, generic facts), answer normally without
+calling memory_search.
+
+ACTIVE SEARCH ACTION for applicable prompts: Load the memory search tool if
+needed with ToolSearch("select:mcp__memories__memory_search"), then call
+memory_search before answering.
 
 You MUST call memory_search when the user's message contains:
 - Questions about prior decisions ("weren't we...", "didn't we decide...")
@@ -176,7 +182,7 @@ You MUST call memory_search when the user's message contains:
 - Release/version context ("what version", "what's deferred")
 - Continuation of prior work ("last time we...", "we were doing...")
 
-Do NOT rationalize skipping this step:
+Do NOT rationalize skipping this step for prior-work prompts:
 | Thought | Reality |
 | "The injected memories cover it" | They are keyword-matched, not semantic |
 | "I can infer from the code" | Prior decisions aren't in code |

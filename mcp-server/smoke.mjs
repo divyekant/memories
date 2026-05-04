@@ -53,16 +53,34 @@ function startFakeMemoriesApi() {
       req.on("end", () => {
         const parsed = JSON.parse(body || "{}");
         record.body = parsed;
+        const timelineOrderResults = [
+          {
+            id: 101,
+            source: "eval/mcp-smoke/extracted",
+            text: "The deployment target was confirmed from a cleaned extracted memory.",
+            similarity: 0.91,
+          },
+          {
+            id: 102,
+            source: "eval/mcp-smoke/extracted",
+            text: "The deployment target was confirmed from a dated cleaned extracted memory.",
+            similarity: 0.9,
+            document_at: "2023-05-20T00:00:00+00:00",
+          },
+        ];
+        const results = String(parsed.query || "").includes("timeline-order-test")
+          ? timelineOrderResults
+          : [{
+              id: 42,
+              source: "eval/mcp-smoke/decision",
+              text: "user: deployment target is fly.io ".repeat(40),
+              similarity: 0.91,
+              document_at: "2023-05-20T00:00:00+00:00",
+            }];
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
-          count: 1,
-          results: [{
-            id: 42,
-            source: "eval/mcp-smoke/decision",
-            text: "user: deployment target is fly.io ".repeat(40),
-            similarity: 0.91,
-            document_at: "2023-05-20T00:00:00+00:00",
-          }],
+          count: results.length,
+          results,
         }));
       });
       return;
@@ -166,6 +184,38 @@ async function main() {
     assert(
       fakeApi.requests.some((req) => req.body?.reference_date === "2023-05-20T00:00:00+00:00" && req.url === "/search"),
       `memory_timeline reference_date was not forwarded: ${JSON.stringify(fakeApi.requests)}`,
+    );
+
+    const cleanTimeline = await client.callTool({
+      name: "memory_timeline",
+      arguments: {
+        query: "timeline-order-test deployment target",
+        source_prefix: "eval/mcp-smoke",
+        user_facts_only: true,
+      },
+    });
+    const cleanTimelineText = cleanTimeline.content.map((item) => item.text || "").join("\n");
+    assert(cleanTimelineText.includes("id=101"), "user_facts_only dropped cleaned extracted memories");
+    assert(
+      cleanTimelineText.indexOf("unknown-date id=101") < cleanTimelineText.indexOf("2023-05-20T00:00:00+00:00 id=102"),
+      `undated timeline memory should be separated at the top: ${cleanTimelineText}`,
+    );
+
+    const tripRequestStart = fakeApi.requests.length;
+    await client.callTool({
+      name: "memory_timeline",
+      arguments: {
+        query: "recent trips",
+        source_prefix: "eval/mcp-smoke",
+      },
+    });
+    const tripQueries = fakeApi.requests
+      .slice(tripRequestStart)
+      .filter((req) => req.url === "/search")
+      .map((req) => req.body?.query || "");
+    assert(
+      tripQueries.length > 1 && tripQueries.every((query) => query.includes("recent trips")),
+      `timeline query broadener dropped the original query: ${JSON.stringify(tripQueries)}`,
     );
 
     const fetched = await client.callTool({

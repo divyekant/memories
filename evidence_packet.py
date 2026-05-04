@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -49,9 +50,42 @@ def _compact_memory(memory: dict[str, Any], *, relation: str) -> dict[str, Any]:
     }
 
 
-def _rank_key(memory: dict[str, Any]) -> tuple[int, datetime, float]:
+def _query_prefers_recency(query: str) -> bool:
+    return bool(
+        re.search(r"\b(latest|current|now|recent|changed|newest|today|yesterday)\b", query, re.I)
+    )
+
+
+def _rank_key(memory: dict[str, Any], *, prefer_recency: bool) -> tuple:
     parsed = _parse_date(_memory_date(memory)) or datetime.min.replace(tzinfo=timezone.utc)
-    return (1 if memory.get("is_latest") else 0, parsed, _score(memory))
+    dated = 1 if _parse_date(_memory_date(memory)) else 0
+    if prefer_recency:
+        return (dated, parsed, _score(memory), 1 if memory.get("is_latest") else 0)
+    return (_score(memory), dated, parsed, 1 if memory.get("is_latest") else 0)
+
+
+def _follow_up_queries(query: str) -> list[str]:
+    clean = " ".join(str(query or "").split())
+    if not clean:
+        return []
+    lowered = clean.lower()
+    candidates = [clean]
+    if not lowered.startswith("latest "):
+        candidates.append(f"latest {clean}")
+    if not lowered.startswith("current "):
+        candidates.append(f"current {clean}")
+    if not lowered.startswith("what changed"):
+        candidates.append(f"what changed about {clean}")
+
+    deduped: list[str] = []
+    seen = set()
+    for candidate in candidates:
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
 
 
 def build_evidence_packet(query: str, results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -65,20 +99,17 @@ def build_evidence_packet(query: str, results: list[dict[str, Any]]) -> dict[str
         return {
             "current_answer": None,
             "supporting_memories": [],
+            "older_evidence": [],
             "older_conflicting_memories": [],
             "source_date_trail": [],
             "confidence": {
                 "level": "missing",
                 "reasons": ["No memories were retrieved for this query."],
             },
-            "follow_up_queries": [
-                query,
-                f"latest {query}",
-                f"current decision {query}",
-            ],
+            "follow_up_queries": _follow_up_queries(query),
         }
 
-    ranked = sorted(results, key=_rank_key, reverse=True)
+    ranked = sorted(results, key=lambda memory: _rank_key(memory, prefer_recency=_query_prefers_recency(query)), reverse=True)
     current = ranked[0]
     current_date = _parse_date(_memory_date(current))
 
@@ -90,6 +121,8 @@ def build_evidence_packet(query: str, results: list[dict[str, Any]]) -> dict[str
             older.append(_compact_memory(memory, relation="older"))
         elif memory.get("archived"):
             older.append(_compact_memory(memory, relation="archived"))
+        elif not current_date and memory_date:
+            older.append(_compact_memory(memory, relation="dated_unranked"))
         else:
             supporting.append(_compact_memory(memory, relation="supporting"))
 
@@ -99,7 +132,7 @@ def build_evidence_packet(query: str, results: list[dict[str, Any]]) -> dict[str
     else:
         reasons.append("Current candidate has no source date.")
     if older:
-        reasons.append("Packet includes older evidence that may conflict or be superseded.")
+        reasons.append("Packet includes older evidence or separately dated evidence that may be superseded.")
     if current.get("is_latest"):
         reasons.append("Current candidate is explicitly marked is_latest.")
 
@@ -117,15 +150,12 @@ def build_evidence_packet(query: str, results: list[dict[str, Any]]) -> dict[str
     return {
         "current_answer": _compact_memory(current, relation="current"),
         "supporting_memories": supporting[:5],
+        "older_evidence": older[:5],
         "older_conflicting_memories": older[:5],
         "source_date_trail": trail[:10],
         "confidence": {
             "level": level,
             "reasons": reasons,
         },
-        "follow_up_queries": [
-            f"latest {query}",
-            f"current {query}",
-            f"what changed about {query}",
-        ],
+        "follow_up_queries": _follow_up_queries(query),
     }
