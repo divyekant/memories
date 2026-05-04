@@ -160,9 +160,29 @@ function snippet(text, maxChars = 220) {
   return `${clean.slice(0, maxChars).trim()}...`;
 }
 
+function chronologicalValue(memory) {
+  const date = memoryDate(memory);
+  const parsed = Date.parse(date);
+  return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
+}
+
+function hasUserFact(memory) {
+  return /\buser\s*:/i.test(String(memory?.text || ""));
+}
+
+function timelineQueryVariants(query) {
+  const clean = String(query || "").trim();
+  const variants = [clean];
+  if (/\b(trip|trips|travel|vacation|visited|went|outing|hike|hikes)\b/i.test(clean)) {
+    variants.push(`${clean} day hike outing excursion just got back returned`);
+    variants.push("day hike outing excursion family just got back");
+  }
+  return [...new Set(variants.filter(Boolean))];
+}
+
 server.tool(
   "memory_search",
-  "Search memories using semantic similarity. Use hybrid mode for best results (combines meaning + keyword matching). Returns the most relevant memories.",
+  "Search memories using semantic similarity. Use hybrid mode for best results (combines meaning + keyword matching). Returns the most relevant memories. When memories contain conversation transcript text, treat user: lines as user-stated facts; assistant: lines may be suggestions, plans, or examples unless a user message confirms they happened. For temporal ordering, prefer direct dated user evidence over vague incidental recency mentions, deduplicate repeated mentions of the same event, and include user-confirmed outings such as day hikes when the query asks about trips.",
   {
     query: z.string().describe("Natural language search query"),
     k: z.number().int().min(1).max(50).default(5).describe("Number of results to return"),
@@ -233,6 +253,75 @@ server.tool(
 );
 
 server.tool(
+  "memory_timeline",
+  "Search memories and return compact results sorted chronologically. Use for temporal ordering, date math, and multi-event questions. Treat user: lines as user-stated facts; assistant: lines may be suggestions or plans unless a user message confirms they happened. Prefer direct dated user evidence over vague incidental recency mentions.",
+  {
+    query: z.string().describe("Natural language search query"),
+    k: z.number().int().min(1).max(50).default(20).describe("Number of results to consider"),
+    hybrid: z.boolean().default(true).describe("Use hybrid BM25+vector search"),
+    threshold: z.number().min(0).max(1).optional().describe("Minimum similarity score (0-1)"),
+    source_prefix: z.string().optional().describe("Filter by source prefix"),
+    feedback_weight: z.number().min(0).max(1).default(0.1).describe("Weight for feedback-based ranking signal"),
+    confidence_weight: z.number().min(0).max(1).default(0).describe("Weight for confidence-based ranking"),
+    graph_weight: z.number().min(0).max(1).default(0.1).describe("Weight for graph-based link expansion"),
+    since: z.string().optional().describe("Filter memories at or after this ISO date"),
+    until: z.string().optional().describe("Filter memories at or before this ISO date"),
+    reference_date: z.string().optional().describe("Reference date for relative temporal queries such as today, yesterday, or past three months"),
+    include_archived: z.boolean().default(false).describe("Include archived/superseded memories"),
+    user_facts_only: z.boolean().default(false).describe("Keep only results containing user: transcript facts. Use for questions about what the user did, took, bought, visited, or decided."),
+  },
+  async ({ query, k = 20, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived, user_facts_only = false }) => {
+    const seen = new Set();
+    const merged = [];
+    for (const variant of timelineQueryVariants(query)) {
+      const body = { query: variant, k, hybrid };
+      if (threshold !== undefined) body.threshold = threshold;
+      if (source_prefix) body.source_prefix = source_prefix;
+      if (feedback_weight !== undefined) body.feedback_weight = feedback_weight;
+      if (confidence_weight !== undefined && confidence_weight > 0) body.confidence_weight = confidence_weight;
+      if (graph_weight !== undefined) body.graph_weight = graph_weight;
+      if (since) body.since = since;
+      if (until) body.until = until;
+      if (reference_date) body.reference_date = reference_date;
+      if (include_archived) body.include_archived = true;
+
+      const data = await memoriesRequest("/search", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }, "search");
+      for (const result of data.results || []) {
+        if (user_facts_only && !hasUserFact(result)) continue;
+        const key = `${memoryId(result)}:${result.source || ""}:${memoryDate(result)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(result);
+      }
+    }
+    const results = merged.sort((a, b) => chronologicalValue(a) - chronologicalValue(b));
+
+    if (!results.length) {
+      return { content: [{ type: "text", text: `No timeline memories found for: "${query}"` }] };
+    }
+
+    const lines = results.map((r, i) => {
+      const id = memoryId(r);
+      const date = memoryDate(r) || "unknown-date";
+      const score = r.similarity ?? r.rrf_score;
+      const pct = score !== undefined ? ` score=${(score * 100).toFixed(0)}%` : "";
+      const fact = hasUserFact(r) ? "user-fact" : "assistant-or-mixed";
+      return `[${i + 1}] ${date} id=${id}${pct} fact=${fact} ${r.source || "unknown-source"}\n${snippet(r.text, 360)}`;
+    });
+
+    return {
+      content: [{
+        type: "text",
+        text: `Timeline for "${query}" (chronological; verify user-stated facts before answering):\n\n${lines.join("\n\n")}`,
+      }],
+    };
+  }
+);
+
+server.tool(
   "memory_get",
   "Fetch one memory by ID. Use after compact memory_search results when you need the full text and metadata for a selected memory.",
   {
@@ -252,7 +341,7 @@ server.tool(
 
 server.tool(
   "memory_evidence",
-  "Search memories and return an agent-facing evidence packet with the current candidate, older evidence, source/date trail, confidence, and follow-up queries. Use for latest/current/temporal questions where a flat hit list is easy to misread.",
+  "Search memories and return an agent-facing evidence packet with the current candidate, older evidence, source/date trail, confidence, and follow-up queries. Use for latest/current/temporal questions where a flat hit list is easy to misread. When memories contain conversation transcript text, treat user: lines as user-stated facts; assistant: lines may be suggestions, plans, or examples unless a user message confirms they happened. For temporal ordering, prefer direct dated user evidence over vague incidental recency mentions, deduplicate repeated mentions of the same event, and include user-confirmed outings such as day hikes when the query asks about trips.",
   {
     query: z.string().describe("Natural language search query"),
     k: z.number().int().min(1).max(50).default(8).describe("Number of results to consider"),

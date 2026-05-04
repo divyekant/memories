@@ -111,6 +111,8 @@ def validate_eval_setup(
                     f"{module} package required for judge_provider={provider}. "
                     "Install eval dependencies with: uv sync --extra extract"
                 )
+            if report.ok:
+                report.info.append(f"Eval judge: {provider}")
 
     return report
 
@@ -122,6 +124,8 @@ def main() -> int:
     parser.add_argument("--require-api-key", action="store_true")
     parser.add_argument("--allow-unsafe-target", action="store_true")
     parser.add_argument("--no-claude", action="store_true", help="Skip claude CLI check")
+    parser.add_argument("--require-judge", action="store_true")
+    parser.add_argument("--judge-provider", default="anthropic")
     args = parser.parse_args()
 
     report = validate_eval_setup(
@@ -130,6 +134,8 @@ def main() -> int:
         require_api_key=args.require_api_key,
         mcp_server_path=args.mcp_server_path,
         require_claude=not args.no_claude,
+        require_judge=args.require_judge,
+        judge_provider=args.judge_provider,
         allow_unsafe_target=args.allow_unsafe_target,
     )
     for line in report.info:

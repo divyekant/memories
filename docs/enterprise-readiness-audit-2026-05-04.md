@@ -17,10 +17,13 @@ Transcript handling: this audit summarizes local session evidence and cites sess
 - System eval proof: LongMemEval system artifacts now retain setup validation, ready-before/after status, agent answer excerpts, answer length, error kind, raw recall top sessions, and parsed Claude stream-json tool-call traces.
 - Eval target safety: eval URL resolution ignores ambient `MEMORIES_URL` and defaults to the isolated eval target unless `EVAL_MEMORIES_URL` is explicitly set. Non-local eval targets are rejected by default.
 - Eval credential safety: trusted eval entry points require `MEMORIES_API_KEY` and record only key presence, never the key value.
+- Eval judge proof: setup validation can require judge credentials and records judge-provider presence without leaking secrets.
+- Eval auth isolation: Claude Code system eval subprocesses strip judge/model-provider API keys while keeping eval-scoped Memories credentials, preventing external API key contamination.
 - Eval flake resistance: add-batch seeding retries retryable 5xx/transport failures, and system-agent infrastructure failures get one bounded retry before scoring.
 - MCP progressive disclosure: generic MCP clients can call `memory_search` with `compact=true`, then call `memory_get` for full text by id.
+- MCP temporal timeline: generic MCP clients can call `memory_timeline` for chronological evidence. It supports user-fact filtering and travel/event query expansion so agents can separate user-confirmed events from assistant-only plans.
 - Scoped conflict safety: `CONFLICT` extraction actions now verify `old_id` is inside allowed source prefixes before creating conflict metadata.
-- Generic MCP compatibility: stdio smoke now validates `memory_search`, `memory_get`, `memory_evidence`, `memory_count`, and read-only behavior.
+- Generic MCP compatibility: stdio smoke now validates `memory_search`, `memory_get`, `memory_evidence`, `memory_timeline`, `memory_count`, and read-only behavior.
 
 ## Verification Evidence
 
@@ -29,11 +32,16 @@ Transcript handling: this audit summarizes local session evidence and cites sess
 - MCP generic smoke: `npm run smoke` -> `generic_mcp_stdio_smoke=ok`.
 - Dependency audit: `npm audit --json` -> 0 vulnerabilities.
 - Whitespace: `git diff --check` -> exit 0.
-- Trusted temporal system eval: `eval/results/longmemeval-enterprise-temporal-20q-system-proof-trace-retry.json`.
-  - `overall`: 0.855
+- Trusted temporal system eval: `eval/results/longmemeval-enterprise-temporal-20q-system-timeline-env-isolated.json`.
+  - `overall`: 0.9515
   - `recall_any_at_5`: 1.0
   - `questions_run`: 20
   - `workers`: 2
+  - `agent_timeout_seconds`: 180
+  - `error_counts`: 20 with no agent error kind
+  - `low_scores`: none below 0.95
+  - `memory_timeline` tool calls observed: 17
+  - `setup_validation`: target URL, API key presence, MCP path, and judge provider all recorded as OK
   - `eval_ready_before`: `qdrant_count=0`, `metadata_count=0`
   - `eval_ready_after`: `qdrant_count=0`, `metadata_count=0`
   - service log check: no `ERROR`, `500 Internal`, `Traceback`, `Search failed`, `unexpected keyword`, or `Server disconnected` entries during the final trusted run window.

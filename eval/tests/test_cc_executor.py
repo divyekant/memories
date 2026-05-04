@@ -148,6 +148,27 @@ class TestStrictMcpConfig:
         finally:
             executor.cleanup_project(project_dir)
 
+    @patch("eval.cc_executor.subprocess.run")
+    def test_run_prompt_strips_judge_api_keys_from_agent_env(self, mock_run, monkeypatch):
+        """Judge/provider credentials should not contaminate Claude Code auth."""
+        mock_run.return_value = MagicMock(stdout="response")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "judge-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-judge-key")
+        executor = CCExecutor(
+            memories_url="http://localhost:8901",
+            memories_api_key="eval-key",
+            mcp_server_path="/path/to/mcp/server.js",
+        )
+        project_dir = executor.create_isolated_project(with_memories=True)
+        try:
+            executor.run_prompt("test", project_dir)
+            env = mock_run.call_args.kwargs["env"]
+            assert "ANTHROPIC_API_KEY" not in env
+            assert "OPENAI_API_KEY" not in env
+            assert env["MEMORIES_API_KEY"] == "eval-key"
+        finally:
+            executor.cleanup_project(project_dir)
+
 
 class TestRunPrompt:
     @patch("eval.cc_executor.subprocess.run")
@@ -247,6 +268,61 @@ class TestRunPrompt:
             assert "timeout" in result.lower() or "TIMEOUT" in result
         finally:
             executor.cleanup_project(project_dir)
+
+    @patch("eval.cc_executor.subprocess.run")
+    def test_capture_trace_timeout_preserves_partial_stream_json(self, mock_run):
+        """Timeout traces should retain partial Claude stream evidence."""
+        partial_stream = "\n".join([
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_timeout",
+                            "name": "mcp__memories__memory_evidence",
+                            "input": {
+                                "query": "The Nightingale Sapiens The Power",
+                                "source_prefix": "eval/longmemeval/q1",
+                                "reference_date": "2022-04-30T13:22:00+00:00",
+                            },
+                        }
+                    ]
+                },
+            }),
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "I found the first date."}
+                    ]
+                },
+            }),
+        ])
+        mock_run.side_effect = subprocess.TimeoutExpired(
+            cmd="claude",
+            timeout=60,
+            output=partial_stream,
+            stderr="partial stderr",
+        )
+        traced = CCExecutor(
+            timeout=60,
+            memories_url="http://localhost:8901",
+            memories_api_key="eval-key",
+            mcp_server_path="/path/to/mcp/server.js",
+            capture_trace=True,
+        )
+        project_dir = traced.create_isolated_project(with_memories=True)
+        try:
+            result = traced.run_prompt("Find the answer", project_dir)
+
+            assert result.startswith("[TIMEOUT]")
+            assert traced.last_run_trace["error_kind"] == "timeout"
+            assert traced.last_run_trace["event_count"] == 2
+            assert traced.last_run_trace["tool_calls"][0]["name"] == "mcp__memories__memory_evidence"
+            assert traced.last_run_trace["stderr_excerpt"] == "partial stderr"
+        finally:
+            traced.cleanup_project(project_dir)
 
     @patch("eval.cc_executor.subprocess.run")
     def test_run_prompt_cli_not_found(self, mock_run, executor):

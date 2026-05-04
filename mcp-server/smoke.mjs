@@ -59,7 +59,7 @@ function startFakeMemoriesApi() {
           results: [{
             id: 42,
             source: "eval/mcp-smoke/decision",
-            text: "deployment target is fly.io ".repeat(40),
+            text: "user: deployment target is fly.io ".repeat(40),
             similarity: 0.91,
             document_at: "2023-05-20T00:00:00+00:00",
           }],
@@ -72,7 +72,7 @@ function startFakeMemoriesApi() {
       res.end(JSON.stringify({
         id: 42,
         source: "eval/mcp-smoke/decision",
-        text: "deployment target is fly.io ".repeat(40),
+        text: "user: deployment target is fly.io ".repeat(40),
         document_at: "2023-05-20T00:00:00+00:00",
       }));
       return;
@@ -113,7 +113,7 @@ async function main() {
     const tools = await client.listTools();
     const names = new Set(tools.tools.map((tool) => tool.name));
 
-    for (const required of ["memory_search", "memory_get", "memory_add", "memory_extract", "memory_count", "memory_evidence"]) {
+    for (const required of ["memory_search", "memory_get", "memory_add", "memory_extract", "memory_count", "memory_evidence", "memory_timeline"]) {
       assert(names.has(required), `missing MCP tool: ${required}`);
     }
 
@@ -150,6 +150,23 @@ async function main() {
     const compactText = compactSearch.content.map((item) => item.text || "").join("\n");
     assert(compactText.includes("Use memory_get id=42"), "compact search did not point to memory_get");
     assert(compactText.length < 600, `compact search returned too much text: ${compactText.length}`);
+
+    const timeline = await client.callTool({
+      name: "memory_timeline",
+      arguments: {
+        query: "deployment target",
+        source_prefix: "eval/mcp-smoke",
+        reference_date: "2023-05-20T00:00:00+00:00",
+        user_facts_only: true,
+      },
+    });
+    const timelineText = timeline.content.map((item) => item.text || "").join("\n");
+    assert(timelineText.includes("Timeline for \"deployment target\""), "unexpected memory_timeline response");
+    assert(timelineText.includes("2023-05-20T00:00:00+00:00"), "timeline omitted memory date");
+    assert(
+      fakeApi.requests.some((req) => req.body?.reference_date === "2023-05-20T00:00:00+00:00" && req.url === "/search"),
+      `memory_timeline reference_date was not forwarded: ${JSON.stringify(fakeApi.requests)}`,
+    );
 
     const fetched = await client.callTool({
       name: "memory_get",

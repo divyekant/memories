@@ -33,6 +33,8 @@ VALIDATE_ARGS=(
   --memories-url "$MEMORIES_URL"
   --mcp-server-path "${EVAL_MCP_SERVER_PATH:-}"
   --require-api-key
+  --require-judge
+  --judge-provider "${EXTRACT_PROVIDER:-anthropic}"
 )
 if [[ "${EVAL_ALLOW_UNSAFE_TARGET:-}" == "1" ]]; then
   VALIDATE_ARGS+=(--allow-unsafe-target)

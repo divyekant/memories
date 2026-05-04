@@ -10,6 +10,13 @@ import tempfile
 
 logger = logging.getLogger("eval.cc")
 
+AGENT_ENV_BLOCKLIST = {
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "CHATGPT_REFRESH_TOKEN",
+    "EXTRACT_PROVIDER",
+}
+
 
 class CCExecutor:
     """Runs prompts through Claude Code in isolated temp projects."""
@@ -245,6 +252,15 @@ class CCExecutor:
         trace["error_kind"] = trace["error_kind"] or cls._classify_agent_output(text, stderr, returncode)
         return text, trace
 
+    @staticmethod
+    def _timeout_output_text(value) -> str:
+        """Normalize TimeoutExpired partial stdout/stderr to text."""
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode(errors="replace")
+        return str(value)
+
     def run_prompt(self, prompt: str, project_dir: str) -> str:
         """Run prompt via claude -p with strict MCP isolation.
 
@@ -277,7 +293,11 @@ class CCExecutor:
         env = {
             k: v
             for k, v in os.environ.items()
-            if not k.startswith("CLAUDE_") and k != "MCP_CONTEXT"
+            if (
+                not k.startswith("CLAUDE_")
+                and k != "MCP_CONTEXT"
+                and k not in AGENT_ENV_BLOCKLIST
+            )
         }
         home = os.environ.get("HOME", "")
         env["PATH"] = os.environ.get("PATH", f"{home}/.local/bin:/usr/local/bin:/usr/bin:/bin")
@@ -326,16 +346,26 @@ class CCExecutor:
                 output = f"[STDERR] {stderr.strip()}"
                 self.last_run_trace["error_kind"] = "agent_stderr"
             return output
-        except subprocess.TimeoutExpired:
-            self.last_run_trace = {
-                "output_format": "stream-json" if self.capture_trace else "text",
-                "event_count": 0,
-                "tool_calls": [],
-                "tool_results": 0,
-                "result": {},
-                "error_kind": "timeout",
-                "returncode": None,
-            }
+        except subprocess.TimeoutExpired as e:
+            partial_stdout = self._timeout_output_text(getattr(e, "stdout", None) or getattr(e, "output", None))
+            partial_stderr = self._timeout_output_text(getattr(e, "stderr", None))
+            if self.capture_trace:
+                _, self.last_run_trace = self._parse_stream_json_trace(
+                    partial_stdout,
+                    stderr=partial_stderr,
+                    returncode=None,
+                )
+                self.last_run_trace["error_kind"] = "timeout"
+            else:
+                self.last_run_trace = {
+                    "output_format": "text",
+                    "stdout_chars": len(partial_stdout),
+                    "stderr_chars": len(partial_stderr),
+                    "stderr_excerpt": partial_stderr[:1000],
+                    "returncode": None,
+                    "error_kind": "timeout",
+                    "tool_calls": [],
+                }
             return f"[TIMEOUT] Claude Code timed out after {self.timeout}s"
         except FileNotFoundError:
             self.last_run_trace = {

@@ -94,6 +94,27 @@ def _setup_report_evidence(report) -> dict:
     }
 
 
+def _select_dataset(
+    dataset: list[dict],
+    category: str | None = None,
+    question_ids: list[str] | None = None,
+    max_questions: int = 0,
+) -> list[dict]:
+    """Apply eval dataset filters in a deterministic order."""
+    selected = list(dataset)
+    if category:
+        selected = [q for q in selected if q.get("question_type") == category]
+    if question_ids:
+        wanted = {str(qid) for qid in question_ids}
+        selected = [
+            q for q in selected
+            if str(q.get("question_id") or q.get("id") or "") in wanted
+        ]
+    if max_questions > 0:
+        selected = selected[:max_questions]
+    return selected
+
+
 def _process_question(
     idx: int,
     total: int,
@@ -226,7 +247,16 @@ def _process_question(
             project_queue.put(project_dir)
 
 
-def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "tool", workers: int = 1, agent_model: str = ""):
+def run_benchmark(
+    max_questions: int = 0,
+    output_path: str = "",
+    mode: str = "tool",
+    workers: int = 1,
+    agent_model: str = "",
+    category: str | None = None,
+    question_ids: list[str] | None = None,
+    agent_timeout: int = 180,
+):
     _load_local_env()
     url = resolve_eval_memories_url(DEFAULT_EVAL_MEMORIES_URL)
     api_key = os.environ.get("MEMORIES_API_KEY", "")
@@ -262,13 +292,17 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     dataset = runner.load_dataset()
     _log(f"Loaded {len(dataset)} questions")
 
-    # Filter by category if specified
-    if args.category:
-        dataset = [q for q in dataset if q.get("question_type") == args.category]
-        _log(f"Filtered to category '{args.category}': {len(dataset)} questions")
-
+    dataset = _select_dataset(
+        dataset,
+        category=category,
+        question_ids=question_ids,
+        max_questions=max_questions,
+    )
+    if category:
+        _log(f"Filtered to category '{category}': {len(dataset)} questions")
+    if question_ids:
+        _log(f"Filtered to question id(s): {', '.join(question_ids)} -> {len(dataset)} questions")
     if max_questions > 0:
-        dataset = dataset[:max_questions]
         _log(f"Running subset: {max_questions} questions")
 
     _log("Initializing LLM judge...")
@@ -284,7 +318,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     if mode == "system":
         from eval.cc_executor import CCExecutor
         cc_executor = CCExecutor(
-            timeout=120,
+            timeout=agent_timeout,
             memories_url=url,
             memories_api_key=api_key,
             mcp_server_path=mcp_server_path,
@@ -383,6 +417,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
             "version": "4.0.0",
             "eval_mode": mode,
             "agent_model": agent_model or "default",
+            "agent_timeout_seconds": agent_timeout if mode == "system" else None,
             "workers": workers,
             "elapsed_seconds": round(elapsed, 1),
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -420,7 +455,20 @@ if __name__ == "__main__":
                         help="Number of parallel workers, 1-32 (default: 1).")
     parser.add_argument("--agent-model", default="",
                         help="Claude model for system eval agent (e.g. sonnet, haiku, opus). Empty = default.")
+    parser.add_argument("--agent-timeout", type=int, default=180,
+                        help="Claude Code timeout in seconds for system eval mode (default: 180).")
+    parser.add_argument("--question-id", action="append", default=None,
+                        help="Run only a specific LongMemEval question id. May be repeated.")
     args = parser.parse_args()
     model_suffix = f"-{args.agent_model}" if args.agent_model else ""
     output = args.output or f"eval/results/longmemeval-v4.0.0-{args.mode}{model_suffix}.json"
-    run_benchmark(max_questions=args.questions, output_path=output, mode=args.mode, workers=args.workers, agent_model=args.agent_model)
+    run_benchmark(
+        max_questions=args.questions,
+        output_path=output,
+        mode=args.mode,
+        workers=args.workers,
+        agent_model=args.agent_model,
+        category=args.category,
+        question_ids=args.question_id,
+        agent_timeout=args.agent_timeout,
+    )

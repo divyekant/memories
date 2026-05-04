@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 from eval.run_longmemeval import _process_question
+from eval.run_longmemeval import _select_dataset
 from eval.run_longmemeval import _setup_report_evidence
 
 
@@ -23,6 +24,25 @@ def test_setup_report_evidence_keeps_preflight_without_secrets():
         "errors": [],
     }
     assert "secret" not in str(evidence).lower()
+
+
+def test_select_dataset_filters_category_question_ids_and_limit():
+    """Residual eval cases should be rerunnable directly by question id."""
+    dataset = [
+        {"question_id": "a", "question_type": "temporal-reasoning"},
+        {"question_id": "b", "question_type": "knowledge-update"},
+        {"question_id": "c", "question_type": "temporal-reasoning"},
+        {"question_id": "d", "question_type": "temporal-reasoning"},
+    ]
+
+    selected = _select_dataset(
+        dataset,
+        category="temporal-reasoning",
+        question_ids=["c", "d"],
+        max_questions=1,
+    )
+
+    assert selected == [{"question_id": "c", "question_type": "temporal-reasoning"}]
 
 
 def test_process_question_returns_auditable_system_detail():

@@ -100,6 +100,55 @@ def test_validation_rejects_missing_anthropic_judge_api_key(tmp_path: Path, monk
     assert any("ANTHROPIC_API_KEY" in error for error in report.errors)
 
 
+def test_validation_records_judge_provider_when_available(tmp_path: Path, monkeypatch) -> None:
+    mcp_server = tmp_path / "index.js"
+    mcp_server.write_text("console.log('mcp');")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr("eval.setup_validation.importlib_util.find_spec", lambda name: object())
+
+    report = validate_eval_setup(
+        memories_url="http://localhost:8901",
+        mcp_server_path=str(mcp_server),
+        require_claude=False,
+        require_judge=True,
+        judge_provider="anthropic",
+    )
+
+    assert report.ok
+    assert any("Eval judge: anthropic" in info for info in report.info)
+    assert "test-key" not in "\n".join(report.info + report.warnings + report.errors)
+
+
+def test_setup_validation_cli_can_require_judge(tmp_path: Path, monkeypatch, capsys) -> None:
+    from eval import setup_validation
+
+    mcp_server = tmp_path / "index.js"
+    mcp_server.write_text("console.log('mcp');")
+    monkeypatch.setenv("MEMORIES_API_KEY", "eval-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "judge-key")
+    monkeypatch.setattr("eval.setup_validation.importlib_util.find_spec", lambda name: object())
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "setup_validation.py",
+            "--memories-url",
+            "http://localhost:8901",
+            "--mcp-server-path",
+            str(mcp_server),
+            "--require-api-key",
+            "--require-judge",
+            "--judge-provider",
+            "anthropic",
+            "--no-claude",
+        ],
+    )
+
+    assert setup_validation.main() == 0
+    output = capsys.readouterr().out
+    assert "OK: Eval judge: anthropic" in output
+    assert "judge-key" not in output
+
+
 def test_validation_requires_eval_api_key_when_requested(tmp_path: Path) -> None:
     mcp_server = tmp_path / "index.js"
     mcp_server.write_text("console.log('mcp');")
