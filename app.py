@@ -2081,6 +2081,85 @@ async def search_explain(request_body: SearchRequest, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/search/evidence")
+async def search_evidence(request_body: SearchRequest, request: Request):
+    """Search and return an agent-facing evidence packet."""
+    auth = _get_auth(request)
+    logger.info("Search evidence: q=%r k=%d", request_body.query[:80], request_body.k)
+    if request_body.auto_intent:
+        from query_intent import classify_query
+        from datetime import datetime as _dt
+        ref = None
+        if request_body.reference_date:
+            try:
+                ref = _dt.fromisoformat(request_body.reference_date.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        adj = classify_query(
+            query=request_body.query,
+            reference_date=ref,
+            caller_since=request_body.since or None,
+            caller_until=request_body.until or None,
+            caller_graph_weight=request_body.graph_weight if request_body.graph_weight != 0.1 else None,
+        )
+        if adj.auto_detected:
+            if adj.since and not request_body.since:
+                request_body.since = adj.since
+            if adj.until and not request_body.until:
+                request_body.until = adj.until
+            if adj.graph_weight is not None and request_body.graph_weight == 0.1:
+                request_body.graph_weight = adj.graph_weight
+            if adj.recency_weight is not None and request_body.recency_weight == 0.0:
+                request_body.recency_weight = adj.recency_weight
+    try:
+        fb_scores = None
+        if request_body.feedback_weight > 0:
+            fb_scores = usage_tracker.get_feedback_scores(
+                [m["id"] for m in getattr(memory, "metadata", [])]
+            )
+        if request_body.hybrid:
+            results = memory.hybrid_search(
+                query=request_body.query,
+                k=request_body.k,
+                threshold=request_body.threshold,
+                vector_weight=request_body.vector_weight,
+                source_prefix=request_body.source_prefix,
+                recency_weight=request_body.recency_weight,
+                recency_half_life_days=request_body.recency_half_life_days,
+                include_archived=request_body.include_archived,
+                feedback_weight=request_body.feedback_weight,
+                feedback_scores=fb_scores,
+                confidence_weight=request_body.confidence_weight,
+                graph_weight=request_body.graph_weight,
+                since=request_body.since,
+                until=request_body.until,
+            )
+        else:
+            results = memory.search(
+                query=request_body.query,
+                k=request_body.k,
+                threshold=request_body.threshold,
+                source_prefix=request_body.source_prefix,
+                include_archived=request_body.include_archived,
+                since=request_body.since,
+                until=request_body.until,
+            )
+        results = auth.filter_results(results)
+        from evidence_packet import build_evidence_packet
+
+        packet = build_evidence_packet(request_body.query, results)
+        usage_tracker.log_api_event("search_evidence", request_body.source)
+        return {
+            "query": request_body.query,
+            "results": results,
+            "count": len(results),
+            "evidence_packet": packet,
+        }
+    except Exception:
+        logger.exception("Search evidence failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.post("/search/batch")
 async def search_batch(request_body: SearchBatchRequest, request: Request):
     """Run multiple searches in one request."""

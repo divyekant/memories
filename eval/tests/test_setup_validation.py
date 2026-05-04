@@ -49,6 +49,41 @@ def test_validation_can_skip_mcp_for_tool_only_eval() -> None:
     assert report.ok
 
 
+def test_validation_rejects_missing_anthropic_judge_dependency(tmp_path: Path, monkeypatch) -> None:
+    mcp_server = tmp_path / "index.js"
+    mcp_server.write_text("console.log('mcp');")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr("eval.setup_validation.importlib_util.find_spec", lambda name: None)
+
+    report = validate_eval_setup(
+        memories_url="http://localhost:8901",
+        mcp_server_path=str(mcp_server),
+        require_claude=False,
+        require_judge=True,
+        judge_provider="anthropic",
+    )
+
+    assert not report.ok
+    assert any("anthropic package required" in error for error in report.errors)
+
+
+def test_validation_rejects_missing_anthropic_judge_api_key(tmp_path: Path, monkeypatch) -> None:
+    mcp_server = tmp_path / "index.js"
+    mcp_server.write_text("console.log('mcp');")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    report = validate_eval_setup(
+        memories_url="http://localhost:8901",
+        mcp_server_path=str(mcp_server),
+        require_claude=False,
+        require_judge=True,
+        judge_provider="anthropic",
+    )
+
+    assert not report.ok
+    assert any("ANTHROPIC_API_KEY" in error for error in report.errors)
+
+
 def test_eval_url_resolution_prefers_eval_env(monkeypatch) -> None:
     monkeypatch.setenv("MEMORIES_URL", "http://localhost:8900")
     monkeypatch.setenv("EVAL_MEMORIES_URL", "http://localhost:8901")

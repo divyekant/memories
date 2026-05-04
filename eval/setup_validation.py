@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util as importlib_util
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -13,6 +14,15 @@ from urllib.parse import urlparse
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"}
 LOCAL_PRODUCTION_PORTS = {8900}
 DEFAULT_EVAL_MEMORIES_URL = "http://localhost:8901"
+JUDGE_PROVIDER_MODULES = {
+    "anthropic": "anthropic",
+    "openai": "openai",
+}
+JUDGE_PROVIDER_ENV_KEYS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "chatgpt-subscription": "CHATGPT_REFRESH_TOKEN",
+}
 
 
 @dataclass
@@ -44,6 +54,8 @@ def validate_eval_setup(
     mcp_server_path: str = "",
     require_mcp: bool = True,
     require_claude: bool = True,
+    require_judge: bool = False,
+    judge_provider: str = "",
     allow_unsafe_target: bool = False,
 ) -> EvalSetupReport:
     """Validate static eval setup before network or model work begins."""
@@ -69,6 +81,21 @@ def validate_eval_setup(
 
     if require_claude and shutil.which("claude") is None:
         report.errors.append("claude CLI not found in PATH; scenario eval cannot run.")
+
+    if require_judge:
+        provider = judge_provider.strip().lower()
+        if not provider:
+            report.errors.append("Judge provider is required for this eval run.")
+        else:
+            env_key = JUDGE_PROVIDER_ENV_KEYS.get(provider)
+            if env_key and not os.getenv(env_key, "").strip():
+                report.errors.append(f"{env_key} is required when judge_provider={provider}.")
+            module = JUDGE_PROVIDER_MODULES.get(provider)
+            if module and importlib_util.find_spec(module) is None:
+                report.errors.append(
+                    f"{module} package required for judge_provider={provider}. "
+                    "Install eval dependencies with: uv sync --extra extract"
+                )
 
     return report
 

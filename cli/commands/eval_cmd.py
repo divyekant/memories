@@ -48,6 +48,8 @@ def longmemeval(judge_provider, judge_model, output, compare, questions, k, url,
         mcp_server_path=mcp_server_path,
         require_mcp=mode == "system",
         require_claude=mode == "system",
+        require_judge=True,
+        judge_provider=judge_provider,
         allow_unsafe_target=os.getenv("EVAL_ALLOW_UNSAFE_TARGET") == "1",
     )
     for message in setup_report.warnings:

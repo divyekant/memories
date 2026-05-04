@@ -198,6 +198,76 @@ server.tool(
 );
 
 server.tool(
+  "memory_evidence",
+  "Search memories and return an agent-facing evidence packet with the current candidate, older evidence, source/date trail, confidence, and follow-up queries. Use for latest/current/temporal questions where a flat hit list is easy to misread.",
+  {
+    query: z.string().describe("Natural language search query"),
+    k: z.number().int().min(1).max(50).default(8).describe("Number of results to consider"),
+    hybrid: z.boolean().default(true).describe("Use hybrid BM25+vector search"),
+    threshold: z.number().min(0).max(1).optional().describe("Minimum similarity score (0-1)"),
+    source_prefix: z.string().optional().describe("Filter by source prefix"),
+    feedback_weight: z.number().min(0).max(1).default(0.1).describe("Weight for feedback-based ranking signal"),
+    confidence_weight: z.number().min(0).max(1).default(0).describe("Weight for confidence-based ranking"),
+    graph_weight: z.number().min(0).max(1).default(0.1).describe("Weight for graph-based link expansion"),
+    since: z.string().optional().describe("Filter memories at or after this ISO date"),
+    until: z.string().optional().describe("Filter memories at or before this ISO date"),
+    include_archived: z.boolean().default(false).describe("Include archived/superseded memories"),
+  },
+  async ({ query, k = 8, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, include_archived }) => {
+    const body = { query, k, hybrid };
+    if (threshold !== undefined) body.threshold = threshold;
+    if (source_prefix) body.source_prefix = source_prefix;
+    if (feedback_weight !== undefined) body.feedback_weight = feedback_weight;
+    if (confidence_weight !== undefined && confidence_weight > 0) body.confidence_weight = confidence_weight;
+    if (graph_weight !== undefined) body.graph_weight = graph_weight;
+    if (since) body.since = since;
+    if (until) body.until = until;
+    if (include_archived) body.include_archived = true;
+
+    const data = await memoriesRequest("/search/evidence", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }, "search");
+
+    const packet = data.evidence_packet || {};
+    const lines = [];
+    lines.push(`Evidence packet for "${query}"`);
+    lines.push(`Confidence: ${packet.confidence?.level || "unknown"}`);
+    for (const reason of packet.confidence?.reasons || []) {
+      lines.push(`- ${reason}`);
+    }
+
+    if (packet.current_answer) {
+      const current = packet.current_answer;
+      lines.push("");
+      lines.push("Current candidate:");
+      lines.push(`[${current.id}] ${current.source} ${current.date || ""}`);
+      lines.push(current.text || "");
+    } else {
+      lines.push("");
+      lines.push("Current candidate: none");
+    }
+
+    if (packet.older_conflicting_memories?.length) {
+      lines.push("");
+      lines.push("Older evidence:");
+      for (const item of packet.older_conflicting_memories) {
+        lines.push(`[${item.id}] ${item.source} ${item.date || ""}`);
+        lines.push(item.text || "");
+      }
+    }
+
+    if (packet.follow_up_queries?.length) {
+      lines.push("");
+      lines.push("Follow-up queries:");
+      for (const q of packet.follow_up_queries) lines.push(`- ${q}`);
+    }
+
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  }
+);
+
+server.tool(
   "memory_add",
   "Store a new memory. Memories persist across sessions and are searchable by meaning. Use for decisions, patterns, learnings, bug fixes, preferences.",
   {

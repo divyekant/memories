@@ -19,6 +19,30 @@ function startFakeMemoriesApi() {
       res.end(JSON.stringify({ count: 0 }));
       return;
     }
+    if (req.method === "POST" && req.url === "/search/evidence") {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        const parsed = JSON.parse(body || "{}");
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          query: parsed.query,
+          count: 0,
+          results: [],
+          evidence_packet: {
+            current_answer: null,
+            supporting_memories: [],
+            older_conflicting_memories: [],
+            source_date_trail: [],
+            confidence: { level: "missing", reasons: ["No memories were retrieved for this query."] },
+            follow_up_queries: [parsed.query],
+          },
+        }));
+      });
+      return;
+    }
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "unexpected request" }));
   });
@@ -55,7 +79,7 @@ async function main() {
     const tools = await client.listTools();
     const names = new Set(tools.tools.map((tool) => tool.name));
 
-    for (const required of ["memory_search", "memory_add", "memory_extract", "memory_count"]) {
+    for (const required of ["memory_search", "memory_add", "memory_extract", "memory_count", "memory_evidence"]) {
       assert(names.has(required), `missing MCP tool: ${required}`);
     }
 
@@ -66,7 +90,16 @@ async function main() {
     const text = result.content.map((item) => item.text || "").join("\n");
     assert(text.includes('0 memories with source prefix "eval/mcp-smoke".'), "unexpected memory_count response");
 
-    const writes = fakeApi.requests.filter((req) => req.method !== "GET");
+    const evidence = await client.callTool({
+      name: "memory_evidence",
+      arguments: { query: "latest deployment target", source_prefix: "eval/mcp-smoke" },
+    });
+    const evidenceText = evidence.content.map((item) => item.text || "").join("\n");
+    assert(evidenceText.includes("Confidence: missing"), "unexpected memory_evidence response");
+
+    const writes = fakeApi.requests.filter(
+      (req) => req.method !== "GET" && req.url !== "/search/evidence",
+    );
     assert(writes.length === 0, `smoke test made write requests: ${JSON.stringify(writes)}`);
     assert(
       fakeApi.requests.some((req) => req.url.startsWith("/memories/count?source=eval%2Fmcp-smoke")),

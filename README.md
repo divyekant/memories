@@ -745,6 +745,9 @@ POST /search
  "vector_weight": 0.7, "recency_weight": 0.1, "recency_half_life_days": 30,
  "source_prefix": "team/project/"}
 
+POST /search/evidence
+{"query": "latest deploy target", "k": 8, "source_prefix": "team/project/"}
+
 POST /search/batch
 {"queries": [{"query": "...", "k": 5}, {"query": "...", "hybrid": true}]}
 ```
@@ -868,6 +871,7 @@ DELETE /webhooks/{id}
 
 ```
 POST /search/explain               # Admin-only scoring breakdown
+POST /search/evidence              # Agent-facing current/older evidence packet
 ```
 
 ### Quality & Metrics

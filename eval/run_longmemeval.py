@@ -170,6 +170,8 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
         mcp_server_path=mcp_server_path,
         require_mcp=mode == "system",
         require_claude=mode == "system",
+        require_judge=True,
+        judge_provider="anthropic",
         allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",
     )
     if not setup_report.ok:
