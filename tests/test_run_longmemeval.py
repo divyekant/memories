@@ -184,3 +184,67 @@ def test_process_question_retries_transient_agent_auth_error():
     assert result["answer_excerpt"] == "You attended on May 1."
     assert result["retried"] is True
     assert result["first_error_kind"] == "auth_error"
+
+
+def test_process_question_single_mode_retry_resets_and_cleans_owned_project():
+    """Single-mode system retries should scrub the temp project between attempts."""
+    runner = MagicMock()
+    runner.judge_provider = "anthropic"
+    runner.judge_model = None
+    runner.seed_question.return_value = 1
+    seen_project_dirs = []
+
+    def fake_run_question_system(*args, project_dir, **kwargs):
+        seen_project_dirs.append(project_dir)
+        if len(seen_project_dirs) == 1:
+            return {
+                "context": "[TIMEOUT] Claude Code timed out after 120s",
+                "recall_any_at_5": 1.0,
+                "recall_all_at_5": 1.0,
+            }
+        return {
+            "context": "You attended on May 1.",
+            "recall_any_at_5": 1.0,
+            "recall_all_at_5": 1.0,
+        }
+
+    runner.run_question_system.side_effect = fake_run_question_system
+    runner._judge_single.return_value = (1.0, "correct")
+
+    class FakeExecutor:
+        def __init__(self):
+            self.reset_calls = []
+            self.cleanup_calls = []
+
+        def create_isolated_project(self, with_memories=False):
+            assert with_memories is True
+            return "/tmp/owned-system-eval"
+
+        def reset_project(self, project_dir):
+            self.reset_calls.append(project_dir)
+
+        def cleanup_project(self, project_dir):
+            self.cleanup_calls.append(project_dir)
+
+    executor = FakeExecutor()
+
+    result = _process_question(
+        0,
+        1,
+        {
+            "question_id": "q-timeout",
+            "question_type": "temporal-reasoning",
+            "question": "When did I attend?",
+            "answer": "May 1",
+        },
+        runner,
+        "system",
+        "eval/longmemeval",
+        cc_executor=executor,
+    )
+
+    assert seen_project_dirs == ["/tmp/owned-system-eval", "/tmp/owned-system-eval"]
+    assert executor.reset_calls == ["/tmp/owned-system-eval"]
+    assert executor.cleanup_calls == ["/tmp/owned-system-eval"]
+    assert result["retried"] is True
+    assert result["first_error_kind"] == "timeout"

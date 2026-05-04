@@ -145,8 +145,12 @@ def _process_question(
 
     # Acquire exclusive project dir for system mode
     project_dir = ""
+    owns_project_dir = False
     if project_queue is not None:
         project_dir = project_queue.get()
+    elif mode == "system" and cc_executor and hasattr(cc_executor, "create_isolated_project"):
+        project_dir = cc_executor.create_isolated_project(with_memories=True)
+        owns_project_dir = True
 
     # Use per-thread client for parallel safety (httpx.Client is not thread-safe)
     if client_url:
@@ -251,6 +255,8 @@ def _process_question(
             if cc_executor:
                 cc_executor.reset_project(project_dir)
             project_queue.put(project_dir)
+        elif owns_project_dir and cc_executor and project_dir and hasattr(cc_executor, "cleanup_project"):
+            cc_executor.cleanup_project(project_dir)
 
 
 def run_benchmark(

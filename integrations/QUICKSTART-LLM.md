@@ -122,7 +122,7 @@ Edit `~/.claude/settings.json` and merge in:
       "hooks": [{
         "type": "command",
         "command": "~/.claude/hooks/memory/memory-query.sh",
-        "timeout": 3
+        "timeout": 10
       }]
     }],
     "Stop": [{
@@ -303,7 +303,7 @@ chmod +x ~/.codex/hooks/memory/*.sh
       "hooks": [{
         "type": "command",
         "command": "/Users/you/.codex/hooks/memory/memory-query.sh",
-        "timeout": 3
+        "timeout": 10
       }]
     }],
     "Stop": [{

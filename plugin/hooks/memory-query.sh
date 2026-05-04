@@ -191,12 +191,22 @@ fi
 
 # --- Dual search strategy ---
 RAW_RESPONSES=""
+SEARCH_TMPDIR=$(mktemp -d 2>/dev/null || mktemp -d -t memories-query)
+SEARCH_JOBS=()
+SEARCH_INDEX=0
+
+queue_search() {
+  local query="$1" prefix="$2" limit="$3" threshold="$4"
+  local outfile="$SEARCH_TMPDIR/result_${SEARCH_INDEX}.json"
+  SEARCH_INDEX=$((SEARCH_INDEX + 1))
+  (
+    search_memories "$query" "$prefix" "$limit" "$threshold" > "$outfile" || true
+  ) &
+  SEARCH_JOBS+=("$!")
+}
 
 # Strategy A: enriched unscoped (cross-project, semantic)
-UNSCOPED_RESPONSE=$(search_memories "$ENRICHED_QUERY" "" 6 0.30)
-if [ -n "$UNSCOPED_RESPONSE" ]; then
-  RAW_RESPONSES="$UNSCOPED_RESPONSE"
-fi
+queue_search "$ENRICHED_QUERY" "" 6 0.30
 
 # Strategy B: enriched prefix-scoped (project-specific precision across client families)
 if [ -n "$PROJECT" ]; then
@@ -204,22 +214,25 @@ if [ -n "$PROJECT" ]; then
   for raw_prefix in "${prefix_templates[@]}"; do
     prefix=$(printf '%s' "$raw_prefix" | sed "s/{project}/$PROJECT/g" | xargs)
     [ -z "$prefix" ] && continue
-    SCOPED_RESPONSE=$(search_memories "$ENRICHED_QUERY" "$prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD")
-    if [ -n "$SCOPED_RESPONSE" ]; then
-      RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$SCOPED_RESPONSE")
-    fi
+    queue_search "$ENRICHED_QUERY" "$prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD"
   done
 fi
 
 # Intent-based prefix biasing (additional search for fix/debug/setup prompts)
 if [ -n "$INTENT_PREFIXES" ] && [ -n "$PROJECT" ]; then
   for intent_prefix in $INTENT_PREFIXES; do
-    response=$(search_memories "$ENRICHED_QUERY" "$intent_prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD")
-    if [ -n "$response" ]; then
-      RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
-    fi
+    queue_search "$ENRICHED_QUERY" "$intent_prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD"
   done
 fi
+
+for job in "${SEARCH_JOBS[@]}"; do
+  wait "$job" || true
+done
+
+if ls "$SEARCH_TMPDIR"/result_*.json >/dev/null 2>&1; then
+  RAW_RESPONSES=$(cat "$SEARCH_TMPDIR"/result_*.json 2>/dev/null || true)
+fi
+rm -rf "$SEARCH_TMPDIR"
 
 # Merge, deduplicate, cap at 6
 RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr '

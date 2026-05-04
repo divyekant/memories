@@ -73,7 +73,7 @@ def install_claude_product_read_hooks(
                     {
                         "type": "command",
                         "command": str(hook_root / "memory-query.sh"),
-                        "timeout": 3,
+                        "timeout": 10,
                     }
                 ],
             }
@@ -119,7 +119,7 @@ def install_codex_product_read_hooks(
                         {
                             "type": "command",
                             "command": str(hook_root / "memory-query.sh"),
-                            "timeout": 3,
+                            "timeout": 10,
                         }
                     ],
                 }

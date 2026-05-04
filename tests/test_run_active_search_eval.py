@@ -1,5 +1,6 @@
 """Tests for the active-search behavior eval runner."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -132,8 +133,10 @@ def test_install_claude_product_read_hooks_writes_project_settings(tmp_path: Pat
     )
 
     settings = (project_dir / ".claude" / "settings.json").read_text(encoding="utf-8")
+    settings_json = json.loads(settings)
     assert str(hooks_dir / "memory-recall.sh") in settings
     assert str(hooks_dir / "memory-query.sh") in settings
+    assert settings_json["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"] == 10
     assert "memory-extract.sh" not in settings
     assert (project_dir / "CLAUDE.md").read_text(encoding="utf-8") == "# Memories\n"
 
@@ -154,9 +157,11 @@ def test_install_codex_product_read_hooks_writes_temp_home(tmp_path: Path):
     )
 
     hooks_json = (codex_home / "hooks.json").read_text(encoding="utf-8")
+    hooks = json.loads(hooks_json)
     config_toml = (codex_home / "config.toml").read_text(encoding="utf-8")
     assert str(hooks_dir / "memory-recall.sh") in hooks_json
     assert str(hooks_dir / "memory-query.sh") in hooks_json
+    assert hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"] == 10
     assert "memory-extract.sh" not in hooks_json
     assert "[mcp_servers.memories]" in config_toml
     assert "http://localhost:8901" in config_toml

@@ -176,10 +176,12 @@ function hasUserFact(memory) {
 
 function timelineQueryVariants(query) {
   const clean = String(query || "").trim();
-  const variants = [clean];
+  const variants = [
+    clean,
+    `${clean} user confirmed dated event evidence completed happened`,
+  ];
   if (/\b(trip|trips|travel|vacation|visited|went|outing|hike|hikes)\b/i.test(clean)) {
-    variants.push(`${clean} day hike outing excursion just got back returned`);
-    variants.push(`${clean} day hike outing excursion family just got back`);
+    variants.push(`${clean} trip travel vacation day hike outing excursion just got back returned`);
   }
   return [...new Set(variants.filter(Boolean))];
 }
