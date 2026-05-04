@@ -341,6 +341,7 @@ class LongMemEvalRunner:
             "eval_mode": "tool",
             "recall_any_at_5": recall["recall_any"],
             "recall_all_at_5": recall["recall_all"],
+            "recall_top_sessions_at_5": recall["top_sessions"],
         }
 
     def run_question_system(
@@ -395,6 +396,7 @@ class LongMemEvalRunner:
             )
 
             agent_response = cc_executor.run_prompt(prompt, project_dir)
+            agent_trace = getattr(cc_executor, "last_run_trace", {}) or {}
             logger.debug("Agent response for Q%s: %s", qid, agent_response[:200])
 
             retrieval_k = 50
@@ -419,6 +421,8 @@ class LongMemEvalRunner:
                 "eval_mode": "system",
                 "recall_any_at_5": recall["recall_any"],
                 "recall_all_at_5": recall["recall_all"],
+                "recall_top_sessions_at_5": recall["top_sessions"],
+                "agent_trace": agent_trace,
             }
         finally:
             if owns_project:
@@ -598,6 +602,11 @@ class LongMemEvalRunner:
                     "category": s["category"],
                     "score": s["score"],
                     **({"recall_any_at_5": s["recall_any_at_5"]} if "recall_any_at_5" in s else {}),
+                    **({"recall_top_sessions_at_5": s["recall_top_sessions_at_5"]} if "recall_top_sessions_at_5" in s else {}),
+                    **({"answer_excerpt": s["answer_excerpt"]} if "answer_excerpt" in s else {}),
+                    **({"answer_chars": s["answer_chars"]} if "answer_chars" in s else {}),
+                    **({"error_kind": s["error_kind"]} if "error_kind" in s else {}),
+                    **({"agent_trace": s["agent_trace"]} if "agent_trace" in s else {}),
                 }
                 for s in scored
             ],

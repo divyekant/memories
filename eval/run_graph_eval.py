@@ -5,7 +5,7 @@ Seeds memories with explicit links, then compares search results with
 graph_weight=0 (off) vs graph_weight=0.1 (on) for each scenario.
 
 Usage:
-    MEMORIES_URL=http://localhost:8901 MEMORIES_API_KEY=god-is-an-astronaut \
+    MEMORIES_URL=http://localhost:8901 MEMORIES_API_KEY="$MEMORIES_API_KEY" \
     python eval/run_graph_eval.py [--output path.json] [--verbose]
 """
 
@@ -189,6 +189,8 @@ def main():
     api_key = os.environ.get("MEMORIES_API_KEY", "")
     setup_report = validate_eval_setup(
         memories_url=url,
+        api_key=api_key,
+        require_api_key=True,
         require_mcp=False,
         require_claude=False,
         allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",

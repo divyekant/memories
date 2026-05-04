@@ -653,6 +653,11 @@ def execute_actions(
                 if document_at:
                     fact_meta["document_at"] = document_at
                 if old_id is not None:
+                    if allowed_prefixes is not None:
+                        existing = engine.get_memory(old_id)
+                        existing_source = str(existing.get("source", ""))
+                        if not source_matches_prefixes(existing_source, allowed_prefixes):
+                            raise PermissionError(f"old_id not authorized for conflict: {old_id}")
                     fact_meta["conflicts_with"] = old_id
                 added_ids = engine.add_memories(
                     texts=[fact_text],

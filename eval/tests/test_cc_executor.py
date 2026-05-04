@@ -167,6 +167,75 @@ class TestRunPrompt:
             executor.cleanup_project(project_dir)
 
     @patch("eval.cc_executor.subprocess.run")
+    def test_capture_trace_records_stream_json_tool_calls(self, mock_run):
+        """Trace mode should run Claude stream-json and save tool-call evidence."""
+        stream = "\n".join([
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "mcp__memories__memory_search",
+                            "input": {
+                                "query": "roadmap",
+                                "source_prefix": "eval/longmemeval/q1",
+                            },
+                        }
+                    ]
+                },
+            }),
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "The answer is blue."}
+                    ]
+                },
+            }),
+            json.dumps({
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": "The answer is blue.",
+                "duration_ms": 1234,
+            }),
+        ])
+        mock_run.return_value = MagicMock(stdout=stream, stderr="", returncode=0)
+        traced = CCExecutor(
+            timeout=60,
+            memories_url="http://localhost:8901",
+            memories_api_key="eval-key",
+            mcp_server_path="/path/to/mcp/server.js",
+            capture_trace=True,
+        )
+        project_dir = traced.create_isolated_project(with_memories=True)
+        try:
+            result = traced.run_prompt("Find the answer", project_dir)
+            cmd = mock_run.call_args[0][0]
+
+            assert result == "The answer is blue."
+            assert "--output-format" in cmd
+            assert cmd[cmd.index("--output-format") + 1] == "stream-json"
+            assert "--verbose" in cmd
+            assert traced.last_run_trace["output_format"] == "stream-json"
+            assert traced.last_run_trace["event_count"] == 3
+            assert traced.last_run_trace["tool_calls"] == [
+                {
+                    "id": "toolu_1",
+                    "name": "mcp__memories__memory_search",
+                    "input_keys": ["query", "source_prefix"],
+                    "source_prefix": "eval/longmemeval/q1",
+                    "query": "roadmap",
+                }
+            ]
+            assert traced.last_run_trace["result"]["is_error"] is False
+            assert traced.last_run_trace["duration_ms"] == 1234
+        finally:
+            traced.cleanup_project(project_dir)
+
+    @patch("eval.cc_executor.subprocess.run")
     def test_run_prompt_timeout(self, mock_run, executor):
         """Mock raises TimeoutExpired, verify 'timeout' in output."""
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=60)

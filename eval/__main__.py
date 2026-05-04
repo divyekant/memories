@@ -63,6 +63,8 @@ def main():
 
     setup_report = validate_eval_setup(
         memories_url=config.memories_url,
+        api_key=config.memories_api_key,
+        require_api_key=True,
         mcp_server_path=mcp_server_path,
         allow_unsafe_target=os.getenv("EVAL_ALLOW_UNSAFE_TARGET") == "1",
     )

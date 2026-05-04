@@ -45,12 +45,14 @@ def is_local_production_url(url: str) -> bool:
 
 def resolve_eval_memories_url(default: str = DEFAULT_EVAL_MEMORIES_URL) -> str:
     """Resolve the eval target without defaulting to the normal local service."""
-    return os.getenv("EVAL_MEMORIES_URL") or os.getenv("MEMORIES_URL") or default
+    return os.getenv("EVAL_MEMORIES_URL") or default
 
 
 def validate_eval_setup(
     *,
     memories_url: str,
+    api_key: str | None = None,
+    require_api_key: bool = False,
     mcp_server_path: str = "",
     require_mcp: bool = True,
     require_claude: bool = True,
@@ -63,12 +65,25 @@ def validate_eval_setup(
 
     if not memories_url:
         report.errors.append("MEMORIES_URL is empty; eval target is unknown.")
+    elif not allow_unsafe_target and (urlparse(memories_url).hostname or "") not in LOCAL_HOSTS:
+        report.errors.append(
+            f"Refusing to run eval against non-local target {memories_url}; set EVAL_MEMORIES_URL to the isolated eval service."
+        )
     elif is_local_production_url(memories_url) and not allow_unsafe_target:
         report.errors.append(
             f"Refusing to run eval against {memories_url}; localhost:8900 is the normal local production service."
         )
     else:
         report.info.append(f"Eval Memories target: {memories_url}")
+
+    if api_key is None:
+        api_key = os.getenv("MEMORIES_API_KEY", "")
+    if require_api_key and not api_key.strip():
+        report.errors.append("MEMORIES_API_KEY is required for trusted eval runs.")
+    elif api_key.strip():
+        report.info.append("Eval API key: set")
+    else:
+        report.warnings.append("Eval API key: not set")
 
     if not require_mcp:
         report.info.append("Eval MCP server: not required for this eval mode")
@@ -104,12 +119,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Validate Memories eval setup")
     parser.add_argument("--memories-url", required=True)
     parser.add_argument("--mcp-server-path", required=True)
+    parser.add_argument("--require-api-key", action="store_true")
     parser.add_argument("--allow-unsafe-target", action="store_true")
     parser.add_argument("--no-claude", action="store_true", help="Skip claude CLI check")
     args = parser.parse_args()
 
     report = validate_eval_setup(
         memories_url=args.memories_url,
+        api_key=os.getenv("MEMORIES_API_KEY", ""),
+        require_api_key=args.require_api_key,
         mcp_server_path=args.mcp_server_path,
         require_claude=not args.no_claude,
         allow_unsafe_target=args.allow_unsafe_target,

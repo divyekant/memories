@@ -146,6 +146,20 @@ const server = new McpServer({
 
 // -- Tools -------------------------------------------------------------------
 
+function memoryId(memory) {
+  return memory.id ?? memory.memory_id ?? "unknown";
+}
+
+function memoryDate(memory) {
+  return memory.document_at || memory.date || memory.created_at || "";
+}
+
+function snippet(text, maxChars = 220) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (clean.length <= maxChars) return clean;
+  return `${clean.slice(0, maxChars).trim()}...`;
+}
+
 server.tool(
   "memory_search",
   "Search memories using semantic similarity. Use hybrid mode for best results (combines meaning + keyword matching). Returns the most relevant memories.",
@@ -162,8 +176,9 @@ server.tool(
     until: z.string().optional().describe("Filter memories at or before this ISO date"),
     reference_date: z.string().optional().describe("Reference date for relative temporal queries such as today, yesterday, or past three months"),
     include_archived: z.boolean().default(false).describe("Include archived/superseded memories (needed for version history queries)"),
+    compact: z.boolean().default(false).describe("Return compact snippets with IDs. Use memory_get on a selected ID for full text."),
   },
-  async ({ query, k = 5, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived }) => {
+  async ({ query, k = 5, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived, compact = false }) => {
     const body = { query, k, hybrid };
     if (threshold !== undefined) body.threshold = threshold;
     if (source_prefix) body.source_prefix = source_prefix;
@@ -184,6 +199,24 @@ server.tool(
       return { content: [{ type: "text", text: `No memories found for: "${query}"` }] };
     }
 
+    if (compact) {
+      const lines = data.results.map((r, i) => {
+        const score = r.similarity ?? r.rrf_score;
+        const pct = score !== undefined ? ` (${(score * 100).toFixed(0)}%)` : "";
+        const id = memoryId(r);
+        const date = memoryDate(r);
+        const dateText = date ? ` ${date}` : "";
+        return `[${i + 1}] id=${id}${pct} ${r.source || "unknown-source"}${dateText}\n${snippet(r.text)}\nUse memory_get id=${id} for full text.`;
+      });
+
+      return {
+        content: [{
+          type: "text",
+          text: `Found ${data.count} compact memories for "${query}":\n\n${lines.join("\n\n")}`,
+        }],
+      };
+    }
+
     const lines = data.results.map((r, i) => {
       const score = r.similarity ?? r.rrf_score;
       const pct = (score * 100).toFixed(0);
@@ -196,6 +229,24 @@ server.tool(
         text: `Found ${data.count} memories for "${query}":\n\n${lines.join("\n\n---\n\n")}`,
       }],
     };
+  }
+);
+
+server.tool(
+  "memory_get",
+  "Fetch one memory by ID. Use after compact memory_search results when you need the full text and metadata for a selected memory.",
+  {
+    id: z.number().int().min(0).describe("Memory ID to fetch"),
+  },
+  async ({ id }) => {
+    const data = await memoriesRequest(`/memory/${id}`, {}, "manage");
+    const date = memoryDate(data);
+    const lines = [
+      `[${data.id ?? id}] ${data.source || "unknown-source"}${date ? ` ${date}` : ""}`,
+      "",
+      data.text || "",
+    ];
+    return { content: [{ type: "text", text: lines.join("\n") }] };
   }
 );
 

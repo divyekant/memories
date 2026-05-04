@@ -21,12 +21,15 @@ class CCExecutor:
         memories_api_key: str = "",
         mcp_server_path: str = "",
         model: str = "",
+        capture_trace: bool = False,
     ):
         self.timeout = timeout
         self.memories_url = memories_url
         self.memories_api_key = memories_api_key
         self.model = model
         self.mcp_server_path = mcp_server_path
+        self.capture_trace = capture_trace
+        self.last_run_trace: dict = {}
 
     def create_isolated_project(self, with_memories: bool = False) -> str:
         """Create temp dir as isolated CC project.
@@ -127,6 +130,121 @@ class CCExecutor:
         if count:
             logger.info("Cleaned %d stale cc_eval auto-memory dirs", count)
 
+    @staticmethod
+    def _classify_agent_output(text: str, stderr: str = "", returncode: int | None = None) -> str:
+        """Classify infrastructure failures separately from bad answers."""
+        combined = f"{text}\n{stderr}".strip().lower()
+        if not text.strip() and returncode not in (0, None):
+            return "agent_error"
+        if text.startswith("[TIMEOUT]"):
+            return "timeout"
+        if "invalid api key" in combined or "authentication_error" in combined:
+            return "auth_error"
+        if text.startswith("[STDERR]"):
+            return "agent_stderr"
+        if text.startswith("[ERROR]"):
+            return "agent_error"
+        if returncode not in (0, None):
+            return "agent_error"
+        return ""
+
+    @staticmethod
+    def _content_blocks(event: dict) -> list[dict]:
+        """Return assistant/user content blocks from Claude stream-json events."""
+        message = event.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, list):
+                return [b for b in content if isinstance(b, dict)]
+        content = event.get("content")
+        if isinstance(content, list):
+            return [b for b in content if isinstance(b, dict)]
+        return []
+
+    @staticmethod
+    def _summarize_tool_input(tool_input) -> dict:
+        """Keep proof-useful tool input fields without copying full payloads."""
+        if not isinstance(tool_input, dict):
+            return {"input_keys": []}
+        summary = {"input_keys": sorted(str(k) for k in tool_input.keys())}
+        for key in ("query", "source_prefix", "reference_date", "memory_id"):
+            if key in tool_input:
+                summary[key] = str(tool_input[key])[:300]
+        if "ids" in tool_input and isinstance(tool_input["ids"], list):
+            summary["ids_count"] = len(tool_input["ids"])
+        return summary
+
+    @classmethod
+    def _parse_stream_json_trace(
+        cls,
+        stdout: str,
+        stderr: str = "",
+        returncode: int | None = None,
+    ) -> tuple[str, dict]:
+        """Parse Claude Code stream-json into a final answer and audit trace."""
+        trace = {
+            "output_format": "stream-json",
+            "event_count": 0,
+            "parse_errors": 0,
+            "tool_calls": [],
+            "tool_results": 0,
+            "result": {},
+            "duration_ms": None,
+            "stdout_chars": len(stdout or ""),
+            "stderr_chars": len(stderr or ""),
+            "stderr_excerpt": (stderr or "")[:1000],
+            "returncode": returncode,
+            "error_kind": "",
+        }
+        assistant_text: list[str] = []
+        result_text = ""
+
+        for line in (stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                trace["parse_errors"] += 1
+                continue
+            if not isinstance(event, dict):
+                continue
+            trace["event_count"] += 1
+
+            if event.get("type") == "result":
+                trace["result"] = {
+                    key: event.get(key)
+                    for key in ("type", "subtype", "is_error", "num_turns", "total_cost_usd")
+                    if key in event
+                }
+                if "duration_ms" in event:
+                    trace["duration_ms"] = event.get("duration_ms")
+                if isinstance(event.get("result"), str):
+                    result_text = event["result"].strip()
+                if event.get("is_error"):
+                    trace["error_kind"] = "agent_error"
+
+            for block in cls._content_blocks(event):
+                block_type = block.get("type")
+                if block_type == "tool_use":
+                    tool = {
+                        "id": str(block.get("id", "")),
+                        "name": str(block.get("name", "")),
+                    }
+                    tool.update(cls._summarize_tool_input(block.get("input")))
+                    trace["tool_calls"].append(tool)
+                elif block_type == "tool_result":
+                    trace["tool_results"] += 1
+                elif block_type == "text" and isinstance(block.get("text"), str):
+                    assistant_text.append(block["text"])
+
+        text = result_text or "\n".join(t.strip() for t in assistant_text if t.strip()).strip()
+        if not text and stdout and trace["parse_errors"]:
+            text = stdout.strip()
+        trace["error_kind"] = trace["error_kind"] or cls._classify_agent_output(text, stderr, returncode)
+        return text, trace
+
     def run_prompt(self, prompt: str, project_dir: str) -> str:
         """Run prompt via claude -p with strict MCP isolation.
 
@@ -150,6 +268,8 @@ class CCExecutor:
             "--strict-mcp-config",
             "--mcp-config", mcp_arg,
         ]
+        if self.capture_trace:
+            cmd.extend(["--output-format", "stream-json", "--verbose"])
         if self.model:
             cmd.extend(["--model", self.model])
         cmd.extend(["-p", prompt])
@@ -178,15 +298,53 @@ class CCExecutor:
                 cwd=project_dir,
                 env=env,
             )
-            output = result.stdout.strip()
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+            output = stdout.strip()
             logger.debug("claude exit=%d stdout=%d chars stderr=%d chars",
-                         result.returncode, len(output), len(result.stderr or ""))
-            if result.stderr:
-                logger.debug("stderr: %s", result.stderr[:500])
-            if not output and result.stderr:
-                return f"[STDERR] {result.stderr.strip()}"
+                         result.returncode, len(output), len(stderr))
+            if stderr:
+                logger.debug("stderr: %s", stderr[:500])
+            if self.capture_trace:
+                output, self.last_run_trace = self._parse_stream_json_trace(
+                    stdout,
+                    stderr=stderr,
+                    returncode=result.returncode,
+                )
+                output = output.strip()
+            else:
+                self.last_run_trace = {
+                    "output_format": "text",
+                    "stdout_chars": len(stdout),
+                    "stderr_chars": len(stderr),
+                    "stderr_excerpt": stderr[:1000],
+                    "returncode": result.returncode,
+                    "error_kind": self._classify_agent_output(output, stderr, result.returncode),
+                    "tool_calls": [],
+                }
+            if not output and stderr:
+                output = f"[STDERR] {stderr.strip()}"
+                self.last_run_trace["error_kind"] = "agent_stderr"
             return output
         except subprocess.TimeoutExpired:
+            self.last_run_trace = {
+                "output_format": "stream-json" if self.capture_trace else "text",
+                "event_count": 0,
+                "tool_calls": [],
+                "tool_results": 0,
+                "result": {},
+                "error_kind": "timeout",
+                "returncode": None,
+            }
             return f"[TIMEOUT] Claude Code timed out after {self.timeout}s"
         except FileNotFoundError:
+            self.last_run_trace = {
+                "output_format": "stream-json" if self.capture_trace else "text",
+                "event_count": 0,
+                "tool_calls": [],
+                "tool_results": 0,
+                "result": {},
+                "error_kind": "agent_error",
+                "returncode": None,
+            }
             return "[ERROR] Claude Code CLI not found. Ensure 'claude' is on PATH."

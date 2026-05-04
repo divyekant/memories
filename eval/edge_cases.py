@@ -7,7 +7,7 @@ detect regressions in search ranking, link integrity, and memory lifecycle.
 
 Usage:
     # Against eval instance:
-    python eval/edge_cases.py --url http://localhost:8901 --key god-is-an-astronaut
+    python eval/edge_cases.py --url http://localhost:8901 --key "$MEMORIES_API_KEY"
 
     # JSON output for CI:
     python eval/edge_cases.py --url http://localhost:8901 --key KEY --json
@@ -397,12 +397,14 @@ class EdgeCaseEval:
 def main():
     parser = argparse.ArgumentParser(description="Memories Edge Case Eval")
     parser.add_argument("--url", default="http://localhost:8901", help="Memories API URL")
-    parser.add_argument("--key", default="god-is-an-astronaut", help="API key")
+    parser.add_argument("--key", default=os.environ.get("MEMORIES_API_KEY", ""), help="API key")
     parser.add_argument("--json", action="store_true", help="JSON output")
     args = parser.parse_args()
 
     setup_report = validate_eval_setup(
         memories_url=args.url,
+        api_key=args.key,
+        require_api_key=True,
         require_mcp=False,
         require_claude=False,
         allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",

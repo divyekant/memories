@@ -28,6 +28,22 @@ def test_validation_rejects_production_target(tmp_path: Path) -> None:
     assert any("localhost:8900" in error for error in report.errors)
 
 
+def test_validation_rejects_remote_eval_target_by_default(tmp_path: Path) -> None:
+    mcp_server = tmp_path / "index.js"
+    mcp_server.write_text("console.log('mcp');")
+
+    report = validate_eval_setup(
+        memories_url="https://memory.divyekant.com",
+        api_key="eval-key",
+        require_api_key=True,
+        mcp_server_path=str(mcp_server),
+        require_claude=False,
+    )
+
+    assert not report.ok
+    assert any("non-local" in error for error in report.errors)
+
+
 def test_validation_requires_mcp_server_path_for_trusted_eval() -> None:
     report = validate_eval_setup(
         memories_url="http://localhost:8901",
@@ -84,9 +100,49 @@ def test_validation_rejects_missing_anthropic_judge_api_key(tmp_path: Path, monk
     assert any("ANTHROPIC_API_KEY" in error for error in report.errors)
 
 
+def test_validation_requires_eval_api_key_when_requested(tmp_path: Path) -> None:
+    mcp_server = tmp_path / "index.js"
+    mcp_server.write_text("console.log('mcp');")
+
+    report = validate_eval_setup(
+        memories_url="http://localhost:8901",
+        mcp_server_path=str(mcp_server),
+        require_claude=False,
+        require_api_key=True,
+        api_key="",
+    )
+
+    assert not report.ok
+    assert any("MEMORIES_API_KEY" in error for error in report.errors)
+
+
+def test_validation_records_api_key_presence_without_leaking_value(tmp_path: Path) -> None:
+    mcp_server = tmp_path / "index.js"
+    mcp_server.write_text("console.log('mcp');")
+
+    report = validate_eval_setup(
+        memories_url="http://localhost:8901",
+        mcp_server_path=str(mcp_server),
+        require_claude=False,
+        require_api_key=True,
+        api_key="secret-eval-key",
+    )
+
+    assert report.ok
+    assert any("Eval API key: set" in info for info in report.info)
+    assert "secret-eval-key" not in "\n".join(report.info + report.warnings + report.errors)
+
+
 def test_eval_url_resolution_prefers_eval_env(monkeypatch) -> None:
     monkeypatch.setenv("MEMORIES_URL", "http://localhost:8900")
     monkeypatch.setenv("EVAL_MEMORIES_URL", "http://localhost:8901")
+
+    assert resolve_eval_memories_url() == "http://localhost:8901"
+
+
+def test_eval_url_resolution_ignores_default_memories_url(monkeypatch) -> None:
+    monkeypatch.setenv("MEMORIES_URL", "http://memory.divyekant.com")
+    monkeypatch.delenv("EVAL_MEMORIES_URL", raising=False)
 
     assert resolve_eval_memories_url() == "http://localhost:8901"
 

@@ -45,6 +45,38 @@ function startFakeMemoriesApi() {
       });
       return;
     }
+    if (req.method === "POST" && req.url === "/search") {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        const parsed = JSON.parse(body || "{}");
+        record.body = parsed;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          count: 1,
+          results: [{
+            id: 42,
+            source: "eval/mcp-smoke/decision",
+            text: "deployment target is fly.io ".repeat(40),
+            similarity: 0.91,
+            document_at: "2023-05-20T00:00:00+00:00",
+          }],
+        }));
+      });
+      return;
+    }
+    if (req.method === "GET" && req.url === "/memory/42") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: 42,
+        source: "eval/mcp-smoke/decision",
+        text: "deployment target is fly.io ".repeat(40),
+        document_at: "2023-05-20T00:00:00+00:00",
+      }));
+      return;
+    }
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "unexpected request" }));
   });
@@ -81,7 +113,7 @@ async function main() {
     const tools = await client.listTools();
     const names = new Set(tools.tools.map((tool) => tool.name));
 
-    for (const required of ["memory_search", "memory_add", "memory_extract", "memory_count", "memory_evidence"]) {
+    for (const required of ["memory_search", "memory_get", "memory_add", "memory_extract", "memory_count", "memory_evidence"]) {
       assert(names.has(required), `missing MCP tool: ${required}`);
     }
 
@@ -107,8 +139,28 @@ async function main() {
       `memory_evidence reference_date was not forwarded: ${JSON.stringify(fakeApi.requests)}`,
     );
 
+    const compactSearch = await client.callTool({
+      name: "memory_search",
+      arguments: {
+        query: "deployment target",
+        source_prefix: "eval/mcp-smoke",
+        compact: true,
+      },
+    });
+    const compactText = compactSearch.content.map((item) => item.text || "").join("\n");
+    assert(compactText.includes("Use memory_get id=42"), "compact search did not point to memory_get");
+    assert(compactText.length < 600, `compact search returned too much text: ${compactText.length}`);
+
+    const fetched = await client.callTool({
+      name: "memory_get",
+      arguments: { id: 42 },
+    });
+    const fetchedText = fetched.content.map((item) => item.text || "").join("\n");
+    assert(fetchedText.includes("[42] eval/mcp-smoke/decision"), "memory_get did not return requested memory");
+    assert(fetchedText.length > compactText.length, "memory_get should return fuller detail than compact search");
+
     const writes = fakeApi.requests.filter(
-      (req) => req.method !== "GET" && req.url !== "/search/evidence",
+      (req) => req.method !== "GET" && !["/search/evidence", "/search"].includes(req.url),
     );
     assert(writes.length === 0, `smoke test made write requests: ${JSON.stringify(writes)}`);
     assert(

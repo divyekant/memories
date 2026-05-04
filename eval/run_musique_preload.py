@@ -8,7 +8,7 @@ Phase 3: Single cleanup at end
 This eliminates the Qdrant mmap thrash that crashed the eval at 220/1000.
 
 Usage:
-    MEMORIES_URL=http://localhost:8901 MEMORIES_API_KEY=god-is-an-astronaut \
+    MEMORIES_URL=http://localhost:8901 MEMORIES_API_KEY="$MEMORIES_API_KEY" \
     python eval/run_musique_preload.py --questions 100 [--hops 3] [--output path.json]
 """
 
@@ -275,6 +275,8 @@ def main():
     key = os.environ.get("MEMORIES_API_KEY", "")
     setup_report = validate_eval_setup(
         memories_url=url,
+        api_key=key,
+        require_api_key=True,
         require_mcp=False,
         require_claude=False,
         allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",

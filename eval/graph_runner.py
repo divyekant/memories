@@ -6,7 +6,7 @@ Supports two modes:
 - Shared corpus: preload passages once, window links only (2WikiMultiHopQA)
 
 Usage:
-    MEMORIES_URL=http://localhost:8901 MEMORIES_API_KEY=god-is-an-astronaut \
+    MEMORIES_URL=http://localhost:8901 MEMORIES_API_KEY="$MEMORIES_API_KEY" \
     python eval/graph_runner.py --adapter musique --dataset eval/datasets/musique-multihop.jsonl \
         --questions 200 --hops 3 --window 50
 """
@@ -222,6 +222,8 @@ def main():
     key = os.environ.get("MEMORIES_API_KEY", "")
     setup_report = validate_eval_setup(
         memories_url=url,
+        api_key=key,
+        require_api_key=True,
         require_mcp=False,
         require_claude=False,
         allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",

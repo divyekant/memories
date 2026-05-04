@@ -6,7 +6,7 @@ accumulated over months across many sessions, teams, and domains.
 Each memory is unique and realistic. Links connect related facts across domains.
 
 Usage:
-    MEMORIES_URL=http://localhost:8901 MEMORIES_API_KEY=god-is-an-astronaut \
+    MEMORIES_URL=http://localhost:8901 MEMORIES_API_KEY="$MEMORIES_API_KEY" \
     python eval/generate_synthetic_memories.py [--count 2000] [--seed-links] [--cleanup]
 """
 
@@ -29,6 +29,8 @@ def _client():
     key = os.environ.get("MEMORIES_API_KEY", "")
     setup_report = validate_eval_setup(
         memories_url=url,
+        api_key=key,
+        require_api_key=True,
         require_mcp=False,
         require_claude=False,
         allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",

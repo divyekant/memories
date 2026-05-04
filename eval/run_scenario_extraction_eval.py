@@ -125,10 +125,12 @@ def run_eval(extraction_model: str = "", output_path: str = ""):
         pass
 
     url = resolve_eval_memories_url(DEFAULT_EVAL_MEMORIES_URL)
-    api_key = os.environ.get("MEMORIES_API_KEY", "god-is-an-astronaut")
+    api_key = os.environ.get("MEMORIES_API_KEY", "")
     mcp_server_path = str(Path(__file__).parent.parent / "mcp-server" / "index.js")
     setup_report = validate_eval_setup(
         memories_url=url,
+        api_key=api_key,
+        require_api_key=True,
         mcp_server_path=mcp_server_path,
         require_claude=True,
         allow_unsafe_target=os.environ.get("EVAL_ALLOW_UNSAFE_TARGET") == "1",

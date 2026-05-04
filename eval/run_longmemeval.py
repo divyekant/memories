@@ -56,6 +56,44 @@ def _get_thread_client(url: str, api_key: str) -> MemoriesClient:
     return _thread_local.client
 
 
+def _answer_excerpt(text: str, limit: int = 1000) -> str:
+    """Bound stored answer/context text in eval result details."""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _classify_agent_context(context: str) -> str:
+    """Separate agent infrastructure failures from answer-quality failures."""
+    text = (context or "").strip()
+    lower = text.lower()
+    if not text:
+        return "empty"
+    if text.startswith("[TIMEOUT]"):
+        return "timeout"
+    if "invalid api key" in lower or "authentication_error" in lower:
+        return "auth_error"
+    if text.startswith("[STDERR]"):
+        return "agent_stderr"
+    if text.startswith("[ERROR]"):
+        return "agent_error"
+    return ""
+
+
+def _retryable_agent_error(error_kind: str) -> bool:
+    return error_kind in {"auth_error", "agent_error", "agent_stderr", "timeout"}
+
+
+def _setup_report_evidence(report) -> dict:
+    """Serialize eval preflight evidence without credentials."""
+    return {
+        "ok": bool(report.ok),
+        "info": list(report.info),
+        "warnings": list(report.warnings),
+        "errors": list(report.errors),
+    }
+
+
 def _process_question(
     idx: int,
     total: int,
@@ -108,12 +146,23 @@ def _process_question(
 
         try:
             if mode == "system" and cc_executor:
-                question_result = thread_runner.run_question_system(
-                    q,
-                    cc_executor=cc_executor,
-                    source_prefix=prefix,
-                    project_dir=project_dir,
+                def run_system_question():
+                    return thread_runner.run_question_system(
+                        q,
+                        cc_executor=cc_executor,
+                        source_prefix=prefix,
+                        project_dir=project_dir,
+                    )
+
+                question_result = run_system_question()
+                first_error = question_result.get("error_kind") or _classify_agent_context(
+                    str(question_result.get("context", ""))
                 )
+                if _retryable_agent_error(first_error):
+                    _log(f"  Agent infra error ({first_error}); retrying once")
+                    if project_dir and hasattr(cc_executor, "reset_project"):
+                        cc_executor.reset_project(project_dir)
+                    question_result = run_system_question()
                 _log(f"  Agent responded: {len(question_result['context'])} chars")
             else:
                 question_result = thread_runner.run_question(q, k=10, source_prefix=prefix)
@@ -126,11 +175,19 @@ def _process_question(
             question_result = {
                 "question": question,
                 "expected": expected,
-                "context": "",
+                "context": f"[ERROR] {e}",
                 "eval_mode": mode,
+                "error_kind": "agent_exception" if mode == "system" else "search_exception",
             }
 
-        if not question_result.get("context"):
+        context = str(question_result.get("context", ""))
+        error_kind = question_result.get("error_kind") or (
+            _classify_agent_context(context) if mode == "system" else ("empty" if not context.strip() else "")
+        )
+
+        if error_kind:
+            score, reasoning = 0.0, f"Agent error: {error_kind}" if mode == "system" else "No context retrieved"
+        elif not context:
             score, reasoning = 0.0, "No context retrieved"
         else:
             try:
@@ -143,8 +200,20 @@ def _process_question(
         recall_all = question_result.get("recall_all_at_5", 0.0)
         _log(f"  Score: {score:.2f} | R@5: {recall_any:.0f} | Expected: {expected[:60]}")
         return {
-            "qid": qid, "type": qtype, "score": score, "reasoning": reasoning,
-            "recall_any_at_5": recall_any, "recall_all_at_5": recall_all,
+            "qid": qid,
+            "type": qtype,
+            "question": question,
+            "expected": expected,
+            "score": score,
+            "reasoning": reasoning,
+            "recall_any_at_5": recall_any,
+            "recall_all_at_5": recall_all,
+            "recall_top_sessions_at_5": question_result.get("recall_top_sessions_at_5", []),
+            "answer_chars": len(context),
+            "answer_excerpt": _answer_excerpt(context),
+            "error_kind": error_kind,
+            "agent_trace": question_result.get("agent_trace", {}),
+            "seeded_chunks": seeded,
         }
     finally:
         try:
@@ -167,6 +236,8 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
     )
     setup_report = validate_eval_setup(
         memories_url=url,
+        api_key=api_key,
+        require_api_key=True,
         mcp_server_path=mcp_server_path,
         require_mcp=mode == "system",
         require_claude=mode == "system",
@@ -180,8 +251,10 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
         sys.exit(2)
 
     client = MemoriesClient(url=url, api_key=api_key)
-    if not client.health_check():
+    ready_before = client.ready_status()
+    if not ready_before.get("ready", ready_before.get("status_code") == 200):
         _log("ERROR: Memories service not reachable")
+        _log(json.dumps(ready_before, sort_keys=True))
         sys.exit(1)
 
     runner = LongMemEvalRunner(client=client, judge_provider="anthropic")
@@ -216,6 +289,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
             memories_api_key=api_key,
             mcp_server_path=mcp_server_path,
             model=agent_model,
+            capture_trace=True,
         )
         CCExecutor.cleanup_stale_auto_memory()
         project_queue = queue.Queue()
@@ -276,6 +350,7 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
                     break
 
     elapsed = time.time() - start_time
+    ready_after = client.ready_status()
 
     # Report
     overall = sum(s["score"] for s in scores) / len(scores) if scores else 0
@@ -311,6 +386,9 @@ def run_benchmark(max_questions: int = 0, output_path: str = "", mode: str = "to
             "workers": workers,
             "elapsed_seconds": round(elapsed, 1),
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "setup_validation": _setup_report_evidence(setup_report),
+            "eval_ready_before": ready_before,
+            "eval_ready_after": ready_after,
             "questions_run": len(scores),
             "overall": round(overall, 4),
             "recall_any_at_5": round(recall_overall, 4),

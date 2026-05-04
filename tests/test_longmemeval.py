@@ -261,6 +261,55 @@ def test_run_question_system_computes_diagnostic_recall():
     assert result["recall_all_at_5"] == 1.0
 
 
+def test_run_question_system_preserves_agent_trace_and_top_sessions():
+    """System eval should keep tool-call trace and raw recall evidence for audits."""
+    from eval.longmemeval import LongMemEvalRunner
+
+    client = MagicMock()
+    client.search.return_value = [
+        {"text": "answer session", "source": "eval/test/qsys1/s1/c0"},
+        {"text": "wrong session", "source": "eval/test/qsys1/s0/c0"},
+    ]
+    runner = LongMemEvalRunner(client=client)
+
+    class FakeExecutor:
+        def create_isolated_project(self, with_memories=False):
+            return "/tmp/cc_eval_test"
+
+        def run_prompt(self, prompt, project_dir):
+            self.last_run_trace = {
+                "output_format": "stream-json",
+                "tool_calls": [
+                    {
+                        "name": "mcp__memories__memory_evidence",
+                        "source_prefix": "eval/test/qsys1",
+                    }
+                ],
+                "error_kind": "",
+            }
+            return "Business Administration"
+
+        def cleanup_project(self, project_dir):
+            self.cleaned = project_dir
+
+    question = {
+        "question_id": "sys1",
+        "question_type": "single-session-user",
+        "question": "What degree did I get?",
+        "answer": "Business Administration",
+        "haystack_session_ids": ["session-a", "session-b"],
+        "answer_session_ids": ["session-b"],
+    }
+    result = runner.run_question_system(
+        question,
+        cc_executor=FakeExecutor(),
+        source_prefix="eval/test",
+    )
+
+    assert result["agent_trace"]["tool_calls"][0]["name"] == "mcp__memories__memory_evidence"
+    assert result["recall_top_sessions_at_5"] == [1, 0]
+
+
 def test_run_question_system_prompt_directs_reference_date_for_temporal_queries():
     """System eval prompt should tell agents how to anchor relative temporal searches."""
     from eval.longmemeval import LongMemEvalRunner
