@@ -48,6 +48,11 @@ def test_dockerfile_copies_web_ui_assets() -> None:
     assert "COPY webui ./webui" in dockerfile
 
 
+def test_dockerfile_copies_evidence_packet_module() -> None:
+    dockerfile = _read("Dockerfile")
+    assert "COPY evidence_packet.py ." in dockerfile
+
+
 def test_compose_healthchecks_use_python_probe() -> None:
     for compose_file in ("docker-compose.yml", "docker-compose.snippet.yml"):
         contents = _read(compose_file)

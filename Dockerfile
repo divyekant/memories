@@ -72,6 +72,7 @@ COPY auth_context.py .
 COPY event_bus.py .
 COPY audit_log.py .
 COPY query_intent.py .
+COPY evidence_packet.py .
 COPY app.py .
 COPY cli/ cli/
 COPY webui ./webui
