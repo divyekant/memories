@@ -15,6 +15,59 @@ _log_info() { _log "INFO" "$1"; }
 _log_error() { _log "ERROR" "$1"; }
 _log_warn() { _log "WARN" "$1"; }
 
+_active_search_metrics_enabled() {
+  case "${MEMORIES_ACTIVE_SEARCH_METRICS:-1}" in
+    0|false|FALSE|no|NO|off|OFF) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+_active_search_metrics_log() {
+  _active_search_metrics_enabled || return 0
+  local event_json="$1"
+  local metrics_log="${MEMORIES_ACTIVE_SEARCH_LOG:-$HOME/.config/memories/active-search.jsonl}"
+  local metrics_dir
+  metrics_dir=$(dirname "$metrics_log")
+  [ -d "$metrics_dir" ] || mkdir -p "$metrics_dir" 2>/dev/null || return 0
+  printf '%s\n' "$event_json" >> "$metrics_log" 2>/dev/null || true
+}
+
+_hash_for_metrics() {
+  local value="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$value" | shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$value" | sha256sum | awk '{print $1}'
+  else
+    printf ''
+  fi
+}
+
+_source_prefix_quality() {
+  local source_prefix="${1:-}"
+  local project="${2:-}"
+  if [ -z "$source_prefix" ]; then
+    printf 'broad_or_unscoped'
+    return 0
+  fi
+  if [ -n "$project" ]; then
+    case "$source_prefix" in
+      "claude-code/$project"|"claude-code/$project/"*|"codex/$project"|"codex/$project/"*|"learning/$project"|"learning/$project/"*|"wip/$project"|"wip/$project/"*)
+        printf 'exact_project'
+        return 0
+        ;;
+    esac
+  fi
+  case "$source_prefix" in
+    claude-code/|codex/|learning/|wip/|claude-code|codex|learning|wip)
+      printf 'broad_or_unscoped'
+      ;;
+    *)
+      printf 'other'
+      ;;
+  esac
+}
+
 _memories_disabled() {
   case "${MEMORIES_DISABLED:-}" in
     1|true|TRUE|yes|YES|on|ON) return 0 ;;

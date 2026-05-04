@@ -85,6 +85,7 @@ class CCExecutor:
             "MEMORIES_BACKENDS_FILE": "__eval_single_backend__",
             "MEMORIES_DISABLED": "0" if with_memories else "1",
             "MEMORIES_LOG": os.path.join(project_dir, ".memories-hook.log"),
+            "MEMORIES_ACTIVE_SEARCH_LOG": os.path.join(project_dir, ".active-search.jsonl"),
         }
         with open(env_path, "w") as f:
             for key, value in values.items():
@@ -308,6 +309,7 @@ class CCExecutor:
         env["MEMORIES_BACKENDS_FILE"] = "__eval_single_backend__"
         env["MEMORIES_ENV_FILE"] = hook_env_file
         env["MEMORIES_LOG"] = os.path.join(project_dir, ".memories-hook.log")
+        env["MEMORIES_ACTIVE_SEARCH_LOG"] = os.path.join(project_dir, ".active-search.jsonl")
         env["MEMORIES_DISABLED"] = "0" if with_memories else "1"
         try:
             result = subprocess.run(

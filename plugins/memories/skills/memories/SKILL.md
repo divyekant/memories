@@ -287,6 +287,7 @@ The extraction `context` parameter controls aggressiveness:
 | `memory-guard.sh` | PreToolUse (`Write\|Edit`) | Blocks direct writes to `MEMORY.md` if attempted |
 
 Codex stores those hooks in `~/.codex/hooks.json`, uses `~/.codex/settings.json` for tool permissions, and relies on `~/.codex/config.toml` for MCP registration plus developer instructions that bias `memory_search` usage.
+Active-search monitoring writes privacy-safe local telemetry to `~/.config/memories/active-search.jsonl`; summarize it with `.venv/bin/python scripts/active_search_metrics.py --log ~/.config/memories/active-search.jsonl`.
 
 ## Auto-Memory Hydration (Claude Code / Cursor)
 

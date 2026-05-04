@@ -271,6 +271,7 @@ The installer will:
 The hooks load `MEMORIES_URL` / `MEMORIES_API_KEY` from `~/.config/memories/env` (or `MEMORIES_ENV_FILE` override).
 Default scoped retrieval prefixes are `codex/{project},claude-code/{project},learning/{project},wip/{project}` for Codex and `claude-code/{project},codex/{project},learning/{project},wip/{project}` for Claude Code. Extraction still writes to the active client prefix by default.
 For scoped API keys, override them with `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE`.
+Active-search hooks also write privacy-safe local telemetry to `~/.config/memories/active-search.jsonl`; summarize it with `.venv/bin/python scripts/active_search_metrics.py --log ~/.config/memories/active-search.jsonl`.
 
 ### Option C: Manual setup
 

@@ -30,6 +30,7 @@ Transcript handling: this audit summarizes local session evidence and cites sess
 - Active-search behavior eval: `eval/run_active_search_eval.py` runs realistic prompts that do not say `memory_search`, installs this worktree's read hooks/instructions into isolated Claude Code projects and isolated Codex homes, captures stream-json tool traces, scores active search, source-prefix quality, answer use, passive-hook-only failures, and no-memory controls.
 - Active-search hook reinforcement: `SessionStart`, `UserPromptSubmit`, and post-compaction MEMORY.md sync now use candidate pointers instead of full memory text for prior-context prompts so agents must call `memory_search` for details.
 - Active-search source hygiene: hook playbooks, Codex developer instructions, and installer output now tell agents to search exact project-scoped prefixes from candidate pointers before broad family prefixes or unscoped search.
+- Active-search monitoring: `UserPromptSubmit` and `PostToolUse` hooks now write privacy-safe local JSONL telemetry for required active-search prompts, memory tool calls, and source-prefix quality. `scripts/active_search_metrics.py` summarizes follow-up search rate, passive-risk prompts, and broad/unscoped source use.
 - Cross-client source defaults: Claude Code now searches `claude-code/{project},codex/{project},learning/{project},wip/{project}` by default; Codex searches `codex/{project},claude-code/{project},learning/{project},wip/{project}` by default. Extraction still writes to the active client prefix.
 
 ## Why Prior Evals Missed Active-Search Failures
@@ -41,11 +42,11 @@ Transcript handling: this audit summarizes local session evidence and cites sess
 
 ## Verification Evidence
 
-- Full Python suite: `.venv/bin/pytest -q` -> 1346 passed, 1 local-Qdrant warning.
+- Full Python suite: `.venv/bin/pytest -q` -> 1351 passed, 1 local-Qdrant warning.
 - MCP syntax: `node --check mcp-server/index.js` -> exit 0.
 - MCP generic smoke: `npm run smoke` -> `generic_mcp_stdio_smoke=ok`.
 - MCP generic write smoke: `npm run smoke:write` -> `generic_mcp_write_smoke=ok`.
-- Claude Code active-search behavior eval: `eval/results/active-search-enterprise-20260504-claude-after-source-guidance.json` (local ignored artifact).
+- Claude Code active-search behavior eval: `eval/results/active-search-enterprise-20260504-claude-after-monitoring.json` (local ignored artifact).
   - `active_search_rate`: 1.0 over 3 required-search cases
   - `passive_hook_only_failures`: 0
   - `wrong_source_prefix_failures`: 0
@@ -54,7 +55,7 @@ Transcript handling: this audit summarizes local session evidence and cites sess
   - `ready_before`: `qdrant_count=0`, `metadata_count=0`
   - `ready_after`: `qdrant_count=0`, `metadata_count=0`
   - `setup_validation`: target URL, API key presence, MCP path, and Claude CLI presence recorded as OK
-- Codex active-search behavior eval: `eval/results/active-search-enterprise-20260504-codex-after-source-guidance.json` (local ignored artifact).
+- Codex active-search behavior eval: `eval/results/active-search-enterprise-20260504-codex-after-monitoring.json` (local ignored artifact).
   - `active_search_rate`: 1.0 over 3 required-search cases
   - `passive_hook_only_failures`: 0
   - `wrong_source_prefix_failures`: 0

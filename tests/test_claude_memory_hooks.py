@@ -15,6 +15,7 @@ QUERY_SCRIPT = HOOKS_DIR / "memory-query.sh"
 RECALL_SCRIPT = HOOKS_DIR / "memory-recall.sh"
 REHYDRATE_SCRIPT = HOOKS_DIR / "memory-rehydrate.sh"
 EXTRACT_SCRIPT = HOOKS_DIR / "memory-extract.sh"
+OBSERVE_SCRIPT = HOOKS_DIR / "memory-observe.sh"
 
 
 def _write_fake_curl(bin_dir: Path) -> Path:
@@ -263,6 +264,135 @@ def test_memory_query_redacts_details_for_active_search_required_prompts(tmp_pat
     assert "Use exact source prefixes shown below" in ctx
     assert "candidate memory id=42" in ctx
     assert "setup validation and production write isolation" not in ctx
+
+
+def test_memory_query_logs_active_search_prompt_metrics_without_text(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 42,
+                        "source": "codex/memories",
+                        "text": "Decision: release is gated by setup validation and production write isolation.",
+                        "similarity": 0.91,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    payload = {
+        "session_id": "session-1",
+        "cwd": "/Users/example/memories",
+        "prompt": "Did we already decide how release should be gated?",
+    }
+
+    result, _, _ = _run_hook(
+        QUERY_SCRIPT,
+        tmp_path,
+        payload,
+        responses,
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert len(events) == 1
+    event = events[0]
+    assert event["event"] == "prompt_evaluated"
+    assert event["client"] == "claude-code"
+    assert event["session_id"] == "session-1"
+    assert event["project"] == "memories"
+    assert event["active_search_required"] is True
+    assert event["candidate_count"] == 1
+    assert event["hook_results_injected"] is True
+    assert event["source_prefixes"] == ["codex/memories"]
+    assert len(event["prompt_hash"]) == 64
+    assert "release should be gated" not in json.dumps(event)
+    assert "setup validation" not in json.dumps(event)
+
+
+def test_memory_query_logs_required_prompt_metrics_even_without_candidates(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    responses = [
+        {"url_suffix": "/search", "source_prefix": "", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "claude-code/memories", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "codex/memories", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "learning/memories", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "wip/memories", "response": {"results": [], "count": 0}},
+    ]
+
+    payload = {
+        "session_id": "session-empty",
+        "cwd": "/Users/example/memories",
+        "prompt": "What did we decide about the release gate?",
+    }
+
+    result, _, _ = _run_hook(
+        QUERY_SCRIPT,
+        tmp_path,
+        payload,
+        responses,
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert len(events) == 1
+    assert events[0]["active_search_required"] is True
+    assert events[0]["candidate_count"] == 0
+    assert events[0]["hook_results_injected"] is False
+    assert events[0]["source_prefixes"] == []
+
+
+def test_memory_observe_logs_memory_search_tool_metrics_without_query_text(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    payload = {
+        "session_id": "session-1",
+        "cwd": "/Users/example/memories",
+        "tool_name": "mcp__memories__memory_search",
+        "tool_input": {
+            "query": "private release gate query",
+            "source_prefix": "codex/memories/feature",
+        },
+    }
+
+    result, _, _ = _run_hook(
+        OBSERVE_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert len(events) == 1
+    event = events[0]
+    assert event["event"] == "tool_call"
+    assert event["client"] == "claude-code"
+    assert event["session_id"] == "session-1"
+    assert event["project"] == "memories"
+    assert event["tool_name"] == "mcp__memories__memory_search"
+    assert event["source_prefix"] == "codex/memories/feature"
+    assert event["source_prefix_quality"] == "exact_project"
+    assert "private release gate query" not in json.dumps(event)
 
 
 def test_memory_query_falls_back_to_global_search_when_scoped_is_empty(tmp_path: Path) -> None:

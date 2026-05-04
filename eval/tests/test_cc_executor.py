@@ -121,6 +121,7 @@ class TestStrictMcpConfig:
             assert env["MEMORIES_BACKENDS_FILE"] == "__eval_single_backend__"
             assert env["MEMORIES_ENV_FILE"].startswith(project_dir)
             assert os.path.exists(env["MEMORIES_ENV_FILE"])
+            assert env["MEMORIES_ACTIVE_SEARCH_LOG"].startswith(project_dir)
         finally:
             executor.cleanup_project(project_dir)
 
@@ -145,6 +146,8 @@ class TestStrictMcpConfig:
             env_text = open(env["MEMORIES_ENV_FILE"]).read()
             assert "MEMORIES_URL=http://localhost:8901" in env_text
             assert "MEMORIES_DISABLED=0" in env_text
+            assert "MEMORIES_ACTIVE_SEARCH_LOG=" in env_text
+            assert env["MEMORIES_ACTIVE_SEARCH_LOG"].startswith(project_dir)
         finally:
             executor.cleanup_project(project_dir)
 

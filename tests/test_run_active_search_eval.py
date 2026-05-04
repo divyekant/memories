@@ -162,6 +162,7 @@ def test_install_codex_product_read_hooks_writes_temp_home(tmp_path: Path):
     assert "test-key" in config_toml
     assert "replace {project} with the current working directory basename" in config_toml
     assert "Do not use broad family prefixes" in config_toml
+    assert "MEMORIES_ACTIVE_SEARCH_LOG" in (codex_home / "memories-eval-env").read_text(encoding="utf-8")
 
 
 def test_parse_codex_json_trace_extracts_answer_and_memory_tool_calls():

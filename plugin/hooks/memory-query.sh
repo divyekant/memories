@@ -254,6 +254,28 @@ else
   ' 2>/dev/null) || true
 fi
 
+if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
+  SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
+  CLIENT=$(_memory_client_prefix 2>/dev/null || echo "claude-code")
+  PROMPT_HASH=$(_hash_for_metrics "$PROMPT")
+  CANDIDATE_COUNT=$(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0)
+  HOOK_RESULTS_INJECTED=0
+  [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ] && HOOK_RESULTS_INJECTED=1
+  SOURCE_PREFIXES_JSON=$(printf '%s' "$RESULTS_JSON" | jq -c '[.[].source // empty | select(. != "")] | unique' 2>/dev/null || echo '[]')
+  METRICS_EVENT=$(jq -nc \
+    --arg ts "$(date -u +%FT%TZ)" \
+    --arg client "$CLIENT" \
+    --arg session_id "$SESSION_ID" \
+    --arg project "${PROJECT:-unknown}" \
+    --arg prompt_hash "$PROMPT_HASH" \
+    --argjson active_search_required true \
+    --argjson candidate_count "$CANDIDATE_COUNT" \
+    --argjson hook_results_injected "$HOOK_RESULTS_INJECTED" \
+    --argjson source_prefixes "$SOURCE_PREFIXES_JSON" \
+    '{ts: $ts, event: "prompt_evaluated", client: $client, session_id: $session_id, project: $project, prompt_hash: $prompt_hash, active_search_required: $active_search_required, candidate_count: $candidate_count, hook_results_injected: ($hook_results_injected == 1), source_prefixes: $source_prefixes}')
+  _active_search_metrics_log "$METRICS_EVENT"
+fi
+
 if [ -z "$RESULTS" ] || [ "$RESULTS" = "null" ]; then
   exit 0
 fi

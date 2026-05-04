@@ -145,6 +145,7 @@ def install_codex_product_read_hooks(
                 f"export MEMORIES_API_KEY={json.dumps(api_key)}",
                 "export MEMORIES_BACKENDS_FILE=__eval_single_backend__",
                 "export MEMORIES_DISABLED=0",
+                f"export MEMORIES_ACTIVE_SEARCH_LOG={json.dumps(str(home / 'active-search.jsonl'))}",
                 "",
             ]
         ),
@@ -253,6 +254,7 @@ class CodexExecutor:
         env = dict(os.environ)
         env["CODEX_HOME"] = self.codex_home
         env["MEMORIES_ENV_FILE"] = str(Path(self.codex_home) / "memories-eval-env")
+        env["MEMORIES_ACTIVE_SEARCH_LOG"] = str(Path(self.codex_home) / "active-search.jsonl")
         try:
             result = subprocess.run(
                 cmd,
