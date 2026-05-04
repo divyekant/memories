@@ -83,3 +83,19 @@ Transcript handling: this audit summarizes local session evidence and cites sess
 ## Release Approval
 
 Release review completed 2026-05-04. All 25 PR review items closed and verified (1367 tests passing, smoke tests green, 0 npm vulnerabilities). Merging to `main` and tagging `v5.4.0`.
+
+## Post-Release System Eval (v5.4.0)
+
+LongMemEval system eval ran post-merge against the isolated eval target on `http://localhost:8901`, default Sonnet agent, 20 questions per category, 2 workers, 36 minutes wall-clock. Files under `eval/results/v5.4.0-sampled/`.
+
+| Category (n=20) | v4.0.0 baseline (500q) | v5.4.0 sample | Δ |
+|---|---:|---:|---:|
+| single-session-user | 87.6% | 91.5% | +3.9pp |
+| single-session-assistant | 91.7% | 90.4% | −1.3pp |
+| single-session-preference | 74.0% | 84.2% | +10.2pp |
+| multi-session | 70.3% | 68.0% | −2.3pp |
+| knowledge-update | 80.6% | 82.0% | +1.4pp |
+| temporal-reasoning | 42.2% | **85.5%** | **+43.3pp** |
+| **Overall (weighted)** | **69.5%** | **83.6%** | **+14.1pp** |
+
+R@5 across all 120 questions: **98.3%**. The +43.3pp temporal lift validates the `memory_timeline` + `memory_evidence` + reference-date work in this branch. Multi-session aggregation is the remaining architectural gap (R@5 95% but agent struggles to synthesize across sessions).

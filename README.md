@@ -12,7 +12,7 @@ Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **Cu
 - **Operator workbench** — create, edit, merge, bulk actions, extraction trigger, lifecycle panel, conflict resolution
 - **Feedback-weighted ranking** — search learns from useful/not_useful signals
 - **Lifecycle policies** — per-prefix TTL and confidence-based auto-archive with operator-visible evidence
-- **Quality benchmarks** — LongMemEval + MuSiQue eval harnesses with graph and temporal benchmarking
+- **Quality benchmarks** — LongMemEval system eval **83.6%** overall (vs 69.5% v4.0.0 baseline), **85.5%** on temporal reasoning (vs 42.2% baseline), **98.3%** R@5; MuSiQue + graph benchmarks included
 - **Full audit trail** — every mutation tracked, lifecycle timeline in UI, version chains via supersedes links
 - **Self-hosted** — your data, your infrastructure, no cloud dependency
 

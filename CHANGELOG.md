@@ -26,6 +26,22 @@
 - Fixed setup validation gaps around unknown judge providers and configurable local production ports.
 - Replaced bash 4 indirect expansion in hook YAML parsing with `printenv` for macOS bash compatibility.
 
+### Validated
+
+LongMemEval system eval (agent + MCP tools, 20 questions per category, 2 workers, default Sonnet model):
+
+| Category (n=20) | v4.0.0 baseline (full 500q) | v5.4.0 sample | Δ |
+|---|---:|---:|---:|
+| single-session-user | 87.6% | 91.5% | +3.9pp |
+| single-session-assistant | 91.7% | 90.4% | −1.3pp |
+| single-session-preference | 74.0% | 84.2% | +10.2pp |
+| multi-session | 70.3% | 68.0% | −2.3pp |
+| knowledge-update | 80.6% | 82.0% | +1.4pp |
+| **temporal-reasoning** | **42.2%** | **85.5%** | **+43.3pp** |
+| **Overall (weighted)** | **69.5%** | **83.6%** | **+14.1pp** |
+
+R@5 across all 120 questions: **98.3%**. Retrieval is no longer the bottleneck — gains are from `memory_timeline` + `memory_evidence` + reference-date threading + the active-search hook gate. Multi-session aggregation remains the open gap.
+
 ## [5.3.0] - 2026-04-11
 
 ### Added
