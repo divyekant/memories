@@ -80,6 +80,6 @@ Transcript handling: this audit summarizes local session evidence and cites sess
   - `eval_ready_after`: `qdrant_count=0`, `metadata_count=0`
   - service log check: no `ERROR`, `500 Internal`, `Traceback`, `Search failed`, `unexpected keyword`, or `Server disconnected` entries during the final trusted run window.
 
-## Remaining Release Note
+## Release Approval
 
-Do not merge this branch to main/master until release review. The current branch is intended to stay as draft PR work until final release approval.
+Release review completed 2026-05-04. All 25 PR review items closed and verified (1367 tests passing, smoke tests green, 0 npm vulnerabilities). Merging to `main` and tagging `v5.4.0`.
