@@ -1,13 +1,9 @@
 # Changelog
 
-## [Unreleased]
-
-### Added
-- **First-class OpenCode integration** — installer target, OpenCode MCP config merge, marker-safe Memories skill install, repo-local OpenCode plugin registration, prompt-time recall context, and active-search telemetry with `client=opencode`.
-
 ## [5.4.0] - 2026-05-04
 
 ### Added
+- **First-class OpenCode integration** — installer target, OpenCode MCP config merge, marker-safe Memories skill install, repo-local OpenCode plugin registration, prompt-time recall context, and active-search telemetry with `client=opencode`.
 - **Enterprise eval isolation** — eval runners now validate setup before execution, require eval-scoped API keys, reject unsafe production targets by default, and record ready-before/after evidence so eval runs can prove they did not contaminate production data.
 - **Active-search behavior evals** — added realistic Codex and Claude Code eval coverage that checks required `memory_search` use, exact project source prefixes, passive-hook-only failures, unnecessary control-case searches, and whether retrieved memory affected the answer.
 - **Active-search monitoring** — hooks now emit privacy-safe local JSONL telemetry for required prompts and memory tool calls, with `scripts/active_search_metrics.py` summarizing follow-up rate, passive-risk prompts, exact project searches, and broad/unscoped searches.
