@@ -231,13 +231,13 @@ For simple cases (2 clear, novel facts), individual `memory_add` calls are fine.
 
 - **Backend provisioning**: Run `/memories:setup` to check service health, configure extraction providers, and write env files. Use this when entering a project where the Memories backend is not yet reachable.
 - **Auto-memory** handles project conventions and patterns in local files — let it do its job
-- **Session hooks** already provide baseline context at startup — Claude Code / Cursor use the full 12-hook lifecycle, while Codex uses 5 native hooks plus MCP + developer instructions. Don't duplicate that work.
+- **Session hooks and plugins** already provide baseline context where supported — Claude Code / Cursor use the full 12-hook lifecycle, Codex uses 5 native hooks plus MCP + developer instructions, and OpenCode uses MCP plus plugin prompt recall and memory-tool telemetry. Don't duplicate that work.
 - **Hook-injected recall is a starting point, not a substitute for active recall.** If the
   retrieved memories look noisy, low-confidence, or obviously cross-project, run explicit
   `memory_search` calls yourself before answering.
-- **Extraction hooks** already trigger `memory_extract` via HTTP at lifecycle boundaries.
+- **Extraction hooks** already trigger `memory_extract` via HTTP at lifecycle boundaries for clients that support them.
   Claude Code / Cursor use `Stop`, `PreCompact`, and `SessionEnd`; Codex uses a
-  beefier `Stop` hook because it has no compaction/session-end lifecycle events.
+  beefier `Stop` hook because it has no compaction/session-end lifecycle events. OpenCode does not auto-extract by default yet; OpenCode extraction is gated until reliable end-of-turn transcript access is proven.
   The skill triggers extraction *within* a session at natural breakpoints that hooks
   miss — like mid-conversation decision changes or deferred work completions.
 - **Learning skill** captures failure-fix patterns — if both skills apply, the learning skill

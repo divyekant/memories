@@ -117,3 +117,46 @@ def test_load_events_skips_invalid_jsonl(tmp_path: Path) -> None:
     log.write_text('{"event":"prompt_evaluated"}\nnot-json\n{"event":"tool_call"}\n', encoding="utf-8")
 
     assert [event["event"] for event in load_events(log)] == ["prompt_evaluated", "tool_call"]
+
+
+def test_summarize_attributes_opencode_tool_calls_with_ts_field(tmp_path: Path) -> None:
+    """OpenCode plugin telemetry must use the same `ts` field name as Claude/Codex hooks.
+
+    This guards against a regression where the plugin emitted `timestamp` instead of `ts`,
+    causing matched-prompt analytics to silently drop OpenCode tool_call events.
+    """
+    log = tmp_path / "active-search.jsonl"
+    events = [
+        {
+            "ts": "2026-05-06T12:00:00Z",
+            "event": "prompt_evaluated",
+            "client": "opencode",
+            "session_id": "oc-1",
+            "project": "memories",
+            "prompt_hash": "d" * 64,
+            "active_search_required": True,
+            "candidate_count": 1,
+        },
+        {
+            "ts": "2026-05-06T12:00:15Z",
+            "event": "tool_call",
+            "client": "opencode",
+            "session_id": "oc-1",
+            "project": "memories",
+            "tool_name": "mcp__memories__memory_search",
+            "source_prefix": "opencode/memories",
+            "source_prefix_quality": "exact_project",
+        },
+    ]
+    log.write_text("\n".join(json.dumps(event) for event in events), encoding="utf-8")
+
+    summary = summarize_events(load_events(log), followup_window_seconds=60)
+
+    assert summary["memory_search_calls"] == 1
+    assert summary["exact_project_searches"] == 1
+    assert summary["by_client"]["opencode"]["memory_search_calls"] == 1
+    assert summary["by_client"]["opencode"]["exact_project_searches"] == 1
+    assert summary["by_client"]["opencode"]["required_prompts"] == 1
+    assert summary["by_client"]["opencode"]["required_prompts_with_memory_search"] == 1
+    assert summary["by_client"]["opencode"]["passive_risk_prompts"] == 0
+    assert summary["active_search_followup_rate"] == 1.0

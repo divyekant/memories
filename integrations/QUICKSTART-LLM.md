@@ -1,6 +1,6 @@
 # Memories — Automatic Memory Layer Setup
 
-> **This document is designed to be fed directly to an LLM (Claude Code, Codex, Cursor, OpenClaw, or any AI coding assistant) so it can set up automatic memory integration for you.**
+> **This document is designed to be fed directly to an LLM (Claude Code, Codex, OpenCode, Cursor, OpenClaw, or any AI coding assistant) so it can set up automatic memory integration for you.**
 
 > **Recommended:** Install via the plugin marketplace: `claude plugins install memories@dk-marketplace`, then run `/memories:setup` to provision the backend. This handles hook installation, settings configuration, and env file creation automatically. The manual steps below are for reference or non-plugin environments.
 
@@ -8,8 +8,8 @@
 
 Memories is a local semantic memory service running at `http://localhost:8900`. This guide sets up automatic memory integrations so your AI assistant:
 
-1. **Retrieves** relevant memories during coding flow (fully automatic with Claude hooks; MCP-guided on Codex/Cursor/OpenClaw)
-2. **Extracts** facts from conversations and stores them automatically (no manual save)
+1. **Retrieves** relevant memories during coding flow (fully automatic with Claude/Codex hooks; plugin-guided on OpenCode; MCP-guided on Cursor/OpenClaw)
+2. **Extracts** facts from conversations and stores them automatically where transcript hooks are available (OpenCode extraction is gated for now)
 3. **Updates** stale memories intelligently using AUDN (Add/Update/Delete/Noop)
 
 After setup, memory works invisibly — the assistant gets context from past sessions automatically.
@@ -363,6 +363,30 @@ Codex will expose `memory_search`, `memory_add`, `memory_delete`, `memory_delete
 
 ---
 
+## Setup for OpenCode
+
+OpenCode uses Memories through MCP plus OpenCode plugin hooks. It does not use Claude Code or Codex shell hooks.
+
+### Run the installer
+
+```bash
+cd ~/projects/memories
+npm --prefix ./mcp-server install
+./integrations/claude-code/install.sh --opencode
+```
+
+The installer will:
+1. Merge `mcp.memories` into `~/.config/opencode/opencode.json`
+2. Configure a local OpenCode MCP server using `zsh -lc` to source `~/.config/memories/env` and run `mcp-server/index.js`
+3. Register the repo-local plugin path `integrations/opencode/plugin/memories.js`
+4. Install `~/.config/opencode/skills/memories/SKILL.md` with marker-safe behavior that preserves an existing unmarked skill directory
+
+The plugin reads `~/.config/memories/env` by default for `MEMORIES_URL`, `MEMORIES_API_KEY`, `MEMORIES_ACTIVE_SEARCH_LOG`, and `MEMORIES_ACTIVE_SEARCH_METRICS`. It provides prompt-time recall context and active-search `tool_call` telemetry for memory tool calls with `client=opencode`, writing to `~/.config/memories/active-search.jsonl` unless metrics are disabled. It searches exact project prefixes first in this order: `opencode/{project}`, `claude-code/{project}`, `codex/{project}`, `learning/{project}`, `wip/{project}`.
+
+OpenCode-authored extracted memories should use `opencode/{project}` when extraction is added. The first implementation does not auto-extract by default because automatic extraction remains gated until reliable OpenCode end-of-turn transcript access is proven.
+
+---
+
 ## Setup for OpenClaw
 
 OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update the skill file:
@@ -472,6 +496,7 @@ curl -s https://memory.yourdomain.com/health   # prod
 |--------|--------------------------|-------|
 | Claude Code | Yes | Uses hook scripts that read `backends.yaml` |
 | Codex | Yes | Codex-specific hook scripts that read `backends.yaml` |
+| OpenCode | No | First implementation uses MCP plus plugin prompt recall and memory-tool telemetry, not shell-hook routing |
 | Cursor | Yes | Same hook scripts via Third-party skills |
 | OpenClaw | Not yet | Uses skill-based extraction, not hooks |
 
@@ -504,7 +529,17 @@ curl -s https://memory.yourdomain.com/health   # prod
 
 Codex uses `~/.codex/hooks.json` for hooks, `~/.codex/settings.json` for tool permissions, and `~/.codex/config.toml` for MCP + developer instructions. The legacy `memory-codex-notify.sh` (config.toml notify hook) is preserved for backward compatibility but superseded by native hooks.
 
-**Token cost:** ~1500 tokens/turn injected context (retrieval). Extraction is async and free if using Ollama, ~$0.001/turn with API providers.
+### OpenCode
+
+| Mechanism | Sync? | What It Does |
+|-----------|-------|--------------|
+| `experimental.chat.system.transform` plugin hook | Sync | Injects recall guidance and recent project memories |
+| `tool.execute.after` plugin hook | Async | Logs memory MCP tool telemetry with `client=opencode` |
+| `mcp.memories` in `~/.config/opencode/opencode.json` | — | Exposes Memories MCP tools through local OpenCode MCP |
+
+OpenCode source-prefix policy searches exact project scopes: `opencode/{project}`, `claude-code/{project}`, `codex/{project}`, `learning/{project}`, and `wip/{project}`. OpenCode extraction is not automatic yet.
+
+**Claude/Codex hook token cost:** ~1500 tokens/turn injected context (retrieval). Extraction is async and free if using Ollama, ~$0.001/turn with API providers. OpenCode extraction is not automatic in the first implementation.
 
 ---
 
@@ -531,9 +566,9 @@ Codex uses `~/.codex/hooks.json` for hooks, `~/.codex/settings.json` for tool pe
 |----------|---------|-------------|
 | `MEMORIES_URL` | `http://localhost:8900` | Memories service URL |
 | `MEMORIES_API_KEY` | (empty) | API key for Memories service auth |
-| `MEMORIES_ENV_FILE` | `~/.config/memories/env` | Hook env file path for Claude/Codex hooks and OpenClaw QMD sync snippets |
-| `MEMORIES_SOURCE_PREFIXES` | client-specific | Retrieval prefixes for settings-based hooks. Defaults to `claude-code/{project},codex/{project},learning/{project},wip/{project}` for Claude/Cursor and `codex/{project},claude-code/{project},learning/{project},wip/{project}` under `~/.codex/hooks/memory`. |
-| `MEMORIES_EXTRACT_SOURCE` | client-specific | Extraction source for settings-based hooks. Defaults to `claude-code/{project}` for Claude/Cursor and `codex/{project}` under `~/.codex/hooks/memory`. |
+| `MEMORIES_ENV_FILE` | `~/.config/memories/env` | Hook env file path for Claude/Codex hooks and OpenClaw QMD sync snippets; OpenCode MCP sources this file via `zsh -lc` |
+| `MEMORIES_SOURCE_PREFIXES` | client-specific | Retrieval prefixes for settings-based hooks. Defaults to `claude-code/{project},codex/{project},learning/{project},wip/{project}` for Claude/Cursor and `codex/{project},claude-code/{project},learning/{project},wip/{project}` under `~/.codex/hooks/memory`. OpenCode plugin recall uses `opencode/{project},claude-code/{project},codex/{project},learning/{project},wip/{project}`. |
+| `MEMORIES_EXTRACT_SOURCE` | client-specific | Extraction source for settings-based hooks. Defaults to `claude-code/{project}` for Claude/Cursor and `codex/{project}` under `~/.codex/hooks/memory`. OpenCode-authored extracted memories should use `opencode/{project}` when extraction is added. |
 | `MEMORIES_SOURCE_PREFIX` | `codex` | Legacy notify-hook prefix used only by `memory-codex-notify.sh` |
 | `MEMORIES_SOURCE` | (empty) | Legacy notify-hook full source override used only by `memory-codex-notify.sh` |
 | `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `chatgpt-subscription`, `ollama`, or empty to disable |
@@ -629,17 +664,15 @@ This enables strict add-only fallback writes (no AUDN update/delete behavior), i
 ### Remove all integrations
 
 ```bash
-# Remove Claude hooks
-rm -rf ~/.claude/hooks/memory/
+# Remove Claude hooks/config installed by the Memories installer
+./integrations/claude-code/install.sh --claude --uninstall
 
-# Remove Codex hooks
-rm -rf ~/.codex/hooks/memory/
+# Remove Codex hooks/config installed by the Memories installer
+./integrations/claude-code/install.sh --codex --uninstall
 
-# Remove Codex hook entries from ~/.codex/hooks.json (or delete the file if only Memories hooks exist)
-
-# Remove Codex config entries from ~/.codex/config.toml:
-# - [mcp_servers.memories] section
-# - [mcp_servers.memories.env] section
+# Remove OpenCode mcp/plugin entries and marker-managed skill files.
+# Existing unmarked ~/.config/opencode/skills/memories content is preserved.
+./integrations/claude-code/install.sh --opencode --uninstall
 
 # Remove env vars from hook/repo env files
 # Edit ~/.config/memories/env and remove MEMORIES_URL/MEMORIES_API_KEY/MEMORIES_SOURCE_PREFIXES/MEMORIES_EXTRACT_SOURCE
@@ -665,6 +698,9 @@ jq '.hooks' ~/.codex/hooks.json
 
 # Codex: test recall hook manually
 echo '{"cwd": "/Users/you/project", "source": "startup"}' | bash ~/.codex/hooks/memory/memory-recall.sh
+
+# OpenCode: check MCP/plugin config
+jq '.mcp.memories, .plugin' ~/.config/opencode/opencode.json
 ```
 
 ### Extraction returning 501

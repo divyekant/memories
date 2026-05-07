@@ -1,6 +1,6 @@
 #!/bin/bash
 # install.sh — installer for Memories automatic integrations
-# Usage: ./install.sh [--auto] [--claude] [--codex] [--cursor] [--openclaw] [--uninstall] [--dry-run]
+# Usage: ./install.sh [--auto] [--claude] [--codex] [--cursor] [--opencode] [--openclaw] [--uninstall] [--dry-run]
 set -euo pipefail
 
 # Colors
@@ -15,6 +15,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HOOKS_SRC="$SCRIPT_DIR/hooks"
 OPENCLAW_SKILL_SRC="$REPO_ROOT/integrations/openclaw-skill.md"
 CODEX_HOOKS_SRC="$REPO_ROOT/integrations/codex/hooks"
+OPENCODE_SKILL_SRC="$REPO_ROOT/plugin/skills/memories/SKILL.md"
+OPENCODE_PLUGIN_SRC="$REPO_ROOT/integrations/opencode/plugin/memories.js"
 
 READONLY_MCP_TOOLS='["mcp__memories__memory_search","mcp__memories__memory_list","mcp__memories__memory_count","mcp__memories__memory_stats","mcp__memories__memory_is_novel","mcp__memories__memory_is_useful","mcp__memories__memory_conflicts"]'
 
@@ -25,6 +27,7 @@ CODEX_DEV_INSTR_MARKER="Memories Codex developer instructions"
 TARGET_CLAUDE=false
 TARGET_CODEX=false
 TARGET_CURSOR=false
+TARGET_OPENCODE=false
 TARGET_OPENCLAW=false
 EXPLICIT_TARGETS=false
 AUTO_DETECT=true
@@ -43,6 +46,7 @@ Options:
   --claude     Install Claude Code hooks + MCP
   --codex      Install Codex integration (settings hooks + MCP)
   --cursor     Install Cursor hooks + MCP
+  --opencode   Install OpenCode MCP, plugin, and Memories skill
   --openclaw   Install OpenClaw skill
   --uninstall  Remove installed files for selected targets
   --dry-run    Print detected/selected targets and exit
@@ -75,6 +79,11 @@ for arg in "$@"; do
       EXPLICIT_TARGETS=true
       AUTO_DETECT=false
       ;;
+    --opencode)
+      TARGET_OPENCODE=true
+      EXPLICIT_TARGETS=true
+      AUTO_DETECT=false
+      ;;
     --openclaw)
       TARGET_OPENCLAW=true
       EXPLICIT_TARGETS=true
@@ -102,6 +111,7 @@ detect_targets() {
   TARGET_CLAUDE=false
   TARGET_CODEX=false
   TARGET_CURSOR=false
+  TARGET_OPENCODE=false
   TARGET_OPENCLAW=false
 
   if [ -d "$HOME/.claude" ] || [ -f "$HOME/.claude/settings.json" ]; then
@@ -113,6 +123,9 @@ detect_targets() {
   if [ -d "$HOME/.cursor" ]; then
     TARGET_CURSOR=true
   fi
+  if [ -d "$HOME/.config/opencode" ] || [ -f "$HOME/.config/opencode/opencode.json" ]; then
+    TARGET_OPENCODE=true
+  fi
   if [ -d "$HOME/.openclaw" ] || [ -d "$HOME/.openclaw/skills" ]; then
     TARGET_OPENCLAW=true
   fi
@@ -123,7 +136,7 @@ if [ "$AUTO_DETECT" = true ] && [ "$EXPLICIT_TARGETS" = false ]; then
 fi
 
 # Fallback for first-time setup
-if [ "$TARGET_CLAUDE" = false ] && [ "$TARGET_CODEX" = false ] && [ "$TARGET_CURSOR" = false ] && [ "$TARGET_OPENCLAW" = false ]; then
+if [ "$TARGET_CLAUDE" = false ] && [ "$TARGET_CODEX" = false ] && [ "$TARGET_CURSOR" = false ] && [ "$TARGET_OPENCODE" = false ] && [ "$TARGET_OPENCLAW" = false ]; then
   TARGET_CLAUDE=true
 fi
 
@@ -131,6 +144,7 @@ target_list=()
 [ "$TARGET_CLAUDE" = true ] && target_list+=("claude")
 [ "$TARGET_CODEX" = true ] && target_list+=("codex")
 [ "$TARGET_CURSOR" = true ] && target_list+=("cursor")
+[ "$TARGET_OPENCODE" = true ] && target_list+=("opencode")
 [ "$TARGET_OPENCLAW" = true ] && target_list+=("openclaw")
 TARGETS_CSV="$(IFS=, ; echo "${target_list[*]}")"
 
@@ -239,6 +253,36 @@ remove_mcp_json_target() {
   echo -e "  ${GREEN}[OK]${NC} Removed $label MCP 'memories' from $settings_file"
 }
 
+remove_opencode_target() {
+  local config_file="$HOME/.config/opencode/opencode.json"
+  local skill_dir="$HOME/.config/opencode/skills/memories"
+  local skill_marker="$skill_dir/.memories-installer-managed"
+
+  if [ -f "$config_file" ]; then
+    local cleaned
+    cleaned=$(jq --arg plugin_suffix "/integrations/opencode/plugin/memories.js" '
+      if .mcp.memories.environment.MEMORIES_MANAGED_BY == "memories-opencode-installer"
+      then del(.mcp.memories)
+      else . end
+      | if .mcp == {} then del(.mcp) else . end
+      | if (.plugin? | type) == "array" then
+          .plugin = (.plugin | map(select((type == "string" and endswith($plugin_suffix)) | not)))
+          | if .plugin == [] then del(.plugin) else . end
+        else . end
+    ' "$config_file")
+    echo "$cleaned" > "$config_file"
+    echo -e "  ${GREEN}[OK]${NC} Removed OpenCode Memories config from $config_file"
+  fi
+
+  if [ -f "$skill_marker" ]; then
+    remove_target "OpenCode skill" "$skill_dir"
+  elif [ -d "$skill_dir" ]; then
+    echo -e "  ${YELLOW}[SKIP]${NC} OpenCode skill exists without installer marker, preserving: $skill_dir"
+  else
+    echo -e "  ${YELLOW}[WARN]${NC} Not found (OpenCode skill): $skill_dir"
+  fi
+}
+
 if [ "$UNINSTALL" = true ]; then
   echo -e "${YELLOW}Uninstalling selected targets...${NC}"
 
@@ -280,6 +324,10 @@ if [ "$UNINSTALL" = true ]; then
 
   if [ "$TARGET_OPENCLAW" = true ]; then
     remove_target "OpenClaw skill" "$HOME/.openclaw/skills/memories"
+  fi
+
+  if [ "$TARGET_OPENCODE" = true ]; then
+    remove_opencode_target
   fi
 
   echo ""
@@ -477,6 +525,52 @@ install_openclaw_target() {
   echo -e "  ${GREEN}[OK]${NC} Installed OpenClaw skill: $skill_dir/SKILL.md"
 }
 
+install_opencode_target() {
+  local config_file="$HOME/.config/opencode/opencode.json"
+  local skill_dir="$HOME/.config/opencode/skills/memories"
+  local skill_marker="$skill_dir/.memories-installer-managed"
+  local mcp_path="$REPO_ROOT/mcp-server/index.js"
+
+  mkdir -p "$(dirname "$config_file")"
+  if [ ! -f "$config_file" ]; then
+    echo '{}' > "$config_file"
+  fi
+
+  local merged
+  merged=$(jq --arg mcp_path "$mcp_path" \
+              --arg plugin_path "$OPENCODE_PLUGIN_SRC" \
+              --arg plugin_suffix "/integrations/opencode/plugin/memories.js" '
+    if .mcp.memories then . else
+      .mcp.memories = {
+        type: "local",
+        enabled: true,
+        timeout: 10000,
+        environment: {MEMORIES_MANAGED_BY: "memories-opencode-installer"},
+        command: [
+          "zsh",
+          "-lc",
+          ("set -a; [ -f \"$HOME/.config/memories/env\" ] && . \"$HOME/.config/memories/env\"; set +a; exec node \"" + $mcp_path + "\"")
+        ]
+      }
+    end
+    | .plugin = (((if (.plugin? | type) == "array" then .plugin else [] end)
+        | map(select((type == "string" and endswith($plugin_suffix)) | not))
+        + [$plugin_path])
+      | reduce .[] as $item ([]; if index($item) then . else . + [$item] end))
+  ' "$config_file")
+  echo "$merged" > "$config_file"
+  echo -e "  ${GREEN}[OK]${NC} Merged OpenCode MCP and plugin config into $config_file"
+
+  if [ -d "$skill_dir" ] && [ ! -f "$skill_marker" ]; then
+    echo -e "  ${YELLOW}[SKIP]${NC} OpenCode skill already exists without installer marker, preserving: $skill_dir"
+  else
+    mkdir -p "$skill_dir"
+    cp "$OPENCODE_SKILL_SRC" "$skill_dir/SKILL.md"
+    echo "managed by Memories OpenCode installer" > "$skill_marker"
+    echo -e "  ${GREEN}[OK]${NC} Installed OpenCode skill: $skill_dir/SKILL.md"
+  fi
+}
+
 install_codex_target() {
   local hook_dir="$HOME/.codex/hooks/memory"
   local codex_hooks_json="$HOME/.codex/hooks.json"
@@ -604,6 +698,10 @@ fi
 
 if [ "$TARGET_OPENCLAW" = true ]; then
   install_openclaw_target
+fi
+
+if [ "$TARGET_OPENCODE" = true ]; then
+  install_opencode_target
 fi
 
 echo ""
