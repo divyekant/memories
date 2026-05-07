@@ -140,7 +140,6 @@ console.log(JSON.stringify(Object.keys(hooks).sort()));
     )
 
     assert output == [
-        "event",
         "experimental.chat.system.transform",
         "tool.execute.after",
     ]
@@ -209,7 +208,7 @@ console.log(JSON.stringify(JSON.parse(line)));
         "source_prefix_quality": "exact_project",
         "session_id": "sess-1",
         "project": "demo",
-        "timestamp": "2026-05-06T00:00:00.000Z",
+        "ts": "2026-05-06T00:00:00.000Z",
     }
 
 

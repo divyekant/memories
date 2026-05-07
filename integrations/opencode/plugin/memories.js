@@ -148,7 +148,7 @@ async function observeToolCall(toolName, args = {}, sessionID, options = {}) {
     source_prefix_quality: sourcePrefixQuality(sourcePrefix, project),
     session_id: sessionID || args.sessionID || args.session_id || "",
     project,
-    timestamp: timestamp(options),
+    ts: timestamp(options),
   };
   appendTelemetry(record, options);
   return record;
@@ -214,7 +214,7 @@ function normalizeResults(payload) {
 }
 
 function fetchTimeoutMs(options = {}) {
-  const value = options.fetchTimeoutMs ?? options.recallTimeoutMs ?? 1200;
+  const value = options.fetchTimeoutMs ?? 1200;
   return Number.isFinite(Number(value)) ? Number(value) : 1200;
 }
 
@@ -276,7 +276,6 @@ function server(input = {}, options = {}) {
       const context = renderRecallContext({ project, results, activeSearchRequired: true });
       ensureSystemArray(hookOutput).push(context);
     },
-    event: async () => {},
     "tool.execute.after": async (hookInput = {}) => {
       const toolName = hookInput.tool || hookInput.toolName || hookInput.tool_name || hookInput.name || "";
       if (!isMemoryToolName(toolName)) return;

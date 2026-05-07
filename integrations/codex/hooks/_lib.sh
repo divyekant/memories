@@ -57,14 +57,14 @@ _source_prefix_quality() {
   fi
   if [ -n "$project" ]; then
     case "$source_prefix" in
-      "claude-code/$project"|"claude-code/$project/"*|"codex/$project"|"codex/$project/"*|"learning/$project"|"learning/$project/"*|"wip/$project"|"wip/$project/"*)
+      "claude-code/$project"|"claude-code/$project/"*|"codex/$project"|"codex/$project/"*|"opencode/$project"|"opencode/$project/"*|"learning/$project"|"learning/$project/"*|"wip/$project"|"wip/$project/"*)
         printf 'exact_project'
         return 0
         ;;
     esac
   fi
   case "$source_prefix" in
-    claude-code/|codex/|learning/|wip/|claude-code|codex|learning|wip)
+    claude-code/|codex/|opencode/|learning/|wip/|claude-code|codex|opencode|learning|wip)
       printf 'broad_or_unscoped'
       ;;
     *)
