@@ -349,7 +349,7 @@ Events are emitted non-blocking from the calling thread. The bus maintains a bou
 
 ## 10) Hook System
 
-The automatic memory layer uses 12 shell hooks across 10 Claude Code / Cursor lifecycle events, plus a reduced 5-hook Codex variant layered with MCP + developer instructions:
+The automatic memory layer uses 12 shell hooks across 10 Claude Code / Cursor lifecycle events, a reduced 5-hook Codex variant layered with MCP + developer instructions, and an OpenCode plugin + MCP lifecycle distinct from shell hooks:
 
 | Event | Hook | Purpose |
 |---|---|---|
@@ -367,6 +367,8 @@ The automatic memory layer uses 12 shell hooks across 10 Claude Code / Cursor li
 | `SessionEnd` | `memory-commit.sh` | Final extraction and cleanup |
 
 Codex installs `memory-recall.sh`, `memory-query.sh`, `memory-extract.sh`, `memory-observe.sh`, and `memory-guard.sh` via `~/.codex/hooks.json`; because Codex lacks `PreCompact` and `SessionEnd`, its `Stop` hook samples more transcript context.
+
+OpenCode does not use Claude Code or Codex shell hooks. The installer merges `mcp.memories` and the repo-local plugin path into `~/.config/opencode/opencode.json`; the MCP server runs as a local OpenCode server through `zsh -lc`, sourcing `~/.config/memories/env` before executing `mcp-server/index.js`. The plugin injects prompt-time recall context, searches exact project prefixes first (`opencode/{project}`, `claude-code/{project}`, `codex/{project}`, `learning/{project}`, `wip/{project}`), and logs active-search telemetry for memory tool calls with `client=opencode`. OpenCode-authored extracted memories should use `opencode/{project}` when extraction is added, but automatic extraction is not enabled by default until reliable OpenCode end-of-turn transcript access is proven.
 
 Hooks share a common library (`_lib.sh`) with logging, health checks, and log rotation. All hooks use guarded `_lib.sh` sourcing with no-op fallbacks for backward compatibility. Response hints use a JSON lookup table (`response-hints.json`) rather than shell case/esac. Hook behavior is configurable via 10 environment variables.
 

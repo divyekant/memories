@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **First-class OpenCode integration** — installer target, OpenCode MCP config merge, marker-safe Memories skill install, repo-local OpenCode plugin registration, prompt-time recall context, and active-search telemetry with `client=opencode`.
+
 ## [5.4.0] - 2026-05-04
 
 ### Added

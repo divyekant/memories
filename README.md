@@ -2,7 +2,7 @@
 
 Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector search.
 
-Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
+Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **OpenCode**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
 **Key capabilities (v5.4.0):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
@@ -162,9 +162,10 @@ Config resolution: CLI flags > `~/.config/memories/config.json` > env vars > def
 ## Architecture
 
 ```
-AI Client (Claude, Codex, Cursor, ChatGPT, OpenClaw)
+AI Client (Claude, Codex, OpenCode, Cursor, ChatGPT, OpenClaw)
     |
-    |-- MCP protocol (Claude Code / Desktop / Codex / Cursor)
+    |-- MCP protocol (Claude Code / Desktop / Codex / OpenCode / Cursor)
+    |-- Client hooks/plugins (Claude Code / Codex / OpenCode / Cursor)
     |-- REST API (everything else)
     v
 MCP Server (mcp-server/index.js)
@@ -377,6 +378,32 @@ Codex uses `~/.codex/hooks.json` for lifecycle hooks, `~/.codex/settings.json` f
 - "Search memory for how we handle error logging"
 - "Store this architecture decision in memory"
 - "List all memories from the project-setup source"
+
+---
+
+### OpenCode
+
+OpenCode uses Memories through MCP plus OpenCode plugin hooks. It does not use Claude Code or Codex shell hooks.
+
+**Setup:**
+
+```bash
+cd memories
+npm --prefix ./mcp-server install
+./integrations/claude-code/install.sh --opencode
+```
+
+This configures:
+- `~/.config/opencode/opencode.json` with a merged `mcp.memories` local server entry
+- a `zsh -lc` MCP command that sources `~/.config/memories/env` and runs `mcp-server/index.js`
+- the repo-local plugin path `integrations/opencode/plugin/memories.js`
+- the Memories skill at `~/.config/opencode/skills/memories/SKILL.md` with marker-safe behavior
+
+The plugin reads `~/.config/memories/env` by default for `MEMORIES_URL`, `MEMORIES_API_KEY`, `MEMORIES_ACTIVE_SEARCH_LOG`, and `MEMORIES_ACTIVE_SEARCH_METRICS`. It injects prompt-time recall context and records active-search `tool_call` telemetry for memory tool calls with `client=opencode` to `~/.config/memories/active-search.jsonl` unless metrics are disabled. It searches exact project prefixes first in this order: `opencode/{project}`, `claude-code/{project}`, `codex/{project}`, `learning/{project}`, `wip/{project}`.
+
+OpenCode-authored extracted memories should use `opencode/{project}` when extraction is added. The first implementation does not auto-extract by default because automatic extraction remains gated until reliable OpenCode end-of-turn transcript access is proven.
+
+See [`integrations/opencode/README.md`](integrations/opencode/README.md) for details.
 
 ---
 
@@ -676,7 +703,7 @@ ingress:
 }
 ```
 
-Now every client — Claude Code on your laptop, Cursor, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
+Now every client — Claude Code on your laptop, Codex, OpenCode, Cursor, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
 
 ---
 
@@ -714,7 +741,7 @@ backends:
 
 Config supports env var interpolation (`${VAR_NAME}`) for API keys and URLs.
 
-Multi-backend works automatically with **Claude Code**, **Codex**, and **Cursor** because they all use the same hook scripts. **OpenClaw** does not yet support multi-backend (it uses skill-based extraction, not hooks).
+Multi-backend works automatically with **Claude Code**, **Codex**, and **Cursor** because their hook paths read `backends.yaml`. **OpenCode** currently uses MCP plus plugin prompt recall and memory-tool telemetry, not shell-hook routing. **OpenClaw** does not yet support multi-backend (it uses skill-based extraction, not hooks).
 
 For full setup instructions, config format, and verification steps, see the [Multi-Backend Setup](integrations/QUICKSTART-LLM.md#multi-backend-setup-optional) section in the LLM quickstart guide.
 
@@ -990,6 +1017,7 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 - Claude Code: full 12-hook lifecycle (session start, each prompt, after response, pre-compact, post-compact, subagent start, subagent stop, tool use, tool observe, file write guard, config change, session end)
 - Cursor: same 12-hook lifecycle via Third-party skills (loads from `~/.claude/settings.json`)
 - Codex: 5-hook lifecycle via `~/.codex/hooks.json` + permissions in `~/.codex/settings.json` + MCP/developer instructions in `~/.codex/config.toml`
+- OpenCode: MCP plus OpenCode plugin hooks for prompt-time recall context and active-search telemetry; auto-extraction is gated until reliable end-of-turn transcript access is proven
 - OpenClaw: skill-driven retrieval/extraction flow
 
 ### Claude Code / Cursor Hook Lifecycle
@@ -1024,16 +1052,25 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 
 Codex uses `~/.codex/hooks.json` for these hooks, `~/.codex/settings.json` for permissions, and `~/.codex/config.toml` for MCP + developer instructions. Its `Stop` hook is intentionally beefier because Codex does not expose `PreCompact` or `SessionEnd`.
 
+### OpenCode Lifecycle
+
+| Event | Mechanism | What happens |
+|-------|-----------|--------------|
+| Prompt context | OpenCode plugin `experimental.chat.system.transform` | Injects recall guidance and recent project memories |
+| Memory MCP tool calls | OpenCode plugin `tool.execute.after` | Logs active-search telemetry with `client=opencode` |
+| MCP tools | `~/.config/opencode/opencode.json` `mcp.memories` | Exposes Memories MCP tools through a local `zsh -lc` command that sources `~/.config/memories/env` |
+
+OpenCode searches exact project prefixes first: `opencode/{project}`, `claude-code/{project}`, `codex/{project}`, `learning/{project}`, `wip/{project}`. OpenCode-authored extracted memories should use `opencode/{project}` when extraction is added; the first implementation does not auto-extract by default.
+
 ### Quick setup
 
 **Prerequisites:**
 - `jq` and `curl` installed (required by installer)
 - running Memories service (`curl -s http://localhost:8900/health | jq .`)
-- if installing Codex integration, MCP deps installed:
+- if installing Codex or OpenCode integration, MCP deps installed:
 
 ```bash
-cd memories/mcp-server
-npm install
+npm --prefix ./mcp-server install
 ```
 
 **One-command auto-detect installer (recommended):**
@@ -1044,6 +1081,7 @@ npm install
 This detects and configures any available targets on your machine:
 - Claude Code hooks (`~/.claude/settings.json`)
 - Codex hooks (`~/.codex/hooks.json`) + permissions (`~/.codex/settings.json`) + MCP/developer instructions (`~/.codex/config.toml`)
+- OpenCode MCP/plugin config (`~/.config/opencode/opencode.json`) + Memories skill (`~/.config/opencode/skills/memories/SKILL.md`)
 - OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
 
 Cursor is supported via manual MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`).
@@ -1056,12 +1094,14 @@ The installer writes runtime config to:
 Claude/Cursor read hooks also support an optional `MEMORIES_SOURCE_PREFIXES` env var in
 `~/.config/memories/env`. It is a comma-separated list of source prefix templates and
 defaults to `claude-code/{project},codex/{project},learning/{project},wip/{project}` for Claude Code and `codex/{project},claude-code/{project},learning/{project},wip/{project}` for Codex.
+OpenCode plugin recall defaults to `opencode/{project},claude-code/{project},codex/{project},learning/{project},wip/{project}`.
 
-**Target only Claude, Cursor, or Codex:**
+**Target only Claude, Cursor, Codex, or OpenCode:**
 ```bash
 ./integrations/claude-code/install.sh --claude
 ./integrations/claude-code/install.sh --cursor
 ./integrations/claude-code/install.sh --codex
+./integrations/claude-code/install.sh --opencode
 ```
 
 **Target only OpenClaw:**
@@ -1362,7 +1402,7 @@ memories/
     app.js                # Browser-side pagination/filter logic
   integrations/
     claude-code/
-      install.sh          # Auto-detect installer (Claude/Codex/Cursor/OpenClaw)
+      install.sh          # Auto-detect installer (Claude/Codex/OpenCode/Cursor/OpenClaw)
       hooks/              # Claude Code 12-hook scripts + hooks.json
         _lib.sh               # Shared hook utilities (logging, health check)
         memory-rehydrate.sh   # PostCompact rehydration hook
@@ -1373,6 +1413,10 @@ memories/
         response-hints.json   # Response hint patterns
     codex/
       memory-codex-notify.sh # Legacy Codex notify hook (compatibility/manual fallback)
+    opencode/
+      README.md           # OpenCode setup and lifecycle notes
+      plugin/
+        memories.js       # OpenCode prompt recall + telemetry plugin
     claude-code.md        # Claude Code guide
     openclaw-skill.md     # OpenClaw SKILL.md
     QUICKSTART-LLM.md     # LLM-friendly setup guide

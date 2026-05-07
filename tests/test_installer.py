@@ -23,6 +23,14 @@ def _prepare_installer_fixture(tmp_path: Path) -> Path:
         repo_root / "integrations" / "codex",
         dirs_exist_ok=True,
     )
+    opencode_plugin_dir = repo_root / "integrations" / "opencode" / "plugin"
+    opencode_plugin_dir.mkdir(parents=True, exist_ok=True)
+    (opencode_plugin_dir / "memories.js").write_text("// installer test fixture\n")
+    shutil.copytree(
+        REPO_ROOT / "plugin" / "skills" / "memories",
+        repo_root / "plugin" / "skills" / "memories",
+        dirs_exist_ok=True,
+    )
     mcp_dir = repo_root / "mcp-server"
     mcp_dir.mkdir(parents=True, exist_ok=True)
     (mcp_dir / "index.js").write_text("// installer test fixture\n")
@@ -78,19 +86,29 @@ def test_auto_detect_defaults_to_claude_when_no_client_dirs(tmp_path: Path) -> N
 def test_auto_detect_finds_all_supported_targets(tmp_path: Path) -> None:
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".codex").mkdir()
+    (tmp_path / ".config" / "opencode").mkdir(parents=True)
     (tmp_path / ".openclaw" / "skills").mkdir(parents=True)
 
     result = _run_installer(tmp_path, "--auto", "--dry-run")
     assert result.returncode == 0
-    assert "targets=claude,codex,openclaw" in result.stdout
+    assert "targets=claude,codex,opencode,openclaw" in result.stdout
+
+
+def test_auto_detect_finds_opencode_target(tmp_path: Path) -> None:
+    (tmp_path / ".config" / "opencode" / "opencode.json").parent.mkdir(parents=True)
+    (tmp_path / ".config" / "opencode" / "opencode.json").write_text("{}")
+
+    result = _run_installer(tmp_path, "--auto", "--dry-run")
+    assert result.returncode == 0
+    assert "targets=opencode" in result.stdout
 
 
 def test_explicit_target_flags_override_auto_detection(tmp_path: Path) -> None:
     (tmp_path / ".claude").mkdir()
 
-    result = _run_installer(tmp_path, "--codex", "--openclaw", "--dry-run", "--uninstall")
+    result = _run_installer(tmp_path, "--codex", "--opencode", "--openclaw", "--dry-run", "--uninstall")
     assert result.returncode == 0
-    assert "targets=codex,openclaw" in result.stdout
+    assert "targets=codex,opencode,openclaw" in result.stdout
     assert "mode=uninstall" in result.stdout
 
 
@@ -163,3 +181,342 @@ def test_codex_install_writes_standalone_hooks_json(tmp_path: Path) -> None:
     assert (hook_dir / "memory-observe.sh").exists()
     assert (hook_dir / "_lib.sh").exists()
     assert (hook_dir / "response-hints.json").exists()
+
+
+def test_opencode_install_writes_mcp_skill_and_plugin_config(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    repo_root = install_script.parents[2]
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write_fake_curl(bin_dir)
+
+    opencode_dir = home / ".config" / "opencode"
+    opencode_dir.mkdir(parents=True, exist_ok=True)
+    opencode_json = opencode_dir / "opencode.json"
+    opencode_json.write_text(
+        json.dumps(
+            {
+                "mcp": {"other": {"type": "remote", "enabled": True}},
+                "plugin": ["/tmp/other-plugin.js"],
+                "theme": "system",
+            }
+        )
+    )
+
+    result = _run_installer(
+        home,
+        "--opencode",
+        install_script=install_script,
+        extra_env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Skipping extraction provider prompt (no hook targets selected)" in result.stdout
+
+    config = json.loads(opencode_json.read_text())
+    assert config["theme"] == "system"
+    assert config["mcp"]["other"] == {"type": "remote", "enabled": True}
+    assert config["mcp"]["memories"] == {
+        "type": "local",
+        "enabled": True,
+        "timeout": 10000,
+        "environment": {"MEMORIES_MANAGED_BY": "memories-opencode-installer"},
+        "command": [
+            "zsh",
+            "-lc",
+            f"set -a; [ -f \"$HOME/.config/memories/env\" ] && . \"$HOME/.config/memories/env\"; set +a; exec node \"{repo_root}/mcp-server/index.js\"",
+        ],
+    }
+
+    plugin_path = f"{repo_root}/integrations/opencode/plugin/memories.js"
+    assert config["plugin"] == ["/tmp/other-plugin.js", plugin_path]
+    assert (home / ".config" / "opencode" / "skills" / "memories" / "SKILL.md").read_text() == (
+        repo_root / "plugin" / "skills" / "memories" / "SKILL.md"
+    ).read_text()
+    assert (home / ".config" / "opencode" / "skills" / "memories" / ".memories-installer-managed").exists()
+    assert not (home / ".claude" / "hooks" / "memory").exists()
+    assert not (home / ".codex" / "hooks" / "memory").exists()
+
+
+def test_opencode_install_preserves_existing_memories_mcp(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    repo_root = install_script.parents[2]
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write_fake_curl(bin_dir)
+
+    custom_mcp = {
+        "type": "remote",
+        "enabled": False,
+        "url": "https://memories.example.test/mcp",
+        "headers": {"Authorization": "Bearer custom"},
+    }
+    opencode_dir = home / ".config" / "opencode"
+    opencode_dir.mkdir(parents=True, exist_ok=True)
+    opencode_json = opencode_dir / "opencode.json"
+    opencode_json.write_text(
+        json.dumps(
+            {
+                "mcp": {"memories": custom_mcp, "other": {"type": "remote"}},
+                "plugin": ["/tmp/other-plugin.js"],
+            }
+        )
+    )
+
+    result = _run_installer(
+        home,
+        "--opencode",
+        install_script=install_script,
+        extra_env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    config = json.loads(opencode_json.read_text())
+    assert config["mcp"]["memories"] == custom_mcp
+    assert config["mcp"]["other"] == {"type": "remote"}
+    assert config["plugin"] == [
+        "/tmp/other-plugin.js",
+        f"{repo_root}/integrations/opencode/plugin/memories.js",
+    ]
+    assert (home / ".config" / "opencode" / "skills" / "memories" / "SKILL.md").exists()
+
+
+def test_opencode_install_preserves_unmarked_existing_skill(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    repo_root = install_script.parents[2]
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write_fake_curl(bin_dir)
+
+    opencode_dir = home / ".config" / "opencode"
+    skill_dir = opencode_dir / "skills" / "memories"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    custom_skill = "# Custom OpenCode Memories Skill\n"
+    (skill_dir / "SKILL.md").write_text(custom_skill)
+    (opencode_dir / "opencode.json").write_text(json.dumps({"plugin": []}))
+
+    result = _run_installer(
+        home,
+        "--opencode",
+        install_script=install_script,
+        extra_env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "OpenCode skill already exists without installer marker" in result.stdout
+    assert (skill_dir / "SKILL.md").read_text() == custom_skill
+    assert not (skill_dir / ".memories-installer-managed").exists()
+    config = json.loads((opencode_dir / "opencode.json").read_text())
+    assert config["plugin"] == [f"{repo_root}/integrations/opencode/plugin/memories.js"]
+
+
+def test_opencode_install_replaces_stale_memories_plugin_path(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    repo_root = install_script.parents[2]
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write_fake_curl(bin_dir)
+
+    stale_plugin = "/old/worktree/integrations/opencode/plugin/memories.js"
+    current_plugin = f"{repo_root}/integrations/opencode/plugin/memories.js"
+    opencode_dir = home / ".config" / "opencode"
+    opencode_dir.mkdir(parents=True, exist_ok=True)
+    opencode_json = opencode_dir / "opencode.json"
+    opencode_json.write_text(
+        json.dumps(
+            {
+                "plugin": ["/tmp/other-plugin.js", stale_plugin, stale_plugin],
+                "theme": "system",
+            }
+        )
+    )
+
+    result = _run_installer(
+        home,
+        "--opencode",
+        install_script=install_script,
+        extra_env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    config = json.loads(opencode_json.read_text())
+    assert config["plugin"] == ["/tmp/other-plugin.js", current_plugin]
+
+
+def test_opencode_uninstall_removes_only_memories_entries(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    repo_root = install_script.parents[2]
+    home = tmp_path / "home"
+    opencode_dir = home / ".config" / "opencode"
+    skill_dir = opencode_dir / "skills" / "memories"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text("installed skill\n")
+    (skill_dir / ".memories-installer-managed").write_text("managed by Memories installer\n")
+
+    memories_plugin = f"{repo_root}/integrations/opencode/plugin/memories.js"
+    opencode_json = opencode_dir / "opencode.json"
+    opencode_json.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "memories": {
+                        "type": "local",
+                        "enabled": True,
+                        "environment": {"MEMORIES_MANAGED_BY": "memories-opencode-installer"},
+                        "command": [
+                            "zsh",
+                            "-lc",
+                            f"exec node \"{repo_root}/mcp-server/index.js\"",
+                        ],
+                    },
+                    "other": {"type": "remote", "enabled": True},
+                },
+                "plugin": ["/tmp/other-plugin.js", memories_plugin],
+                "theme": "system",
+            }
+        )
+    )
+
+    result = _run_installer(home, "--opencode", "--uninstall", install_script=install_script)
+
+    assert result.returncode == 0, result.stderr
+    config = json.loads(opencode_json.read_text())
+    assert config == {
+        "mcp": {"other": {"type": "remote", "enabled": True}},
+        "plugin": ["/tmp/other-plugin.js"],
+        "theme": "system",
+    }
+    assert not skill_dir.exists()
+
+
+def test_opencode_uninstall_preserves_unmarked_local_memories_mcp_config(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    repo_root = install_script.parents[2]
+    home = tmp_path / "home"
+    opencode_dir = home / ".config" / "opencode"
+    skill_dir = opencode_dir / "skills" / "memories"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    custom_skill = "custom local skill\n"
+    (skill_dir / "SKILL.md").write_text(custom_skill)
+
+    custom_mcp = {
+        "type": "local",
+        "enabled": True,
+        "timeout": 30000,
+        "command": ["node", f"{repo_root}/mcp-server/index.js"],
+        "environment": {"MEMORIES_URL": "https://memories.example.test"},
+    }
+    memories_plugin = f"{repo_root}/integrations/opencode/plugin/memories.js"
+    opencode_json = opencode_dir / "opencode.json"
+    opencode_json.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "memories": custom_mcp,
+                    "other": {"type": "remote", "enabled": True},
+                },
+                "plugin": ["/tmp/other-plugin.js", memories_plugin],
+                "theme": "system",
+            }
+        )
+    )
+
+    result = _run_installer(home, "--opencode", "--uninstall", install_script=install_script)
+
+    assert result.returncode == 0, result.stderr
+    config = json.loads(opencode_json.read_text())
+    assert config == {
+        "mcp": {
+            "memories": custom_mcp,
+            "other": {"type": "remote", "enabled": True},
+        },
+        "plugin": ["/tmp/other-plugin.js"],
+        "theme": "system",
+    }
+    assert skill_dir.exists()
+    assert (skill_dir / "SKILL.md").read_text() == custom_skill
+
+
+def test_opencode_uninstall_preserves_custom_memories_mcp_config(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    repo_root = install_script.parents[2]
+    home = tmp_path / "home"
+    opencode_dir = home / ".config" / "opencode"
+    skill_dir = opencode_dir / "skills" / "memories"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    custom_skill = "custom remote skill\n"
+    (skill_dir / "SKILL.md").write_text(custom_skill)
+
+    custom_mcp = {
+        "type": "remote",
+        "enabled": False,
+        "url": "https://memories.example.test/mcp",
+        "headers": {"Authorization": "Bearer custom"},
+    }
+    memories_plugin = f"{repo_root}/integrations/opencode/plugin/memories.js"
+    opencode_json = opencode_dir / "opencode.json"
+    opencode_json.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "memories": custom_mcp,
+                    "other": {"type": "remote", "enabled": True},
+                },
+                "plugin": ["/tmp/other-plugin.js", memories_plugin],
+                "theme": "system",
+            }
+        )
+    )
+
+    result = _run_installer(home, "--opencode", "--uninstall", install_script=install_script)
+
+    assert result.returncode == 0, result.stderr
+    config = json.loads(opencode_json.read_text())
+    assert config == {
+        "mcp": {
+            "memories": custom_mcp,
+            "other": {"type": "remote", "enabled": True},
+        },
+        "plugin": ["/tmp/other-plugin.js"],
+        "theme": "system",
+    }
+    assert skill_dir.exists()
+    assert (skill_dir / "SKILL.md").read_text() == custom_skill
+
+
+def test_opencode_uninstall_removes_stale_memories_plugin_paths(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    repo_root = install_script.parents[2]
+    home = tmp_path / "home"
+    opencode_dir = home / ".config" / "opencode"
+    opencode_dir.mkdir(parents=True, exist_ok=True)
+
+    current_plugin = f"{repo_root}/integrations/opencode/plugin/memories.js"
+    stale_plugin = "/old/worktree/integrations/opencode/plugin/memories.js"
+    opencode_json = opencode_dir / "opencode.json"
+    opencode_json.write_text(
+        json.dumps(
+            {
+                "plugin": [
+                    "/tmp/other-plugin.js",
+                    stale_plugin,
+                    current_plugin,
+                    "/tmp/memories-but-not-opencode.js",
+                ],
+                "theme": "system",
+            }
+        )
+    )
+
+    result = _run_installer(home, "--opencode", "--uninstall", install_script=install_script)
+
+    assert result.returncode == 0, result.stderr
+    config = json.loads(opencode_json.read_text())
+    assert config == {
+        "plugin": ["/tmp/other-plugin.js", "/tmp/memories-but-not-opencode.js"],
+        "theme": "system",
+    }
