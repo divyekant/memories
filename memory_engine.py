@@ -553,10 +553,29 @@ class MemoryEngine:
         return backup_path
 
     def _cleanup_old_backups(self, keep: int = 10):
-        """Keep only N most recent backups."""
-        backups = sorted(self.backup_dir.glob("*_*"), key=lambda p: p.name, reverse=True)
-        for old_backup in backups[keep:]:
-            shutil.rmtree(old_backup, ignore_errors=True)
+        """Keep the N most recent backups by mtime, plus the 2 most recent of
+        every prefix class.
+
+        The old name-descending sort let the prefix dominate ordering, so a
+        pre_delete backup created moments ago could be evicted by the very
+        call that created it while stale alphabetically-later backups
+        survived. Backup names are {prefix}_{YYYYMMDD}_{HHMMSS}.
+        """
+        backups = sorted(
+            self.backup_dir.glob("*_*"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        survivors = set(backups[:keep])
+        per_prefix: Dict[str, int] = {}
+        for b in backups:
+            prefix = re.sub(r"_\d{8}_\d{6}$", "", b.name)
+            if per_prefix.get(prefix, 0) < 2:
+                survivors.add(b)
+                per_prefix[prefix] = per_prefix.get(prefix, 0) + 1
+        for old_backup in backups:
+            if old_backup not in survivors:
+                shutil.rmtree(old_backup, ignore_errors=True)
 
     def _finalize_legacy_faiss_cutover(self) -> bool:
         """Archive legacy index.faiss and write one-time cutover marker."""
@@ -726,10 +745,12 @@ class MemoryEngine:
 
         return added_ids
 
-    def delete_memory(self, memory_id: int) -> Dict[str, Any]:
-        """Delete a single memory by ID."""
+    def delete_memory(self, memory_id: int, force: bool = False) -> Dict[str, Any]:
+        """Delete a single memory by ID. Pinned memories require force=True."""
         if not self._id_exists(memory_id):
             raise ValueError(f"Memory ID {memory_id} not found")
+        if not force and self._get_meta_by_id(memory_id).get("pinned"):
+            raise ValueError(f"Memory ID {memory_id} is pinned; pass force=true to delete it")
         key = self._entity_key(self._get_meta_by_id(memory_id).get("source", ""))
         with self._entity_locks.acquire_many([key]):
             with self._write_lock:
@@ -787,10 +808,15 @@ class MemoryEngine:
             return {"deleted_count": 0, "deleted_ids": [], "missing_ids": []}
 
         existing = [mid for mid in unique_ids if self._id_exists(mid)]
+        # Pinned memories never participate in bulk deletes.
+        pinned = [mid for mid in existing if self._get_meta_by_id(mid).get("pinned")]
+        if pinned:
+            logger.info("delete_memories: skipping %d pinned ids: %s", len(pinned), pinned[:10])
+            existing = [mid for mid in existing if mid not in set(pinned)]
         existing_set = set(existing)
-        missing = [mid for mid in unique_ids if mid not in existing_set]
+        missing = [mid for mid in unique_ids if mid not in existing_set and mid not in set(pinned)]
         if not existing:
-            return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing}
+            return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing, "skipped_pinned": pinned}
 
         if len(unique_ids) > 10 and not skip_snapshot:
             self._snapshot_before_delete("pre_delete_batch")
@@ -2742,16 +2768,46 @@ class MemoryEngine:
     # ------------------------------------------------------------------
 
     def save(self):
-        """Persist metadata/config to disk."""
-        with open(self.metadata_path, "w", encoding="utf-8") as f:
-            json.dump(self.metadata, f, indent=2)
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            json.dump(self.config, f, indent=2)
+        """Persist metadata/config to disk atomically.
+
+        The metadata file is the canonical store (tens of MB); a truncate-write
+        interrupted by OOM-kill/SIGKILL corrupts it AND there may be no recent
+        backup. Write to a temp file in the same directory, fsync, atomically
+        replace, and keep the previous good file as .bak for load() fallback.
+        """
+        for path, payload in ((self.metadata_path, self.metadata), (self.config_path, self.config)):
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            if path.exists():
+                bak_path = path.with_suffix(path.suffix + ".bak")
+                try:
+                    shutil.copy2(path, bak_path)
+                except OSError as e:
+                    logger.warning("Could not refresh %s: %s", bak_path, e)
+            os.replace(tmp_path, path)
 
     def load(self, rebuild_on_mismatch: bool = False):
         """Load metadata/config and validate against Qdrant state."""
-        with open(self.metadata_path, encoding="utf-8") as f:
-            self.metadata = json.load(f)
+        try:
+            with open(self.metadata_path, encoding="utf-8") as f:
+                self.metadata = json.load(f)
+        except json.JSONDecodeError as e:
+            bak_path = self.metadata_path.with_suffix(self.metadata_path.suffix + ".bak")
+            if bak_path.exists():
+                logger.error(
+                    "metadata.json is corrupt (%s) — falling back to %s. "
+                    "The corrupt file is preserved as metadata.json.corrupt for inspection.",
+                    e, bak_path,
+                )
+                shutil.copy2(self.metadata_path, self.metadata_path.with_suffix(".json.corrupt"))
+                with open(bak_path, encoding="utf-8") as f:
+                    self.metadata = json.load(f)
+                shutil.copy2(bak_path, self.metadata_path)
+            else:
+                raise
         if self.config_path.exists():
             with open(self.config_path, encoding="utf-8") as f:
                 self.config.update(json.load(f))

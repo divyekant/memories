@@ -2311,24 +2311,26 @@ async def list_conflicts(request: Request):
 
 
 @app.delete("/memory/{memory_id}")
-async def delete_memory(memory_id: int, request: Request):
-    """Delete a single memory by ID"""
+async def delete_memory(memory_id: int, request: Request, force: bool = False):
+    """Delete a single memory by ID. Pinned memories require force=true."""
     auth = _get_auth(request)
     if auth.role == "read-only":
         raise HTTPException(status_code=403, detail="Read-only keys cannot delete memories")
-    logger.info("Delete memory: id=%d", memory_id)
+    logger.info("Delete memory: id=%d force=%s", memory_id, force)
     try:
         existing = memory.get_memory(memory_id)
         if auth.prefixes is not None:
             _require_write(auth, existing.get("source", ""))
         delete_source = existing.get("source", "")
-        result = memory.delete_memory(memory_id)
+        result = memory.delete_memory(memory_id, force=force)
         usage_tracker.log_api_event("delete")
         _audit(request, "memory.deleted", resource_id=str(memory_id), source=delete_source)
         return {"success": True, **result}
     except HTTPException:
         raise
     except ValueError as e:
+        if "pinned" in str(e):
+            raise HTTPException(status_code=409, detail=str(e))
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Delete failed")

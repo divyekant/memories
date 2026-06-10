@@ -57,10 +57,14 @@ def find_clusters(
     Returns:
         List of clusters, where each cluster is a list of memory dicts.
     """
-    # Filter for memories matching source_prefix
+    # Filter for memories matching source_prefix. Pinned and archived
+    # memories are never consolidation material: pinned is operator-protected,
+    # archived is supersede-chain history.
     candidates = []
     for m in engine.metadata:
         if not m:
+            continue
+        if m.get("pinned") or m.get("archived"):
             continue
         if source_prefix and not m.get("source", "").startswith(source_prefix):
             continue
@@ -88,11 +92,15 @@ def find_clusters(
         if mem_id in clustered_ids:
             continue
 
-        # Search for similar memories
+        # Search for similar memories. Vector-only search: cosine similarity
+        # lives on a 0-1 scale that similarity_threshold (0.75) was written
+        # for. hybrid_search returns RRF rank-fusion scores structurally
+        # bounded near 1/60, so comparing those against 0.75 meant no cluster
+        # could ever form.
         search_kwargs = {"query": mem["text"], "k": 10}
         if source_prefix:
             search_kwargs["source_prefix"] = source_prefix
-        similar = engine.hybrid_search(**search_kwargs)
+        similar = engine.search(**search_kwargs)
         searched += 1
 
         # Build cluster: start with the seed memory
@@ -105,8 +113,9 @@ def find_clusters(
                 continue
             if hit_id in clustered_ids:
                 continue
-            # Use rrf_score as similarity proxy -- it's what hybrid_search returns
-            score = hit.get("rrf_score", hit.get("similarity", 0.0))
+            if hit.get("pinned") or hit.get("archived"):
+                continue
+            score = hit.get("similarity", 0.0)
             if score >= similarity_threshold:
                 cluster.append(hit)
                 cluster_ids.add(hit_id)
@@ -161,6 +170,16 @@ def consolidate_cluster(
         Dict with merged_count, new_count, old_ids, new_texts, dry_run.
     """
     old_ids = [m["id"] for m in cluster]
+    protected = [m["id"] for m in cluster if m.get("pinned") or m.get("archived")]
+    if protected:
+        return {
+            "merged_count": 0,
+            "new_count": 0,
+            "old_ids": old_ids,
+            "new_texts": [],
+            "dry_run": dry_run,
+            "skipped_reason": f"cluster contains pinned/archived ids {protected}",
+        }
     project = _infer_project(cluster)
     category = _dominant_category(cluster)
 
@@ -182,32 +201,52 @@ def consolidate_cluster(
         user=prompt,
     )
 
-    # Parse response
+    # Parse response. A response that is not a clean JSON array is REJECTED for
+    # mutation: the old fallback stored the raw LLM text as a memory while the
+    # originals were already deleted, so one malformed response could replace
+    # real memories with garbage.
+    parse_error = None
     try:
         from llm_extract import _parse_json_array
         new_texts = _parse_json_array(result.text)
-        new_texts = [str(t) for t in new_texts] if new_texts else [result.text.strip()]
-    except Exception:
-        # Fallback: treat entire response as a single consolidated memory
-        new_texts = [result.text.strip()]
+    except Exception as e:
+        new_texts = None
+        parse_error = str(e)
+    if not new_texts or not all(isinstance(t, str) and t.strip() for t in (str(t) for t in new_texts)):
+        return {
+            "merged_count": 0,
+            "new_count": 0,
+            "old_ids": old_ids,
+            "new_texts": [],
+            "dry_run": dry_run,
+            "error": f"unparseable consolidation response{': ' + parse_error if parse_error else ''}",
+        }
+    new_texts = [str(t) for t in new_texts]
 
     if not dry_run:
-        # Delete old memories
-        engine.delete_memories(old_ids)
-
-        # Determine source from first cluster member
+        # Add the consolidated memories FIRST, delete originals only after the
+        # add succeeded — never leave a window where the cluster is gone and
+        # nothing replaced it.
         source = cluster[0].get("source", "consolidated")
-
-        # Add consolidated memories
         metadata_list = [
             {"category": category, "consolidated_from": old_ids}
             for _ in new_texts
         ]
-        engine.add_memories(
+        added = engine.add_memories(
             texts=new_texts,
             sources=[source] * len(new_texts),
             metadata_list=metadata_list,
         )
+        if not added:
+            return {
+                "merged_count": 0,
+                "new_count": 0,
+                "old_ids": old_ids,
+                "new_texts": new_texts,
+                "dry_run": dry_run,
+                "error": "add_memories stored nothing; originals left untouched",
+            }
+        engine.delete_memories(old_ids)
 
     return {
         "merged_count": len(cluster),
@@ -242,6 +281,10 @@ def find_prune_candidates(
 
     for mem in all_memories:
         if not mem:
+            continue
+        # Pinned memories are operator-protected; archived memories are
+        # supersede-chain version history. Neither is ever prunable.
+        if mem.get("pinned") or mem.get("archived"):
             continue
         mem_id = mem.get("id")
         if mem_id is None:
