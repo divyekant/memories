@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- **Modern-embedder upgrade path** — the embedder is now fully env-selectable: `EMBED_BASE_URL`/`EMBED_API_KEY` point the `openai` provider at any OpenAI-compatible endpoint (e.g. oMLX), `EMBED_DIMENSION` declares and validates the vector size, and `EMBED_QUERY_PREFIX`/`EMBED_DOC_PREFIX` support asymmetric prefix models (nomic-embed, arctic-embed). Candidate evaluation and the recommended upgrade (nomic-embed-text-v1.5, 768d in-process ONNX; Qwen3-Embedding-0.6B via oMLX as the config-only alternate) are documented in `docs/designs/embedder-upgrade.md`.
+- **Explicit embedding spaces** — non-default embedders resolve to collections named with model+dimension (`memories__<model>_<dim>d`), and a sidecar registry (`data/embedding_spaces.json`) records each collection's embedding signature; the engine refuses to write vectors into a collection created with a different signature (catching same-dimension model swaps that dimension checks miss). `EMBED_COLLECTION` pins an exact name; `EMBED_ALLOW_SPACE_REBIND=1` opts into in-place rebinds.
+- **`scripts/reembed.py`** — blue/green re-embedding migration: builds a new Qdrant collection from existing payload text (resumable cursor state, progress/ETA logging, `--max-rps` rate limiting), `verify` samples old-vs-new top-k neighbor overlap, and `cutover` re-points `EMBED_*` config in an env file only behind `--execute` (dry-run by default, automatic backup, printed rollback values; the source collection is never modified).
+
 ### Internal / Experimental
 - **Shadow extraction fan-out** — opt-in A/B harness that mirrors extraction calls to candidate local models (oMLX/Ollama) and logs JSONL comparisons, without touching the primary path. Inert unless `SHADOW_PROVIDERS` is set; not part of the supported user-facing feature set. Includes `scripts/shadow_compare.py` for offline agreement analysis.
 
