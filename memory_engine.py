@@ -842,29 +842,216 @@ class MemoryEngine:
             "missing_ids": missing,
         }
 
-    def supersede(self, old_id: int, new_text: str, source: str = "") -> dict:
-        """Replace a memory with an updated version, preserving audit trail."""
+    def supersede(self, old_id: int, new_text: str, source: str = "", metadata: Optional[Dict] = None) -> dict:
+        """Replace a memory with an updated version, preserving history.
+
+        The new memory is added FIRST; the old memory is then ARCHIVED (not
+        deleted) with a superseded_by pointer and a supersedes link from the
+        new memory — so timeline/evidence can render the change ("79kg,
+        was 78kg"), default search stops returning the old version, and a
+        crash mid-operation can never lose the original.
+        """
         if not self._id_exists(old_id):
             raise ValueError(f"Memory {old_id} not found")
 
-        previous_text = self._get_meta_by_id(old_id).get("text", "")
-
-        self.delete_memory(old_id)
+        old_meta = self._get_meta_by_id(old_id)
+        previous_text = old_meta.get("text", "")
+        use_source = source or old_meta.get("source", "")
 
         added_ids = self.add_memories(
             texts=[new_text],
-            sources=[source],
+            sources=[use_source],
+            metadata_list=[metadata] if metadata else None,
             deduplicate=False,
         )
         new_id = added_ids[0] if added_ids else None
+        if new_id is None or not self._id_exists(new_id):
+            raise RuntimeError("supersede: add_memories stored nothing; original left untouched")
 
-        if new_id is not None and self._id_exists(new_id):
-            self._get_meta_by_id(new_id)["supersedes"] = old_id
-            self._get_meta_by_id(new_id)["previous_text"] = previous_text
+        new_meta = self._get_meta_by_id(new_id)
+        new_meta["supersedes"] = old_id
+        new_meta["previous_text"] = previous_text
+        self.add_link(new_id, old_id, "supersedes")
+
+        old_meta["archived"] = True
+        old_meta["superseded_by"] = new_id
+        self.qdrant_store.set_payload(old_id, {"archived": True})
+        self.save()
+
+        logger.info("Superseded memory %d → %d (old archived)", old_id, new_id)
+        return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text, "archived_old": True}
+
+    def add_with_doctrine(
+        self,
+        text: str,
+        source: str,
+        metadata: Optional[Dict] = None,
+        on_duplicate: str = "supersede",
+        dedup_threshold: float = 0.90,
+        identical_threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Single-memory write with update-on-collision semantics.
+
+        Every write becomes an explicit decision instead of a silent skip:
+        - no collision (top similarity < dedup_threshold) -> ADD
+        - collision, similarity >= identical_threshold     -> SKIP (true
+          duplicate; the blocking id is surfaced so callers can supersede
+          deliberately)
+        - collision below identical_threshold              -> SUPERSEDE the
+          blocker (the incoming fact is newer by definition: "weight is
+          79kg" replaces "weight is 78kg" instead of being eaten by dedup)
+        - blocker is pinned                                -> SKIP (operator
+          protection wins; surfaced in the result)
+        on_duplicate: "supersede" (default) | "skip" (legacy dedup behavior,
+        but with the blocker surfaced) | "add" (no collision check).
+        """
+        if on_duplicate not in ("add", "skip", "supersede"):
+            raise ValueError(f"on_duplicate must be add|skip|supersede, got {on_duplicate!r}")
+        if identical_threshold is None:
+            identical_threshold = float(os.getenv("DOCTRINE_IDENTICAL_THRESHOLD", "0.97"))
+
+        if on_duplicate != "add" and self.metadata:
+            novel, top = self.is_novel(text, threshold=dedup_threshold)
+            if not novel and top is not None:
+                top_id = top.get("id")
+                sim = float(top.get("similarity", 0.0))
+                blocker = self._get_meta_by_id(top_id) if self._id_exists(top_id) else {}
+                if blocker.get("pinned"):
+                    return {
+                        "action": "skipped",
+                        "reason": "pinned_blocker",
+                        "blocked_by": top_id,
+                        "similarity": round(sim, 4),
+                        "hint": f"memory {top_id} is pinned; unpin it or supersede deliberately",
+                    }
+                if on_duplicate == "skip" or sim >= identical_threshold:
+                    return {
+                        "action": "skipped",
+                        "reason": "identical" if sim >= identical_threshold else "duplicate",
+                        "blocked_by": top_id,
+                        "similarity": round(sim, 4),
+                        "hint": f"memory {top_id} already covers this; supersede it to replace the content",
+                    }
+                result = self.supersede(top_id, text, source, metadata=metadata)
+                return {
+                    "action": "superseded",
+                    "id": result["new_id"],
+                    "superseded": top_id,
+                    "similarity": round(sim, 4),
+                    "previous_text": result["previous_text"],
+                }
+
+        ids = self.add_memories(
+            texts=[text],
+            sources=[source],
+            metadata_list=[metadata] if metadata else None,
+            deduplicate=False,
+        )
+        return {"action": "added", "id": ids[0] if ids else None}
+
+    def resolve_conflicts(
+        self,
+        dry_run: bool = True,
+        policy: str = "newest_wins",
+        max_resolutions: int = 0,
+    ) -> Dict[str, Any]:
+        """Drain the conflict queue.
+
+        Extraction flags contradictions by storing the new fact with a
+        ``conflicts_with`` marker — and historically nothing ever resolved
+        them. Under ``newest_wins`` the newer of the pair stays live and the
+        older is ARCHIVED with a supersedes link (never deleted, recoverable
+        via include_archived). Pinned losers and pairs without usable dates
+        are left in the queue marked ``conflict_review``; markers whose other
+        side no longer exists (or is already archived) are cleared as
+        orphaned. dry_run reports what would happen without mutating.
+        """
+        if policy != "newest_wins":
+            raise ValueError(f"unknown conflict policy: {policy!r}")
+
+        def _when(meta: Dict) -> Optional[datetime]:
+            for key in ("document_at", "created_at", "timestamp"):
+                val = meta.get(key)
+                if not val:
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    return parsed
+                except (ValueError, TypeError):
+                    continue
+            return None
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        resolved: List[Dict[str, Any]] = []
+        needs_review: List[Dict[str, Any]] = []
+        orphaned: List[Dict[str, Any]] = []
+        mutated = False
+
+        for m in list(self.metadata):
+            if not m or m.get("archived") or m.get("deferred"):
+                continue
+            cw = m.get("conflicts_with")
+            if cw is None:
+                continue
+            if max_resolutions and len(resolved) + len(orphaned) >= max_resolutions:
+                break
+            mid = m["id"]
+
+            other = self._get_meta_by_id(cw) if self._id_exists(cw) else None
+            if other is None or other.get("archived"):
+                reason = "missing" if other is None else "already_archived"
+                orphaned.append({"id": mid, "conflicts_with": cw, "reason": reason})
+                if not dry_run:
+                    m["conflict_resolution"] = {"policy": policy, "outcome": f"orphaned_{reason}", "other": cw, "at": now_iso}
+                    m.pop("conflicts_with", None)
+                    mutated = True
+                continue
+
+            t_m, t_o = _when(m), _when(other)
+            if t_m is None or t_o is None:
+                needs_review.append({"id": mid, "conflicts_with": cw, "reason": "undated"})
+                if not dry_run and m.get("conflict_review") != "undated":
+                    m["conflict_review"] = "undated"
+                    mutated = True
+                continue
+
+            # Tie goes to the flagging memory: it was stored later by construction.
+            winner, loser = (m, other) if t_m >= t_o else (other, m)
+            if loser.get("pinned"):
+                needs_review.append({"id": mid, "conflicts_with": cw, "reason": "pinned_loser"})
+                if not dry_run and m.get("conflict_review") != "pinned_loser":
+                    m["conflict_review"] = "pinned_loser"
+                    mutated = True
+                continue
+
+            if not dry_run:
+                loser["archived"] = True
+                loser["superseded_by"] = winner["id"]
+                self.qdrant_store.set_payload(loser["id"], {"archived": True})
+                self.add_link(winner["id"], loser["id"], "supersedes")
+                winner["conflict_resolution"] = {
+                    "policy": policy, "outcome": "won", "archived": loser["id"], "at": now_iso,
+                }
+                m.pop("conflicts_with", None)
+                m.pop("conflict_review", None)
+                mutated = True
+            resolved.append({"kept": winner["id"], "archived": loser["id"], "flagger": mid})
+
+        if not dry_run and mutated:
             self.save()
 
-        logger.info("Superseded memory %d → %d", old_id, new_id)
-        return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text}
+        return {
+            "dry_run": dry_run,
+            "policy": policy,
+            "resolved": resolved,
+            "needs_review": needs_review,
+            "orphaned": orphaned,
+            "resolved_count": len(resolved),
+            "needs_review_count": len(needs_review),
+            "orphaned_count": len(orphaned),
+        }
 
     def merge_memories(self, ids: List[int], merged_text: str, source: str) -> Dict[str, Any]:
         """Merge multiple memories into one, archiving originals and linking via supersedes."""
