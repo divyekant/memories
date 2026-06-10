@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Gated per-prompt playbook injection** — the UserPromptSubmit hooks (Claude Code and Codex) now inject the full directive memory playbook only when keyword retrieval returned at least one candidate memory or the prompt is prior-work-shaped ("did we", "weren't we", "how does X work", "what version", "is X still", "last time", "resume", "continue", and similar); self-contained prompts get at most a 1-2 line reminder. Prior-work prompts with zero retrieval candidates now still receive the full mandate (previously the hook stayed silent). The mandate wording when injected is unchanged, the Retrieved Memories block is unchanged, and the gate is exposed as `_playbook_injection_mode` in the hook `_lib.sh` for standalone testing.
+
 ### Internal / Experimental
 - **Shadow extraction fan-out** — opt-in A/B harness that mirrors extraction calls to candidate local models (oMLX/Ollama) and logs JSONL comparisons, without touching the primary path. Inert unless `SHADOW_PROVIDERS` is set; not part of the supported user-facing feature set. Includes `scripts/shadow_compare.py` for offline agreement analysis.
 

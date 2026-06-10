@@ -38,6 +38,15 @@ The log is metadata-only. Claude Code and Codex hooks can store prompt and tool 
 
 OpenCode currently logs memory tool-call telemetry only (`event: "tool_call"`) through its plugin. It does not emit `prompt_evaluated` events yet, so prompt classification, candidate-count, follow-up-rate, and passive-risk metrics are Claude/Codex hook metrics only for now.
 
+Note on the playbook gate: the UserPromptSubmit hooks inject the full directive
+playbook only when retrieval returned at least one candidate memory or the
+prompt is prior-work-shaped; other prompts get at most a 1-2 line reminder.
+This does not change what gets logged. `prompt_evaluated` events are still
+emitted for every active-search-required prompt, and a required prompt with
+`candidate_count: 0` / `hook_results_injected: false` now still carries the
+full mandate (without a Retrieved Memories block), so its follow-up
+`memory_search` is expected as before.
+
 It does not store prompt text, memory text, retrieved snippets, or API keys.
 
 ## Check Active Search Health
