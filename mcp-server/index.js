@@ -246,7 +246,7 @@ server.tool(
     const lines = data.results.map((r, i) => {
       const score = r.similarity ?? r.rrf_score;
       const pct = (score * 100).toFixed(0);
-      return `[${i + 1}] (${pct}%) ${r.source}\n${r.text}`;
+      return `[${i + 1}] id=${memoryId(r)} (${pct}%) ${r.source}\n${r.text}`;
     });
 
     return {

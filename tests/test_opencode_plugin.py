@@ -212,6 +212,32 @@ console.log(JSON.stringify(JSON.parse(line)));
     }
 
 
+def test_tool_telemetry_logs_memory_ids_from_args(tmp_path: Path) -> None:
+    log_path = tmp_path / "active-search.jsonl"
+    output = _node_json(
+        _plugin_import()
+        + f"""
+await helpers.observeToolCall('memory_get', {{ id: 7 }}, 'sess-ids', {{
+  project: 'demo',
+  activeSearchLog: {json.dumps(str(log_path))},
+  now: () => '2026-05-06T00:00:00.000Z',
+}});
+await helpers.observeToolCall('memory_is_useful', {{ memory_id: 9, signal: 'useful' }}, 'sess-ids', {{
+  project: 'demo',
+  activeSearchLog: {json.dumps(str(log_path))},
+  now: () => '2026-05-06T00:00:00.000Z',
+}});
+const lines = (await import('node:fs')).readFileSync({json.dumps(str(log_path))}, 'utf8').trim().split('\\n');
+console.log(JSON.stringify(lines.map((line) => JSON.parse(line))));
+"""
+    )
+
+    assert output[0]["tool_name"] == "memory_get"
+    assert output[0]["memory_ids"] == [7]
+    assert output[1]["tool_name"] == "memory_is_useful"
+    assert output[1]["memory_ids"] == [9]
+
+
 def test_tool_after_hook_logs_real_opencode_tool_name(tmp_path: Path) -> None:
     log_path = tmp_path / "active-search.jsonl"
     output = _node_json(
