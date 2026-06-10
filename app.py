@@ -3260,6 +3260,9 @@ async def extract_commit(request_body: ExtractCommitRequest, request: Request):
         facts=facts,
         source=request_body.source,
         allowed_prefixes=auth.prefixes,
+        # Human-approved actions from a dry run bypass the novelty gate;
+        # engine-side dedup remains the backstop.
+        novelty_gate=False,
     )
     return result
 

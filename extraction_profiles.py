@@ -1,8 +1,28 @@
 """Extraction profiles — per-source extraction configuration with cascade resolution."""
 
+import copy
 import json
 import os
 from typing import Optional
+
+# Default extraction rules — the novelty bar for auto-extraction.
+# Target durable signal (decisions, learnings, preferences, deferred work) and
+# NOOP session narration. A profile that explicitly sets "rules" (even {})
+# fully replaces these defaults.
+DEFAULT_RULES = {
+    "always_remember": [
+        "Decisions and their rationale, including boundary conditions (until/unless/because/blocked on)",
+        "Learnings: root causes, fixes, gotchas, and non-obvious behavior discovered while working",
+        "Durable user or project preferences and conventions",
+        "Deferred work: tasks explicitly postponed, blocked, or scheduled for later",
+    ],
+    "never_remember": [
+        "Session narration or running commentary about what was just done, edited, run, or is about to be done",
+        "Restatements of code, diffs, or file contents that already live in the repository",
+        "Ephemeral task chatter: progress updates, test counts, build or test status, command output",
+        "Recalled or previously injected memory text repeated back in the conversation",
+    ],
+}
 
 DEFAULTS = {
     "mode": "standard",
@@ -11,7 +31,7 @@ DEFAULTS = {
     "half_life_days": 30,
     "single_call": False,
     "enabled": True,
-    "rules": {},
+    "rules": DEFAULT_RULES,
     "ttl_days": None,
     "confidence_threshold": None,
     "min_age_days": None,
@@ -40,8 +60,9 @@ class ExtractionProfiles:
 
     def put(self, source_prefix: str, config: dict) -> dict:
         existing = self._profiles.get(source_prefix, {})
-        # Merge: defaults → existing → new config.
-        merged = {**DEFAULTS, **self._public(existing), **config, "source_prefix": source_prefix}
+        # Merge: defaults → existing → new config. Deep-copy defaults so the
+        # mutable DEFAULT_RULES lists are never shared with stored profiles.
+        merged = {**copy.deepcopy(DEFAULTS), **self._public(existing), **config, "source_prefix": source_prefix}
         # Track which fields were explicitly provided (across all puts).
         prev_explicit: set = set(existing.get(_EXPLICIT_KEY, []))
         # Fields from config are explicit; source_prefix is always explicit.
@@ -86,7 +107,7 @@ class ExtractionProfiles:
                 matched.append(self._profiles[prefix])
 
         if not matched:
-            return {**DEFAULTS, "source_prefix": source}
+            return {**DEFAULTS, "rules": copy.deepcopy(DEFAULTS["rules"]), "source_prefix": source}
 
         # Build result starting from DEFAULTS, then overlay from least to most specific
         # using only explicitly-set fields.
@@ -107,7 +128,7 @@ class ExtractionProfiles:
                 break
 
         if not rules_resolved:
-            result["rules"] = DEFAULTS["rules"]
+            result["rules"] = copy.deepcopy(DEFAULTS["rules"])
 
         result["source_prefix"] = source
         return result

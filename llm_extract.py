@@ -41,11 +41,15 @@ def _training_output_path(out_dir: Path, now: datetime) -> Path:
     return path
 
 
-def _build_extraction_system_prompt(source: str, context: str) -> str:
+def _build_extraction_system_prompt(source: str, context: str, rules: dict | None = None) -> str:
     """Build the exact extraction system prompt used for a request."""
     template = FACT_EXTRACTION_PROMPT_AGGRESSIVE if context == "pre_compact" else FACT_EXTRACTION_PROMPT
     project = source.rsplit("/", 1)[-1] if "/" in source else source or "this"
-    return template.format(project=project)
+    prompt = template.format(project=project)
+    rules_section = _build_rules_section(rules)
+    if rules_section:
+        prompt = prompt + "\n\n" + rules_section
+    return prompt
 
 
 def _compact_similar_memories(similar_per_fact: dict) -> dict[str, list[dict]]:
@@ -76,6 +80,7 @@ def _save_training_pair(
     similar_per_fact: dict | None = None,
     extract_tokens: dict | None = None,
     audn_tokens: dict | None = None,
+    rules: dict | None = None,
 ) -> None:
     """Persist extraction and optional AUDN supervision for future fine-tuning.
 
@@ -95,7 +100,7 @@ def _save_training_pair(
             "context": context,
             "ts": now.isoformat(),
             "extraction": {
-                "system": _build_extraction_system_prompt(source, context),
+                "system": _build_extraction_system_prompt(source, context, rules),
                 "user": messages,
                 "assistant": facts,
             },
@@ -158,6 +163,49 @@ EXTRACT_SIMILAR_TEXT_CHARS = _env_int("EXTRACT_SIMILAR_TEXT_CHARS", 280, minimum
 EXTRACT_SIMILAR_PER_FACT = _env_int("EXTRACT_SIMILAR_PER_FACT", 5)
 EXTRACT_MAX_LINKS = _env_int("EXTRACT_MAX_LINKS", 3, minimum=0)
 EXTRACT_MIN_LINK_SCORE = _env_float("EXTRACT_MIN_LINK_SCORE", 0.005)
+
+_NOVELTY_GATE_DEFAULT_THRESHOLD = 0.85
+
+
+def _novelty_gate_enabled() -> bool:
+    """EXTRACT_NOVELTY_GATE — explicit novelty gate on extraction ADDs (default on).
+
+    Read dynamically (not at import) so operators and tests can toggle it
+    without reloading the module.
+    """
+    raw = os.environ.get("EXTRACT_NOVELTY_GATE", "").strip().lower()
+    if not raw:
+        return True
+    return raw not in ("0", "false", "no", "off")
+
+
+def _novelty_gate_threshold() -> float:
+    """EXTRACT_NOVELTY_THRESHOLD — cosine similarity above which an ADD is gated."""
+    raw = os.environ.get("EXTRACT_NOVELTY_THRESHOLD", "").strip()
+    if not raw:
+        return _NOVELTY_GATE_DEFAULT_THRESHOLD
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid EXTRACT_NOVELTY_THRESHOLD=%r; using %s",
+            raw, _NOVELTY_GATE_DEFAULT_THRESHOLD,
+        )
+        return _NOVELTY_GATE_DEFAULT_THRESHOLD
+
+
+def _novelty_gate_check(engine, fact_text: str) -> tuple[bool, Optional[dict]]:
+    """Return (gated, similar_memory). Fail-open: any error means not gated,
+    leaving engine-side dedup (add_memories deduplicate=True) as the backstop.
+    """
+    try:
+        is_new, similar = engine.is_novel(fact_text, threshold=_novelty_gate_threshold())
+        if isinstance(is_new, bool) and not is_new:
+            return True, similar if isinstance(similar, dict) else None
+        return False, None
+    except Exception as e:
+        logger.warning("Novelty gate check failed (fail-open): %s", e)
+        return False, None
 
 
 # --- Prompts ---
@@ -297,6 +345,7 @@ def extract_facts(
     context: str = "stop",
     return_error: bool = False,
     source: str = "",
+    rules: dict | None = None,
 ):
     """Extract categorized facts from conversation using LLM.
 
@@ -305,12 +354,14 @@ def extract_facts(
         messages: conversation text
         context: "stop", "pre_compact", or "session_end"
         source: memory source identifier (e.g. "claude-code/my-app")
+        rules: extraction rules (always_remember/never_remember/custom_instructions)
+            appended to the system prompt so the bar applies at extraction time
 
     Returns:
         list[dict], or tuple[list[dict], Optional[str], dict] when return_error=True.
         Each dict has {"category": str, "text": str}.
     """
-    system = _build_extraction_system_prompt(source, context)
+    system = _build_extraction_system_prompt(source, context, rules)
 
     tokens = {"input": 0, "output": 0}
     try:
@@ -581,6 +632,7 @@ def execute_actions(
     allowed_prefixes: Optional[List[str]] = None,
     job_id: Optional[str] = None,
     document_at: Optional[str] = None,
+    novelty_gate: bool = True,
 ) -> dict:
     """Execute AUDN decisions against the memory engine.
 
@@ -591,13 +643,18 @@ def execute_actions(
         facts: list of {"category": str, "text": str} dicts
         job_id: extraction job identifier for provenance tracking
         document_at: ISO 8601 timestamp for when the source content was created
+        novelty_gate: apply the EXTRACT_NOVELTY_GATE check to ADD/FALLBACK_ADD
+            actions (near-duplicates become noops). Callers executing
+            human-approved actions (e.g. dry-run commit) pass False.
     """
     stored_count = 0
     updated_count = 0
     deleted_count = 0
     conflict_count = 0
     fallback_count = 0
+    gated_count = 0
     result_actions = []
+    gate_active = novelty_gate and _novelty_gate_enabled()
 
     for action in actions:
         act = action.get("action", "").upper()
@@ -609,6 +666,18 @@ def execute_actions(
             if act in ("ADD", "FALLBACK_ADD"):
                 if not source_matches_prefixes(source, allowed_prefixes):
                     raise PermissionError(f"source not authorized for add: {source}")
+                if gate_active:
+                    gated, similar = _novelty_gate_check(engine, fact_text)
+                    if gated:
+                        result_actions.append({
+                            "action": "noop",
+                            "text": fact_text,
+                            "reason": "novelty_gate",
+                            "existing_id": (similar or {}).get("id"),
+                            "similarity": (similar or {}).get("similarity"),
+                        })
+                        gated_count += 1
+                        continue
                 fact_meta = {"category": fact.get("category", "detail")} if isinstance(fact, dict) else {}
                 if job_id:
                     fact_meta["extraction_job_id"] = job_id
@@ -725,6 +794,9 @@ def execute_actions(
             logger.error("Failed to execute %s for fact '%s': %s", act, fact_text[:50], e)
             result_actions.append({"action": "error", "text": fact_text, "error": str(e)})
 
+    if gated_count:
+        logger.info("Novelty gate suppressed %d near-duplicate add(s)", gated_count)
+
     return {
         "actions": result_actions,
         "stored_count": stored_count,
@@ -732,6 +804,7 @@ def execute_actions(
         "deleted_count": deleted_count,
         "conflict_count": conflict_count,
         "fallback_count": fallback_count,
+        "gated_count": gated_count,
     }
 
 
@@ -952,6 +1025,7 @@ def run_extraction(
             context=context,
             return_error=True,
             source=source,
+            rules=rules,
         )
     finally:
         _mod.EXTRACT_MAX_FACTS = orig_max_facts
@@ -1003,6 +1077,7 @@ def run_extraction(
         similar_per_fact=audn_artifacts.get("similar_per_fact"),
         extract_tokens=extract_tokens,
         audn_tokens=audn_tokens,
+        rules=rules,
     )
 
     # Step 3: Dry-run intercept — return planned actions without executing
