@@ -3133,18 +3133,24 @@ registerPage("settings", async (container) => {
       exportBtn.disabled = true;
       exportBtn.textContent = "Exporting...";
       try {
-        const data = await api("/memories?limit=10000");
-        const memories = data.memories || [];
-        const blob = new Blob([JSON.stringify(memories, null, 2)], { type: "application/json" });
+        // GET /export streams the full corpus as NDJSON (header line first).
+        // The old call used /memories?limit=10000, which 422s: the endpoint
+        // caps limit at 5000 — the export button never worked.
+        const resp = await fetch("/export", { headers: authHeaders(false) });
+        if (!resp.ok) throw new Error(`Export failed: HTTP ${resp.status}`);
+        const text = await resp.text();
+        const lines = text.trim() ? text.trim().split("\n") : [];
+        const count = Math.max(lines.length - 1, 0); // first line is the header
+        const blob = new Blob([text], { type: "application/x-ndjson" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `memories-export-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `memories-export-${new Date().toISOString().slice(0, 10)}.ndjson`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        showToast(`Exported ${memories.length} memories`, "success");
+        showToast(`Exported ${count} memories`, "success");
       } catch (err) {
         showToast(err.message, "error");
       } finally {
