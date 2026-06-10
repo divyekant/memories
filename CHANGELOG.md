@@ -1,5 +1,10 @@
 # Changelog
 
+## [5.5.1] - 2026-06-10
+
+### Fixed
+- **Docker image missing new modules** — `embedding_space.py` and `transcript_hygiene.py` were not in the Dockerfile COPY list, so the 5.5.0 image crash-looped at boot (`ModuleNotFoundError`). Both are now shipped; an import-graph check against the COPY list caught no other gaps.
+
 ## [5.5.0] - 2026-06-10
 
 ### Added
