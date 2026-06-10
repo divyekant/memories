@@ -154,6 +154,26 @@ function memoryDate(memory) {
   return memory.document_at || memory.date || memory.created_at || "";
 }
 
+// Render a legible relevance tag for one search result.
+// - Vector-only results carry `similarity` (cosine, 0-1) — absolute % as before.
+// - Hybrid results carry `rrf_score` (Reciprocal Rank Fusion: weight * 1/(rank+60)
+//   per signal, bounded near 1/60) — absolute % renders as 0-2% noise, so use
+//   the backend's set-relative `relative_score` (1.0 = top of this result set).
+// - Legacy backends without relative_score: omit the tag rather than show noise.
+function relevanceTag(r) {
+  if (typeof r.similarity === "number") return ` (${(r.similarity * 100).toFixed(0)}%)`;
+  if (typeof r.relative_score === "number") return ` (rel ${(r.relative_score * 100).toFixed(0)}%)`;
+  return "";
+}
+
+function usesRelativeScores(results) {
+  return (results || []).some(
+    (r) => typeof r.similarity !== "number" && typeof r.relative_score === "number"
+  );
+}
+
+const REL_LEGEND = "rel % = relevance relative to the top result of this search, not an absolute match score";
+
 function snippet(text, maxChars = 220) {
   const clean = String(text || "").replace(/\s+/g, " ").trim();
   if (clean.length <= maxChars) return clean;
@@ -225,34 +245,30 @@ server.tool(
       return { content: [{ type: "text", text: `No memories found for: "${query}"` }] };
     }
 
+    const legend = usesRelativeScores(data.results) ? ` (${REL_LEGEND})` : "";
+
     if (compact) {
       const lines = data.results.map((r, i) => {
-        const score = r.similarity ?? r.rrf_score;
-        const pct = score !== undefined ? ` (${(score * 100).toFixed(0)}%)` : "";
         const id = memoryId(r);
         const date = memoryDate(r);
         const dateText = date ? ` ${date}` : "";
-        return `[${i + 1}] id=${id}${pct} ${r.source || "unknown-source"}${dateText}\n${snippet(r.text)}\nUse memory_get id=${id} for full text.`;
+        return `[${i + 1}] id=${id}${relevanceTag(r)} ${r.source || "unknown-source"}${dateText}\n${snippet(r.text)}\nUse memory_get id=${id} for full text.`;
       });
 
       return {
         content: [{
           type: "text",
-          text: `Found ${data.count} compact memories for "${query}":\n\n${lines.join("\n\n")}`,
+          text: `Found ${data.count} compact memories for "${query}"${legend}:\n\n${lines.join("\n\n")}`,
         }],
       };
     }
 
-    const lines = data.results.map((r, i) => {
-      const score = r.similarity ?? r.rrf_score;
-      const pct = (score * 100).toFixed(0);
-      return `[${i + 1}] (${pct}%) ${r.source}\n${r.text}`;
-    });
+    const lines = data.results.map((r, i) => `[${i + 1}]${relevanceTag(r)} ${r.source}\n${r.text}`);
 
     return {
       content: [{
         type: "text",
-        text: `Found ${data.count} memories for "${query}":\n\n${lines.join("\n\n---\n\n")}`,
+        text: `Found ${data.count} memories for "${query}"${legend}:\n\n${lines.join("\n\n---\n\n")}`,
       }],
     };
   }
@@ -315,8 +331,9 @@ server.tool(
     const lines = results.map((r, i) => {
       const id = memoryId(r);
       const date = memoryDate(r) || "unknown-date";
-      const score = r.similarity ?? r.rrf_score;
-      const pct = score !== undefined ? ` score=${(score * 100).toFixed(0)}%` : "";
+      let pct = "";
+      if (typeof r.similarity === "number") pct = ` score=${(r.similarity * 100).toFixed(0)}%`;
+      else if (typeof r.relative_score === "number") pct = ` rel=${(r.relative_score * 100).toFixed(0)}%`;
       const fact = hasUserFact(r) ? "user-fact" : "assistant-or-mixed";
       return `[${i + 1}] ${date} id=${id}${pct} fact=${fact} ${r.source || "unknown-source"}\n${snippet(r.text, 360)}`;
     });
