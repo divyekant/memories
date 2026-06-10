@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+- **Recall feedback loop** — surfaced-vs-used telemetry now closes the loop on hook-recalled memories:
+  - `memory-query.sh` logs `candidate_ids` on `prompt_evaluated` events for every prompt with injected candidates (local telemetry only; ids still never enter model context for active-search prompts).
+  - The PostToolUse observers (Claude Code, Codex) log `memory_ids` touched by each memory tool call, from tool input ids plus unambiguous `id=N` / `(id: N)` response markers; the OpenCode plugin logs argument-derived `memory_ids`.
+  - `scripts/apply_memory_feedback.py` — batch applier that tallies per-memory used/ignored over closed follow-up windows and posts `useful`/`not_useful` through the existing `/search/feedback` mechanism (consumed by `feedback_weight` ranking). Dry-run by default, idempotent via an event cursor file, bounded by `--max-actions`.
+  - `scripts/active_search_metrics.py --prune-report` — lists chronically-surfaced-never-used memories as REVIEW candidates (report only, never auto-deletes); the summary now includes `candidate_surfacings`, `candidates_used`, and `candidates_ignored`.
+  - `memory_search` MCP results now include `id=N` per hit (previously compact/timeline modes only), so follow-up usage is id-derivable and agents can call `memory_get` / `memory_is_useful` directly.
+  - Documented the loop in `docs/active-search-monitoring.md`.
+
 ### Internal / Experimental
 - **Shadow extraction fan-out** — opt-in A/B harness that mirrors extraction calls to candidate local models (oMLX/Ollama) and logs JSONL comparisons, without touching the primary path. Inert unless `SHADOW_PROVIDERS` is set; not part of the supported user-facing feature set. Includes `scripts/shadow_compare.py` for offline agreement analysis.
 
