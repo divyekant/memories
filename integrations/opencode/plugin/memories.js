@@ -136,6 +136,19 @@ function isMemoryToolName(toolName) {
   return /^memory_/.test(name) || /^mcp__memories__memory_/.test(name) || /^memories[._]memory_/.test(name);
 }
 
+function memoryIdsFromArgs(args = {}) {
+  const ids = [];
+  for (const value of [args.id, args.memory_id, args.memoryId]) {
+    if (typeof value === "number" && Number.isFinite(value)) ids.push(value);
+  }
+  if (Array.isArray(args.ids)) {
+    for (const value of args.ids) {
+      if (typeof value === "number" && Number.isFinite(value)) ids.push(value);
+    }
+  }
+  return [...new Set(ids)].sort((a, b) => a - b).slice(0, 50);
+}
+
 async function observeToolCall(toolName, args = {}, sessionID, options = {}) {
   if (!isMemoryToolName(toolName)) return undefined;
   const project = projectName(options);
@@ -150,6 +163,10 @@ async function observeToolCall(toolName, args = {}, sessionID, options = {}) {
     project,
     ts: timestamp(options),
   };
+  // Recall-feedback loop: record which memory ids the call touched (ids only,
+  // never query or memory text).
+  const memoryIds = memoryIdsFromArgs(args);
+  if (memoryIds.length > 0) record.memory_ids = memoryIds;
   appendTelemetry(record, options);
   return record;
 }

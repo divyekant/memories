@@ -33,7 +33,7 @@ SUMMARY=$(echo "$INPUT" | jq -r '.compact_summary // empty')
 
 # Extract CWD and project for scoped search
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
-PROJECT=$(basename "${CWD:-unknown}")
+PROJECT=$(_memories_resolve_project "${CWD:-unknown}" 2>/dev/null || basename "${CWD:-unknown}")
 [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ] || [ -z "$PROJECT" ] && exit 0
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"

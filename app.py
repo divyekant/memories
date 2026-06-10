@@ -29,11 +29,12 @@ from starlette.concurrency import run_in_threadpool
 from auth_context import AuthContext
 from embedder_reloader import EmbedderAutoReloadController
 from key_store import KeyStore
-from memory_engine import MemoryEngine
+from memory_engine import MemoryEngine, annotate_relative_scores
 from runtime_memory import MemoryTrimmer
 from audit_log import AuditLog, NullAuditLog
 from usage_tracker import UsageTracker, NullTracker
 from extraction_profiles import ExtractionProfiles
+from transcript_hygiene import clean_transcript
 
 # -- Logging ------------------------------------------------------------------
 
@@ -595,6 +596,10 @@ def _run_fallback_extraction(
     allowed_prefixes: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Fallback add-only extraction path for disabled or runtime-failed providers."""
+    # Transcript hygiene: never re-ingest hook-injected recalled memories.
+    # The regex extractor is especially prone to matching injected
+    # "decided/chose" memory lines verbatim.
+    messages = clean_transcript(messages)
     facts = _fallback_extract_facts(messages)
     actions: List[Dict[str, Any]] = []
     stored_count = 0
@@ -1054,15 +1059,21 @@ async def lifespan(app: FastAPI):
     _embed_provider = os.getenv("EMBED_PROVIDER", "onnx").strip().lower()
     _embed_model = os.getenv("EMBED_MODEL", "").strip()
     if _embed_provider == "openai":
-        _openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if not _openai_key:
+        _embed_base_url = os.getenv("EMBED_BASE_URL", "").strip()
+        _embed_key = (
+            os.getenv("EMBED_API_KEY", "").strip()
+            or os.getenv("OPENAI_API_KEY", "").strip()
+        )
+        if not _embed_key and not _embed_base_url:
             raise RuntimeError(
-                "EMBED_PROVIDER=openai requires OPENAI_API_KEY. "
-                "Set OPENAI_API_KEY or use EMBED_PROVIDER=onnx for local embeddings."
+                "EMBED_PROVIDER=openai requires OPENAI_API_KEY, or EMBED_BASE_URL "
+                "for an OpenAI-compatible endpoint (e.g. oMLX). "
+                "Alternatively use EMBED_PROVIDER=onnx for local embeddings."
             )
         logger.info(
-            "Embedding: provider=openai, model=%s",
+            "Embedding: provider=openai, model=%s, base_url=%s",
             _embed_model or "text-embedding-3-small",
+            _embed_base_url or "api.openai.com",
         )
     elif _embed_provider == "onnx":
         logger.info("Embedding: provider=%s, model=%s", _embed_provider, _embed_model or "all-MiniLM-L6-v2")
@@ -1122,7 +1133,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Memories API",
-    version="5.4.0",
+    version="5.5.0",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
 )
@@ -1435,7 +1446,7 @@ async def health(request: Request):
 
     Unauthenticated callers get minimal response; authenticated callers get full stats.
     """
-    base = {"status": "ok", "service": "memories", "version": "5.4.0"}
+    base = {"status": "ok", "service": "memories", "version": "5.5.0"}
     # Only include detailed stats for authenticated callers
     if not API_KEY or hmac.compare_digest(
         request.headers.get("X-API-Key", "").encode(), API_KEY.encode()
@@ -2005,7 +2016,7 @@ async def search(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
-        results = auth.filter_results(results)
+        results = annotate_relative_scores(auth.filter_results(results))
         result_count = len(results)
         usage_tracker.log_api_event("search", request_body.source)
         for rank, r in enumerate(results, 1):
@@ -2071,7 +2082,7 @@ async def search_explain(request_body: SearchRequest, request: Request):
         )
         # Apply auth filtering to results and track how many were removed
         raw_results = explain_result["results"]
-        filtered_results = auth.filter_results(raw_results)
+        filtered_results = annotate_relative_scores(auth.filter_results(raw_results))
         filtered_by_auth = len(raw_results) - len(filtered_results)
         explain_result["results"] = filtered_results
         explain_result["explain"]["filtered_by_auth"] = filtered_by_auth
@@ -2144,7 +2155,7 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
-        results = auth.filter_results(results)
+        results = annotate_relative_scores(auth.filter_results(results))
         from evidence_packet import build_evidence_packet
 
         packet = build_evidence_packet(request_body.query, results)
@@ -2190,7 +2201,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     since=item.since,
                     until=item.until,
                 )
-            results = auth.filter_results(results)
+            results = annotate_relative_scores(auth.filter_results(results))
             batch_result_count = len(results)
             for rank, r in enumerate(results, 1):
                 if "id" in r:
@@ -3255,6 +3266,9 @@ async def extract_commit(request_body: ExtractCommitRequest, request: Request):
         facts=facts,
         source=request_body.source,
         allowed_prefixes=auth.prefixes,
+        # Human-approved actions from a dry run bypass the novelty gate;
+        # engine-side dedup remains the backstop.
+        novelty_gate=False,
     )
     return result
 

@@ -39,6 +39,23 @@ def _invoke(args, handler, input=None):
     return result
 
 
+def _invoke_pretty(args, handler, input=None):
+    """Like _invoke but forces human-readable output."""
+    original_init = MemoriesClient.__init__
+
+    def patched_init(self, url=None, api_key=None, transport=None):
+        original_init(self, url=url, api_key=api_key,
+                      transport=httpx.MockTransport(handler))
+
+    MemoriesClient.__init__ = patched_init
+    try:
+        runner = CliRunner()
+        result = runner.invoke(app, ["--pretty"] + args, input=input)
+    finally:
+        MemoriesClient.__init__ = original_init
+    return result
+
+
 # ---------------------------------------------------------------------------
 # search
 # ---------------------------------------------------------------------------
@@ -70,6 +87,38 @@ class TestSearch:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["data"]["results"] == []
+
+    def test_search_pretty_renders_relative_score_for_hybrid(self):
+        def handler(request: httpx.Request):
+            return httpx.Response(200, json={
+                "query": "test",
+                "results": [
+                    {"id": 1, "text": "top", "source": "cli/", "rrf_score": 0.0167, "relative_score": 1.0},
+                    {"id": 2, "text": "weak", "source": "cli/", "rrf_score": 0.0102, "relative_score": 0.6108},
+                ],
+                "count": 2,
+            })
+
+        result = _invoke_pretty(["search", "test"], handler)
+        assert result.exit_code == 0
+        assert "(rel 100%)" in result.output
+        assert "(rel 61%)" in result.output
+        # raw RRF scores must not surface as 0-2% noise
+        assert "(2%)" not in result.output and "(1%)" not in result.output
+
+    def test_search_pretty_keeps_absolute_percent_for_similarity(self):
+        def handler(request: httpx.Request):
+            return httpx.Response(200, json={
+                "query": "test",
+                "results": [
+                    {"id": 1, "text": "hello", "source": "cli/", "similarity": 0.95, "relative_score": 1.0},
+                ],
+                "count": 1,
+            })
+
+        result = _invoke_pretty(["search", "test"], handler)
+        assert result.exit_code == 0
+        assert "(95%)" in result.output
 
     def test_search_with_options(self):
         captured = {}

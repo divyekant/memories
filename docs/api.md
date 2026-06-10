@@ -112,12 +112,21 @@ Semantic or hybrid search over memories.
 ```json
 {
   "results": [
-    {"id": 42, "text": "...", "source": "...", "similarity": 0.87, ...}
+    {"id": 42, "text": "...", "source": "...", "rrf_score": 0.0167, "relative_score": 1.0, ...}
   ],
   "query": "...",
-  "k": 5
+  "count": 1
 }
 ```
+
+**Result scoring fields:**
+| Field | Mode | Description |
+|-------|------|-------------|
+| `similarity` | `hybrid: false` | Absolute cosine similarity (0-1). Safe to render as a percentage |
+| `rrf_score` | `hybrid: true` | Raw Reciprocal Rank Fusion value (`weight * 1/(rank + 60)` summed per signal, plus graph bonuses). Structurally bounded near `1/60 ≈ 0.017` — only meaningful relative to other results of the same response. Never render as an absolute percentage |
+| `relative_score` | both | Strength relative to the top result of this result set, in `(0, 1]` (`score / max(score)`; `1.0` = best of set). Ranking order is identical to the raw score (ties stay ties). Not comparable across different searches. Use this for display |
+
+`relative_score` is also present on `/search/batch` (normalized per query result set), `/search/evidence`, and `/search/explain` results. The `threshold` request param is unchanged: it still filters on raw vector `similarity` (0-1) in both modes.
 
 ### POST /search/evidence
 

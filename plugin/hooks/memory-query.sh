@@ -18,6 +18,10 @@ else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
   _default_source_prefixes() { echo 'claude-code/{project},codex/{project},learning/{project},wip/{project}'; }
+  # Degraded fallbacks when _lib.sh is missing: keep the active-search
+  # classifier identical and gate the playbook on candidate count only.
+  _active_search_pattern() { printf '%s' '(^|[^a-z])(did we already|do you remember|remember (how|what|where|when|why|the)|recall|already decide|where did we|how did we|what did we|what was the last|where we left|left off|resume|continue where|previous|prior|earlier|last (fix|time|decision|session|run)|deferred|blocked|follow.?up|next steps|what.?s the plan|what is the plan|current plan|existing plan|release gate|gated)([^a-z]|$)'; }
+  _playbook_injection_mode() { if [ "${2:-0}" -ge 1 ] 2>/dev/null; then printf 'full'; else printf 'minimal'; fi; }
 fi
 
 _exit_if_disabled 2>/dev/null || true
@@ -36,7 +40,7 @@ MEMORIES_QUERY_FALLBACK_THRESHOLD="${MEMORIES_QUERY_FALLBACK_THRESHOLD:-0.55}"
 INPUT=$(cat)
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // .workspaceRoots[0] // empty')
-PROJECT=$(basename "${CWD:-}")
+PROJECT=$(_memories_resolve_project "${CWD:-}" 2>/dev/null || basename "${CWD:-}")
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   PROJECT=""
 fi
@@ -123,7 +127,7 @@ search_memories() {
 CONTEXT=$(extract_recent_context "$TRANSCRIPT_PATH")
 PROMPT_LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
 ACTIVE_SEARCH_REQUIRED=0
-ACTIVE_SEARCH_PATTERN='(^|[^a-z])(did we already|do you remember|remember (how|what|where|when|why|the)|recall|already decide|where did we|how did we|what did we|what was the last|where we left|left off|resume|continue where|previous|prior|earlier|last (fix|time|decision|session|run)|deferred|blocked|follow.?up|next steps|what.?s the plan|what is the plan|current plan|existing plan|release gate|gated)([^a-z]|$)'
+ACTIVE_SEARCH_PATTERN="$(_active_search_pattern)"
 if printf '%s' "$PROMPT_LOWER" | grep -qiE "$ACTIVE_SEARCH_PATTERN"; then
   ACTIVE_SEARCH_REQUIRED=1
 fi
@@ -209,12 +213,15 @@ queue_search() {
 queue_search "$ENRICHED_QUERY" "" 6 0.30
 
 # Strategy B: enriched prefix-scoped (project-specific precision across client families)
+SCOPED_PREFIX_LIST=""
 if [ -n "$PROJECT" ]; then
   IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
   for raw_prefix in "${prefix_templates[@]}"; do
     prefix=$(printf '%s' "$raw_prefix" | sed "s/{project}/$PROJECT/g" | xargs)
     [ -z "$prefix" ] && continue
     queue_search "$ENRICHED_QUERY" "$prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD"
+    [ -n "$SCOPED_PREFIX_LIST" ] && SCOPED_PREFIX_LIST="$SCOPED_PREFIX_LIST, "
+    SCOPED_PREFIX_LIST="$SCOPED_PREFIX_LIST$prefix"
   done
 fi
 
@@ -268,37 +275,77 @@ else
   ' 2>/dev/null) || true
 fi
 
-if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
+# Telemetry: log every prompt whose candidates were surfaced (plus every
+# active-search-required prompt, even with zero candidates). candidate_ids
+# feed the recall-feedback loop (scripts/apply_memory_feedback.py) — they go
+# to the local metrics log only, never into model context.
+CANDIDATE_COUNT=$(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0)
+HOOK_RESULTS_INJECTED=0
+[ -n "$RESULTS" ] && [ "$RESULTS" != "null" ] && HOOK_RESULTS_INJECTED=1
+if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ] || [ "$HOOK_RESULTS_INJECTED" = "1" ]; then
   SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
   CLIENT=$(_memory_client_prefix 2>/dev/null || echo "claude-code")
-  PROMPT_HASH=$(_hash_for_metrics "$PROMPT")
-  CANDIDATE_COUNT=$(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0)
-  HOOK_RESULTS_INJECTED=0
-  [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ] && HOOK_RESULTS_INJECTED=1
+  PROMPT_HASH=$(_hash_for_metrics "$PROMPT" 2>/dev/null || echo "")
   SOURCE_PREFIXES_JSON=$(printf '%s' "$RESULTS_JSON" | jq -c '[.[].source // empty | select(. != "")] | unique' 2>/dev/null || echo '[]')
+  CANDIDATE_IDS_JSON=$(printf '%s' "$RESULTS_JSON" | jq -c '[.[].id | select(type == "number")] | unique | .[0:20]' 2>/dev/null || echo '[]')
+  ACTIVE_SEARCH_BOOL=false
+  [ "$ACTIVE_SEARCH_REQUIRED" = "1" ] && ACTIVE_SEARCH_BOOL=true
   METRICS_EVENT=$(jq -nc \
     --arg ts "$(date -u +%FT%TZ)" \
     --arg client "$CLIENT" \
     --arg session_id "$SESSION_ID" \
     --arg project "${PROJECT:-unknown}" \
     --arg prompt_hash "$PROMPT_HASH" \
-    --argjson active_search_required true \
+    --argjson active_search_required "$ACTIVE_SEARCH_BOOL" \
     --argjson candidate_count "$CANDIDATE_COUNT" \
     --argjson hook_results_injected "$HOOK_RESULTS_INJECTED" \
     --argjson source_prefixes "$SOURCE_PREFIXES_JSON" \
-    '{ts: $ts, event: "prompt_evaluated", client: $client, session_id: $session_id, project: $project, prompt_hash: $prompt_hash, active_search_required: $active_search_required, candidate_count: $candidate_count, hook_results_injected: ($hook_results_injected == 1), source_prefixes: $source_prefixes}')
-  _active_search_metrics_log "$METRICS_EVENT"
+    --argjson candidate_ids "$CANDIDATE_IDS_JSON" \
+    '{ts: $ts, event: "prompt_evaluated", client: $client, session_id: $session_id, project: $project, prompt_hash: $prompt_hash, active_search_required: $active_search_required, candidate_count: $candidate_count, hook_results_injected: ($hook_results_injected == 1), source_prefixes: $source_prefixes, candidate_ids: $candidate_ids}')
+  _active_search_metrics_log "$METRICS_EVENT" 2>/dev/null || true
 fi
 
-if [ -z "$RESULTS" ] || [ "$RESULTS" = "null" ]; then
+# Playbook gate: the full directive mandate is keyed on prompt SHAPE
+# (prior-work prompts); candidate matches alone get the memories block with a
+# short preamble; nothing matched gets a 1-2 line reminder. Keeps per-prompt
+# token cost proportional to need.
+PLAYBOOK_MODE=$(_playbook_injection_mode "$PROMPT" "$CANDIDATE_COUNT")
+
+if [ "$PLAYBOOK_MODE" = "minimal" ]; then
+  _log_info "Playbook gate: minimal reminder (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
+  jq -n '{
+	hookSpecificOutput: {
+	  hookEventName: "UserPromptSubmit",
+	  additionalContext: "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first (load it with ToolSearch(\"select:mcp__memories__memory_search\") if needed)."
+	}
+}'
   exit 0
 fi
 
-_log_info "Query returned $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0) results for prompt (${#PROMPT} chars)"
-
 RESPONSE_HINT=$(build_response_hint "$PROMPT_LOWER")
 
-jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
+if [ "$PLAYBOOK_MODE" = "memories" ]; then
+  # Candidates matched but the prompt is not prior-work-shaped: inject the
+  # memories with a short preamble instead of the full directive mandate.
+  # This is where the per-prompt token cut actually comes from — on real
+  # telemetry ~99% of prompts have >=1 keyword candidate.
+  _log_info "Playbook gate: memories without mandate (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
+  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
+	hookSpecificOutput: {
+	  hookEventName: "UserPromptSubmit",
+	  additionalContext: (
+	    "Memories from prior sessions matched this prompt (keyword retrieval; may be incomplete). Consider them; if this task turns out to depend on prior decisions or project history, verify with memory_search (load it with ToolSearch(\"select:mcp__memories__memory_search\") if needed) before relying on assumptions.\n\n## Retrieved Memories\n" + $memories +
+	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
+	  )
+	}
+}'
+  exit 0
+fi
+
+_log_info "Playbook gate: full mandate (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
+
+if [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ]; then
+  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
@@ -307,3 +354,19 @@ jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
 	  )
 	}
 }'
+else
+  # Prior-work-shaped prompt with no candidate memories: keep the directive
+  # mandate (directive strength is required to survive context dilution) but
+  # without a Retrieved Memories block.
+  jq -n --arg response_hint "$RESPONSE_HINT" --arg prefixes "$SCOPED_PREFIX_LIST" '{
+	hookSpecificOutput: {
+	  hookEventName: "UserPromptSubmit",
+	  additionalContext: (
+	    "IMPORTANT: This prompt references prior work, but hook keyword retrieval returned no candidate memories. Keyword retrieval is incomplete — stored decisions may still exist.\n\nActive search requirement: hook retrieval is a keyword-matched starting point, not a substitute for active search.\n\nMANDATORY FIRST ACTION: load the tool if needed with ToolSearch(\"select:mcp__memories__memory_search\"), then MUST call memory_search before answering. Do not answer from assumptions about prior work alone. Do not use memory_get as a substitute for memory_search. Use exact project-scoped source prefixes" +
+	    (if ($prefixes | length) > 0 then " (" + $prefixes + ")" else "" end) +
+	    " before broad family prefixes or unscoped search." +
+	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
+	  )
+	}
+}'
+fi

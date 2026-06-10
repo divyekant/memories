@@ -73,6 +73,106 @@ _source_prefix_quality() {
   esac
 }
 
+# -- Playbook injection gate -------------------------------------------------
+
+# Prompts that require active memory search (candidate-pointer rendering plus
+# prompt_evaluated metrics in memory-query.sh). Single source of truth for the
+# regex previously inlined in the query hooks.
+_active_search_pattern() {
+  printf '%s' '(^|[^a-z])(did we already|do you remember|remember (how|what|where|when|why|the)|recall|already decide|where did we|how did we|what did we|what was the last|where we left|left off|resume|continue where|previous|prior|earlier|last (fix|time|decision|session|run)|deferred|blocked|follow.?up|next steps|what.?s the plan|what is the plan|current plan|existing plan|release gate|gated)([^a-z]|$)'
+}
+
+# Additional prior-work shapes that gate the full playbook mandate without
+# changing active-search rendering or metrics classification. Includes the
+# follow-up shapes from response-hints.json so hint-worthy short follow-ups
+# referencing the current topic always carry the full mandate.
+_prior_work_extra_pattern() {
+  printf '%s' '(^|[^a-z])(weren.?t we|didn.?t we|did we|do we (already|still)|have we|haven.?t we|were we|we were|we did|last time|what version|which version|what mode|how (does|do|did) .{1,60} work|is .{1,40} still|are .{1,40} still|does .{1,40} still|continue|continuing|resume|resuming|pick up where|what about|how about|and for|regarding|still (valid|relevant|true|appl|slow|broken|failing|open|pending)|still on|we.?re still|we are still|don.?t want to change|do not want to change|should we (switch|move|change) to|(okay|fine|good enough|works) for now)([^a-z]|$)'
+}
+
+# Decide how much playbook the UserPromptSubmit hook injects for this prompt.
+# Usage: _playbook_injection_mode "<prompt>" "<candidate_count>"
+# Echoes "full" when retrieval returned >=1 candidate memory OR the prompt is
+# prior-work-shaped; echoes "minimal" (1-2 line reminder) otherwise.
+_playbook_injection_mode() {
+  local prompt="${1:-}"
+  local candidate_count="${2:-0}"
+  case "$candidate_count" in
+    ''|*[!0-9]*) candidate_count=0 ;;
+  esac
+  local prompt_lower
+  prompt_lower=$(printf '%s' "$prompt" | tr '[:upper:]' '[:lower:]')
+  if printf '%s' "$prompt_lower" | grep -qiE "$(_active_search_pattern)"; then
+    printf 'full'
+    return 0
+  fi
+  if printf '%s' "$prompt_lower" | grep -qiE "$(_prior_work_extra_pattern)"; then
+    printf 'full'
+    return 0
+  fi
+  if [ "$candidate_count" -ge 1 ]; then
+    printf 'memories'
+    return 0
+  fi
+  printf 'minimal'
+}
+
+# Extract memory ids touched by a memory tool call, for the recall-feedback
+# loop. Reads ids from tool input (id / memory_id / ids) and parses the
+# unambiguous "id=N" / "(id: N)" markers from the tool response text. Result
+# index markers like "[1]" are NOT parsed. Emits a JSON array (max 50 ids).
+_memory_ids_for_metrics() {
+  local input_json="$1"
+  local input_ids response_ids
+  input_ids=$(printf '%s' "$input_json" | jq -c '
+    def ids_of($o): if ($o | type) == "object"
+      then [($o | .id? // empty), ($o | .memory_id? // empty)]
+        + (($o | .ids? // []) | if type == "array" then . else [] end)
+      else [] end;
+    (ids_of(.tool_input? // {}) + ids_of(.tool_input.arguments? // {})
+      + ids_of(.input? // {}) + ids_of(.arguments? // {}))
+    | map(select(type == "number"))
+  ' 2>/dev/null) || input_ids='[]'
+  [ -z "$input_ids" ] && input_ids='[]'
+  response_ids=$(printf '%s' "$input_json" \
+    | jq -r '.tool_response // empty | tostring' 2>/dev/null \
+    | head -c 20000 \
+    | { grep -oE '(^|[^A-Za-z0-9_])id=[0-9]+|\(id: [0-9]+\)' || true; } \
+    | { grep -oE '[0-9]+' || true; } \
+    | sort -un | head -50 \
+    | jq -Rcs '[splits("\n") | select(length > 0) | tonumber]' 2>/dev/null) || response_ids='[]'
+  [ -z "$response_ids" ] && response_ids='[]'
+  jq -nc --argjson a "$input_ids" --argjson b "$response_ids" '$a + $b | unique | .[0:50]' 2>/dev/null || echo '[]'
+}
+
+# Resolve the project name for a cwd. Git worktree checkouts (e.g. Claude
+# Code's .claude/worktrees/<name>) resolve to the MAIN repo's directory name,
+# not the worktree directory, so worktree sessions share the project's
+# memories instead of scoping recall/capture to a throwaway name.
+_memories_resolve_project() {
+  local cwd="${1:-}"
+  local fallback
+  fallback=$(basename "${cwd:-unknown}")
+  if [ -z "$cwd" ] || ! command -v git >/dev/null 2>&1; then
+    printf '%s' "$fallback"; return 0
+  fi
+  local common
+  common=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null) || { printf '%s' "$fallback"; return 0; }
+  [ -z "$common" ] && { printf '%s' "$fallback"; return 0; }
+  case "$common" in
+    /*) ;;
+    *) common="$cwd/$common" ;;
+  esac
+  if [ "$(basename "$common")" = ".git" ]; then
+    local root
+    root=$(CDPATH= cd "$(dirname "$common")" 2>/dev/null && pwd)
+    if [ -n "$root" ] && [ "$root" != "/" ]; then
+      printf '%s' "$(basename "$root")"; return 0
+    fi
+  fi
+  printf '%s' "$fallback"
+}
+
 _memories_disabled() {
   case "${MEMORIES_DISABLED:-}" in
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
@@ -412,6 +512,11 @@ _search_memories_multi() {
 
   # Merge results: sort by score, dedup keeping highest-scoring duplicate,
   # then re-sort to guarantee global score ordering after dedup.
+  # Intentionally merge on RAW scores (similarity/rrf_score), not relative_score:
+  # raw RRF values share one scale across searches against the same backend,
+  # while relative_score is normalized per result set (top of every set = 1.0)
+  # and would let a single-result set outrank everything. relative_score is for
+  # display only.
   cat "$tmpdir"/result_*.jsonl 2>/dev/null | jq -s '
     sort_by(-(.similarity // .rrf_score // 0))
     | unique_by(.text)

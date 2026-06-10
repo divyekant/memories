@@ -33,7 +33,7 @@ INPUT=$(cat)
 
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
-PROJECT=$(basename "$CWD")
+PROJECT=$(_memories_resolve_project "$CWD" 2>/dev/null || basename "$CWD")
 
 # Expand tilde if present
 TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"

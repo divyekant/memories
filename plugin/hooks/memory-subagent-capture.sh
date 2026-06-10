@@ -30,7 +30,7 @@ TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
 
 # Capture from all subagent types — matcher in hooks.json controls which fire
 
-PROJECT=$(basename "${CWD:-unknown}")
+PROJECT=$(_memories_resolve_project "${CWD:-unknown}" 2>/dev/null || basename "${CWD:-unknown}")
 [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ] || [ -z "$PROJECT" ] && exit 0
 
 # Build extraction source

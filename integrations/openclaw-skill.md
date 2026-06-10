@@ -327,8 +327,11 @@ function memory_search_memories() {
         -H "Content-Type: application/json" \
         -H "X-API-Key: $MEMORIES_API_KEY" \
         -d "$payload" \
-    | jq -r '.results[] | "\(.similarity // .rrf_score | tonumber | . * 100 | floor)% | \(.source): \(.text[:200])"'
+    | jq -r '.results[] | "\(.similarity // .relative_score // 0 | tonumber | . * 100 | floor)% | \(.source): \(.text[:200])"'
 }
+# similarity is absolute cosine (vector mode); hybrid results expose
+# relative_score (strength vs the top result of this search) because raw
+# rrf_score is a rank-fusion value bounded near 1/60 — never render it as %.
 
 # Usage
 memory_search_memories "database preferences"

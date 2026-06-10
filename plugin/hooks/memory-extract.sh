@@ -30,7 +30,7 @@ MSG_CAP="${MEMORIES_EXTRACT_MSG_CAP:-8000}"
 INPUT=$(cat)
 
 CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
-PROJECT=$(basename "$CWD")
+PROJECT=$(_memories_resolve_project "$CWD" 2>/dev/null || basename "$CWD")
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
 
 # Expand tilde if present
@@ -44,6 +44,9 @@ SOURCE="${_EXTRACT_SRC//\{project\}/$PROJECT}"
 MESSAGES=""
 
 # Try to read last user+assistant pair from transcript for decision context
+# Hook-injected context items (<system-reminder> blocks carrying recalled
+# memories) are dropped before the per-message clip so they can never be
+# re-extracted. The backend applies the same hygiene defensively.
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
   MESSAGES=$(tail -"$TAIL_LINES" "$TRANSCRIPT_PATH" 2>/dev/null | jq -sr --argjson pairs "$MSG_PAIRS" '
     [
@@ -55,7 +58,12 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
             if .message.content | type == "string" then
               .message.content
             elif .message.content | type == "array" then
-              [.message.content[] | select(.type == "text") | .text] | join(" ")
+              [
+                .message.content[]
+                | select(.type == "text")
+                | .text
+                | select(test("^\\s*<system-reminder>") | not)
+              ] | join(" ")
             else
               ""
             end
