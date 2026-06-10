@@ -62,3 +62,12 @@ eval/scenarios/longmemeval/*.jsonl
 # Internal working artifacts (specs, plans, brainstorm)
 docs/superpowers/
 docs/plans/
+
+# Local research notes (unpublished)
+RESEARCH/
+
+# Eval data backups
+data-eval.bak*/
+
+# Claude Code workspace (worktrees, local settings)
+.claude/
