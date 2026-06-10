@@ -40,7 +40,7 @@ MEMORIES_QUERY_FALLBACK_THRESHOLD="${MEMORIES_QUERY_FALLBACK_THRESHOLD:-0.55}"
 INPUT=$(cat)
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // .workspaceRoots[0] // empty')
-PROJECT=$(basename "${CWD:-}")
+PROJECT=$(_memories_resolve_project "${CWD:-}" 2>/dev/null || basename "${CWD:-}")
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   PROJECT=""
 fi

@@ -30,7 +30,7 @@ MSG_CAP="${MEMORIES_EXTRACT_MSG_CAP:-8000}"
 INPUT=$(cat)
 
 CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
-PROJECT=$(basename "$CWD")
+PROJECT=$(_memories_resolve_project "$CWD" 2>/dev/null || basename "$CWD")
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
 
 # Expand tilde if present

@@ -20,7 +20,7 @@ INPUT=$(cat)
 TOOL=$(echo "$INPUT" | jq -r '.tool_name // "unknown"')
 USAGE_LOG="${MEMORIES_TOOL_LOG:-$HOME/.config/memories/tool-usage.log}"
 CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // .workspaceRoots[0] // empty')
-PROJECT=$(basename "${CWD:-}")
+PROJECT=$(_memories_resolve_project "${CWD:-}" 2>/dev/null || basename "${CWD:-}")
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   PROJECT="unknown"
 fi

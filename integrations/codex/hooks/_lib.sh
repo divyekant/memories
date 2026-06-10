@@ -145,6 +145,34 @@ _memory_ids_for_metrics() {
   jq -nc --argjson a "$input_ids" --argjson b "$response_ids" '$a + $b | unique | .[0:50]' 2>/dev/null || echo '[]'
 }
 
+# Resolve the project name for a cwd. Git worktree checkouts (e.g. Claude
+# Code's .claude/worktrees/<name>) resolve to the MAIN repo's directory name,
+# not the worktree directory, so worktree sessions share the project's
+# memories instead of scoping recall/capture to a throwaway name.
+_memories_resolve_project() {
+  local cwd="${1:-}"
+  local fallback
+  fallback=$(basename "${cwd:-unknown}")
+  if [ -z "$cwd" ] || ! command -v git >/dev/null 2>&1; then
+    printf '%s' "$fallback"; return 0
+  fi
+  local common
+  common=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null) || { printf '%s' "$fallback"; return 0; }
+  [ -z "$common" ] && { printf '%s' "$fallback"; return 0; }
+  case "$common" in
+    /*) ;;
+    *) common="$cwd/$common" ;;
+  esac
+  if [ "$(basename "$common")" = ".git" ]; then
+    local root
+    root=$(CDPATH= cd "$(dirname "$common")" 2>/dev/null && pwd)
+    if [ -n "$root" ] && [ "$root" != "/" ]; then
+      printf '%s' "$(basename "$root")"; return 0
+    fi
+  fi
+  printf '%s' "$fallback"
+}
+
 _memories_disabled() {
   case "${MEMORIES_DISABLED:-}" in
     1|true|TRUE|yes|YES|on|ON) return 0 ;;

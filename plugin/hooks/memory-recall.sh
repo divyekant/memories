@@ -43,7 +43,7 @@ if [ -z "$CWD" ]; then
   exit 0
 fi
 
-PROJECT=$(basename "$CWD")
+PROJECT=$(_memories_resolve_project "$CWD" 2>/dev/null || basename "$CWD")
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   exit 0
 fi
