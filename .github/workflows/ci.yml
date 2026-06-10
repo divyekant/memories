@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Run pytest
+        run: uv run pytest -q
+
+      - name: MCP server install + syntax
+        run: |
+          cd mcp-server
+          npm ci
+          node --check index.js
+
+      - name: Hook script syntax
+        run: |
+          for f in plugin/hooks/*.sh integrations/codex/hooks/*.sh; do
+            bash -n "$f"
+          done
+
+  docker-image:
+    # The 5.5.0 release crash-looped because new modules were missing from the
+    # Dockerfile COPY list — host pytest can never catch that. Build the image
+    # and import the app module inside it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t memories-ci --target core .
+
+      - name: Import app inside image
+        run: docker run --rm --entrypoint python memories-ci -c "import app; print('app imports OK')"

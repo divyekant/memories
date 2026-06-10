@@ -95,12 +95,12 @@ class TestFindClustersMaxCandidates:
 
         engine = MagicMock()
         engine.metadata = mems
-        engine.hybrid_search.return_value = []
+        engine.search.return_value = []
 
         find_clusters(engine, max_candidates=20)
 
         # Should only have searched up to 20 candidates, not all 100
-        assert engine.hybrid_search.call_count <= 20
+        assert engine.search.call_count <= 20
 
     def test_max_candidates_zero_means_unlimited(self):
         from consolidator import find_clusters
@@ -112,11 +112,11 @@ class TestFindClustersMaxCandidates:
 
         engine = MagicMock()
         engine.metadata = mems
-        engine.hybrid_search.return_value = []
+        engine.search.return_value = []
 
         find_clusters(engine, max_candidates=0)
 
-        assert engine.hybrid_search.call_count == 10
+        assert engine.search.call_count == 10
 
     def test_default_max_candidates_is_set(self):
         """Default max_candidates should be set to a reasonable limit."""
@@ -141,7 +141,7 @@ class TestFindClustersProgressLogging:
 
         engine = MagicMock()
         engine.metadata = mems
-        engine.hybrid_search.return_value = []
+        engine.search.return_value = []
 
         with patch("consolidator.logger") as mock_logger:
             find_clusters(engine, max_candidates=50)
@@ -165,15 +165,15 @@ class TestFindClustersRandomSampling:
 
         engine = MagicMock()
         engine.metadata = mems
-        engine.hybrid_search.return_value = []
+        engine.search.return_value = []
 
         # Run multiple times — if we always get IDs 0-19, it's slicing, not random
         seen_ids = set()
         for _ in range(5):
-            engine.hybrid_search.reset_mock()
+            engine.search.reset_mock()
             find_clusters(engine, max_candidates=20)
             # Collect which IDs were searched (from the query text)
-            for call_args in engine.hybrid_search.call_args_list:
+            for call_args in engine.search.call_args_list:
                 query = call_args[1].get("query", call_args[0][0] if call_args[0] else "")
                 # Extract ID from "fact about topic {i}"
                 for m in mems:
@@ -199,12 +199,12 @@ class TestFindClustersRandomSampling:
 
         engine = MagicMock()
         engine.metadata = mems
-        engine.hybrid_search.return_value = []
+        engine.search.return_value = []
 
         find_clusters(engine, max_candidates=50)
 
         # All 10 should be searched
-        assert engine.hybrid_search.call_count == 10
+        assert engine.search.call_count == 10
 
 
 class TestPruningToleratesConcurrentDeletes:

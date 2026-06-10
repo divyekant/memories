@@ -1,5 +1,16 @@
 # Changelog
 
+## [5.6.0] - 2026-06-10
+
+### Fixed
+- **Pruner can no longer destroy pinned or archived memories** — `find_prune_candidates` excludes pinned (operator-protected) and archived (supersede-chain version history) memories; `delete_memory` refuses pinned ids without `force=true` (HTTP 409 from the API); bulk `delete_memories` silently skips pinned ids and reports them as `skipped_pinned`. This is the guard the June 7 prune incident lacked (271 memories hard-deleted, including version history).
+- **Backup rotation sorts by mtime with per-prefix retention** — rotation previously sorted by NAME descending, so a `pre_delete` backup could be evicted by the very call that created it while alphabetically-later stale backups survived. Rotation now keeps the N most recent by mtime plus the 2 most recent of every prefix class.
+- **Atomic metadata/config save with `.bak` fallback** — `save()` writes tmp + fsync + `os.replace` and refreshes a `.bak` of the previous good file; `load()` falls back to `.bak` on a corrupt `metadata.json` (preserving the corrupt file for inspection) instead of crash-looping.
+- **Nightly consolidation actually works now — and safely** — `find_clusters` compared RRF rank-fusion scores (structurally ≤ ~0.017) against a 0.75 cosine threshold, so no cluster ever formed; it now uses vector-only cosine search. `consolidate_cluster` adds the merged memories before deleting originals (originals survive any add failure), rejects unparseable LLM responses instead of storing raw text over deleted memories, and skips clusters containing pinned/archived members.
+
+### Added
+- **CI workflow** — pytest, MCP server install + syntax, hook-script `bash -n`, and a Docker image build with an in-image `import app` check (the exact gap that caused the v5.5.1 crash-loop patch).
+
 ## [5.5.1] - 2026-06-10
 
 ### Fixed

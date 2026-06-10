@@ -46,11 +46,11 @@ class TestClusterDetection:
                 results = []
                 for m in [m0, m1, m2]:
                     if m["text"] != query:
-                        results.append({**m, "rrf_score": 0.85})
+                        results.append({**m, "similarity": 0.85})
                 return results
             return []
 
-        engine.hybrid_search.side_effect = fake_search
+        engine.search.side_effect = fake_search
 
         clusters = find_clusters(engine, similarity_threshold=0.75, min_cluster_size=2)
 
@@ -70,7 +70,7 @@ class TestClusterDetection:
         engine.metadata = [m0, m1]
 
         # hybrid_search returns nothing similar
-        engine.hybrid_search.return_value = []
+        engine.search.return_value = []
 
         clusters = find_clusters(engine, similarity_threshold=0.75, min_cluster_size=2)
         assert clusters == []
@@ -85,7 +85,7 @@ class TestClusterDetection:
         engine = MagicMock()
         engine.metadata = [m0, m1, m2]
 
-        engine.hybrid_search.return_value = [{**m1, "rrf_score": 0.9}]
+        engine.search.return_value = [{**m1, "similarity": 0.9}]
 
         clusters = find_clusters(
             engine, source_prefix="project/", similarity_threshold=0.75,
@@ -105,7 +105,7 @@ class TestClusterDetection:
 
         engine = MagicMock()
         engine.metadata = [m0, m1]
-        engine.hybrid_search.return_value = [{**m1, "rrf_score": 0.8}]
+        engine.search.return_value = [{**m1, "similarity": 0.8}]
 
         # min_cluster_size=3 means a pair won't qualify
         clusters = find_clusters(engine, min_cluster_size=3)
