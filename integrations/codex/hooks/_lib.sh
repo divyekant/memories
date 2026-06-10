@@ -100,10 +100,6 @@ _playbook_injection_mode() {
   case "$candidate_count" in
     ''|*[!0-9]*) candidate_count=0 ;;
   esac
-  if [ "$candidate_count" -ge 1 ]; then
-    printf 'full'
-    return 0
-  fi
   local prompt_lower
   prompt_lower=$(printf '%s' "$prompt" | tr '[:upper:]' '[:lower:]')
   if printf '%s' "$prompt_lower" | grep -qiE "$(_active_search_pattern)"; then
@@ -112,6 +108,10 @@ _playbook_injection_mode() {
   fi
   if printf '%s' "$prompt_lower" | grep -qiE "$(_prior_work_extra_pattern)"; then
     printf 'full'
+    return 0
+  fi
+  if [ "$candidate_count" -ge 1 ]; then
+    printf 'memories'
     return 0
   fi
   printf 'minimal'

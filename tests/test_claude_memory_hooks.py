@@ -496,7 +496,22 @@ _CANDIDATE_RESPONSES = [
 
 
 def test_memory_query_full_mandate_wording_unchanged_when_candidates_exist(tmp_path: Path) -> None:
-    """When candidates matched, the directive mandate stays byte-identical (no softening)."""
+    """Prior-work prompt with candidates: the directive mandate stays byte-identical (no softening)."""
+
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "how does the deploy pipeline work with the WebhookHandler?",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, _CANDIDATE_RESPONSES)
+
+    assert result.returncode == 0
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert ctx.startswith(FULL_MANDATE_PREAMBLE)
+
+
+def test_memory_query_memories_without_mandate_for_non_prior_work_prompt(tmp_path: Path) -> None:
+    """Non-prior-work prompt with candidates: memories block + short preamble, no mandate."""
 
     payload = {
         "cwd": "/Users/example/memories",
@@ -507,7 +522,10 @@ def test_memory_query_full_mandate_wording_unchanged_when_candidates_exist(tmp_p
 
     assert result.returncode == 0
     ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert ctx.startswith(FULL_MANDATE_PREAMBLE)
+    assert ctx.startswith("Memories from prior sessions matched this prompt")
+    assert "## Retrieved Memories" in ctx
+    assert "MANDATORY FIRST ACTION" not in ctx
+    assert "MUST" not in ctx
 
 
 def test_memory_query_minimal_reminder_for_self_contained_prompt(tmp_path: Path) -> None:
@@ -570,7 +588,7 @@ def test_codex_memory_query_full_mandate_wording_unchanged_when_candidates_exist
     ]
     payload = {
         "cwd": "/Users/example/memories",
-        "prompt": "explain the deploy pipeline and the WebhookHandler architecture",
+        "prompt": "how does the deploy pipeline work with the WebhookHandler?",
     }
 
     result, _, _ = _run_hook(CODEX_HOOKS_DIR / "memory-query.sh", tmp_path, payload, responses)
@@ -579,6 +597,18 @@ def test_codex_memory_query_full_mandate_wording_unchanged_when_candidates_exist
     ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     assert ctx.startswith(CODEX_FULL_MANDATE_PREAMBLE)
     assert "ToolSearch" not in ctx
+
+    memories_payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "explain the deploy pipeline and the WebhookHandler architecture",
+    }
+    result2, _, _ = _run_hook(CODEX_HOOKS_DIR / "memory-query.sh", tmp_path, memories_payload, responses)
+    assert result2.returncode == 0
+    ctx2 = json.loads(result2.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert ctx2.startswith("Memories from prior sessions matched this prompt")
+    assert "## Retrieved Memories" in ctx2
+    assert "MANDATORY FIRST ACTION" not in ctx2
+    assert "ToolSearch" not in ctx2
 
 
 def test_codex_memory_query_minimal_reminder_omits_toolsearch(tmp_path: Path) -> None:

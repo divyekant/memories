@@ -305,12 +305,13 @@ if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ] || [ "$HOOK_RESULTS_INJECTED" = "1" ]; th
   _active_search_metrics_log "$METRICS_EVENT" 2>/dev/null || true
 fi
 
-# Playbook gate: inject the full directive mandate only when retrieval matched
-# candidate memories or the prompt is prior-work-shaped; otherwise inject at
-# most a 1-2 line reminder. Keeps per-prompt token cost proportional to need.
+# Playbook gate: the full directive mandate is keyed on prompt SHAPE
+# (prior-work prompts); candidate matches alone get the memories block with a
+# short preamble; nothing matched gets a 1-2 line reminder. Keeps per-prompt
+# token cost proportional to need.
 PLAYBOOK_MODE=$(_playbook_injection_mode "$PROMPT" "$CANDIDATE_COUNT")
 
-if [ "$PLAYBOOK_MODE" != "full" ]; then
+if [ "$PLAYBOOK_MODE" = "minimal" ]; then
   _log_info "Playbook gate: minimal reminder (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
   jq -n '{
 	hookSpecificOutput: {
@@ -321,9 +322,27 @@ if [ "$PLAYBOOK_MODE" != "full" ]; then
   exit 0
 fi
 
-_log_info "Playbook gate: full mandate (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
-
 RESPONSE_HINT=$(build_response_hint "$PROMPT_LOWER")
+
+if [ "$PLAYBOOK_MODE" = "memories" ]; then
+  # Candidates matched but the prompt is not prior-work-shaped: inject the
+  # memories with a short preamble instead of the full directive mandate.
+  # This is where the per-prompt token cut actually comes from — on real
+  # telemetry ~99% of prompts have >=1 keyword candidate.
+  _log_info "Playbook gate: memories without mandate (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
+  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
+	hookSpecificOutput: {
+	  hookEventName: "UserPromptSubmit",
+	  additionalContext: (
+	    "Memories from prior sessions matched this prompt (keyword retrieval; may be incomplete). Consider them; if this task turns out to depend on prior decisions or project history, verify with memory_search (load it with ToolSearch(\"select:mcp__memories__memory_search\") if needed) before relying on assumptions.\n\n## Retrieved Memories\n" + $memories +
+	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
+	  )
+	}
+}'
+  exit 0
+fi
+
+_log_info "Playbook gate: full mandate (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
 
 if [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ]; then
   jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{

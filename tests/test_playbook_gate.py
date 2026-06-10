@@ -102,11 +102,20 @@ def test_self_contained_prompts_gate_minimal_without_candidates(lib: Path, promp
 
 @pytest.mark.parametrize("lib", LIBS)
 @pytest.mark.parametrize("prompt", SELF_CONTAINED_PROMPTS[:2])
-def test_any_candidate_memory_gates_full(lib: Path, prompt: str) -> None:
-    """>=1 retrieved candidate forces the full playbook regardless of shape."""
+def test_candidates_without_prior_work_shape_gate_memories(lib: Path, prompt: str) -> None:
+    """>=1 retrieved candidate on a non-prior-work prompt injects the memories
+    block with a short preamble — not the full directive mandate. On real
+    telemetry ~99% of prompts have >=1 keyword candidate, so keying the
+    mandate on candidates would defeat the gate entirely."""
 
-    assert _gate(lib, prompt, 1) == "full"
-    assert _gate(lib, prompt, 6) == "full"
+    assert _gate(lib, prompt, 1) == "memories"
+    assert _gate(lib, prompt, 6) == "memories"
+
+
+@pytest.mark.parametrize("lib", LIBS)
+def test_prior_work_shape_with_candidates_gates_full(lib: Path) -> None:
+    assert _gate(lib, "how does the deploy pipeline work?", 3) == "full"
+    assert _gate(lib, "didn't we decide to use Qdrant?", 1) == "full"
 
 
 @pytest.mark.parametrize("lib", LIBS)
