@@ -842,29 +842,112 @@ class MemoryEngine:
             "missing_ids": missing,
         }
 
-    def supersede(self, old_id: int, new_text: str, source: str = "") -> dict:
-        """Replace a memory with an updated version, preserving audit trail."""
+    def supersede(self, old_id: int, new_text: str, source: str = "", metadata: Optional[Dict] = None) -> dict:
+        """Replace a memory with an updated version, preserving history.
+
+        The new memory is added FIRST; the old memory is then ARCHIVED (not
+        deleted) with a superseded_by pointer and a supersedes link from the
+        new memory — so timeline/evidence can render the change ("79kg,
+        was 78kg"), default search stops returning the old version, and a
+        crash mid-operation can never lose the original.
+        """
         if not self._id_exists(old_id):
             raise ValueError(f"Memory {old_id} not found")
 
-        previous_text = self._get_meta_by_id(old_id).get("text", "")
-
-        self.delete_memory(old_id)
+        old_meta = self._get_meta_by_id(old_id)
+        previous_text = old_meta.get("text", "")
+        use_source = source or old_meta.get("source", "")
 
         added_ids = self.add_memories(
             texts=[new_text],
-            sources=[source],
+            sources=[use_source],
+            metadata_list=[metadata] if metadata else None,
             deduplicate=False,
         )
         new_id = added_ids[0] if added_ids else None
+        if new_id is None or not self._id_exists(new_id):
+            raise RuntimeError("supersede: add_memories stored nothing; original left untouched")
 
-        if new_id is not None and self._id_exists(new_id):
-            self._get_meta_by_id(new_id)["supersedes"] = old_id
-            self._get_meta_by_id(new_id)["previous_text"] = previous_text
-            self.save()
+        new_meta = self._get_meta_by_id(new_id)
+        new_meta["supersedes"] = old_id
+        new_meta["previous_text"] = previous_text
+        self.add_link(new_id, old_id, "supersedes")
 
-        logger.info("Superseded memory %d → %d", old_id, new_id)
-        return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text}
+        old_meta["archived"] = True
+        old_meta["superseded_by"] = new_id
+        self.qdrant_store.set_payload(old_id, {"archived": True})
+        self.save()
+
+        logger.info("Superseded memory %d → %d (old archived)", old_id, new_id)
+        return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text, "archived_old": True}
+
+    def add_with_doctrine(
+        self,
+        text: str,
+        source: str,
+        metadata: Optional[Dict] = None,
+        on_duplicate: str = "supersede",
+        dedup_threshold: float = 0.90,
+        identical_threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Single-memory write with update-on-collision semantics.
+
+        Every write becomes an explicit decision instead of a silent skip:
+        - no collision (top similarity < dedup_threshold) -> ADD
+        - collision, similarity >= identical_threshold     -> SKIP (true
+          duplicate; the blocking id is surfaced so callers can supersede
+          deliberately)
+        - collision below identical_threshold              -> SUPERSEDE the
+          blocker (the incoming fact is newer by definition: "weight is
+          79kg" replaces "weight is 78kg" instead of being eaten by dedup)
+        - blocker is pinned                                -> SKIP (operator
+          protection wins; surfaced in the result)
+        on_duplicate: "supersede" (default) | "skip" (legacy dedup behavior,
+        but with the blocker surfaced) | "add" (no collision check).
+        """
+        if on_duplicate not in ("add", "skip", "supersede"):
+            raise ValueError(f"on_duplicate must be add|skip|supersede, got {on_duplicate!r}")
+        if identical_threshold is None:
+            identical_threshold = float(os.getenv("DOCTRINE_IDENTICAL_THRESHOLD", "0.97"))
+
+        if on_duplicate != "add" and self.metadata:
+            novel, top = self.is_novel(text, threshold=dedup_threshold)
+            if not novel and top is not None:
+                top_id = top.get("id")
+                sim = float(top.get("similarity", 0.0))
+                blocker = self._get_meta_by_id(top_id) if self._id_exists(top_id) else {}
+                if blocker.get("pinned"):
+                    return {
+                        "action": "skipped",
+                        "reason": "pinned_blocker",
+                        "blocked_by": top_id,
+                        "similarity": round(sim, 4),
+                        "hint": f"memory {top_id} is pinned; unpin it or supersede deliberately",
+                    }
+                if on_duplicate == "skip" or sim >= identical_threshold:
+                    return {
+                        "action": "skipped",
+                        "reason": "identical" if sim >= identical_threshold else "duplicate",
+                        "blocked_by": top_id,
+                        "similarity": round(sim, 4),
+                        "hint": f"memory {top_id} already covers this; supersede it to replace the content",
+                    }
+                result = self.supersede(top_id, text, source, metadata=metadata)
+                return {
+                    "action": "superseded",
+                    "id": result["new_id"],
+                    "superseded": top_id,
+                    "similarity": round(sim, 4),
+                    "previous_text": result["previous_text"],
+                }
+
+        ids = self.add_memories(
+            texts=[text],
+            sources=[source],
+            metadata_list=[metadata] if metadata else None,
+            deduplicate=False,
+        )
+        return {"action": "added", "id": ids[0] if ids else None}
 
     def merge_memories(self, ids: List[int], merged_text: str, source: str) -> Dict[str, Any]:
         """Merge multiple memories into one, archiving originals and linking via supersedes."""

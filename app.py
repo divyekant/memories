@@ -1328,6 +1328,11 @@ class AddMemoryRequest(BaseModel):
     source: str = Field(..., min_length=1, max_length=500)
     metadata: Optional[dict] = None
     deduplicate: bool = False
+    on_duplicate: Optional[str] = Field(
+        None,
+        pattern="^(add|skip|supersede)$",
+        description="Write doctrine: supersede replaces a colliding memory (keeping it archived with a supersedes link), skip surfaces the blocking id, add bypasses the collision check. Omit for legacy deduplicate behavior.",
+    )
 
 
 class AddBatchRequest(BaseModel):
@@ -2227,8 +2232,27 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
     """Add a new memory"""
     auth = _get_auth(request)
     _require_write(auth, request_body.source)
-    logger.info("Add memory: source=%s len=%d", request_body.source, len(request_body.text))
+    logger.info(
+        "Add memory: source=%s len=%d on_duplicate=%s",
+        request_body.source, len(request_body.text), request_body.on_duplicate,
+    )
     try:
+        if request_body.on_duplicate:
+            result = memory.add_with_doctrine(
+                text=request_body.text,
+                source=request_body.source,
+                metadata=request_body.metadata,
+                on_duplicate=request_body.on_duplicate,
+            )
+            usage_tracker.log_api_event("add", request_body.source)
+            audit_action = {
+                "added": "memory.created",
+                "superseded": "memory.superseded",
+                "skipped": "memory.add_skipped",
+            }[result["action"]]
+            _audit(request, audit_action, resource_id=str(result.get("id") or result.get("blocked_by") or ""), source=request_body.source)
+            return {"success": True, **result}
+
         ids = memory.add_memories(
             texts=[request_body.text],
             sources=[request_body.source],
@@ -2237,12 +2261,24 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
         )
         usage_tracker.log_api_event("add", request_body.source)
         result_id = ids[0] if ids else None
-        _audit(request, "memory.created", resource_id=str(result_id or ""), source=request_body.source)
-        return {
+        response = {
             "success": True,
             "id": result_id,
             "message": "Memory added successfully" if ids else "Duplicate skipped",
         }
+        if not ids and request_body.deduplicate:
+            # Surface WHICH memory blocked the write so callers can act on it
+            # instead of silently losing a correction.
+            _, top = memory.is_novel(request_body.text)
+            if top is not None:
+                response["blocked_by"] = top.get("id")
+                response["blocked_similarity"] = round(float(top.get("similarity", 0.0)), 4)
+                response["hint"] = (
+                    f"memory {top.get('id')} already covers this; "
+                    "pass on_duplicate=supersede to replace it"
+                )
+        _audit(request, "memory.created", resource_id=str(result_id or ""), source=request_body.source)
+        return response
     except Exception as e:
         logger.exception("Add memory failed")
         raise HTTPException(status_code=500, detail="Internal server error")

@@ -452,25 +452,31 @@ server.tool(
   {
     text: z.string().min(1).describe("The memory content to store"),
     source: z.string().min(1).describe("Source identifier (e.g. 'project/decisions.md', 'bug-fix/redis')"),
-    deduplicate: z.boolean().default(true).describe("Skip if a very similar memory already exists"),
+    deduplicate: z.boolean().default(true).describe("Legacy flag; ignored when on_duplicate is set"),
+    on_duplicate: z.enum(["supersede", "skip", "add"]).default("supersede").describe("supersede (default): a colliding similar memory is replaced — the old version is archived with a supersedes link, so corrections like 'weight is now 79kg' update instead of being dropped as duplicates. skip: keep the existing memory and report which id blocked the write. add: store unconditionally."),
     document_at: z.string().optional().describe("ISO 8601 date for when the content was created (e.g. session date). Enables temporal search."),
   },
-  async ({ text, source, deduplicate = true, document_at }) => {
-    const body = { text, source, deduplicate };
+  async ({ text, source, deduplicate = true, on_duplicate = "supersede", document_at }) => {
+    const body = { text, source, on_duplicate };
     if (document_at) body.metadata = { document_at };
     const data = await memoriesRequest("/memory/add", {
       method: "POST",
       body: JSON.stringify(body),
     }, "add");
 
-    return {
-      content: [{
-        type: "text",
-        text: data.id !== null
-          ? `Memory added (id: ${data.id}) from ${source}`
-          : "Duplicate skipped — a very similar memory already exists.",
-      }],
-    };
+    let msg;
+    if (data.action === "superseded") {
+      msg = `Memory superseded: id=${data.id} replaces id=${data.superseded} (similarity ${data.similarity}); the old version is archived with a supersedes link.`;
+    } else if (data.action === "skipped") {
+      msg = `Skipped (${data.reason}): memory id=${data.blocked_by} already covers this (similarity ${data.similarity}). ${data.hint || ""}`.trim();
+    } else if (data.action === "added" || data.id !== null) {
+      msg = `Memory added (id: ${data.id}) from ${source}`;
+    } else {
+      msg = data.blocked_by !== undefined
+        ? `Duplicate skipped — memory id=${data.blocked_by} already covers this. ${data.hint || ""}`.trim()
+        : "Duplicate skipped — a very similar memory already exists.";
+    }
+    return { content: [{ type: "text", text: msg }] };
   }
 );
 

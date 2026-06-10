@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Write doctrine: corrections supersede instead of being eaten** — `supersede()` now ARCHIVES the original (with `superseded_by` pointer and a `supersedes` link from the new memory) instead of hard-deleting it, and adds the new memory first so a crash can never lose data. New `add_with_doctrine` write path: a colliding write (similarity ≥ dedup threshold) supersedes the blocker when the texts differ materially, skips with the blocking id surfaced when near-identical (≥ `DOCTRINE_IDENTICAL_THRESHOLD`, default 0.97), and never touches pinned blockers. `POST /memory/add` gains `on_duplicate: add|skip|supersede` (legacy behavior unchanged when omitted, but dedup skips now report `blocked_by` + a hint). MCP `memory_add` defaults to `on_duplicate=supersede` — "weight is now 79kg" finally updates "weight is 78kg" instead of being dropped as a duplicate.
+
 ## [5.6.0] - 2026-06-10
 
 ### Fixed
