@@ -100,3 +100,54 @@ def clean_transcript(text: str) -> str:
     if not cleaned or _ONLY_ROLE_PREFIXES_RE.fullmatch(cleaned):
         return ""
     return cleaned
+
+
+# ---------------------------------------------------------------------------
+# Secret redaction
+# ---------------------------------------------------------------------------
+# Credentials mentioned in conversations must never reach the extraction LLM
+# or be stored as memory text: stored memories are re-injected verbatim into
+# future agent contexts, so one pasted token becomes a permanent leak (live
+# audit finding: four real credentials sat in the corpus). Patterns are
+# deliberately value-shaped to keep false positives low — prose like
+# "password policy" is untouched because no value follows.
+
+_SECRET_PATTERNS = [
+    ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+    ("openai_style_key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+    ("telegram_bot_token", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b")),
+    ("url_credentials", re.compile(r"(?<=://)[^\s/:@]+:[^\s/@]+(?=@)")),
+    ("bearer_token", re.compile(r"(?i)(?<=bearer )[A-Za-z0-9._~+/=-]{16,}\b")),
+    (
+        "key_value_secret",
+        re.compile(
+            r"(?i)\b((?:api[_-]?key|x-api-key|access[_-]?token|auth[_-]?token|secret[_-]?key|client[_-]?secret|password|passwd)\s*[=:]\s*[\"']?)([^\s\"',;]{8,})"
+        ),
+    ),
+]
+
+
+def redact_secrets(text: str) -> tuple:
+    """Replace credential-shaped substrings with [REDACTED:<type>].
+
+    Returns (redacted_text, sorted list of redacted type names).
+    """
+    if not text:
+        return text, []
+    found = set()
+    out = text
+    for name, pattern in _SECRET_PATTERNS:
+        if name == "key_value_secret":
+            def _kv(m, _name=name):
+                found.add(_name)
+                return m.group(1) + f"[REDACTED:{_name}]"
+            new = pattern.sub(_kv, out)
+        else:
+            new, n = pattern.subn(f"[REDACTED:{name}]", out)
+            if n:
+                found.add(name)
+        out = new
+    return out, sorted(found)
