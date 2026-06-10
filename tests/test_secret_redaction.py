@@ -5,8 +5,8 @@ from transcript_hygiene import redact_secrets
 
 class TestPatterns:
     def test_aws_access_key(self):
-        out, types = redact_secrets("creds: AKIAIOSFODNN7EXAMPLE done")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out, types = redact_secrets("creds: AKIA1234567890ABCDEF done")
+        assert "AKIA1234567890ABCDEF" not in out
         assert "[REDACTED:aws_access_key]" in out
         assert types == ["aws_access_key"]
 
@@ -63,7 +63,7 @@ class TestFalsePositiveGuards:
         assert redact_secrets("") == ("", [])
 
     def test_idempotent(self):
-        once, _ = redact_secrets("key AKIAIOSFODNN7EXAMPLE")
+        once, _ = redact_secrets("key AKIA1234567890ABCDEF")
         twice, types = redact_secrets(once)
         assert once == twice
         assert types == []
@@ -121,5 +121,45 @@ class TestSweepScript:
     def test_scan_logic_pure(self):
         from scripts.redact_corpus import _masked_preview
 
-        preview = _masked_preview("key AKIAIOSFODNN7EXAMPLE and more text here")
-        assert "AKIAIOSFODNN7EXAMPLE" not in preview
+        preview = _masked_preview("key AKIA1234567890ABCDEF and more text here")
+        assert "AKIA1234567890ABCDEF" not in preview
+
+
+class TestContextGuard:
+    """Documentation / placeholder / local-dev / demo content is NOT a secret."""
+
+    def test_placeholder_dsn_password_kept(self):
+        out, types = redact_secrets("postgresql://postgres:<SUPABASE_DB_PASSWORD>@db.x.supabase.co:5432/postgres")
+        assert types == []
+
+    def test_bracket_placeholder_kept(self):
+        out, types = redact_secrets("DSN postgresql://postgres.ref:[PASSWORD]@aws-0.pooler.supabase.com:5432/postgres")
+        assert types == []
+
+    def test_localhost_default_kept(self):
+        out, types = redact_secrets("postgresql://postgres:postgres@127.0.0.1:54322/postgres")
+        assert types == []
+
+    def test_supabase_demo_jwt_kept(self):
+        out, types = redact_secrets(
+            "Supabase local dev credentials: eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIn0.abcdefghij"
+        )
+        assert types == []
+
+    def test_env_var_name_reference_kept(self):
+        out, types = redact_secrets("agent.py reads FPLRECO_LLM_BASE_URL=production at startup")
+        assert types == []
+
+    def test_format_example_kept(self):
+        out, types = redact_secrets(
+            "Telegram bot token format (example: 8732681111:AAELHHQ46ba3pEjqRDp_-sEYvvWmgKR9kwc)"
+        )
+        assert types == []
+
+    def test_real_secret_still_redacted_near_unrelated_text(self):
+        out, types = redact_secrets("prod dsn postgresql://admin:Tr0ub4dor3xKj9w@prod-db.aws.com:5432/app")
+        assert "url_credentials" in types
+
+    def test_real_aws_key_not_treated_as_env_name(self):
+        out, types = redact_secrets("aws key AKIA1234567890ABCDEF is live")
+        assert "aws_access_key" in types
