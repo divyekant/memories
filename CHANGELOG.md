@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Conflict-queue drain** — `resolve_conflicts` resolves `conflicts_with` markers under newest-wins: the newer of the pair stays live, the older is **archived** with a `supersedes` link (recoverable, never deleted). Pinned losers and undated pairs stay queued marked `needs_review`; orphaned markers (other side gone or already archived) are cleared. Exposed as `POST /memory/conflicts/resolve` (dry-run by default; unscoped key required) and as a daily scheduled maintenance job (3:30 UTC, `MAINTENANCE_CONFLICT_DRAIN`, capped by `MAINTENANCE_CONFLICT_MAX`, default 200/run). `GET /memory/conflicts` now annotates entries held for review.
+
 ## [5.6.0] - 2026-06-10
 
 ### Fixed
