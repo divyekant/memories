@@ -2001,6 +2001,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     recency_weight=item.recency_weight,
                     recency_half_life_days=item.recency_half_life_days,
                     confidence_weight=item.confidence_weight,
+                    graph_weight=item.graph_weight,
                 )
             else:
                 results = memory.search(
