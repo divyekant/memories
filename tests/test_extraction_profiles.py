@@ -176,9 +176,11 @@ class TestRulesCascade:
         result = ep.resolve("claude-code/memories/deep")
         assert result["rules"] == {}
 
-    def test_no_profile_rules_defaults_to_empty(self, ep):
+    def test_no_profile_rules_falls_back_to_default_rules(self, ep):
+        from extraction_profiles import DEFAULT_RULES
         result = ep.resolve("claude-code/memories")
-        assert result["rules"] == {}
+        assert result["rules"] == DEFAULT_RULES
+        assert result["rules"]["never_remember"]  # hygiene defaults present
 
 
 class TestProfileAPI:
