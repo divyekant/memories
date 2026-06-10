@@ -231,3 +231,31 @@ the target service is running.
 Decision gate: adopt the new embedder if tool-mode `recall_any_at_5`
 improves by ≥3 points without category regressions; otherwise stay and
 re-evaluate the Qwen3-via-oMLX variant.
+
+## Tier-1 A/B result (2026-06-10) — VERDICT: do not promote
+
+Sampled LongMemEval tool-mode A/B, 20 questions x 6 categories (n=120), isolated
+eval stack (`docker-compose.eval.yml`), recall_any_at_5 (judge disabled via
+recall-only mode — recall is mechanical and judge-independent). nomic ran with
+correct `search_query:`/`search_document:` prefixes and the embedding-space
+registry collection `memories__nomic_ai_nomic_embed_text_v1_5_768d`.
+
+| category | all-MiniLM-L6-v2 | nomic-embed-text-v1.5 | delta |
+|---|---:|---:|---:|
+| single-session-user | 0.900 | 0.800 | -0.100 |
+| single-session-assistant | 0.950 | 1.000 | +0.050 |
+| single-session-preference | 0.950 | 1.000 | +0.050 |
+| multi-session | 0.950 | 0.950 | 0.000 |
+| knowledge-update | 1.000 | 0.950 | -0.050 |
+| temporal-reasoning | 1.000 | 0.950 | -0.050 |
+| **overall (equal weight)** | **0.958** | **0.942** | **-0.017** |
+
+Promotion gate was +0.03 overall; measured -0.017 — **FAIL**. MiniLM is already
+near-ceiling on this corpus (0.958), so the "2019-era embedder is leaving recall
+on the table" hypothesis is refuted at tier 1 on this eval set. The default
+embedder stays all-MiniLM-L6-v2. The embedding-space registry, env-selectable
+embedder, and `scripts/reembed.py` migration rails ship anyway — they are the
+prerequisite for ANY future swap (e.g. Qwen3-Embedding-0.6B via oMLX, untested,
+or if the corpus/query mix changes). Operational note from the run: nomic 768d
+ONNX trips the embedder auto-reload RSS threshold (1.2GB) — disable
+`EMBEDDER_AUTO_RELOAD_ENABLED` or raise the threshold for any future 768d eval.
