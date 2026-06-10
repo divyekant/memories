@@ -1303,12 +1303,14 @@ registerPage("memories", async (container) => {
       const rightSide = h("span", { className: "memory-item-id" }, `#${mem.id}`);
 
       if (mem.rrf_score != null) {
-        const pct = (mem.rrf_score * 100).toFixed(1);
-        const color = confidenceColor(mem.rrf_score);
+        // rrf_score is RRF rank fusion (bounded near 1/60) — render the
+        // set-relative score; fall back to raw only for legacy responses.
+        const isRelative = mem.relative_score != null;
+        const pct = ((isRelative ? mem.relative_score : mem.rrf_score) * 100).toFixed(1);
         const scoreBadge = h("span", {
           className: `search-result-score`,
           style: { cursor: "help" },
-        }, `${pct}%`);
+        }, isRelative ? `rel ${pct}%` : `${pct}%`);
 
         // Score tooltip on hover (lazy-load explain data, fixed-position to body)
         let explainLoaded = false;
@@ -2040,7 +2042,9 @@ registerPage("memories", async (container) => {
 
       let scoreHtml = "";
       if (mem.rrf_score != null) {
-        scoreHtml = ` <span class="search-result-score">${escHtml(String((mem.rrf_score * 100).toFixed(1)))}%</span>`;
+        const isRelative = mem.relative_score != null;
+        const pct = ((isRelative ? mem.relative_score : mem.rrf_score) * 100).toFixed(1);
+        scoreHtml = ` <span class="search-result-score">${isRelative ? "rel " : ""}${escHtml(String(pct))}%</span>`;
       }
 
       const isBulkSelected = memState.bulkMode && memState.bulkSelect && memState.bulkSelect.isSelected(mem.id);
