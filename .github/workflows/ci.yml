@@ -18,14 +18,14 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Run pytest
-        run: uv run pytest -q
-
-      - name: MCP server install + syntax
+      - name: MCP server install (pytest's stdio smoke needs node_modules)
         run: |
           cd mcp-server
           npm ci
           node --check index.js
+
+      - name: Run pytest
+        run: uv run pytest -q
 
       - name: Hook script syntax
         run: |
