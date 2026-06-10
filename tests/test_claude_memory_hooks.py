@@ -929,6 +929,55 @@ def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp
     ]
 
 
+def test_memory_extract_drops_system_reminder_content_items(tmp_path: Path) -> None:
+    """Hook-injected <system-reminder> items (recalled memories) must not be
+    sent to the extraction endpoint — that re-ingests them every session."""
+    transcript = tmp_path / "transcript.jsonl"
+    injected = (
+        "<system-reminder>\n## Retrieved Memories\n"
+        "- [claude-code/memories] We chose Qdrant over FAISS for payload filtering\n"
+        "</system-reminder>"
+    )
+    transcript.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": injected},
+                                {"type": "text", "text": "please wire the novelty gate into extraction"},
+                            ]
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "Decision: gate ADDs behind EXTRACT_NOVELTY_GATE."}
+                            ]
+                        },
+                    }
+                ),
+            ]
+        )
+    )
+
+    payload = {"cwd": "/Users/example/memories", "transcript_path": str(transcript)}
+    result, calls, _ = _run_hook(EXTRACT_SCRIPT, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0
+    assert calls
+    body = calls[0]["body"]
+    assert "Qdrant over FAISS" not in body["messages"]
+    assert "system-reminder" not in body["messages"]
+    assert "novelty gate" in body["messages"]
+    assert "EXTRACT_NOVELTY_GATE" in body["messages"]
+
+
 def test_memory_extract_uses_codex_source_when_installed_under_codex(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     installed_extract = _install_hook_fixture(home_dir, "memory-extract.sh")

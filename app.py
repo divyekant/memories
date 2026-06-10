@@ -34,6 +34,7 @@ from runtime_memory import MemoryTrimmer
 from audit_log import AuditLog, NullAuditLog
 from usage_tracker import UsageTracker, NullTracker
 from extraction_profiles import ExtractionProfiles
+from transcript_hygiene import clean_transcript
 
 # -- Logging ------------------------------------------------------------------
 
@@ -595,6 +596,10 @@ def _run_fallback_extraction(
     allowed_prefixes: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Fallback add-only extraction path for disabled or runtime-failed providers."""
+    # Transcript hygiene: never re-ingest hook-injected recalled memories.
+    # The regex extractor is especially prone to matching injected
+    # "decided/chose" memory lines verbatim.
+    messages = clean_transcript(messages)
     facts = _fallback_extract_facts(messages)
     actions: List[Dict[str, Any]] = []
     stored_count = 0

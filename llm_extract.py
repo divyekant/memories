@@ -17,6 +17,7 @@ from typing import Optional, List
 
 from auth_context import source_matches_prefixes
 from shadow_runner import build_shadow_providers, fanout_shadow_async
+from transcript_hygiene import clean_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -884,6 +885,23 @@ def run_extraction(
     """
     if provider is None:
         return {"error": "extraction_disabled"}
+
+    # Transcript hygiene: hook-injected recalled memories, <system-reminder>
+    # blocks, and hook additional-context blocks must never reach the
+    # extraction LLM, or they get re-stored as new memories every session.
+    messages = clean_transcript(messages)
+    if not messages:
+        return {
+            "actions": [],
+            "extracted_count": 0,
+            "stored_count": 0,
+            "updated_count": 0,
+            "deleted_count": 0,
+            "skipped_reason": "empty_after_hygiene",
+            "tokens": {"extract": {"input": 0, "output": 0}, "audn": {"input": 0, "output": 0}},
+            "links_created": [],
+            "compaction_candidates": [],
+        }
 
     job_id = uuid.uuid4().hex[:12]
 
