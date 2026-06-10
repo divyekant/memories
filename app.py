@@ -1054,15 +1054,21 @@ async def lifespan(app: FastAPI):
     _embed_provider = os.getenv("EMBED_PROVIDER", "onnx").strip().lower()
     _embed_model = os.getenv("EMBED_MODEL", "").strip()
     if _embed_provider == "openai":
-        _openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if not _openai_key:
+        _embed_base_url = os.getenv("EMBED_BASE_URL", "").strip()
+        _embed_key = (
+            os.getenv("EMBED_API_KEY", "").strip()
+            or os.getenv("OPENAI_API_KEY", "").strip()
+        )
+        if not _embed_key and not _embed_base_url:
             raise RuntimeError(
-                "EMBED_PROVIDER=openai requires OPENAI_API_KEY. "
-                "Set OPENAI_API_KEY or use EMBED_PROVIDER=onnx for local embeddings."
+                "EMBED_PROVIDER=openai requires OPENAI_API_KEY, or EMBED_BASE_URL "
+                "for an OpenAI-compatible endpoint (e.g. oMLX). "
+                "Alternatively use EMBED_PROVIDER=onnx for local embeddings."
             )
         logger.info(
-            "Embedding: provider=openai, model=%s",
+            "Embedding: provider=openai, model=%s, base_url=%s",
             _embed_model or "text-embedding-3-small",
+            _embed_base_url or "api.openai.com",
         )
     elif _embed_provider == "onnx":
         logger.info("Embedding: provider=%s, model=%s", _embed_provider, _embed_model or "all-MiniLM-L6-v2")

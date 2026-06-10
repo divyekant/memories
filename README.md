@@ -967,8 +967,14 @@ When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools
 | `DATA_DIR` | `/data` | Persistent storage path |
 | `WORKSPACE_DIR` | `/workspace` | Read-only workspace for index rebuilds |
 | `API_KEY` | (empty) | API key for auth. Empty = no auth. |
-| `EMBED_PROVIDER` | `onnx` | Embedding provider: `onnx` (local) or `openai` (BYOK) |
+| `EMBED_PROVIDER` | `onnx` | Embedding provider: `onnx` (local) or `openai` (OpenAI API or any OpenAI-compatible endpoint) |
 | `EMBED_MODEL` | (unset) | Provider-specific embedding model override |
+| `EMBED_BASE_URL` | (unset) | OpenAI-compatible embeddings endpoint (e.g. oMLX: `http://host.docker.internal:11434/v1`) |
+| `EMBED_API_KEY` | (unset) | API key for `EMBED_BASE_URL` (falls back to `OPENAI_API_KEY`; optional for local endpoints) |
+| `EMBED_DIMENSION` | (unset) | Declared embedding dimension; validated against the loaded model, fails fast on mismatch |
+| `EMBED_QUERY_PREFIX` / `EMBED_DOC_PREFIX` | (unset) | Asymmetric prefixes for prefix-trained models (e.g. nomic-embed `search_query: ` / `search_document: `) |
+| `EMBED_COLLECTION` | (unset) | Pin the exact Qdrant collection name (skips model+dim auto naming) |
+| `EMBED_ALLOW_SPACE_REBIND` | `false` | Allow re-recording a collection under a new embedding signature (requires re-embed) |
 | `MODEL_NAME` | `all-MiniLM-L6-v2` | Default ONNX model used when `EMBED_PROVIDER=onnx` and `EMBED_MODEL` is unset |
 | `MODEL_CACHE_DIR` | (unset; Docker image sets `/data/model-cache`) | Optional writable cache path for downloaded model files |
 | `PRELOADED_MODEL_CACHE_DIR` | (unset; Docker image sets `/opt/model-cache`) | Optional read-only cache to seed `MODEL_CACHE_DIR` when empty |
