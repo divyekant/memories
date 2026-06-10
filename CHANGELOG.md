@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **`memory_update` MCP tool + `POST /memory/{id}/supersede`** — agents finally have an update verb: the new text replaces the memory, the old version is archived with a supersedes link (pinned memories refuse with 409 until unpinned). Previously the MCP surface was add/delete-only, so even a willing agent could not correct a stale fact deliberately.
+- **Dates on search results** — MCP `memory_search` hits now render `[YYYY-MM-DD]` from `document_at`/`created_at`, so agents can discount stale facts at a glance.
+
+### Fixed
+- **`memory_conflicts` is paginated** — `GET /memory/conflicts` takes `limit` (default 50, max 500) and `offset` and reports `total`/`has_more`; the MCP tool defaults to 20 per page. A single unpaginated call used to dump the entire queue (70KB observed) into the agent's context.
+
 ## [5.6.0] - 2026-06-10
 
 ### Fixed
