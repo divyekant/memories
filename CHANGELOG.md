@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- **`relative_score` on search results** — `/search`, `/search/batch`, `/search/evidence`, and `/search/explain` results now carry `relative_score` (`score / max(score)` of the returned set, `(0, 1]`, `1.0` = top of set). Hybrid `rrf_score` values are Reciprocal Rank Fusion sums (`weight * 1/(rank + 60)` per signal) structurally bounded near `1/60 ≈ 0.017`, so consumers rendering them as percentages showed a useless 0-2%. Ratio-to-top was chosen over min-max so near-tied results don't render as 0%. Normalization is per result set and strictly monotone — ranking order and ties are provably unchanged. Raw `rrf_score`/`similarity` fields and `threshold` semantics (raw vector similarity) are untouched.
+
+### Fixed
+- **Relevance display no longer shows 0-2% noise for hybrid search** — the MCP server (`memory_search` full + compact, `memory_timeline`), the CLI `search` command, and the web UI now render the set-relative score (`rel NN%`) for hybrid results instead of the raw RRF value, keep absolute percentages for vector `similarity`, and omit the tag entirely against legacy backends without `relative_score`. MCP output includes a legend clarifying that `rel %` is relative to the top result of the search, not an absolute match score.
+
 ### Internal / Experimental
 - **Shadow extraction fan-out** — opt-in A/B harness that mirrors extraction calls to candidate local models (oMLX/Ollama) and logs JSONL comparisons, without touching the primary path. Inert unless `SHADOW_PROVIDERS` is set; not part of the supported user-facing feature set. Includes `scripts/shadow_compare.py` for offline agreement analysis.
 

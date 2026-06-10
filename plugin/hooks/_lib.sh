@@ -425,6 +425,11 @@ _search_memories_multi() {
 
   # Merge results: sort by score, dedup keeping highest-scoring duplicate,
   # then re-sort to guarantee global score ordering after dedup.
+  # Intentionally merge on RAW scores (similarity/rrf_score), not relative_score:
+  # raw RRF values share one scale across searches against the same backend,
+  # while relative_score is normalized per result set (top of every set = 1.0)
+  # and would let a single-result set outrank everything. relative_score is for
+  # display only.
   cat "$tmpdir"/result_*.jsonl 2>/dev/null | jq -s '
     sort_by(-(.similarity // .rrf_score // 0))
     | unique_by(.text)
