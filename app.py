@@ -2340,9 +2340,50 @@ async def add_batch(request_body: AddBatchRequest, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+class SupersedeByIdRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=50000)
+    source: Optional[str] = Field(None, max_length=500, description="Source for the replacement; defaults to the original memory's source")
+    metadata: Optional[dict] = None
+
+
+@app.post("/memory/{memory_id}/supersede")
+async def supersede_memory_by_id(memory_id: int, request_body: SupersedeByIdRequest, request: Request):
+    """Replace a memory with an updated version. The original is archived with a supersedes link."""
+    auth = _get_auth(request)
+    if auth.role == "read-only":
+        raise HTTPException(status_code=403, detail="Read-only keys cannot supersede memories")
+    try:
+        existing = memory.get_memory(memory_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Memory ID {memory_id} not found")
+    _require_write(auth, existing.get("source", ""))
+    if request_body.source:
+        _require_write(auth, request_body.source)
+    if existing.get("pinned"):
+        raise HTTPException(status_code=409, detail=f"Memory ID {memory_id} is pinned; unpin it before superseding")
+    logger.info("Supersede memory: id=%d", memory_id)
+    try:
+        result = memory.supersede(
+            memory_id,
+            request_body.text,
+            source=request_body.source or "",
+            metadata=request_body.metadata,
+        )
+        usage_tracker.log_api_event("supersede", existing.get("source", ""))
+        _audit(request, "memory.superseded", resource_id=str(result.get("new_id") or ""), source=existing.get("source", ""))
+        return {"success": True, **result}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        logger.exception("Supersede failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/memory/conflicts")
-async def list_conflicts(request: Request):
-    """List memories flagged as conflicting with existing memories."""
+async def list_conflicts(request: Request, limit: int = 50, offset: int = 0):
+    """List memories flagged as conflicting with existing memories (paginated)."""
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
     auth = _get_auth(request)
     metadata = getattr(memory, "metadata", [])
     conflicts = []
@@ -2368,7 +2409,15 @@ async def list_conflicts(request: Request):
         except Exception:
             entry["conflicting_memory"] = None
         conflicts.append(entry)
-    return {"conflicts": conflicts, "count": len(conflicts)}
+    total = len(conflicts)
+    page = conflicts[offset : offset + limit]
+    return {
+        "conflicts": page,
+        "count": len(page),
+        "total": total,
+        "offset": offset,
+        "has_more": offset + len(page) < total,
+    }
 
 
 class ResolveConflictsRequest(BaseModel):

@@ -3,10 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **`memory_update` MCP tool + `POST /memory/{id}/supersede`** — agents finally have an update verb: the new text replaces the memory, the old version is archived with a supersedes link (pinned memories refuse with 409 until unpinned). Previously the MCP surface was add/delete-only, so even a willing agent could not correct a stale fact deliberately.
+- **Dates on search results** — MCP `memory_search` hits now render `[YYYY-MM-DD]` from `document_at`/`created_at`, so agents can discount stale facts at a glance.
 - **Conflict-queue drain** — `resolve_conflicts` resolves `conflicts_with` markers under newest-wins: the newer of the pair stays live, the older is **archived** with a `supersedes` link (recoverable, never deleted). Pinned losers and undated pairs stay queued marked `needs_review`; orphaned markers (other side gone or already archived) are cleared. Exposed as `POST /memory/conflicts/resolve` (dry-run by default; unscoped key required) and as a daily scheduled maintenance job (3:30 UTC, `MAINTENANCE_CONFLICT_DRAIN`, capped by `MAINTENANCE_CONFLICT_MAX`, default 200/run). `GET /memory/conflicts` now annotates entries held for review.
 
 ### Changed
 - **Write doctrine: corrections supersede instead of being eaten** — `supersede()` now ARCHIVES the original (with `superseded_by` pointer and a `supersedes` link from the new memory) instead of hard-deleting it, and adds the new memory first so a crash can never lose data. New `add_with_doctrine` write path: a colliding write (similarity ≥ dedup threshold) supersedes the blocker when the texts differ materially, skips with the blocking id surfaced when near-identical (≥ `DOCTRINE_IDENTICAL_THRESHOLD`, default 0.97), and never touches pinned blockers. `POST /memory/add` gains `on_duplicate: add|skip|supersede` (legacy behavior unchanged when omitted, but dedup skips now report `blocked_by` + a hint). MCP `memory_add` defaults to `on_duplicate=supersede` — "weight is now 79kg" finally updates "weight is 78kg" instead of being dropped as a duplicate.
+
+### Fixed
+- **`memory_conflicts` is paginated** — `GET /memory/conflicts` takes `limit` (default 50, max 500) and `offset` and reports `total`/`has_more`; the MCP tool defaults to 20 per page. A single unpaginated call used to dump the entire queue (70KB observed) into the agent's context.
 
 ## [5.6.0] - 2026-06-10
 
