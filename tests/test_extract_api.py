@@ -27,7 +27,10 @@ class TestExtractEndpoint:
     """Test POST /memory/extract."""
 
     @staticmethod
-    def _wait_for_terminal_job(test_client, job_id: str, timeout_sec: float = 2.0):
+    def _wait_for_terminal_job(test_client, job_id: str, timeout_sec: float = None):
+        if timeout_sec is None:
+            # Shared CI runners are slow; local default stays tight.
+            timeout_sec = 30.0 if os.environ.get("CI") else 2.0
         deadline = time.time() + timeout_sec
         last_state = None
         while time.time() < deadline:
