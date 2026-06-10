@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 def client():
     """Create a test client with mocked memory engine and auth."""
     # Set test API key (app.py reads API_KEY env var)
-    with patch.dict(os.environ, {"API_KEY": "test-key", "EXTRACT_PROVIDER": "ollama"}):
+    with patch.dict(os.environ, {"API_KEY": "test-key", "EXTRACT_PROVIDER": "ollama", "OLLAMA_URL": "http://127.0.0.1:9"}):
         # Need to reimport app to pick up env changes
         import importlib
         import app as app_module
