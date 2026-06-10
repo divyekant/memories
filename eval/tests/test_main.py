@@ -7,9 +7,14 @@ import builtins
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import shutil
+
+import pytest
+
 import eval.__main__ as eval_main
 
 
+@pytest.mark.skipif(shutil.which("claude") is None, reason="needs the claude CLI (absent on CI runners)")
 def test_memories_url_env_overrides_config(tmp_path, monkeypatch):
     """MEMORIES_URL should override the config file so eval can target an isolated stack."""
     config_path = tmp_path / "config.yaml"
