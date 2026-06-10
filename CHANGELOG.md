@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Internal / Experimental
+- **Shadow extraction fan-out** — opt-in A/B harness that mirrors extraction calls to candidate local models (oMLX/Ollama) and logs JSONL comparisons, without touching the primary path. Inert unless `SHADOW_PROVIDERS` is set; not part of the supported user-facing feature set. Includes `scripts/shadow_compare.py` for offline agreement analysis.
+
 ## [5.4.0] - 2026-05-04
 
 ### Added

@@ -55,7 +55,9 @@ services:
       - CHATGPT_REFRESH_TOKEN=${CHATGPT_REFRESH_TOKEN:-}
       - CHATGPT_CLIENT_ID=${CHATGPT_CLIENT_ID:-}
       - EXTRACT_FALLBACK_ADD=${EXTRACT_FALLBACK_ADD:-false}
-      # Shadow extraction (A/B comparison against local models)
+      # Shadow extraction — EXPERIMENTAL, internal A/B harness only.
+      # Leave SHADOW_PROVIDERS unset unless you are comparing candidate
+      # extraction models; the feature is fully inert without it.
       - SHADOW_PROVIDERS=${SHADOW_PROVIDERS:-}
       - SHADOW_OMLX_URL=${SHADOW_OMLX_URL:-}
       - SHADOW_OMLX_API_KEY=${SHADOW_OMLX_API_KEY:-}
