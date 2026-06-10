@@ -106,7 +106,9 @@ def write_shadow_log(log_dir: str, model: str, record: dict) -> None:
     writers from different shadow threads cannot produce torn lines.
     """
     safe_model = _sanitize_model_name(model)
-    path = str(Path(log_dir) / f"memories-shadow-{safe_model}.log")
+    log_path = Path(log_dir)
+    log_path.mkdir(parents=True, exist_ok=True)
+    path = str(log_path / f"memories-shadow-{safe_model}.log")
     line = json.dumps(record, default=str) + "\n"
     lock = _get_log_lock(path)
     with lock:
@@ -165,7 +167,7 @@ def _run_one_shadow(
         "call_type": call_type,
         "source": source,
         "prompt_hash": prompt_hash,
-        "primary_text": primary_text[:2000] if primary_text else None,
+        "primary_text": primary_text[:4000] if primary_text else None,
         "shadow_text": None,
         "shadow_input_tokens": 0,
         "shadow_output_tokens": 0,
@@ -174,7 +176,7 @@ def _run_one_shadow(
     }
     try:
         result = shadow.complete(system, user)
-        record["shadow_text"] = (result.text or "")[:2000]
+        record["shadow_text"] = (result.text or "")[:4000]
         record["shadow_input_tokens"] = result.input_tokens
         record["shadow_output_tokens"] = result.output_tokens
     except Exception as e:

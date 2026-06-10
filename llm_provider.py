@@ -423,10 +423,13 @@ class OMLXProvider(LLMProvider):
             ],
             max_tokens=1024,
             temperature=DEFAULT_TEMPERATURE,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
+        msg = response.choices[0].message
+        text = msg.content or getattr(msg, "reasoning", None) or ""
         usage = response.usage
         return CompletionResult(
-            text=response.choices[0].message.content,
+            text=text,
             input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
             output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
         )
