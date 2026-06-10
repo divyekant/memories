@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.5.0] - 2026-06-10
 
 ### Added
 - **`relative_score` on search results** — `/search`, `/search/batch`, `/search/evidence`, and `/search/explain` results now carry `relative_score` (`score / max(score)` of the returned set, `(0, 1]`, `1.0` = top of set). Hybrid `rrf_score` values are Reciprocal Rank Fusion sums (`weight * 1/(rank + 60)` per signal) structurally bounded near `1/60 ≈ 0.017`, so consumers rendering them as percentages showed a useless 0-2%. Ratio-to-top was chosen over min-max so near-tied results don't render as 0%. Normalization is per result set and strictly monotone — ranking order and ties are provably unchanged. Raw `rrf_score`/`similarity` fields and `threshold` semantics (raw vector similarity) are untouched.
@@ -23,6 +23,7 @@
 - **Stronger default extraction profile** — the DEFAULT profile now ships hygiene rules (`extraction_profiles.DEFAULT_RULES`): always remember decisions + rationale (with until/unless/because boundary conditions), learnings, durable preferences, and deferred work; never remember session narration/running commentary, restated repo code, ephemeral task chatter, or recalled memory text repeated back. Rules now also reach the fact-extraction system prompt (previously AUDN/single-call only). A profile that explicitly sets `rules` (even `{}`) fully replaces the defaults.
 
 ### Fixed
+- **Worktree sessions now share the repo's memories** — all hooks resolve the project name via the git common dir (`_memories_resolve_project`), so git-worktree checkouts (e.g. Claude Code's `.claude/worktrees/<name>`) recall and capture under the main repo's name instead of a throwaway worktree dir name that made them memory-blind. Non-git directories keep basename behavior.
 - **Relevance display no longer shows 0-2% noise for hybrid search** — the MCP server (`memory_search` full + compact, `memory_timeline`), the CLI `search` command, and the web UI now render the set-relative score (`rel NN%`) for hybrid results instead of the raw RRF value, keep absolute percentages for vector `similarity`, and omit the tag entirely against legacy backends without `relative_score`. MCP output includes a legend clarifying that `rel %` is relative to the top result of the search, not an absolute match score.
 
 ### Internal / Experimental
