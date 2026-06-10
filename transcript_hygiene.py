@@ -130,24 +130,87 @@ _SECRET_PATTERNS = [
 ]
 
 
+# Values that are obviously placeholders / non-secrets, not live credentials.
+_PLACEHOLDER_RE = re.compile(
+    r"^(?:<[^>]*>|\[[^\]]*\]|\$\{[^}]*\}|x{3,}|y{3,}|changeme|placeholder|your[_-].*|example.*|redacted.*)$",
+    re.IGNORECASE,
+)
+# All-caps identifiers are env-var NAMES being referenced, not secret values.
+_ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9]*_[A-Z0-9_]+$")  # real env names have underscores
+# Context words near a match that mark it as documentation / local / demo, not a live secret.
+_DOC_CONTEXT_RE = re.compile(
+    r"(example|e\.g\.|format|placeholder|demo|localhost|127\.0\.0\.1|0\.0\.0\.0|\.local\b|supabase-demo|<your|your[_-]|template|local dev|dev cred|test user|test cred|local cred)",
+    re.IGNORECASE,
+)
+_LOCAL_HOST_AFTER_RE = re.compile(r"^@(?:127\.0\.0\.1|localhost|0\.0\.0\.0|[^@\s]*\.local)\b")
+
+
+def _is_placeholder_value(value: str) -> bool:
+    v = value.strip().strip("\"'")
+    if not v:
+        return True
+    if _PLACEHOLDER_RE.match(v):
+        return True
+    if _ENV_NAME_RE.match(v):
+        return True
+    if "<" in v or ">" in v or "${" in v or "[" in v:
+        return True
+    if v.upper().endswith("EXAMPLE"):  # AWS canonical placeholder keys
+        return True
+    return False
+
+
+def _suppressed(text: str, start: int, end: int, value: str) -> bool:
+    """True when this match is documentation / placeholder / local, not a live secret."""
+    if _is_placeholder_value(value):
+        return True
+    # Documentation LABEL immediately before the value ("example:", "format:",
+    # "local dev credentials:", "<your ...>"). Before-only + short window so a
+    # genuine secret elsewhere in the same memory is still redacted.
+    before = text[max(0, start - 30):start]
+    if _DOC_CONTEXT_RE.search(before):
+        return True
+    # url_credentials pointing at a local/loopback host is a dev default.
+    if _LOCAL_HOST_AFTER_RE.match(text[end:end + 60]):
+        return True
+    return False
+
+
 def redact_secrets(text: str) -> tuple:
     """Replace credential-shaped substrings with [REDACTED:<type>].
 
-    Returns (redacted_text, sorted list of redacted type names).
+    Returns (redacted_text, sorted list of redacted type names). Matches that
+    are placeholders (<...>, [PASSWORD], ${VAR}), env-var NAMES, or sit in a
+    documentation/local/demo context (example:, localhost, 127.0.0.1,
+    supabase-demo, etc.) are left alone — they are not live credentials.
     """
     if not text:
         return text, []
     found = set()
-    out = text
+    # Apply patterns left-to-right over a single mutable string, but decide
+    # suppression per match against the CURRENT text positions.
     for name, pattern in _SECRET_PATTERNS:
-        if name == "key_value_secret":
-            def _kv(m, _name=name):
-                found.add(_name)
-                return m.group(1) + f"[REDACTED:{_name}]"
-            new = pattern.sub(_kv, out)
-        else:
-            new, n = pattern.subn(f"[REDACTED:{name}]", out)
-            if n:
-                found.add(name)
-        out = new
-    return out, sorted(found)
+        result = []
+        last = 0
+        changed = False
+        for m in pattern.finditer(text):
+            if name == "key_value_secret":
+                value = m.group(2)
+                repl = m.group(1) + f"[REDACTED:{name}]"
+            elif name == "url_credentials":
+                value = m.group(0)
+                repl = f"[REDACTED:{name}]"
+            else:
+                value = m.group(0)
+                repl = f"[REDACTED:{name}]"
+            if _suppressed(text, m.start(), m.end(), value):
+                continue
+            result.append(text[last:m.start()])
+            result.append(repl)
+            last = m.end()
+            found.add(name)
+            changed = True
+        if changed:
+            result.append(text[last:])
+            text = "".join(result)
+    return text, sorted(found)
