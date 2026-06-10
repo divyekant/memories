@@ -52,6 +52,41 @@ GRAPH_RESERVED_SLOTS = int(os.environ.get(
 ))
 
 
+def annotate_relative_scores(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Annotate each result with ``relative_score`` — strength relative to the
+    top result of THIS result set, in (0, 1].
+
+    Hybrid search scores come from Reciprocal Rank Fusion
+    (``weight * 1/(rank + 60)`` per signal), so absolute values are bounded
+    near 1/60 and are only meaningful relative to each other within one
+    result set. ``relative_score = score / max(score)`` preserves those
+    ratios: 1.0 = best of set. Division by a positive constant is strictly
+    monotone, so ranking order is unchanged and ties stay ties.
+
+    Raw ``rrf_score``/``similarity`` fields are left untouched (the
+    ``threshold`` request param keeps filtering on raw vector similarity).
+    relative_score values are NOT comparable across different searches.
+    """
+    if not results:
+        return results
+
+    def _raw(result: Dict[str, Any]) -> float:
+        value = result.get("similarity", result.get("rrf_score", 0.0))
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    max_score = max(_raw(r) for r in results)
+    for r in results:
+        raw = _raw(r)
+        if max_score <= 0 or raw <= 0:
+            r["relative_score"] = 0.0
+        else:
+            r["relative_score"] = round(raw / max_score, 4)
+    return results
+
+
 def _trace_top_contributors(doc_id, personalization, adj, max_via=5):
     """Approximate top contributing seeds for a PPR-scored node.
 

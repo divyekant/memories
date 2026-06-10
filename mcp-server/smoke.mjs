@@ -68,15 +68,38 @@ function startFakeMemoriesApi() {
             document_at: "2023-05-20T00:00:00+00:00",
           },
         ];
-        const results = String(parsed.query || "").includes("timeline-order-test")
+        // Hybrid-mode shape: RRF scores are bounded near 1/60 (~0.0167), so the
+        // backend exposes set-relative relative_score for display. No similarity.
+        const hybridRelativeResults = [
+          {
+            id: 201,
+            source: "eval/mcp-smoke/hybrid",
+            text: "user: top fused hybrid result for relevance rendering.",
+            rrf_score: 0.0167,
+            relative_score: 1.0,
+            document_at: "2023-05-21T00:00:00+00:00",
+          },
+          {
+            id: 202,
+            source: "eval/mcp-smoke/hybrid",
+            text: "user: weaker fused hybrid result for relevance rendering.",
+            rrf_score: 0.0102,
+            relative_score: 0.6108,
+            document_at: "2023-05-22T00:00:00+00:00",
+          },
+        ];
+        const query = String(parsed.query || "");
+        const results = query.includes("timeline-order-test")
           ? timelineOrderResults
-          : [{
-              id: 42,
-              source: "eval/mcp-smoke/decision",
-              text: "user: deployment target is fly.io ".repeat(40),
-              similarity: 0.91,
-              document_at: "2023-05-20T00:00:00+00:00",
-            }];
+          : query.includes("relative-score-test")
+            ? hybridRelativeResults
+            : [{
+                id: 42,
+                source: "eval/mcp-smoke/decision",
+                text: "user: deployment target is fly.io ".repeat(40),
+                similarity: 0.91,
+                document_at: "2023-05-20T00:00:00+00:00",
+              }];
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
           count: results.length,
@@ -168,6 +191,41 @@ async function main() {
     const compactText = compactSearch.content.map((item) => item.text || "").join("\n");
     assert(compactText.includes("Use memory_get id=42"), "compact search did not point to memory_get");
     assert(compactText.length < 600, `compact search returned too much text: ${compactText.length}`);
+
+    // Vector-only results (similarity present) keep the absolute % rendering.
+    const fullSearch = await client.callTool({
+      name: "memory_search",
+      arguments: { query: "deployment target", source_prefix: "eval/mcp-smoke" },
+    });
+    const fullSearchText = fullSearch.content.map((item) => item.text || "").join("\n");
+    assert(fullSearchText.includes("(91%)"), `similarity results lost absolute %: ${fullSearchText.slice(0, 200)}`);
+
+    // Hybrid results (rrf_score + relative_score, no similarity) must render the
+    // set-relative score, never the raw 0-2% RRF noise.
+    const hybridSearch = await client.callTool({
+      name: "memory_search",
+      arguments: { query: "relative-score-test relevance", source_prefix: "eval/mcp-smoke" },
+    });
+    const hybridText = hybridSearch.content.map((item) => item.text || "").join("\n");
+    assert(hybridText.includes("(rel 100%)"), `hybrid top result missing relative score: ${hybridText.slice(0, 300)}`);
+    assert(hybridText.includes("(rel 61%)"), `hybrid second result missing relative score: ${hybridText.slice(0, 300)}`);
+    assert(hybridText.includes("relative to the top result"), "hybrid search output missing rel legend");
+    assert(!/\([0-2]%\)/.test(hybridText), `hybrid search still renders raw RRF percentages: ${hybridText.slice(0, 300)}`);
+
+    const hybridCompact = await client.callTool({
+      name: "memory_search",
+      arguments: { query: "relative-score-test relevance", source_prefix: "eval/mcp-smoke", compact: true },
+    });
+    const hybridCompactText = hybridCompact.content.map((item) => item.text || "").join("\n");
+    assert(hybridCompactText.includes("(rel 100%)"), `compact hybrid missing relative score: ${hybridCompactText.slice(0, 300)}`);
+
+    const hybridTimeline = await client.callTool({
+      name: "memory_timeline",
+      arguments: { query: "relative-score-test relevance", source_prefix: "eval/mcp-smoke" },
+    });
+    const hybridTimelineText = hybridTimeline.content.map((item) => item.text || "").join("\n");
+    assert(hybridTimelineText.includes("rel=100%"), `timeline missing relative score: ${hybridTimelineText.slice(0, 300)}`);
+    assert(!/score=[0-2]%/.test(hybridTimelineText), `timeline still renders raw RRF percentages: ${hybridTimelineText.slice(0, 300)}`);
 
     const timeline = await client.callTool({
       name: "memory_timeline",

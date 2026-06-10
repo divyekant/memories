@@ -29,7 +29,7 @@ from starlette.concurrency import run_in_threadpool
 from auth_context import AuthContext
 from embedder_reloader import EmbedderAutoReloadController
 from key_store import KeyStore
-from memory_engine import MemoryEngine
+from memory_engine import MemoryEngine, annotate_relative_scores
 from runtime_memory import MemoryTrimmer
 from audit_log import AuditLog, NullAuditLog
 from usage_tracker import UsageTracker, NullTracker
@@ -2005,7 +2005,7 @@ async def search(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
-        results = auth.filter_results(results)
+        results = annotate_relative_scores(auth.filter_results(results))
         result_count = len(results)
         usage_tracker.log_api_event("search", request_body.source)
         for rank, r in enumerate(results, 1):
@@ -2071,7 +2071,7 @@ async def search_explain(request_body: SearchRequest, request: Request):
         )
         # Apply auth filtering to results and track how many were removed
         raw_results = explain_result["results"]
-        filtered_results = auth.filter_results(raw_results)
+        filtered_results = annotate_relative_scores(auth.filter_results(raw_results))
         filtered_by_auth = len(raw_results) - len(filtered_results)
         explain_result["results"] = filtered_results
         explain_result["explain"]["filtered_by_auth"] = filtered_by_auth
@@ -2144,7 +2144,7 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
-        results = auth.filter_results(results)
+        results = annotate_relative_scores(auth.filter_results(results))
         from evidence_packet import build_evidence_packet
 
         packet = build_evidence_packet(request_body.query, results)
@@ -2190,7 +2190,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     since=item.since,
                     until=item.until,
                 )
-            results = auth.filter_results(results)
+            results = annotate_relative_scores(auth.filter_results(results))
             batch_result_count = len(results)
             for rank, r in enumerate(results, 1):
                 if "id" in r:
