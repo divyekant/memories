@@ -509,7 +509,7 @@ curl -s https://memory.yourdomain.com/health   # prod
 | Hook | Event | Sync? | What It Does |
 |------|-------|-------|-------------|
 | `memory-recall.sh` | SessionStart | Sync | Searches project-scoped memories, injects candidate pointers, and adds a short recall playbook for the session |
-| `memory-query.sh` | UserPromptSubmit | Sync | Searches project-scoped memories first and uses recent transcript context so short follow-up prompts still retrieve useful memories |
+| `memory-query.sh` | UserPromptSubmit | Sync | Searches project-scoped memories first and uses recent transcript context so short follow-up prompts still retrieve useful memories; injects the full playbook mandate only for prompts with candidate matches or prior-work shape, otherwise a 1-2 line reminder |
 | `memory-subagent-recall.sh` | SubagentStart | Sync | Injects project-scoped memories into subagents (Plan, Explore, code-reviewer, etc.) at spawn time |
 | `memory-extract.sh` | Stop | Async | POSTs the last exchange to `/memory/extract` for fact extraction (fires unconditionally — no keyword filter) |
 | `memory-tool-observe.sh` | PostToolUse | Async | Logs Write/Edit/Bash tool observations to a session-scoped JSONL file for richer extraction context |
@@ -521,7 +521,7 @@ curl -s https://memory.yourdomain.com/health   # prod
 | Hook | Event | Sync? | What It Does |
 |------|-------|-------|-------------|
 | `memory-recall.sh` | SessionStart | Sync | Searches project-scoped memories, injects candidate pointers and recall playbook (no MEMORY.md hydration) |
-| `memory-query.sh` | UserPromptSubmit | Sync | Searches project-scoped memories using transcript context and prompt enrichment |
+| `memory-query.sh` | UserPromptSubmit | Sync | Searches project-scoped memories using transcript context and prompt enrichment; injects the full playbook mandate only for prompts with candidate matches or prior-work shape, otherwise a 1-2 line reminder |
 | `memory-extract.sh` | Stop | Async | Beefier extraction: 500 lines, 10 msg pairs, 8000 chars, no signal filter (compensates for no PreCompact/SessionEnd) |
 | `memory-guard.sh` | PreToolUse | Sync | Blocks writes to MEMORY.md files |
 | `memory-observe.sh` | PostToolUse | Async | Logs memory MCP tool usage with `[codex]` tag |
@@ -539,7 +539,7 @@ Codex uses `~/.codex/hooks.json` for hooks, `~/.codex/settings.json` for tool pe
 
 OpenCode source-prefix policy searches exact project scopes: `opencode/{project}`, `claude-code/{project}`, `codex/{project}`, `learning/{project}`, and `wip/{project}`. OpenCode extraction is not automatic yet.
 
-**Claude/Codex hook token cost:** ~1500 tokens/turn injected context (retrieval). Extraction is async and free if using Ollama, ~$0.001/turn with API providers. OpenCode extraction is not automatic in the first implementation.
+**Claude/Codex hook token cost:** gated per prompt. The full directive playbook plus retrieved memories (~1500 tokens) is injected only when keyword retrieval matched at least one candidate memory or the prompt is prior-work-shaped ("did we", "weren't we", "how does X work", "what version", "resume", and similar). Self-contained prompts with no candidate matches get at most a 1-2 line reminder (~40 tokens). Extraction is async and free if using Ollama, ~$0.001/turn with API providers. OpenCode extraction is not automatic in the first implementation.
 
 ---
 

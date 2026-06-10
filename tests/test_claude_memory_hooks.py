@@ -437,13 +437,181 @@ def test_memory_query_logs_required_prompt_metrics_even_without_candidates(tmp_p
     )
 
     assert result.returncode == 0
-    assert result.stdout == ""
+    # Prior-work prompt with zero candidates still gets the full directive
+    # mandate (gated injection), just without a Retrieved Memories block.
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "MANDATORY FIRST ACTION" in ctx
+    assert "MUST call memory_search" in ctx
+    assert "## Retrieved Memories" not in ctx
     events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
     assert len(events) == 1
     assert events[0]["active_search_required"] is True
     assert events[0]["candidate_count"] == 0
     assert events[0]["hook_results_injected"] is False
     assert events[0]["source_prefixes"] == []
+
+
+FULL_MANDATE_PREAMBLE = (
+    "IMPORTANT: The following memories from prior sessions are relevant to this prompt. "
+    "These represent prior decisions and context that MUST be considered before responding. "
+    "Do not contradict stored decisions without explicitly acknowledging the change.\n\n"
+    "Active search requirement: hook-injected memories are keyword-matched starting points, "
+    "not a substitute for active search.\n\n"
+    "MANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, "
+    "deferred work, conventions, or continuation of prior work, load the tool if needed with "
+    'ToolSearch("select:mcp__memories__memory_search"), then MUST call memory_search before '
+    "answering. Do not answer from injected memories alone. Do not use memory_get as a "
+    "substitute for memory_search. Use exact source prefixes shown below before broad family "
+    "prefixes or unscoped search.\n\n## Retrieved Memories\n"
+)
+
+CODEX_FULL_MANDATE_PREAMBLE = (
+    "IMPORTANT: hook-injected memories are keyword-matched starting points, not a substitute "
+    "for active search.\n\n"
+    "MANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, "
+    "deferred work, conventions, or continuation of prior work, you MUST call memory_search "
+    "before answering. Do not answer from injected memories alone. Do not use memory_get as a "
+    "substitute for memory_search. Use exact source prefixes shown below before broad family "
+    "prefixes or unscoped search.\n\n## Retrieved Memories\n"
+)
+
+_CANDIDATE_RESPONSES = [
+    {
+        "url_suffix": "/search",
+        "source_prefix": "claude-code/memories",
+        "response": {
+            "results": [
+                {
+                    "id": 7,
+                    "source": "claude-code/memories",
+                    "text": "Hook playbook injection is gated by candidate count and prior-work shape.",
+                    "similarity": 0.9,
+                }
+            ],
+            "count": 1,
+        },
+    }
+]
+
+
+def test_memory_query_full_mandate_wording_unchanged_when_candidates_exist(tmp_path: Path) -> None:
+    """When candidates matched, the directive mandate stays byte-identical (no softening)."""
+
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "explain the deploy pipeline and the WebhookHandler architecture",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, _CANDIDATE_RESPONSES)
+
+    assert result.returncode == 0
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert ctx.startswith(FULL_MANDATE_PREAMBLE)
+
+
+def test_memory_query_minimal_reminder_for_self_contained_prompt(tmp_path: Path) -> None:
+    """Self-contained prompts with no candidates get at most a 1-2 line reminder."""
+
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "Translate the phrase good morning into French please.",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "memory_search" in ctx
+    assert "MANDATORY FIRST ACTION" not in ctx
+    assert "## Retrieved Memories" not in ctx
+    assert "IMPORTANT" not in ctx
+    assert len(ctx) < 400, f"minimal reminder too long ({len(ctx)} chars): {ctx!r}"
+    assert ctx.count("\n") <= 1, f"minimal reminder must be 1-2 lines: {ctx!r}"
+
+
+def test_memory_query_full_mandate_without_candidates_for_prior_work_prompt(tmp_path: Path) -> None:
+    """Prior-work shapes outside the active-search regex still gate the full mandate."""
+
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "Weren't we going to migrate the embedder to the new model?",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "MANDATORY FIRST ACTION" in ctx
+    assert "MUST call memory_search" in ctx
+    assert "ToolSearch" in ctx
+    assert "## Retrieved Memories" not in ctx
+    assert "memory_get" in ctx
+
+
+def test_codex_memory_query_full_mandate_wording_unchanged_when_candidates_exist(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 8,
+                        "source": "codex/memories",
+                        "text": "Codex hook variant uses native hooks.json wiring.",
+                        "similarity": 0.9,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "explain the deploy pipeline and the WebhookHandler architecture",
+    }
+
+    result, _, _ = _run_hook(CODEX_HOOKS_DIR / "memory-query.sh", tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert ctx.startswith(CODEX_FULL_MANDATE_PREAMBLE)
+    assert "ToolSearch" not in ctx
+
+
+def test_codex_memory_query_minimal_reminder_omits_toolsearch(tmp_path: Path) -> None:
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "Translate the phrase good morning into French please.",
+    }
+
+    result, _, _ = _run_hook(CODEX_HOOKS_DIR / "memory-query.sh", tmp_path, payload, responses=[])
+
+    assert result.returncode == 0
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "memory_search" in ctx
+    assert "ToolSearch" not in ctx
+    assert "MANDATORY FIRST ACTION" not in ctx
+    assert "## Retrieved Memories" not in ctx
+    assert ctx.count("\n") <= 1
+
+
+def test_codex_memory_query_full_mandate_without_candidates_omits_toolsearch(tmp_path: Path) -> None:
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "What did we decide about the release gate?",
+    }
+
+    result, _, _ = _run_hook(CODEX_HOOKS_DIR / "memory-query.sh", tmp_path, payload, responses=[])
+
+    assert result.returncode == 0
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "MANDATORY FIRST ACTION" in ctx
+    assert "MUST call memory_search" in ctx
+    assert "ToolSearch" not in ctx
+    assert "## Retrieved Memories" not in ctx
 
 
 def test_memory_observe_logs_memory_search_tool_metrics_without_query_text(tmp_path: Path) -> None:
