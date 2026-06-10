@@ -949,6 +949,110 @@ class MemoryEngine:
         )
         return {"action": "added", "id": ids[0] if ids else None}
 
+    def resolve_conflicts(
+        self,
+        dry_run: bool = True,
+        policy: str = "newest_wins",
+        max_resolutions: int = 0,
+    ) -> Dict[str, Any]:
+        """Drain the conflict queue.
+
+        Extraction flags contradictions by storing the new fact with a
+        ``conflicts_with`` marker — and historically nothing ever resolved
+        them. Under ``newest_wins`` the newer of the pair stays live and the
+        older is ARCHIVED with a supersedes link (never deleted, recoverable
+        via include_archived). Pinned losers and pairs without usable dates
+        are left in the queue marked ``conflict_review``; markers whose other
+        side no longer exists (or is already archived) are cleared as
+        orphaned. dry_run reports what would happen without mutating.
+        """
+        if policy != "newest_wins":
+            raise ValueError(f"unknown conflict policy: {policy!r}")
+
+        def _when(meta: Dict) -> Optional[datetime]:
+            for key in ("document_at", "created_at", "timestamp"):
+                val = meta.get(key)
+                if not val:
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    return parsed
+                except (ValueError, TypeError):
+                    continue
+            return None
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        resolved: List[Dict[str, Any]] = []
+        needs_review: List[Dict[str, Any]] = []
+        orphaned: List[Dict[str, Any]] = []
+        mutated = False
+
+        for m in list(self.metadata):
+            if not m or m.get("archived") or m.get("deferred"):
+                continue
+            cw = m.get("conflicts_with")
+            if cw is None:
+                continue
+            if max_resolutions and len(resolved) + len(orphaned) >= max_resolutions:
+                break
+            mid = m["id"]
+
+            other = self._get_meta_by_id(cw) if self._id_exists(cw) else None
+            if other is None or other.get("archived"):
+                reason = "missing" if other is None else "already_archived"
+                orphaned.append({"id": mid, "conflicts_with": cw, "reason": reason})
+                if not dry_run:
+                    m["conflict_resolution"] = {"policy": policy, "outcome": f"orphaned_{reason}", "other": cw, "at": now_iso}
+                    m.pop("conflicts_with", None)
+                    mutated = True
+                continue
+
+            t_m, t_o = _when(m), _when(other)
+            if t_m is None or t_o is None:
+                needs_review.append({"id": mid, "conflicts_with": cw, "reason": "undated"})
+                if not dry_run and m.get("conflict_review") != "undated":
+                    m["conflict_review"] = "undated"
+                    mutated = True
+                continue
+
+            # Tie goes to the flagging memory: it was stored later by construction.
+            winner, loser = (m, other) if t_m >= t_o else (other, m)
+            if loser.get("pinned"):
+                needs_review.append({"id": mid, "conflicts_with": cw, "reason": "pinned_loser"})
+                if not dry_run and m.get("conflict_review") != "pinned_loser":
+                    m["conflict_review"] = "pinned_loser"
+                    mutated = True
+                continue
+
+            if not dry_run:
+                loser["archived"] = True
+                loser["superseded_by"] = winner["id"]
+                self.qdrant_store.set_payload(loser["id"], {"archived": True})
+                self.add_link(winner["id"], loser["id"], "supersedes")
+                winner["conflict_resolution"] = {
+                    "policy": policy, "outcome": "won", "archived": loser["id"], "at": now_iso,
+                }
+                m.pop("conflicts_with", None)
+                m.pop("conflict_review", None)
+                mutated = True
+            resolved.append({"kept": winner["id"], "archived": loser["id"], "flagger": mid})
+
+        if not dry_run and mutated:
+            self.save()
+
+        return {
+            "dry_run": dry_run,
+            "policy": policy,
+            "resolved": resolved,
+            "needs_review": needs_review,
+            "orphaned": orphaned,
+            "resolved_count": len(resolved),
+            "needs_review_count": len(needs_review),
+            "orphaned_count": len(orphaned),
+        }
+
     def merge_memories(self, ids: List[int], merged_text: str, source: str) -> Dict[str, Any]:
         """Merge multiple memories into one, archiving originals and linking via supersedes."""
         if len(ids) < 2:

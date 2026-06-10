@@ -140,6 +140,8 @@ EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH = _env_int(
     minimum=0,
 )
 MAINTENANCE_ENABLED = _env_bool("MAINTENANCE_ENABLED", False)
+_MAINTENANCE_CONFLICT_DRAIN = _env_bool("MAINTENANCE_CONFLICT_DRAIN", True)
+_MAINTENANCE_CONFLICT_MAX = int(os.getenv("MAINTENANCE_CONFLICT_MAX", "200"))
 METRICS_LATENCY_SAMPLES = _env_int("METRICS_LATENCY_SAMPLES", 200, minimum=20)
 METRICS_TREND_SAMPLES = _env_int("METRICS_TREND_SAMPLES", 120, minimum=5)
 EXTRACT_FALLBACK_ADD_ENABLED = _env_bool("EXTRACT_FALLBACK_ADD", False)
@@ -1024,10 +1026,22 @@ def _run_scheduled_pruning():
     return deleted
 
 
+def _run_scheduled_conflict_drain():
+    """Drain the conflict queue synchronously (called from threadpool)."""
+    logger.info("Maintenance started: conflict drain")
+    result = memory.resolve_conflicts(dry_run=False, max_resolutions=_MAINTENANCE_CONFLICT_MAX)
+    logger.info(
+        "Maintenance complete: conflict drain — %d resolved, %d need review, %d orphaned markers cleared",
+        result["resolved_count"], result["needs_review_count"], result["orphaned_count"],
+    )
+    return result["resolved_count"]
+
+
 async def _maintenance_scheduler():
-    """Run consolidation daily and pruning weekly."""
+    """Run consolidation + conflict drain daily and pruning weekly."""
     _last_consolidation_date = None
     _last_prune_date = None
+    _last_conflict_date = None
     while True:
         now = datetime.now(timezone.utc)
         today = now.date()
@@ -1040,6 +1054,15 @@ async def _maintenance_scheduler():
                 logger.info("Scheduled consolidation complete: %d clusters merged", n)
             except Exception:
                 logger.exception("Scheduled consolidation failed")
+        # Conflict drain: daily at 3:30 AM UTC (after consolidation)
+        if _MAINTENANCE_CONFLICT_DRAIN and now.hour == 3 and 30 <= now.minute < 35 and _last_conflict_date != today:
+            _last_conflict_date = today
+            try:
+                logger.info("Running scheduled conflict drain")
+                n = await run_in_threadpool(_run_scheduled_conflict_drain)
+                logger.info("Scheduled conflict drain complete: %d resolved", n)
+            except Exception:
+                logger.exception("Scheduled conflict drain failed")
         # Pruning: Sunday at 4 AM UTC (once per week)
         if now.weekday() == 6 and now.hour == 4 and now.minute < 5 and _last_prune_date != today:
             _last_prune_date = today
@@ -2334,6 +2357,8 @@ async def list_conflicts(request: Request):
         if auth.prefixes is not None and not auth.can_read(m.get("source", "")):
             continue
         entry = {**m}
+        if m.get("conflict_review"):
+            entry["needs_review"] = m["conflict_review"]
         try:
             conflicting = memory.get_memory(cw)
             if auth.can_read(conflicting.get("source", "")):
@@ -2344,6 +2369,30 @@ async def list_conflicts(request: Request):
             entry["conflicting_memory"] = None
         conflicts.append(entry)
     return {"conflicts": conflicts, "count": len(conflicts)}
+
+
+class ResolveConflictsRequest(BaseModel):
+    dry_run: bool = True
+    max: int = Field(0, ge=0, le=10000, description="Max resolutions this run (0 = unlimited)")
+
+
+@app.post("/memory/conflicts/resolve")
+async def resolve_conflicts(request_body: ResolveConflictsRequest, request: Request):
+    """Drain the conflict queue (newest wins; loser archived with a supersedes link)."""
+    auth = _get_auth(request)
+    if auth.role == "read-only":
+        raise HTTPException(status_code=403, detail="Read-only keys cannot resolve conflicts")
+    if auth.prefixes is not None:
+        raise HTTPException(status_code=403, detail="Conflict resolution spans sources; an unscoped key is required")
+    logger.info("Resolve conflicts: dry_run=%s max=%d", request_body.dry_run, request_body.max)
+    try:
+        result = memory.resolve_conflicts(dry_run=request_body.dry_run, max_resolutions=request_body.max)
+        if not request_body.dry_run:
+            _audit(request, "memory.conflicts_resolved", resource_id=str(result["resolved_count"]))
+        return {"success": True, **result}
+    except Exception:
+        logger.exception("Conflict resolution failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.delete("/memory/{memory_id}")
