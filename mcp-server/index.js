@@ -263,7 +263,11 @@ server.tool(
       };
     }
 
-    const lines = data.results.map((r, i) => `[${i + 1}] id=${memoryId(r)}${relevanceTag(r)} ${r.source}\n${r.text}`);
+    const lines = data.results.map((r, i) => {
+      const d = memoryDate(r);
+      const dateTag = d ? ` [${String(d).slice(0, 10)}]` : "";
+      return `[${i + 1}] id=${memoryId(r)}${relevanceTag(r)}${dateTag} ${r.source}\n${r.text}`;
+    });
 
     return {
       content: [{
@@ -452,23 +456,55 @@ server.tool(
   {
     text: z.string().min(1).describe("The memory content to store"),
     source: z.string().min(1).describe("Source identifier (e.g. 'project/decisions.md', 'bug-fix/redis')"),
-    deduplicate: z.boolean().default(true).describe("Skip if a very similar memory already exists"),
+    deduplicate: z.boolean().default(true).describe("Legacy flag; ignored when on_duplicate is set"),
+    on_duplicate: z.enum(["supersede", "skip", "add"]).default("supersede").describe("supersede (default): a colliding similar memory is replaced — the old version is archived with a supersedes link, so corrections like 'weight is now 79kg' update instead of being dropped as duplicates. skip: keep the existing memory and report which id blocked the write. add: store unconditionally."),
     document_at: z.string().optional().describe("ISO 8601 date for when the content was created (e.g. session date). Enables temporal search."),
   },
-  async ({ text, source, deduplicate = true, document_at }) => {
-    const body = { text, source, deduplicate };
+  async ({ text, source, deduplicate = true, on_duplicate = "supersede", document_at }) => {
+    const body = { text, source, on_duplicate };
     if (document_at) body.metadata = { document_at };
     const data = await memoriesRequest("/memory/add", {
       method: "POST",
       body: JSON.stringify(body),
     }, "add");
 
+    let msg;
+    if (data.action === "superseded") {
+      msg = `Memory superseded: id=${data.id} replaces id=${data.superseded} (similarity ${data.similarity}); the old version is archived with a supersedes link.`;
+    } else if (data.action === "skipped") {
+      msg = `Skipped (${data.reason}): memory id=${data.blocked_by} already covers this (similarity ${data.similarity}). ${data.hint || ""}`.trim();
+    } else if (data.action === "added" || data.id !== null) {
+      msg = `Memory added (id: ${data.id}) from ${source}`;
+    } else {
+      msg = data.blocked_by !== undefined
+        ? `Duplicate skipped — memory id=${data.blocked_by} already covers this. ${data.hint || ""}`.trim()
+        : "Duplicate skipped — a very similar memory already exists.";
+    }
+    return { content: [{ type: "text", text: msg }] };
+  }
+);
+
+server.tool(
+  "memory_update",
+  "Update/correct an existing memory by id: the new text REPLACES it. The old version is archived with a supersedes link (recoverable, visible in timelines), so corrections like 'weight changed from 78 to 79kg' keep their history. Use memory_search first to find the id; use this instead of memory_add when you know which memory is outdated.",
+  {
+    id: z.number().int().min(0).describe("Memory ID to update (the outdated memory)"),
+    text: z.string().min(1).describe("The corrected/updated memory content"),
+    source: z.string().optional().describe("Source for the replacement; defaults to the original memory's source"),
+    document_at: z.string().optional().describe("ISO 8601 date for when the corrected fact became true"),
+  },
+  async ({ id, text, source, document_at }) => {
+    const body = { text };
+    if (source) body.source = source;
+    if (document_at) body.metadata = { document_at };
+    const data = await memoriesRequest(`/memory/${id}/supersede`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }, "manage");
     return {
       content: [{
         type: "text",
-        text: data.id !== null
-          ? `Memory added (id: ${data.id}) from ${source}`
-          : "Duplicate skipped — a very similar memory already exists.",
+        text: `Memory updated: id=${data.new_id} replaces id=${data.old_id}; the old version is archived with a supersedes link.`,
       }],
     };
   }
@@ -661,10 +697,13 @@ server.tool(
 
 server.tool(
   "memory_conflicts",
-  "List memories that conflict with each other. Conflicts are flagged during extraction when contradictory facts are detected. Use to review and resolve contradictions.",
-  {},
-  async () => {
-    const data = await memoriesRequest("/memory/conflicts", {}, "manage");
+  "List memories that conflict with each other (paginated). Conflicts are flagged during extraction when contradictory facts are detected. Use to review contradictions; memory_supersede or the conflict drain resolves them.",
+  {
+    limit: z.number().int().min(1).max(200).default(20).describe("Max conflicts to return (default 20)"),
+    offset: z.number().int().min(0).default(0).describe("Offset for pagination"),
+  },
+  async ({ limit = 20, offset = 0 }) => {
+    const data = await memoriesRequest(`/memory/conflicts?limit=${limit}&offset=${offset}`, {}, "manage");
 
     if (!data.conflicts || data.conflicts.length === 0) {
       return { content: [{ type: "text", text: "No conflicts found." }] };
@@ -673,15 +712,15 @@ server.tool(
     const lines = data.conflicts.map((c) => {
       const other = c.conflicting_memory;
       const otherText = other ? `${other.text.substring(0, 150)}` : "(deleted)";
-      return `[${c.id}] "${c.text.substring(0, 150)}" CONFLICTS WITH [${c.conflicts_with}] "${otherText}"`;
+      const review = c.needs_review ? ` [needs_review: ${c.needs_review}]` : "";
+      return `[${c.id}] "${c.text.substring(0, 150)}" CONFLICTS WITH [${c.conflicts_with}] "${otherText}"${review}`;
     });
 
-    return {
-      content: [{
-        type: "text",
-        text: `${data.count} conflict(s) found:\n\n${lines.join("\n\n")}`,
-      }],
-    };
+    const total = data.total ?? data.count;
+    const header = data.has_more
+      ? `Showing ${data.count} of ${total} conflict(s) (offset ${data.offset}; pass offset=${data.offset + data.count} for more):`
+      : `${total} conflict(s) found:`;
+    return { content: [{ type: "text", text: `${header}\n\n${lines.join("\n\n")}` }] };
   }
 );
 

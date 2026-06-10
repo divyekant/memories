@@ -505,7 +505,7 @@ class TestSupersede:
     """Test memory supersede (targeted update with audit trail)."""
 
     def test_supersede_replaces_memory(self, populated_engine):
-        """Supersede deletes old memory and adds new one with link."""
+        """Supersede archives the old memory (never deletes) and adds the new one with a link."""
         old_count = populated_engine.stats_light()["total_memories"]
         old_id = 0  # first memory in populated_engine
 
@@ -517,7 +517,12 @@ class TestSupersede:
 
         assert result["old_id"] == old_id
         assert result["new_id"] is not None
-        assert populated_engine.stats_light()["total_memories"] == old_count  # same count (delete + add)
+        assert result["archived_old"] is True
+        # archive + add: the original is preserved as history, so count grows
+        assert populated_engine.stats_light()["total_memories"] == old_count + 1
+        old_meta = populated_engine._get_meta_by_id(old_id)
+        assert old_meta["archived"] is True
+        assert old_meta["superseded_by"] == result["new_id"]
 
     def test_supersede_nonexistent_id_raises(self, populated_engine):
         """Superseding a nonexistent memory raises ValueError."""

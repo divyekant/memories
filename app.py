@@ -140,6 +140,8 @@ EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH = _env_int(
     minimum=0,
 )
 MAINTENANCE_ENABLED = _env_bool("MAINTENANCE_ENABLED", False)
+_MAINTENANCE_CONFLICT_DRAIN = _env_bool("MAINTENANCE_CONFLICT_DRAIN", True)
+_MAINTENANCE_CONFLICT_MAX = int(os.getenv("MAINTENANCE_CONFLICT_MAX", "200"))
 METRICS_LATENCY_SAMPLES = _env_int("METRICS_LATENCY_SAMPLES", 200, minimum=20)
 METRICS_TREND_SAMPLES = _env_int("METRICS_TREND_SAMPLES", 120, minimum=5)
 EXTRACT_FALLBACK_ADD_ENABLED = _env_bool("EXTRACT_FALLBACK_ADD", False)
@@ -1024,10 +1026,22 @@ def _run_scheduled_pruning():
     return deleted
 
 
+def _run_scheduled_conflict_drain():
+    """Drain the conflict queue synchronously (called from threadpool)."""
+    logger.info("Maintenance started: conflict drain")
+    result = memory.resolve_conflicts(dry_run=False, max_resolutions=_MAINTENANCE_CONFLICT_MAX)
+    logger.info(
+        "Maintenance complete: conflict drain — %d resolved, %d need review, %d orphaned markers cleared",
+        result["resolved_count"], result["needs_review_count"], result["orphaned_count"],
+    )
+    return result["resolved_count"]
+
+
 async def _maintenance_scheduler():
-    """Run consolidation daily and pruning weekly."""
+    """Run consolidation + conflict drain daily and pruning weekly."""
     _last_consolidation_date = None
     _last_prune_date = None
+    _last_conflict_date = None
     while True:
         now = datetime.now(timezone.utc)
         today = now.date()
@@ -1040,6 +1054,15 @@ async def _maintenance_scheduler():
                 logger.info("Scheduled consolidation complete: %d clusters merged", n)
             except Exception:
                 logger.exception("Scheduled consolidation failed")
+        # Conflict drain: daily at 3:30 AM UTC (after consolidation)
+        if _MAINTENANCE_CONFLICT_DRAIN and now.hour == 3 and 30 <= now.minute < 35 and _last_conflict_date != today:
+            _last_conflict_date = today
+            try:
+                logger.info("Running scheduled conflict drain")
+                n = await run_in_threadpool(_run_scheduled_conflict_drain)
+                logger.info("Scheduled conflict drain complete: %d resolved", n)
+            except Exception:
+                logger.exception("Scheduled conflict drain failed")
         # Pruning: Sunday at 4 AM UTC (once per week)
         if now.weekday() == 6 and now.hour == 4 and now.minute < 5 and _last_prune_date != today:
             _last_prune_date = today
@@ -1133,7 +1156,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Memories API",
-    version="5.6.0",
+    version="5.7.0",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
 )
@@ -1328,6 +1351,11 @@ class AddMemoryRequest(BaseModel):
     source: str = Field(..., min_length=1, max_length=500)
     metadata: Optional[dict] = None
     deduplicate: bool = False
+    on_duplicate: Optional[str] = Field(
+        None,
+        pattern="^(add|skip|supersede)$",
+        description="Write doctrine: supersede replaces a colliding memory (keeping it archived with a supersedes link), skip surfaces the blocking id, add bypasses the collision check. Omit for legacy deduplicate behavior.",
+    )
 
 
 class AddBatchRequest(BaseModel):
@@ -1446,7 +1474,7 @@ async def health(request: Request):
 
     Unauthenticated callers get minimal response; authenticated callers get full stats.
     """
-    base = {"status": "ok", "service": "memories", "version": "5.6.0"}
+    base = {"status": "ok", "service": "memories", "version": "5.7.0"}
     # Only include detailed stats for authenticated callers
     if not API_KEY or hmac.compare_digest(
         request.headers.get("X-API-Key", "").encode(), API_KEY.encode()
@@ -2227,8 +2255,27 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
     """Add a new memory"""
     auth = _get_auth(request)
     _require_write(auth, request_body.source)
-    logger.info("Add memory: source=%s len=%d", request_body.source, len(request_body.text))
+    logger.info(
+        "Add memory: source=%s len=%d on_duplicate=%s",
+        request_body.source, len(request_body.text), request_body.on_duplicate,
+    )
     try:
+        if request_body.on_duplicate:
+            result = memory.add_with_doctrine(
+                text=request_body.text,
+                source=request_body.source,
+                metadata=request_body.metadata,
+                on_duplicate=request_body.on_duplicate,
+            )
+            usage_tracker.log_api_event("add", request_body.source)
+            audit_action = {
+                "added": "memory.created",
+                "superseded": "memory.superseded",
+                "skipped": "memory.add_skipped",
+            }[result["action"]]
+            _audit(request, audit_action, resource_id=str(result.get("id") or result.get("blocked_by") or ""), source=request_body.source)
+            return {"success": True, **result}
+
         ids = memory.add_memories(
             texts=[request_body.text],
             sources=[request_body.source],
@@ -2237,12 +2284,24 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
         )
         usage_tracker.log_api_event("add", request_body.source)
         result_id = ids[0] if ids else None
-        _audit(request, "memory.created", resource_id=str(result_id or ""), source=request_body.source)
-        return {
+        response = {
             "success": True,
             "id": result_id,
             "message": "Memory added successfully" if ids else "Duplicate skipped",
         }
+        if not ids and request_body.deduplicate:
+            # Surface WHICH memory blocked the write so callers can act on it
+            # instead of silently losing a correction.
+            _, top = memory.is_novel(request_body.text)
+            if top is not None:
+                response["blocked_by"] = top.get("id")
+                response["blocked_similarity"] = round(float(top.get("similarity", 0.0)), 4)
+                response["hint"] = (
+                    f"memory {top.get('id')} already covers this; "
+                    "pass on_duplicate=supersede to replace it"
+                )
+        _audit(request, "memory.created", resource_id=str(result_id or ""), source=request_body.source)
+        return response
     except Exception as e:
         logger.exception("Add memory failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2281,9 +2340,50 @@ async def add_batch(request_body: AddBatchRequest, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+class SupersedeByIdRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=50000)
+    source: Optional[str] = Field(None, max_length=500, description="Source for the replacement; defaults to the original memory's source")
+    metadata: Optional[dict] = None
+
+
+@app.post("/memory/{memory_id}/supersede")
+async def supersede_memory_by_id(memory_id: int, request_body: SupersedeByIdRequest, request: Request):
+    """Replace a memory with an updated version. The original is archived with a supersedes link."""
+    auth = _get_auth(request)
+    if auth.role == "read-only":
+        raise HTTPException(status_code=403, detail="Read-only keys cannot supersede memories")
+    try:
+        existing = memory.get_memory(memory_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Memory ID {memory_id} not found")
+    _require_write(auth, existing.get("source", ""))
+    if request_body.source:
+        _require_write(auth, request_body.source)
+    if existing.get("pinned"):
+        raise HTTPException(status_code=409, detail=f"Memory ID {memory_id} is pinned; unpin it before superseding")
+    logger.info("Supersede memory: id=%d", memory_id)
+    try:
+        result = memory.supersede(
+            memory_id,
+            request_body.text,
+            source=request_body.source or "",
+            metadata=request_body.metadata,
+        )
+        usage_tracker.log_api_event("supersede", existing.get("source", ""))
+        _audit(request, "memory.superseded", resource_id=str(result.get("new_id") or ""), source=existing.get("source", ""))
+        return {"success": True, **result}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        logger.exception("Supersede failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/memory/conflicts")
-async def list_conflicts(request: Request):
-    """List memories flagged as conflicting with existing memories."""
+async def list_conflicts(request: Request, limit: int = 50, offset: int = 0):
+    """List memories flagged as conflicting with existing memories (paginated)."""
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
     auth = _get_auth(request)
     metadata = getattr(memory, "metadata", [])
     conflicts = []
@@ -2298,6 +2398,8 @@ async def list_conflicts(request: Request):
         if auth.prefixes is not None and not auth.can_read(m.get("source", "")):
             continue
         entry = {**m}
+        if m.get("conflict_review"):
+            entry["needs_review"] = m["conflict_review"]
         try:
             conflicting = memory.get_memory(cw)
             if auth.can_read(conflicting.get("source", "")):
@@ -2307,7 +2409,39 @@ async def list_conflicts(request: Request):
         except Exception:
             entry["conflicting_memory"] = None
         conflicts.append(entry)
-    return {"conflicts": conflicts, "count": len(conflicts)}
+    total = len(conflicts)
+    page = conflicts[offset : offset + limit]
+    return {
+        "conflicts": page,
+        "count": len(page),
+        "total": total,
+        "offset": offset,
+        "has_more": offset + len(page) < total,
+    }
+
+
+class ResolveConflictsRequest(BaseModel):
+    dry_run: bool = True
+    max: int = Field(0, ge=0, le=10000, description="Max resolutions this run (0 = unlimited)")
+
+
+@app.post("/memory/conflicts/resolve")
+async def resolve_conflicts(request_body: ResolveConflictsRequest, request: Request):
+    """Drain the conflict queue (newest wins; loser archived with a supersedes link)."""
+    auth = _get_auth(request)
+    if auth.role == "read-only":
+        raise HTTPException(status_code=403, detail="Read-only keys cannot resolve conflicts")
+    if auth.prefixes is not None:
+        raise HTTPException(status_code=403, detail="Conflict resolution spans sources; an unscoped key is required")
+    logger.info("Resolve conflicts: dry_run=%s max=%d", request_body.dry_run, request_body.max)
+    try:
+        result = memory.resolve_conflicts(dry_run=request_body.dry_run, max_resolutions=request_body.max)
+        if not request_body.dry_run:
+            _audit(request, "memory.conflicts_resolved", resource_id=str(result["resolved_count"]))
+        return {"success": True, **result}
+    except Exception:
+        logger.exception("Conflict resolution failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.delete("/memory/{memory_id}")

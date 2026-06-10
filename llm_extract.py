@@ -17,7 +17,7 @@ from typing import Optional, List
 
 from auth_context import source_matches_prefixes
 from shadow_runner import build_shadow_providers, fanout_shadow_async
-from transcript_hygiene import clean_transcript
+from transcript_hygiene import clean_transcript, redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -963,6 +963,10 @@ def run_extraction(
     # blocks, and hook additional-context blocks must never reach the
     # extraction LLM, or they get re-stored as new memories every session.
     messages = clean_transcript(messages)
+    if os.environ.get("EXTRACT_REDACT_SECRETS", "true").strip().lower() not in ("0", "false", "no"):
+        messages, _redacted_types = redact_secrets(messages)
+        if _redacted_types:
+            logger.info("Redacted credential-shaped content before extraction: %s", ", ".join(_redacted_types))
     if not messages:
         return {
             "actions": [],

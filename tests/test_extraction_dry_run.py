@@ -4,22 +4,45 @@ import os
 import tempfile
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+
+import memory_engine as _me
+
+
+class _StubEmbedder:
+    def get_sentence_embedding_dimension(self):
+        return 8
+
+    def encode(self, sentences, normalize_embeddings=True, show_progress_bar=False, **kwargs):
+        if isinstance(sentences, str):
+            sentences = [sentences]
+        out = np.zeros((len(sentences), 8), dtype=np.float32)
+        for i, t in enumerate(sentences):
+            rng = np.random.default_rng(abs(hash(t)) % (2**32))
+            v = rng.standard_normal(8).astype(np.float32)
+            out[i] = v / max(float((v ** 2).sum() ** 0.5), 1e-9)
+        return out
+
+    def close(self):
+        pass
 
 
 class TestExtractionDryRun:
     @pytest.fixture
     def client(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            env = {"API_KEY": "", "EXTRACT_PROVIDER": "", "DATA_DIR": tmpdir}
+            env = {"API_KEY": "", "EXTRACT_PROVIDER": "ollama", "OLLAMA_URL": "http://127.0.0.1:9", "DATA_DIR": tmpdir}
             with patch.dict(os.environ, env):
                 import app as app_module
-                importlib.reload(app_module)
-                mock_engine = MagicMock()
-                mock_engine.metadata = []
-                app_module.memory = mock_engine
-                yield TestClient(app_module.app), mock_engine
+                with patch.object(_me.MemoryEngine, "_make_embedder", lambda self: _StubEmbedder()):
+                    importlib.reload(app_module)
+                    with TestClient(app_module.app) as tc:
+                        mock_engine = MagicMock()
+                        mock_engine.metadata = []
+                        app_module.memory = mock_engine
+                        yield tc, mock_engine
 
     def test_dry_run_field_accepted(self, client):
         """dry_run=True should be accepted (not a 422 validation error)."""
@@ -176,14 +199,16 @@ class TestExtractCommit:
     @pytest.fixture
     def client(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            env = {"API_KEY": "", "EXTRACT_PROVIDER": "", "DATA_DIR": tmpdir}
+            env = {"API_KEY": "", "EXTRACT_PROVIDER": "ollama", "OLLAMA_URL": "http://127.0.0.1:9", "DATA_DIR": tmpdir}
             with patch.dict(os.environ, env):
                 import app as app_module
-                importlib.reload(app_module)
-                mock_engine = MagicMock()
-                mock_engine.metadata = []
-                app_module.memory = mock_engine
-                yield TestClient(app_module.app), mock_engine
+                with patch.object(_me.MemoryEngine, "_make_embedder", lambda self: _StubEmbedder()):
+                    importlib.reload(app_module)
+                    with TestClient(app_module.app) as tc:
+                        mock_engine = MagicMock()
+                        mock_engine.metadata = []
+                        app_module.memory = mock_engine
+                        yield tc, mock_engine
 
     def test_commit_approved_actions(self, client):
         """Only approved=True actions are stored."""

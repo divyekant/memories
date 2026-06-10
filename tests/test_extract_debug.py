@@ -9,6 +9,28 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+class _StubEmbedder:
+    """Instant fake embedder so lifespan can boot a real (cheap) engine."""
+
+    def get_sentence_embedding_dimension(self):
+        return 8
+
+    def encode(self, sentences, normalize_embeddings=True, show_progress_bar=False, **kwargs):
+        import numpy as np
+        if isinstance(sentences, str):
+            sentences = [sentences]
+        out = np.zeros((len(sentences), 8), dtype=np.float32)
+        for i, text in enumerate(sentences):
+            rng = np.random.default_rng(abs(hash(text)) % (2**32))
+            v = rng.standard_normal(8).astype(np.float32)
+            out[i] = v / max(float((v ** 2).sum() ** 0.5), 1e-9)
+        return out
+
+    def close(self):
+        pass
+
+
+
 def _make_mock_provider(supports_audn=True):
     """Create a mock LLM provider that returns predictable results."""
     provider = MagicMock()
@@ -61,33 +83,44 @@ def _make_mock_extraction_result(debug=False):
 
 
 @pytest.fixture
-def client():
-    """Create a test client with mocked memory engine and extraction."""
-    with patch.dict(os.environ, {"API_KEY": "test-key", "EXTRACT_PROVIDER": "anthropic"}):
+def client(tmp_path):
+    """Lifespan-managed test client (persistent portal loop for extract workers)."""
+    import memory_engine as me
+
+    env = {
+        "API_KEY": "test-key",
+        "EXTRACT_PROVIDER": "anthropic",
+        "OLLAMA_URL": "http://127.0.0.1:9",
+        "DATA_DIR": str(tmp_path / "data"),
+    }
+    with patch.dict(os.environ, env):
         import app as app_module
+        with patch.object(me.MemoryEngine, "_make_embedder", lambda self: _StubEmbedder()):
+            importlib.reload(app_module)
+            with TestClient(app_module.app) as tc:
+                mock_engine = MagicMock()
+                mock_engine.stats_light.return_value = {
+                    "total_memories": 5,
+                    "dimension": 384,
+                    "model": "all-MiniLM-L6-v2",
+                }
+                mock_engine.is_ready.return_value = {"ready": True, "status": "ready"}
+                app_module.memory = mock_engine
 
-        importlib.reload(app_module)
+                mock_provider = _make_mock_provider()
+                app_module.extract_provider = mock_provider
 
-        mock_engine = MagicMock()
-        mock_engine.stats_light.return_value = {
-            "total_memories": 5,
-            "dimension": 384,
-            "model": "all-MiniLM-L6-v2",
-        }
-        mock_engine.is_ready.return_value = {"ready": True, "status": "ready"}
-        app_module.memory = mock_engine
-
-        mock_provider = _make_mock_provider()
-        app_module.extract_provider = mock_provider
-
-        yield TestClient(app_module.app), mock_engine, mock_provider
+                yield tc, mock_engine, mock_provider
 
 
 class TestExtractDebugMode:
     """Test debug mode for extraction trace."""
 
     @staticmethod
-    def _wait_for_terminal_job(test_client, job_id: str, timeout_sec: float = 3.0):
+    def _wait_for_terminal_job(test_client, job_id: str, timeout_sec: float = None):
+        if timeout_sec is None:
+            # Shared CI runners are slow; local default stays tight.
+            timeout_sec = 90.0 if os.environ.get("CI") else 3.0
         deadline = time.time() + timeout_sec
         last_state = None
         while time.time() < deadline:
