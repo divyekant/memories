@@ -18,6 +18,10 @@ else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
   _default_source_prefixes() { echo 'codex/{project},claude-code/{project},learning/{project},wip/{project}'; }
+  # Degraded fallbacks when _lib.sh is missing: keep the active-search
+  # classifier identical and gate the playbook on candidate count only.
+  _active_search_pattern() { printf '%s' '(^|[^a-z])(did we already|do you remember|remember (how|what|where|when|why|the)|recall|already decide|where did we|how did we|what did we|what was the last|where we left|left off|resume|continue where|previous|prior|earlier|last (fix|time|decision|session|run)|deferred|blocked|follow.?up|next steps|what.?s the plan|what is the plan|current plan|existing plan|release gate|gated)([^a-z]|$)'; }
+  _playbook_injection_mode() { if [ "${2:-0}" -ge 1 ] 2>/dev/null; then printf 'full'; else printf 'minimal'; fi; }
 fi
 
 _exit_if_disabled 2>/dev/null || true
@@ -134,7 +138,7 @@ search_memories() {
 CONTEXT=$(extract_recent_context "$TRANSCRIPT_PATH")
 PROMPT_LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
 ACTIVE_SEARCH_REQUIRED=0
-ACTIVE_SEARCH_PATTERN='(^|[^a-z])(did we already|do you remember|remember (how|what|where|when|why|the)|recall|already decide|where did we|how did we|what did we|what was the last|where we left|left off|resume|continue where|previous|prior|earlier|last (fix|time|decision|session|run)|deferred|blocked|follow.?up|next steps|what.?s the plan|what is the plan|current plan|existing plan|release gate|gated)([^a-z]|$)'
+ACTIVE_SEARCH_PATTERN="$(_active_search_pattern)"
 if printf '%s' "$PROMPT_LOWER" | grep -qiE "$ACTIVE_SEARCH_PATTERN"; then
   ACTIVE_SEARCH_REQUIRED=1
 fi
@@ -220,12 +224,15 @@ queue_search() {
 queue_search "$ENRICHED_QUERY" "" 6 0.30
 
 # Strategy B: enriched prefix-scoped (project-specific precision across client families)
+SCOPED_PREFIX_LIST=""
 if [ -n "$PROJECT" ]; then
   IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
   for raw_prefix in "${prefix_templates[@]}"; do
     prefix=$(printf '%s' "$raw_prefix" | sed "s/{project}/$PROJECT/g" | xargs)
     [ -z "$prefix" ] && continue
     queue_search "$ENRICHED_QUERY" "$prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD"
+    [ -n "$SCOPED_PREFIX_LIST" ] && SCOPED_PREFIX_LIST="$SCOPED_PREFIX_LIST, "
+    SCOPED_PREFIX_LIST="$SCOPED_PREFIX_LIST$prefix"
   done
 fi
 
@@ -279,11 +286,12 @@ else
   ' 2>/dev/null) || true
 fi
 
+CANDIDATE_COUNT=$(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0)
+
 if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
   SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
   CLIENT=$(_memory_client_prefix 2>/dev/null || echo "codex")
   PROMPT_HASH=$(_hash_for_metrics "$PROMPT")
-  CANDIDATE_COUNT=$(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0)
   HOOK_RESULTS_INJECTED=0
   [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ] && HOOK_RESULTS_INJECTED=1
   SOURCE_PREFIXES_JSON=$(printf '%s' "$RESULTS_JSON" | jq -c '[.[].source // empty | select(. != "")] | unique' 2>/dev/null || echo '[]')
@@ -301,15 +309,28 @@ if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
   _active_search_metrics_log "$METRICS_EVENT"
 fi
 
-if [ -z "$RESULTS" ] || [ "$RESULTS" = "null" ]; then
+# Playbook gate: inject the full directive mandate only when retrieval matched
+# candidate memories or the prompt is prior-work-shaped; otherwise inject at
+# most a 1-2 line reminder. Keeps per-prompt token cost proportional to need.
+PLAYBOOK_MODE=$(_playbook_injection_mode "$PROMPT" "$CANDIDATE_COUNT")
+
+if [ "$PLAYBOOK_MODE" != "full" ]; then
+  _log_info "Playbook gate: minimal reminder (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
+  jq -n '{
+	hookSpecificOutput: {
+	  hookEventName: "UserPromptSubmit",
+	  additionalContext: "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first."
+	}
+}'
   exit 0
 fi
 
-_log_info "Query returned $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0) results for prompt (${#PROMPT} chars)"
+_log_info "Playbook gate: full mandate (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
 
 RESPONSE_HINT=$(build_response_hint "$PROMPT_LOWER")
 
-jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
+if [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ]; then
+  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
@@ -318,3 +339,19 @@ jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
 	  )
 	}
 }'
+else
+  # Prior-work-shaped prompt with no candidate memories: keep the directive
+  # mandate (directive strength is required to survive context dilution) but
+  # without a Retrieved Memories block.
+  jq -n --arg response_hint "$RESPONSE_HINT" --arg prefixes "$SCOPED_PREFIX_LIST" '{
+	hookSpecificOutput: {
+	  hookEventName: "UserPromptSubmit",
+	  additionalContext: (
+	    "IMPORTANT: This prompt references prior work, but hook keyword retrieval returned no candidate memories. Keyword retrieval is incomplete — stored decisions may still exist.\n\nMANDATORY FIRST ACTION: you MUST call memory_search before answering. Do not answer from assumptions about prior work alone. Do not use memory_get as a substitute for memory_search. Use exact project-scoped source prefixes" +
+	    (if ($prefixes | length) > 0 then " (" + $prefixes + ")" else "" end) +
+	    " before broad family prefixes or unscoped search." +
+	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
+	  )
+	}
+}'
+fi
