@@ -9,10 +9,21 @@ does not store prompt text or retrieved memory text.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+# Tools that touch memory ids without meaning "this memory was useful".
+USAGE_EXCLUDED_TOOLS = {
+    "memory_delete",
+    "memory_delete_batch",
+    "memory_delete_by_source",
+}
+
+_TOOL_BASE_NAME_RE = re.compile(r"(memory_[a-z_]+)$")
 
 
 def load_events(path: str | Path) -> list[dict[str, Any]]:
@@ -60,6 +71,177 @@ def _empty_client_summary() -> dict[str, Any]:
 def _is_memory_search(event: dict[str, Any]) -> bool:
     tool_name = str(event.get("tool_name", ""))
     return tool_name == "memory_search" or tool_name.endswith("__memory_search")
+
+
+def tool_base_name(tool_name: str) -> str:
+    """Normalize MCP tool names (mcp__memories__memory_get -> memory_get)."""
+
+    match = _TOOL_BASE_NAME_RE.search(str(tool_name or ""))
+    return match.group(1) if match else str(tool_name or "")
+
+
+def event_key(event: dict[str, Any]) -> str:
+    """Stable identity for a telemetry event, used by the feedback cursor."""
+
+    canonical = json.dumps(event, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _resolve_now(now: str | datetime | None) -> datetime:
+    if now is None:
+        return datetime.now(timezone.utc)
+    if isinstance(now, datetime):
+        return now.astimezone(timezone.utc)
+    parsed = _parse_ts(str(now))
+    if parsed is None:
+        raise ValueError(f"Unparseable now value: {now!r}")
+    return parsed
+
+
+def _coerce_ids(value: Any) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    return [i for i in value if isinstance(i, int) and not isinstance(i, bool)]
+
+
+def derive_candidate_usage(
+    events: list[dict[str, Any]],
+    *,
+    window_seconds: int = 300,
+    now: str | datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Pair surfaced candidate ids with follow-up memory tool calls.
+
+    Returns one surfacing record per (prompt_evaluated event, candidate id):
+    ``{memory_id, prompt_ts, session_id, client, project, event_key, used,
+    used_by, window_closed}``. A candidate counts as used when a later
+    ``tool_call`` event in the same session, within ``window_seconds``, has the
+    id in its ``memory_ids`` (delete tools excluded). ``window_closed`` is
+    False while the follow-up window is still open at ``now`` — such
+    surfacings must not be judged as ignored yet.
+    """
+
+    now_dt = _resolve_now(now)
+    window = timedelta(seconds=window_seconds)
+
+    tool_records: list[tuple[datetime, str, str, set[int]]] = []
+    for event in events:
+        if event.get("event") != "tool_call":
+            continue
+        if tool_base_name(str(event.get("tool_name", ""))) in USAGE_EXCLUDED_TOOLS:
+            continue
+        memory_ids = set(_coerce_ids(event.get("memory_ids")))
+        if not memory_ids:
+            continue
+        ts = _parse_ts(str(event.get("ts") or ""))
+        if ts is None:
+            continue
+        session_id = str(event.get("session_id") or "")
+        tool_records.append((ts, session_id, tool_base_name(str(event.get("tool_name", ""))), memory_ids))
+    tool_records.sort(key=lambda record: record[0])
+
+    surfacings: list[dict[str, Any]] = []
+    for event in sorted(events, key=lambda e: str(e.get("ts", ""))):
+        if event.get("event") != "prompt_evaluated":
+            continue
+        candidate_ids = _coerce_ids(event.get("candidate_ids"))
+        if not candidate_ids:
+            continue
+        prompt_ts = _parse_ts(str(event.get("ts") or ""))
+        if prompt_ts is None:
+            continue
+        session_id = str(event.get("session_id") or "")
+        key = event_key(event)
+        window_closed = prompt_ts + window <= now_dt
+        for memory_id in candidate_ids:
+            used_by = None
+            for tool_ts, tool_session, tool_name, memory_ids in tool_records:
+                if tool_session != session_id:
+                    continue
+                delta = tool_ts - prompt_ts
+                if delta < timedelta(0):
+                    continue
+                if delta > window:
+                    break  # tool_records are sorted; nothing later can match
+                if memory_id in memory_ids:
+                    used_by = tool_name
+                    break
+            surfacings.append(
+                {
+                    "memory_id": memory_id,
+                    "prompt_ts": str(event.get("ts") or ""),
+                    "session_id": session_id,
+                    "client": str(event.get("client") or "unknown"),
+                    "project": str(event.get("project") or "unknown"),
+                    "event_key": key,
+                    "used": used_by is not None,
+                    "used_by": used_by,
+                    "window_closed": window_closed,
+                }
+            )
+    return surfacings
+
+
+def tally_candidate_usage(surfacings: list[dict[str, Any]]) -> dict[int, dict[str, int]]:
+    """Per-memory used/ignored tallies over closed-window surfacings only."""
+
+    tallies: dict[int, dict[str, int]] = {}
+    for surfacing in surfacings:
+        if not surfacing.get("window_closed"):
+            continue
+        tally = tallies.setdefault(
+            int(surfacing["memory_id"]), {"surfaced": 0, "used": 0, "ignored": 0}
+        )
+        tally["surfaced"] += 1
+        if surfacing.get("used"):
+            tally["used"] += 1
+        else:
+            tally["ignored"] += 1
+    return tallies
+
+
+def prune_candidates(
+    events: list[dict[str, Any]],
+    *,
+    window_seconds: int = 300,
+    min_surfaced: int = 3,
+    limit: int = 20,
+    now: str | datetime | None = None,
+) -> list[dict[str, Any]]:
+    """List chronically surfaced-but-never-used memories as REVIEW candidates.
+
+    Report only — nothing here deletes or archives memories. Review each id
+    (``memory_get``) before acting on it.
+    """
+
+    surfacings = derive_candidate_usage(events, window_seconds=window_seconds, now=now)
+    tallies = tally_candidate_usage(surfacings)
+
+    last_surfaced: dict[int, str] = {}
+    projects: dict[int, set[str]] = {}
+    for surfacing in surfacings:
+        if not surfacing.get("window_closed"):
+            continue
+        memory_id = int(surfacing["memory_id"])
+        ts = str(surfacing.get("prompt_ts") or "")
+        if ts > last_surfaced.get(memory_id, ""):
+            last_surfaced[memory_id] = ts
+        projects.setdefault(memory_id, set()).add(str(surfacing.get("project") or "unknown"))
+
+    candidates = [
+        {
+            "memory_id": memory_id,
+            "surfaced": tally["surfaced"],
+            "used": tally["used"],
+            "ignored": tally["ignored"],
+            "last_surfaced_ts": last_surfaced.get(memory_id, ""),
+            "projects": sorted(projects.get(memory_id, set())),
+        }
+        for memory_id, tally in tallies.items()
+        if tally["used"] == 0 and tally["surfaced"] >= min_surfaced
+    ]
+    candidates.sort(key=lambda c: (-c["surfaced"], c["memory_id"]))
+    return candidates[:limit]
 
 
 def summarize_events(
@@ -147,6 +329,13 @@ def summarize_events(
     required_prompts = len(prompt_events)
     followup_rate = prompts_with_search / required_prompts if required_prompts else 1.0
 
+    usage = tally_candidate_usage(
+        derive_candidate_usage(sorted_events, window_seconds=followup_window_seconds)
+    )
+    candidate_surfacings = sum(t["surfaced"] for t in usage.values())
+    candidates_used = sum(t["used"] for t in usage.values())
+    candidates_ignored = sum(t["ignored"] for t in usage.values())
+
     return {
         "required_prompts": required_prompts,
         "required_prompts_with_memory_search": prompts_with_search,
@@ -155,6 +344,9 @@ def summarize_events(
         "memory_search_calls": memory_search_calls,
         "exact_project_searches": exact_project_searches,
         "broad_or_unscoped_searches": broad_or_unscoped_searches,
+        "candidate_surfacings": candidate_surfacings,
+        "candidates_used": candidates_used,
+        "candidates_ignored": candidates_ignored,
         "by_client": by_client,
     }
 
@@ -172,10 +364,49 @@ def main() -> None:
         default=300,
         help="Seconds after a required prompt to count a memory_search as follow-up",
     )
+    parser.add_argument(
+        "--prune-report",
+        action="store_true",
+        help="List chronically surfaced-but-never-used memories as REVIEW candidates (report only)",
+    )
+    parser.add_argument(
+        "--prune-min-surfaced",
+        type=int,
+        default=3,
+        help="Minimum closed-window surfacings before a never-used memory is reported",
+    )
+    parser.add_argument(
+        "--prune-limit",
+        type=int,
+        default=20,
+        help="Maximum prune candidates to report",
+    )
     args = parser.parse_args()
 
+    events = load_events(args.log)
+    if args.prune_report:
+        report = {
+            "note": (
+                "REVIEW candidates only — never auto-delete. Inspect each id with "
+                "memory_get before archiving or deleting."
+            ),
+            "criteria": {
+                "window_seconds": args.followup_window_seconds,
+                "min_surfaced": args.prune_min_surfaced,
+                "used": 0,
+            },
+            "prune_candidates": prune_candidates(
+                events,
+                window_seconds=args.followup_window_seconds,
+                min_surfaced=args.prune_min_surfaced,
+                limit=args.prune_limit,
+            ),
+        }
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
+
     summary = summarize_events(
-        load_events(args.log),
+        events,
         followup_window_seconds=args.followup_window_seconds,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
