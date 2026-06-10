@@ -54,6 +54,7 @@ COPY onnx_embedder.py .
 COPY openai_embedder.py .
 COPY embedder_reloader.py .
 COPY memory_engine.py .
+COPY embedding_space.py .
 COPY entity_locks.py .
 COPY qdrant_config.py .
 COPY qdrant_store.py .
@@ -65,6 +66,7 @@ COPY __main__.py .
 COPY llm_provider.py .
 COPY shadow_runner.py .
 COPY llm_extract.py .
+COPY transcript_hygiene.py .
 COPY extraction_profiles.py .
 COPY usage_tracker.py .
 COPY consolidator.py .
