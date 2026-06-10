@@ -2281,14 +2281,14 @@ async def add_batch(request_body: AddBatchRequest, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-class SupersedeRequest(BaseModel):
+class SupersedeByIdRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=50000)
     source: Optional[str] = Field(None, max_length=500, description="Source for the replacement; defaults to the original memory's source")
     metadata: Optional[dict] = None
 
 
 @app.post("/memory/{memory_id}/supersede")
-async def supersede_memory(memory_id: int, request_body: SupersedeRequest, request: Request):
+async def supersede_memory_by_id(memory_id: int, request_body: SupersedeByIdRequest, request: Request):
     """Replace a memory with an updated version. The original is archived with a supersedes link."""
     auth = _get_auth(request)
     if auth.role == "read-only":
