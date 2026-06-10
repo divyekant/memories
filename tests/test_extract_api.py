@@ -6,21 +6,56 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 
+class _StubEmbedder:
+    """Instant fake embedder so lifespan can boot a real (cheap) engine."""
+
+    def get_sentence_embedding_dimension(self):
+        return 8
+
+    def encode(self, sentences, normalize_embeddings=True, show_progress_bar=False, **kwargs):
+        import numpy as np
+        if isinstance(sentences, str):
+            sentences = [sentences]
+        out = np.zeros((len(sentences), 8), dtype=np.float32)
+        for i, text in enumerate(sentences):
+            rng = np.random.default_rng(abs(hash(text)) % (2**32))
+            v = rng.standard_normal(8).astype(np.float32)
+            out[i] = v / max(float((v ** 2).sum() ** 0.5), 1e-9)
+        return out
+
+    def close(self):
+        pass
+
+
+
 @pytest.fixture
-def client():
-    """Create a test client with mocked memory engine and auth."""
-    # Set test API key (app.py reads API_KEY env var)
-    with patch.dict(os.environ, {"API_KEY": "test-key", "EXTRACT_PROVIDER": "ollama", "OLLAMA_URL": "http://127.0.0.1:9"}):
-        # Need to reimport app to pick up env changes
+def client(tmp_path):
+    """Lifespan-managed test client with mocked memory engine.
+
+    Entering TestClient as a context manager runs lifespan on a PERSISTENT
+    portal loop, so the async extract workers survive across requests.
+    Without it they ride the per-request loop and job completion races
+    portal teardown (always won locally, lost on slow CI runners).
+    DATA_DIR is isolated and the embedder stubbed so lifespan boot is cheap.
+    """
+    import memory_engine as me
+
+    env = {
+        "API_KEY": "test-key",
+        "EXTRACT_PROVIDER": "ollama",
+        "OLLAMA_URL": "http://127.0.0.1:9",
+        "DATA_DIR": str(tmp_path / "data"),
+    }
+    with patch.dict(os.environ, env):
         import importlib
         import app as app_module
-        importlib.reload(app_module)
-
-        mock_engine = MagicMock()
-        mock_engine.stats_light.return_value = {"total_memories": 5}
-        app_module.memory = mock_engine
-
-        yield TestClient(app_module.app), mock_engine
+        with patch.object(me.MemoryEngine, "_make_embedder", lambda self: _StubEmbedder()):
+            importlib.reload(app_module)
+            with TestClient(app_module.app) as tc:
+                mock_engine = MagicMock()
+                mock_engine.stats_light.return_value = {"total_memories": 5}
+                app_module.memory = mock_engine
+                yield tc, mock_engine
 
 
 class TestExtractEndpoint:
@@ -140,12 +175,6 @@ class TestExtractEndpoint:
             assert job_state["status"] == "completed"
             assert job_state["result"]["extracted_count"] == 1
 
-    @pytest.mark.skipif(
-        bool(os.environ.get("CI")),
-        reason="extract workers ride the per-request portal loop (fixture has no lifespan); "
-        "on slow runners the job's await loses the race against portal teardown and never "
-        "resumes — rework fixtures to lifespan-managed TestClient with isolated DATA_DIR",
-    )
     def test_extract_runtime_failure_uses_fallback_when_enabled(self, client):
         test_client, mock_engine = client
         mock_engine.is_novel.return_value = (True, None)
