@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- **Transcript hygiene before extraction** — new `transcript_hygiene.clean_transcript()` strips hook-injected context (`<system-reminder>` blocks, `## Retrieved Memories` / `## Relevant Memories` sections, the recall preamble, and `<HookEvent> hook additional context:` blocks) before any extraction LLM call. Applied in `run_extraction()` (two-call, single-call, and training-data capture) and the provider-less fallback path. Fixes the re-ingestion bug where recalled memories injected by hooks were re-extracted as new memories every session (redundant clusters). Transcripts that are pure injection skip the LLM call entirely (`skipped_reason: empty_after_hygiene`). The Claude Code Stop hook additionally drops `<system-reminder>` content items in jq before the per-message clip (defense in depth).
+- **Extraction novelty gate** — extraction ADD/FALLBACK_ADD actions now pass an explicit `engine.is_novel()` check before storing; near-duplicates are recorded as `noop` actions with `reason: novelty_gate` and counted in `gated_count`. Controlled by `EXTRACT_NOVELTY_GATE` (default on) and `EXTRACT_NOVELTY_THRESHOLD` (default 0.85, stricter than the 0.90 engine dedup backstop). Fails open on engine errors. Human-approved dry-run commits (`/memory/extract/commit`) bypass the gate.
+
+### Changed
+- **Stronger default extraction profile** — the DEFAULT profile now ships hygiene rules (`extraction_profiles.DEFAULT_RULES`): always remember decisions + rationale (with until/unless/because boundary conditions), learnings, durable preferences, and deferred work; never remember session narration/running commentary, restated repo code, ephemeral task chatter, or recalled memory text repeated back. Rules now also reach the fact-extraction system prompt (previously AUDN/single-call only). A profile that explicitly sets `rules` (even `{}`) fully replaces the defaults.
+
 ### Internal / Experimental
 - **Shadow extraction fan-out** — opt-in A/B harness that mirrors extraction calls to candidate local models (oMLX/Ollama) and logs JSONL comparisons, without touching the primary path. Inert unless `SHADOW_PROVIDERS` is set; not part of the supported user-facing feature set. Includes `scripts/shadow_compare.py` for offline agreement analysis.
 
