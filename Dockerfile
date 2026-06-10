@@ -63,6 +63,7 @@ COPY chatgpt_oauth.py .
 COPY memories_auth.py .
 COPY __main__.py .
 COPY llm_provider.py .
+COPY shadow_runner.py .
 COPY llm_extract.py .
 COPY extraction_profiles.py .
 COPY usage_tracker.py .

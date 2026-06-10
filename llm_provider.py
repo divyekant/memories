@@ -382,6 +382,67 @@ class OllamaProvider(LLMProvider):
             return False
 
 
+class OMLXProvider(LLMProvider):
+    """oMLX local provider — OpenAI-compatible API at localhost:11434.
+
+    oMLX serves MLX-quantized models on Mac with an OpenAI-compatible REST
+    surface. Default port 11434, default bearer key '12345' (configurable via
+    OMLX_API_KEY env or constructor). Supports multi-model auto-swap; pin
+    candidates resident before high-throughput shadow testing.
+    """
+
+    provider_name = "omlx"
+    supports_audn = True
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+    ):
+        try:
+            import openai
+        except ImportError:
+            raise ImportError(
+                "openai package required. Install with: pip install openai>=1.50.0"
+            )
+        self.base_url = (base_url or "http://localhost:11434/v1").rstrip("/")
+        parsed = urllib.parse.urlparse(self.base_url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Invalid OMLX base_url scheme: {parsed.scheme!r}")
+        self.api_key = api_key or os.environ.get("OMLX_API_KEY", "").strip() or "12345"
+        self.model = model or "gemma26b-3bit"
+        self.client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+
+    def complete(self, system: str, user: str) -> CompletionResult:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=1024,
+            temperature=DEFAULT_TEMPERATURE,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        msg = response.choices[0].message
+        text = msg.content or getattr(msg, "reasoning", None) or ""
+        usage = response.usage
+        return CompletionResult(
+            text=text,
+            input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+            output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+        )
+
+    def health_check(self) -> bool:
+        try:
+            self.complete("Reply with OK", "health check")
+            return True
+        except Exception as e:
+            logger.warning("OMLX health check failed: %s", e)
+            return False
+
+
 def get_provider() -> LLMProvider | None:
     """Factory: create an LLM provider from environment variables.
 

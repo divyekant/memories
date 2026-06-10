@@ -1,6 +1,8 @@
 """Tests for llm_extract module."""
+import os
 import pytest
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from llm_provider import CompletionResult
 
@@ -1247,3 +1249,196 @@ def _extract_action_definition(prompt: str, action: str) -> str:
                     parts.append(next_line)
             return " ".join(parts)
     return ""
+
+
+class TestExtractFactsShadowFanout:
+    """Tests for shadow fan-out wired into extract_facts."""
+
+    def test_extract_facts_writes_shadow_log_when_configured(self, tmp_path):
+        from llm_extract import extract_facts
+        from shadow_runner import wait_for_shadows
+
+        primary = MagicMock()
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"category": "decision", "text": "use sqlite for memory store"}]',
+            input_tokens=100, output_tokens=20,
+        ))
+
+        shadow = MagicMock()
+        shadow.provider_name = "omlx"
+        shadow.model = "fplv2"
+        shadow.complete = MagicMock(return_value=CompletionResult(
+            text='[{"category": "detail", "text": "shadow saw the same conversation"}]',
+            input_tokens=99, output_tokens=18,
+        ))
+
+        with patch("llm_extract.build_shadow_providers", return_value=[shadow]):
+            with patch.dict(os.environ, {"SHADOW_LOG_DIR": str(tmp_path)}):
+                facts = extract_facts(primary, "messages text", source="claude-code/foo")
+        wait_for_shadows(timeout=5)
+
+        assert facts == [{"category": "decision", "text": "use sqlite for memory store"}]
+        primary.complete.assert_called_once()
+        shadow.complete.assert_called_once()
+
+        log_file = tmp_path / "memories-shadow-fplv2.log"
+        assert log_file.exists()
+        rec = json.loads(log_file.read_text().strip())
+        assert rec["call_type"] == "extract"
+        assert rec["source"] == "claude-code/foo"
+        assert "shadow saw" in rec["shadow_text"]
+
+    def test_extract_facts_unaffected_when_no_shadows(self, tmp_path):
+        from llm_extract import extract_facts
+        from shadow_runner import wait_for_shadows
+
+        primary = MagicMock()
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"category": "decision", "text": "x"}]',
+            input_tokens=10, output_tokens=5,
+        ))
+
+        env = {"SHADOW_LOG_DIR": str(tmp_path)}
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("SHADOW_PROVIDERS", None)
+            facts = extract_facts(primary, "msgs", source="claude-code/foo")
+        wait_for_shadows(timeout=2)
+
+        assert facts == [{"category": "decision", "text": "x"}]
+        assert list(tmp_path.iterdir()) == []
+
+
+class TestRunAudnShadowFanout:
+    """Tests for shadow fan-out wired into run_audn."""
+
+    def test_run_audn_writes_shadow_log_when_configured(self, tmp_path):
+        from llm_extract import run_audn
+        from shadow_runner import wait_for_shadows
+
+        primary = MagicMock()
+        primary.provider_name = "anthropic"
+        primary.supports_audn = True
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"action": "ADD", "fact_index": 0}]',
+            input_tokens=200, output_tokens=30,
+        ))
+
+        engine = MagicMock()
+        engine.hybrid_search = MagicMock(return_value=[])
+
+        shadow = MagicMock()
+        shadow.provider_name = "omlx"
+        shadow.model = "fplv2"
+        shadow.complete = MagicMock(return_value=CompletionResult(
+            text='[{"action": "NOOP", "fact_index": 0}]',
+            input_tokens=190, output_tokens=25,
+        ))
+
+        facts = [{"category": "decision", "text": "x"}]
+        with patch("llm_extract.build_shadow_providers", return_value=[shadow]):
+            with patch.dict(os.environ, {"SHADOW_LOG_DIR": str(tmp_path)}):
+                decisions, tokens, artifacts = run_audn(
+                    primary, engine, facts, source="claude-code/foo",
+                )
+        wait_for_shadows(timeout=5)
+
+        assert decisions == [{"action": "ADD", "fact_index": 0}]
+        shadow.complete.assert_called_once()
+
+        log_file = tmp_path / "memories-shadow-fplv2.log"
+        assert log_file.exists()
+        rec = json.loads(log_file.read_text().strip())
+        assert rec["call_type"] == "audn"
+        assert "NOOP" in rec["shadow_text"]
+
+
+class TestSingleCallShadowFanout:
+    """Tests for shadow fan-out wired into extract_and_decide_single_call."""
+
+    def test_single_call_writes_shadow_log_when_configured(self, tmp_path):
+        from llm_extract import extract_and_decide_single_call
+        from shadow_runner import wait_for_shadows
+
+        primary = MagicMock()
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"action": "ADD", "fact_index": 0, "category": "decision", "text": "x"}]',
+            input_tokens=300, output_tokens=40,
+        ))
+
+        engine = MagicMock()
+
+        shadow = MagicMock()
+        shadow.provider_name = "omlx"
+        shadow.model = "fplv2"
+        shadow.complete = MagicMock(return_value=CompletionResult(
+            text='[{"action": "ADD", "fact_index": 0, "category": "detail", "text": "y"}]',
+            input_tokens=290, output_tokens=35,
+        ))
+
+        with patch("llm_extract.build_shadow_providers", return_value=[shadow]):
+            with patch.dict(os.environ, {"SHADOW_LOG_DIR": str(tmp_path)}):
+                actions, usage, _ = extract_and_decide_single_call(
+                    primary, "msgs text", source="claude-code/foo", engine=engine,
+                )
+        wait_for_shadows(timeout=5)
+
+        assert len(actions) == 1
+        assert actions[0]["action"] == "ADD"
+        shadow.complete.assert_called_once()
+
+        log_file = tmp_path / "memories-shadow-fplv2.log"
+        assert log_file.exists()
+        rec = json.loads(log_file.read_text().strip())
+        assert rec["call_type"] == "single_call"
+
+
+class TestPrimaryUnaffectedByShadowFailures:
+    """Primary path must survive any shadow-side failure mode."""
+
+    def test_extract_facts_succeeds_when_all_shadows_raise(self, tmp_path):
+        from llm_extract import extract_facts
+        from shadow_runner import wait_for_shadows
+
+        primary = MagicMock()
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"category": "decision", "text": "ok"}]',
+            input_tokens=10, output_tokens=5,
+        ))
+
+        def make_boom(model):
+            s = MagicMock()
+            s.provider_name = "omlx"
+            s.model = model
+            s.complete = MagicMock(side_effect=RuntimeError(f"{model} exploded"))
+            return s
+
+        shadows = [make_boom("a"), make_boom("b"), make_boom("c")]
+
+        with patch("llm_extract.build_shadow_providers", return_value=shadows):
+            with patch.dict(os.environ, {"SHADOW_LOG_DIR": str(tmp_path)}):
+                facts = extract_facts(primary, "msgs", source="src")
+        wait_for_shadows(timeout=5)
+
+        assert facts == [{"category": "decision", "text": "ok"}]
+
+        for model in ("a", "b", "c"):
+            log = tmp_path / f"memories-shadow-{model}.log"
+            assert log.exists()
+            rec = json.loads(log.read_text().strip())
+            assert rec["error"] == f"{model} exploded"
+            assert rec["shadow_text"] is None
+
+    def test_extract_facts_succeeds_when_build_shadow_providers_raises(self, tmp_path):
+        from llm_extract import extract_facts
+
+        primary = MagicMock()
+        primary.complete = MagicMock(return_value=CompletionResult(
+            text='[{"category": "decision", "text": "ok"}]',
+            input_tokens=10, output_tokens=5,
+        ))
+
+        with patch("llm_extract.build_shadow_providers",
+                   side_effect=RuntimeError("build exploded")):
+            facts = extract_facts(primary, "msgs", source="src")
+
+        assert facts == [{"category": "decision", "text": "ok"}]
