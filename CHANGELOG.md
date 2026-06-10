@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.6.0] - 2026-06-10
 
 ### Fixed
 - **Pruner can no longer destroy pinned or archived memories** — `find_prune_candidates` excludes pinned (operator-protected) and archived (supersede-chain version history) memories; `delete_memory` refuses pinned ids without `force=true` (HTTP 409 from the API); bulk `delete_memories` silently skips pinned ids and reports them as `skipped_pinned`. This is the guard the June 7 prune incident lacked (271 memories hard-deleted, including version history).
