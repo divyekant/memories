@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.7.0] - 2026-06-10
 
 ### Added
 - **Transcript watcher (hookless capture)** — `scripts/transcript_watcher.py` tails the JSONL transcript directory and, when a session goes idle, submits new messages to extraction. Closes the capture gap for **Claude Desktop** and any local client that writes transcripts but never fires Stop hooks (desktop recalls at SessionStart but otherwise captured nothing). Per-session UUID watermark (in `~/.config/memories/watcher-state.json`) makes it idempotent across idle bursts and restarts; source is `claude-code/<project>` via worktree-aware git-common-dir resolution, so watcher- and hook-captured memories share recall; skips when the backend is unhealthy. launchd agent + `integrations/launchd/install-watcher.sh` (install/uninstall/status); docs in `docs/transcript-watcher.md`.
