@@ -313,10 +313,10 @@ PLAYBOOK_MODE=$(_playbook_injection_mode "$PROMPT" "$CANDIDATE_COUNT")
 
 if [ "$PLAYBOOK_MODE" = "minimal" ]; then
   _log_info "Playbook gate: minimal reminder (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
-  jq -n '{
+  jq -n --arg down "${MEMORIES_BACKEND_DOWN:-0}" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
-	  additionalContext: "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first (load it with ToolSearch(\"select:mcp__memories__memory_search\") if needed)."
+	  additionalContext: (if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first (load it with ToolSearch(\"select:mcp__memories__memory_search\") if needed)." end)
 	}
 }'
   exit 0

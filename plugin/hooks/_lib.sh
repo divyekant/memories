@@ -241,10 +241,51 @@ _resolve_env_reference() {
   fi
 }
 
-# Health check — returns 0 if service is reachable
+
+# -- Backend circuit breaker --------------------------------------------------
+# When the backend is down or slow, every hook on every prompt pays full curl
+# timeouts (~8s measured across a prompt's hook fan-out). After a failure the
+# breaker file makes subsequent hook invocations skip backend calls instantly
+# until the cooldown elapses (then one half-open retry).
+_MEMORIES_BREAKER_FILE="${MEMORIES_BREAKER_FILE:-$HOME/.config/memories/backend-down}"
+_MEMORIES_BREAKER_COOLDOWN="${MEMORIES_BREAKER_COOLDOWN:-60}"
+
+_breaker_open() {
+  [ -f "$_MEMORIES_BREAKER_FILE" ] || return 1
+  local ts now age
+  ts=$(cat "$_MEMORIES_BREAKER_FILE" 2>/dev/null)
+  case "$ts" in ''|*[!0-9]*) rm -f "$_MEMORIES_BREAKER_FILE" 2>/dev/null; return 1 ;; esac
+  now=$(date +%s)
+  age=$((now - ts))
+  [ "$age" -lt "$_MEMORIES_BREAKER_COOLDOWN" ] && return 0
+  return 1
+}
+
+_breaker_trip() {
+  mkdir -p "$(dirname "$_MEMORIES_BREAKER_FILE")" 2>/dev/null
+  date +%s > "$_MEMORIES_BREAKER_FILE" 2>/dev/null
+  _log_warn "Memories backend unreachable — circuit open for ${_MEMORIES_BREAKER_COOLDOWN}s (hooks skip backend calls)" 2>/dev/null || true
+}
+
+_breaker_reset() {
+  rm -f "$_MEMORIES_BREAKER_FILE" 2>/dev/null
+  return 0
+}
+
+# Health check — returns 0 if service is reachable (breaker-aware)
 _health_check() {
   local url="${MEMORIES_URL:-http://localhost:8900}"
-  curl -sf --max-time 2 "$url/health" >/dev/null 2>&1
+  if _breaker_open; then
+    MEMORIES_BACKEND_DOWN=1
+    return 1
+  fi
+  if curl -sf --max-time 2 "$url/health" >/dev/null 2>&1; then
+    _breaker_reset
+    return 0
+  fi
+  _breaker_trip
+  MEMORIES_BACKEND_DOWN=1
+  return 1
 }
 
 # -- Multi-Backend Config --------------------------------------------------
@@ -472,6 +513,12 @@ _search_memories_multi() {
   local limit="${3:-5}"
   local threshold="${4:-0.4}"
 
+  if _breaker_open; then
+    MEMORIES_BACKEND_DOWN=1
+    echo '{"results":[],"count":0}'
+    return
+  fi
+
   local backends
   backends=$(_get_backends_for_op "search")
   local count
@@ -491,10 +538,18 @@ _search_memories_multi() {
     local url key
     url=$(echo "$backends" | jq -r '.[0].url')
     key=$(echo "$backends" | jq -r '.[0].api_key')
-    curl -sf --max-time 4 -X POST "$url/search" \
+    local out
+    if out=$(curl -sf --max-time 4 -X POST "$url/search" \
       -H "Content-Type: application/json" \
       -H "X-API-Key: $key" \
-      -d "$body" 2>/dev/null || echo '{"results":[],"count":0}'
+      -d "$body" 2>/dev/null); then
+      _breaker_reset
+      printf '%s' "$out"
+    else
+      _breaker_trip
+      MEMORIES_BACKEND_DOWN=1
+      echo '{"results":[],"count":0}'
+    fi
     return
   fi
 
