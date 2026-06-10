@@ -5,10 +5,12 @@ This is the fastest path to a working Memories setup with optional automatic ext
 ## 1) Start the service
 
 ```bash
-git clone git@github.com:divyekant/memories.git
+git clone https://github.com/divyekant/memories.git
 cd memories
-docker compose -f docker-compose.snippet.yml up -d
+docker compose up -d
 ```
+
+(`docker-compose.yml` brings up Qdrant + the Memories service. `docker-compose.snippet.yml` is NOT standalone — it is a snippet to merge into an existing compose file.)
 
 ### Optional: Start with a vector cluster (N nodes)
 
