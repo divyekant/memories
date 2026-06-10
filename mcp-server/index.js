@@ -263,7 +263,7 @@ server.tool(
       };
     }
 
-    const lines = data.results.map((r, i) => `[${i + 1}]${relevanceTag(r)} ${r.source}\n${r.text}`);
+    const lines = data.results.map((r, i) => `[${i + 1}] id=${memoryId(r)}${relevanceTag(r)} ${r.source}\n${r.text}`);
 
     return {
       content: [{

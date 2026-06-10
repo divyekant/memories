@@ -27,6 +27,8 @@ fi
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
 SOURCE_PREFIX=$(echo "$INPUT" | jq -r '.tool_input.source_prefix // .tool_input.arguments.source_prefix // .input.source_prefix // .arguments.source_prefix // empty')
 SOURCE_PREFIX_QUALITY=$(_source_prefix_quality "$SOURCE_PREFIX" "$PROJECT")
+MEMORY_IDS_JSON=$(_memory_ids_for_metrics "$INPUT" 2>/dev/null || echo '[]')
+[ -z "$MEMORY_IDS_JSON" ] && MEMORY_IDS_JSON='[]'
 
 # Append tool usage
 CLIENT=$(_memory_client_prefix 2>/dev/null || echo "codex")
@@ -40,7 +42,8 @@ METRICS_EVENT=$(jq -nc \
   --arg tool_name "$TOOL" \
   --arg source_prefix "$SOURCE_PREFIX" \
   --arg source_prefix_quality "$SOURCE_PREFIX_QUALITY" \
-  '{ts: $ts, event: "tool_call", client: $client, session_id: $session_id, project: $project, tool_name: $tool_name, source_prefix: $source_prefix, source_prefix_quality: $source_prefix_quality}')
+  --argjson memory_ids "$MEMORY_IDS_JSON" \
+  '{ts: $ts, event: "tool_call", client: $client, session_id: $session_id, project: $project, tool_name: $tool_name, source_prefix: $source_prefix, source_prefix_quality: $source_prefix_quality, memory_ids: $memory_ids}')
 _active_search_metrics_log "$METRICS_EVENT"
 
 _log_info "Tool used: $TOOL"

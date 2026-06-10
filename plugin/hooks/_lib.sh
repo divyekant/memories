@@ -117,6 +117,34 @@ _playbook_injection_mode() {
   printf 'minimal'
 }
 
+# Extract memory ids touched by a memory tool call, for the recall-feedback
+# loop. Reads ids from tool input (id / memory_id / ids) and parses the
+# unambiguous "id=N" / "(id: N)" markers from the tool response text. Result
+# index markers like "[1]" are NOT parsed. Emits a JSON array (max 50 ids).
+_memory_ids_for_metrics() {
+  local input_json="$1"
+  local input_ids response_ids
+  input_ids=$(printf '%s' "$input_json" | jq -c '
+    def ids_of($o): if ($o | type) == "object"
+      then [($o | .id? // empty), ($o | .memory_id? // empty)]
+        + (($o | .ids? // []) | if type == "array" then . else [] end)
+      else [] end;
+    (ids_of(.tool_input? // {}) + ids_of(.tool_input.arguments? // {})
+      + ids_of(.input? // {}) + ids_of(.arguments? // {}))
+    | map(select(type == "number"))
+  ' 2>/dev/null) || input_ids='[]'
+  [ -z "$input_ids" ] && input_ids='[]'
+  response_ids=$(printf '%s' "$input_json" \
+    | jq -r '.tool_response // empty | tostring' 2>/dev/null \
+    | head -c 20000 \
+    | { grep -oE '(^|[^A-Za-z0-9_])id=[0-9]+|\(id: [0-9]+\)' || true; } \
+    | { grep -oE '[0-9]+' || true; } \
+    | sort -un | head -50 \
+    | jq -Rcs '[splits("\n") | select(length > 0) | tonumber]' 2>/dev/null) || response_ids='[]'
+  [ -z "$response_ids" ] && response_ids='[]'
+  jq -nc --argjson a "$input_ids" --argjson b "$response_ids" '$a + $b | unique | .[0:50]' 2>/dev/null || echo '[]'
+}
+
 _memories_disabled() {
   case "${MEMORIES_DISABLED:-}" in
     1|true|TRUE|yes|YES|on|ON) return 0 ;;

@@ -275,27 +275,34 @@ else
   ' 2>/dev/null) || true
 fi
 
+# Telemetry: log every prompt whose candidates were surfaced (plus every
+# active-search-required prompt, even with zero candidates). candidate_ids
+# feed the recall-feedback loop (scripts/apply_memory_feedback.py) — they go
+# to the local metrics log only, never into model context.
 CANDIDATE_COUNT=$(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0)
-
-if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
+HOOK_RESULTS_INJECTED=0
+[ -n "$RESULTS" ] && [ "$RESULTS" != "null" ] && HOOK_RESULTS_INJECTED=1
+if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ] || [ "$HOOK_RESULTS_INJECTED" = "1" ]; then
   SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
   CLIENT=$(_memory_client_prefix 2>/dev/null || echo "claude-code")
-  PROMPT_HASH=$(_hash_for_metrics "$PROMPT")
-  HOOK_RESULTS_INJECTED=0
-  [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ] && HOOK_RESULTS_INJECTED=1
+  PROMPT_HASH=$(_hash_for_metrics "$PROMPT" 2>/dev/null || echo "")
   SOURCE_PREFIXES_JSON=$(printf '%s' "$RESULTS_JSON" | jq -c '[.[].source // empty | select(. != "")] | unique' 2>/dev/null || echo '[]')
+  CANDIDATE_IDS_JSON=$(printf '%s' "$RESULTS_JSON" | jq -c '[.[].id | select(type == "number")] | unique | .[0:20]' 2>/dev/null || echo '[]')
+  ACTIVE_SEARCH_BOOL=false
+  [ "$ACTIVE_SEARCH_REQUIRED" = "1" ] && ACTIVE_SEARCH_BOOL=true
   METRICS_EVENT=$(jq -nc \
     --arg ts "$(date -u +%FT%TZ)" \
     --arg client "$CLIENT" \
     --arg session_id "$SESSION_ID" \
     --arg project "${PROJECT:-unknown}" \
     --arg prompt_hash "$PROMPT_HASH" \
-    --argjson active_search_required true \
+    --argjson active_search_required "$ACTIVE_SEARCH_BOOL" \
     --argjson candidate_count "$CANDIDATE_COUNT" \
     --argjson hook_results_injected "$HOOK_RESULTS_INJECTED" \
     --argjson source_prefixes "$SOURCE_PREFIXES_JSON" \
-    '{ts: $ts, event: "prompt_evaluated", client: $client, session_id: $session_id, project: $project, prompt_hash: $prompt_hash, active_search_required: $active_search_required, candidate_count: $candidate_count, hook_results_injected: ($hook_results_injected == 1), source_prefixes: $source_prefixes}')
-  _active_search_metrics_log "$METRICS_EVENT"
+    --argjson candidate_ids "$CANDIDATE_IDS_JSON" \
+    '{ts: $ts, event: "prompt_evaluated", client: $client, session_id: $session_id, project: $project, prompt_hash: $prompt_hash, active_search_required: $active_search_required, candidate_count: $candidate_count, hook_results_injected: ($hook_results_injected == 1), source_prefixes: $source_prefixes, candidate_ids: $candidate_ids}')
+  _active_search_metrics_log "$METRICS_EVENT" 2>/dev/null || true
 fi
 
 # Playbook gate: inject the full directive mandate only when retrieval matched

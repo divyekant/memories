@@ -1300,3 +1300,222 @@ def test_codex_memory_hooks_honor_disabled_flag(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert calls == []
     assert result.stdout.strip() == ""
+
+
+def test_memory_query_logs_candidate_ids_for_non_active_prompts(tmp_path: Path) -> None:
+    """Every prompt that gets injected candidates logs which memory ids were surfaced.
+
+    This is the surfaced half of the recall-feedback loop: without it,
+    surfaced-but-never-used memories can never be detected.
+    """
+    metrics_log = tmp_path / "active-search.jsonl"
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "",
+            "response": {
+                "results": [
+                    {
+                        "id": 99,
+                        "source": "other/project",
+                        "text": "Global memory about notification patterns.",
+                        "similarity": 0.75,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 11,
+                        "source": "claude-code/memories",
+                        "text": "Webhook retries use exponential backoff.",
+                        "similarity": 0.86,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    payload = {
+        "session_id": "session-passive",
+        "cwd": "/Users/example/memories",
+        "prompt": "Help me design webhook notifications for this billing service.",
+    }
+
+    result, _, _ = _run_hook(
+        QUERY_SCRIPT,
+        tmp_path,
+        payload,
+        responses,
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert len(events) == 1
+    event = events[0]
+    assert event["event"] == "prompt_evaluated"
+    assert event["active_search_required"] is False
+    assert event["hook_results_injected"] is True
+    assert event["candidate_ids"] == [11, 99]
+    assert "exponential backoff" not in json.dumps(event)
+    assert "notification patterns" not in json.dumps(event)
+
+def test_memory_query_logs_no_event_for_non_active_prompt_without_candidates(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    responses = [
+        {"url_suffix": "/search", "source_prefix": "", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "claude-code/memories", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "codex/memories", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "learning/memories", "response": {"results": [], "count": 0}},
+        {"url_suffix": "/search", "source_prefix": "wip/memories", "response": {"results": [], "count": 0}},
+    ]
+
+    payload = {
+        "session_id": "session-quiet",
+        "cwd": "/Users/example/memories",
+        "prompt": "Help me design webhook notifications for this billing service.",
+    }
+
+    result, _, _ = _run_hook(
+        QUERY_SCRIPT,
+        tmp_path,
+        payload,
+        responses,
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    assert not metrics_log.exists()
+
+def test_memory_observe_logs_memory_ids_from_tool_input(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    payload = {
+        "session_id": "session-1",
+        "cwd": "/Users/example/memories",
+        "tool_name": "mcp__memories__memory_get",
+        "tool_input": {"id": 42},
+        "tool_response": {
+            "content": [{"type": "text", "text": "[42] claude-code/memories 2026-06-01\n\nFull memory text."}]
+        },
+    }
+
+    result, _, _ = _run_hook(
+        OBSERVE_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert len(events) == 1
+    assert events[0]["tool_name"] == "mcp__memories__memory_get"
+    assert events[0]["memory_ids"] == [42]
+    assert "Full memory text" not in json.dumps(events[0])
+
+def test_memory_observe_logs_memory_ids_from_feedback_tool_input(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    payload = {
+        "session_id": "session-1",
+        "cwd": "/Users/example/memories",
+        "tool_name": "mcp__memories__memory_is_useful",
+        "tool_input": {"memory_id": 9, "signal": "useful"},
+    }
+
+    result, _, _ = _run_hook(
+        OBSERVE_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert events[0]["memory_ids"] == [9]
+
+def test_memory_observe_parses_memory_ids_from_search_response_text(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    response_text = (
+        'Found 2 memories for "release gate":\n\n'
+        "[1] id=42 (91%) codex/memories\nRelease is gated by setup validation.\n\n---\n\n"
+        "[2] id=7 (84%) learning/memories\nUse uv for python projects. valid=99 must not match."
+    )
+    payload = {
+        "session_id": "session-1",
+        "cwd": "/Users/example/memories",
+        "tool_name": "mcp__memories__memory_search",
+        "tool_input": {"query": "private query text", "source_prefix": "codex/memories"},
+        "tool_response": {"content": [{"type": "text", "text": response_text}]},
+    }
+
+    result, _, _ = _run_hook(
+        OBSERVE_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert events[0]["memory_ids"] == [7, 42]
+    assert "private query text" not in json.dumps(events[0])
+    assert "setup validation" not in json.dumps(events[0])
+
+def test_memory_observe_ignores_result_indices_without_id_markers(tmp_path: Path) -> None:
+    """Plain [1]/[2] result indices must not be mistaken for memory ids."""
+    metrics_log = tmp_path / "active-search.jsonl"
+    response_text = (
+        'Found 2 memories for "release gate":\n\n'
+        "[1] (91%) codex/memories\nNo ids in this legacy format.\n\n---\n\n"
+        "[2] (84%) learning/memories\nStill no ids."
+    )
+    payload = {
+        "session_id": "session-1",
+        "cwd": "/Users/example/memories",
+        "tool_name": "mcp__memories__memory_search",
+        "tool_input": {"query": "q", "source_prefix": ""},
+        "tool_response": {"content": [{"type": "text", "text": response_text}]},
+    }
+
+    result, _, _ = _run_hook(
+        OBSERVE_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert events[0]["memory_ids"] == []
+
+def test_codex_memory_observe_logs_memory_ids(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    payload = {
+        "session_id": "codex-session",
+        "cwd": "/Users/example/memories",
+        "tool_name": "mcp__memories__memory_get",
+        "tool_input": {"id": 314},
+    }
+
+    result, _, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-observe.sh",
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0
+    events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
+    assert events[0]["memory_ids"] == [314]
