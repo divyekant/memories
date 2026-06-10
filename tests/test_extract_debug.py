@@ -63,7 +63,7 @@ def _make_mock_extraction_result(debug=False):
 @pytest.fixture
 def client():
     """Create a test client with mocked memory engine and extraction."""
-    with patch.dict(os.environ, {"API_KEY": "test-key", "EXTRACT_PROVIDER": "anthropic"}):
+    with patch.dict(os.environ, {"API_KEY": "test-key", "EXTRACT_PROVIDER": "anthropic", "OLLAMA_URL": "http://127.0.0.1:9"}):
         import app as app_module
 
         importlib.reload(app_module)
