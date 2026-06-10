@@ -68,14 +68,22 @@ def search(ctx, query, limit, hybrid, threshold, source, recency, half_life):
             click.echo("No results.")
             return
         for r in results:
-            sim = r.get("similarity", r.get("rrf_score", r.get("score", 0)))
-            pct = f"{sim * 100:.0f}%"
+            # similarity is absolute cosine (0-1); hybrid rrf_score is RRF rank
+            # fusion bounded near 1/60, so show the set-relative score instead.
+            sim = r.get("similarity", r.get("score"))
+            rel = r.get("relative_score")
+            if isinstance(sim, (int, float)):
+                tag = f" ({sim * 100:.0f}%)"
+            elif isinstance(rel, (int, float)):
+                tag = f" (rel {rel * 100:.0f}%)"
+            else:
+                tag = ""
             rid = r.get("id", "?")
             src = r.get("source", "")
             text = r.get("text", "")
             if len(text) > 200:
                 text = text[:200] + "..."
-            click.secho(f"[{rid}] ({pct}) {src}", fg="cyan")
+            click.secho(f"[{rid}]{tag} {src}", fg="cyan")
             click.echo(f"  {text}")
 
     ctx.fmt.echo(data, human)
