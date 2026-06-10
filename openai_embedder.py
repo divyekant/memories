@@ -1,8 +1,10 @@
 """
-OpenAI embedding provider — drop-in replacement for OnnxEmbedder.
+OpenAI-compatible embedding provider — drop-in replacement for OnnxEmbedder.
 
-Uses the OpenAI embeddings API (default: text-embedding-3-small).
-No local model download or ONNX runtime required.
+Uses the OpenAI embeddings API (default: text-embedding-3-small) or any
+OpenAI-compatible endpoint via ``base_url`` (e.g. oMLX serving MLX embedding
+models on http://localhost:11434/v1). No local model download or ONNX
+runtime required.
 """
 
 import logging
@@ -36,20 +38,41 @@ class OpenAIEmbedder:
         model.get_sentence_embedding_dimension()
     """
 
-    def __init__(self, model: str = "text-embedding-3-small", api_key: str = None):
-        from openai import OpenAI
+    def __init__(
+        self,
+        model: str = "text-embedding-3-small",
+        api_key: str = None,
+        base_url: str = None,
+        dimension: int = None,
+    ):
+        import openai
 
         self._model = model
-        self._client = OpenAI(api_key=api_key)
+        client_kwargs = {}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+            if not api_key:
+                # Local OpenAI-compatible endpoints (oMLX, LM Studio, vLLM)
+                # usually ignore the key, but the SDK requires a non-empty one.
+                api_key = "sk-local"
+        self._client = openai.OpenAI(api_key=api_key, **client_kwargs)
         self._closed = False
         self._lock = threading.RLock()
 
-        self._dim = _KNOWN_DIMENSIONS.get(model)
+        if dimension:
+            self._dim = int(dimension)
+        else:
+            self._dim = _KNOWN_DIMENSIONS.get(model)
         if self._dim is None:
             probe = self._call_api(["probe"])
             self._dim = probe.shape[1]
 
-        logger.info("OpenAI embedder loaded: model=%s, dim=%d", self._model, self._dim)
+        logger.info(
+            "OpenAI embedder loaded: model=%s, dim=%d, base_url=%s",
+            self._model,
+            self._dim,
+            base_url or "default",
+        )
 
     def _call_api(self, texts: List[str]) -> np.ndarray:
         last_exc = None
@@ -57,7 +80,16 @@ class OpenAIEmbedder:
             try:
                 response = self._client.embeddings.create(model=self._model, input=texts)
                 vectors = [item.embedding for item in response.data]
-                return np.array(vectors, dtype=np.float32)
+                result = np.array(vectors, dtype=np.float32)
+                if self._dim is not None and result.shape[1] != self._dim:
+                    raise ValueError(
+                        f"Embedding endpoint returned dimension {result.shape[1]} "
+                        f"but {self._dim} was configured for model {self._model!r}. "
+                        "Check EMBED_DIMENSION / the served model."
+                    )
+                return result
+            except ValueError:
+                raise
             except Exception as exc:
                 last_exc = exc
                 if attempt < _MAX_RETRIES:

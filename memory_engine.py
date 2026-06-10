@@ -16,7 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+import dataclasses
+
 import numpy as np
+from embedding_space import EmbedderSettings, EmbeddingSpaceRegistry
 from entity_locks import EntityLockManager
 from qdrant_client import models as qdrant_models
 from event_bus import event_bus
@@ -109,7 +112,8 @@ class MemoryEngine:
         self._model_cache_dir = os.getenv("MODEL_CACHE_DIR", "").strip()
         self._preloaded_model_cache_dir = os.getenv("PRELOADED_MODEL_CACHE_DIR", "").strip()
         self._embedder_cache_dir: Optional[str] = None
-        self._embed_provider = os.getenv("EMBED_PROVIDER", "onnx").strip().lower()
+        self._embed_settings = EmbedderSettings.from_env(default_onnx_model=self._model_name)
+        self._embed_provider = self._embed_settings.provider
         self._embed_model = os.getenv("EMBED_MODEL", "").strip()
 
         requested_backend = os.getenv("STORAGE_BACKEND", "qdrant").strip().lower() or "qdrant"
@@ -152,6 +156,14 @@ class MemoryEngine:
         self.model = self._make_embedder()
         self.dim = self.model.get_sentence_embedding_dimension()
 
+        declared_dim = self._embed_settings.declared_dim
+        if declared_dim is not None and declared_dim != self.dim:
+            raise RuntimeError(
+                f"EMBED_DIMENSION={declared_dim} but the loaded embedder "
+                f"({self._active_embed_model()}) produces {self.dim}-d vectors. "
+                "Fix EMBED_DIMENSION or the model configuration."
+            )
+
         self._write_lock = threading.RLock()
         self._entity_locks = EntityLockManager()
 
@@ -160,6 +172,7 @@ class MemoryEngine:
             "model": self._active_embed_model(),
             "embed_provider": self._embed_provider,
             "dimension": self.dim,
+            "embedding_signature": self._embedding_signature(),
             "storage_backend": self._storage_backend,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_updated": None,
@@ -171,6 +184,25 @@ class MemoryEngine:
         self._bm25_pos_to_id: List[int] = []   # BM25 corpus position -> memory_id
 
         self.qdrant_settings = QdrantSettings.from_env()
+        # isinstance guard: some tests stub QdrantSettings; only real string
+        # collection names participate in space resolution and the registry.
+        base_collection = getattr(self.qdrant_settings, "collection", None)
+        resolved_collection = base_collection
+        if isinstance(base_collection, str):
+            resolved_collection = self._embed_settings.resolve_collection(
+                base_collection, self.dim
+            )
+            if resolved_collection != base_collection:
+                logger.info(
+                    "Embedding space %s -> collection %s (base %s)",
+                    self._embedding_signature(),
+                    resolved_collection,
+                    base_collection,
+                )
+                self.qdrant_settings = dataclasses.replace(
+                    self.qdrant_settings, collection=resolved_collection
+                )
+            self.config["qdrant_collection"] = resolved_collection
         self._qdrant_local_path = self.data_dir / "qdrant"
         self._qdrant_local_path.mkdir(parents=True, exist_ok=True)
         self.qdrant_store = QdrantStore(
@@ -179,6 +211,25 @@ class MemoryEngine:
         )
         self.qdrant_store.ensure_collection(self.dim)
         self.qdrant_store.ensure_payload_indexes()
+
+        self._space_registry: Optional[EmbeddingSpaceRegistry] = None
+        if isinstance(resolved_collection, str):
+            self._space_registry = EmbeddingSpaceRegistry(
+                self.data_dir / "embedding_spaces.json"
+            )
+            registry_status = self._space_registry.check_and_record(
+                resolved_collection,
+                self._embedding_signature(),
+                allow_rebind=self._embed_settings.allow_space_rebind,
+            )
+            if registry_status == "rebound":
+                logger.warning(
+                    "Embedding space for collection %s rebound to %s. Existing vectors "
+                    "are stale until re-embedded (POST /maintenance/reembed or "
+                    "scripts/reembed.py).",
+                    resolved_collection,
+                    self._embedding_signature(),
+                )
 
         self.cloud_sync: Optional[CloudSync] = None
         if CLOUD_SYNC_AVAILABLE:
@@ -308,7 +359,21 @@ class MemoryEngine:
         texts: List[str],
         normalize_embeddings: bool = True,
         show_progress_bar: bool = False,
+        kind: str = "document",
     ) -> np.ndarray:
+        """Encode texts, applying the space's query/document prefix if configured.
+
+        Prefix-trained models (nomic-embed, arctic-embed, Qwen3 instructions)
+        need asymmetric prefixes; EMBED_QUERY_PREFIX / EMBED_DOC_PREFIX default
+        to empty so symmetric models are unaffected.
+        """
+        prefix = (
+            self._embed_settings.query_prefix
+            if kind == "query"
+            else self._embed_settings.document_prefix
+        )
+        if prefix:
+            texts = [f"{prefix}{text}" for text in texts]
         with self._embedder_lock:
             return self.model.encode(
                 texts,
@@ -1400,6 +1465,7 @@ class MemoryEngine:
             [query],
             normalize_embeddings=True,
             show_progress_bar=False,
+            kind="query",
         )[0].astype("float32").tolist()
 
         # Pre-filter at Qdrant level when source_prefix is specified
@@ -1910,7 +1976,7 @@ class MemoryEngine:
         if not self.metadata:
             return []
         k = min(k, len(self.metadata), 100)
-        query_vec = self._encode([query], normalize_embeddings=True, show_progress_bar=False)[0].astype("float32").tolist()
+        query_vec = self._encode([query], normalize_embeddings=True, show_progress_bar=False, kind="query")[0].astype("float32").tolist()
         query_filter = self._build_source_filter(source_prefix=source_prefix, include_archived=include_archived)
         hits = self.qdrant_store.search(
             query_vector=query_vec, limit=k, score_threshold=threshold,
@@ -2658,6 +2724,8 @@ class MemoryEngine:
         self.config["model"] = self._active_embed_model()
         self.config["embed_provider"] = self._embed_provider
         self.config["dimension"] = self.dim
+        self.config["embedding_signature"] = self._embedding_signature()
+        self.config["qdrant_collection"] = self.qdrant_settings.collection
 
         self._rebuild_id_map()
 
@@ -2821,6 +2889,18 @@ class MemoryEngine:
             return self._embed_model or "text-embedding-3-small"
         return self._embed_model or self._model_name
 
+    def _embedding_signature(self) -> str:
+        """Signature of the active embedding space (provider:model:dim[+prefixes])."""
+        from embedding_space import embedding_signature
+
+        return embedding_signature(
+            self._embed_provider,
+            self._active_embed_model(),
+            self.dim,
+            query_prefix=self._embed_settings.query_prefix,
+            document_prefix=self._embed_settings.document_prefix,
+        )
+
     def _make_embedder(self):
         """Instantiate the configured embedding provider."""
         if self._embed_provider == "onnx":
@@ -2832,13 +2912,27 @@ class MemoryEngine:
         if self._embed_provider == "openai":
             from openai_embedder import OpenAIEmbedder
             model = self._active_embed_model()
-            api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
-            if not api_key:
+            base_url = self._embed_settings.base_url or None
+            api_key = (
+                self._embed_settings.api_key
+                or os.getenv("OPENAI_API_KEY", "").strip()
+            ) or None
+            if not api_key and not base_url:
                 raise ValueError(
-                    "EMBED_PROVIDER=openai requires OPENAI_API_KEY to be set"
+                    "EMBED_PROVIDER=openai requires OPENAI_API_KEY (or EMBED_BASE_URL "
+                    "for an OpenAI-compatible endpoint such as oMLX)"
                 )
-            logger.info("Embedder: provider=openai, model=%s", model)
-            return OpenAIEmbedder(model, api_key=api_key)
+            logger.info(
+                "Embedder: provider=openai, model=%s, base_url=%s",
+                model,
+                base_url or "default",
+            )
+            return OpenAIEmbedder(
+                model,
+                api_key=api_key,
+                base_url=base_url,
+                dimension=self._embed_settings.declared_dim,
+            )
 
         raise ValueError(
             f"Unknown EMBED_PROVIDER={self._embed_provider!r}. "
@@ -2954,9 +3048,22 @@ class MemoryEngine:
 
                 self.config["model"] = self._active_embed_model()
                 self.config["dimension"] = self.dim
+                self.config["embedding_signature"] = self._embedding_signature()
                 self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                 self.save()
                 self._rebuild_bm25()
+
+                # In-place re-embed deliberately rebinds this collection's space.
+                registry = getattr(self, "_space_registry", None)
+                collection_name = getattr(
+                    self.qdrant_store, "collection", self.qdrant_settings.collection
+                )
+                if registry is not None and isinstance(collection_name, str):
+                    registry.check_and_record(
+                        collection_name,
+                        self._embedding_signature(),
+                        allow_rebind=True,
+                    )
 
         new_model_name = self._active_embed_model()
         logger.info("Re-embed complete: %s -> %s (%d memories)", old_model_name, new_model_name, total)
