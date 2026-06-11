@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node index.js",
     "smoke": "node smoke.mjs",
-    "smoke:write": "node smoke-write.mjs"
+    "smoke:write": "node smoke-write.mjs",
+    "smoke:redirect": "node smoke-redirect.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
