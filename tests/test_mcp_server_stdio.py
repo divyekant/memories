@@ -21,3 +21,16 @@ def test_generic_mcp_stdio_client_lists_and_calls_tools() -> None:
 
     assert result.returncode == 0, result.stderr or result.stdout
     assert "generic_mcp_stdio_smoke=ok" in result.stdout
+
+
+def test_mcp_refuses_redirecting_backend_url() -> None:
+    result = subprocess.run(
+        ["npm", "run", "smoke:redirect"],
+        cwd=MCP_SERVER_DIR,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "redirect_guard_smoke=ok" in result.stdout
