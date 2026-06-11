@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+import threading
 import pytest
 from pathlib import Path
 
@@ -275,6 +276,35 @@ class TestPersistence:
         assert engine2.stats_light()["total_memories"] == 1
         listed = engine2.list_memories()
         assert listed["memories"][0]["text"] == "persisted data"
+
+    def test_concurrent_saves_do_not_collide(self, engine):
+        """A fixed tmp filename let parallel save() calls rename each other's
+        tmp away mid-cycle: the loser crashed with FileNotFoundError (seen in
+        production from the extraction worker) and the winner could install a
+        half-written file."""
+        engine.add_memories(texts=["seed"], sources=["test.md"])
+        engine.config["_pad"] = "x" * (2 * 1024 * 1024)  # widen the write+fsync window
+
+        errors = []
+
+        def hammer():
+            for _ in range(15):
+                try:
+                    engine.save()
+                except OSError as exc:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=hammer) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"concurrent save() raised: {errors[:3]}"
+        with open(engine.metadata_path, encoding="utf-8") as f:
+            json.load(f)
+        with open(engine.config_path, encoding="utf-8") as f:
+            json.load(f)
 
     def test_integrity_check(self, engine, tmp_path):
         engine.add_memories(texts=["data"], sources=["test.md"])
