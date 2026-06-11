@@ -2,6 +2,7 @@
 import importlib
 import os
 import tempfile
+import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -9,6 +10,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 import memory_engine as _me
+
+
+def _wait_for(condition, timeout=10.0, interval=0.01):
+    """POST /memory/extract returns 202 before the async worker runs the job;
+    poll for the capture instead of racing the queue (flaky on slow CI)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(interval)
+    return condition()
 
 
 class _StubEmbedder:
@@ -84,7 +96,8 @@ class TestExtractionDryRun:
                 "/memory/extract",
                 json={"messages": "Test message.", "source": "test/", "dry_run": True},
             )
-        assert resp.status_code in (200, 202)
+            assert resp.status_code in (200, 202)
+            assert _wait_for(lambda: "profile" in captured), "extract worker never ran the queued job"
         assert captured.get("profile", {}).get("dry_run") is True
 
     def test_dry_run_false_not_in_profile(self, client):
@@ -110,7 +123,8 @@ class TestExtractionDryRun:
                 "/memory/extract",
                 json={"messages": "Test message.", "source": "test/"},
             )
-        assert resp.status_code in (200, 202)
+            assert resp.status_code in (200, 202)
+            assert _wait_for(lambda: "profile" in captured), "extract worker never ran the queued job"
         profile = captured.get("profile") or {}
         assert not profile.get("dry_run")
 
