@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.7.1] - 2026-06-12
+
+### Fixed
+- **Concurrent `save()` calls no longer crash or cross-contaminate** — the atomic metadata/config save (added in 5.6.0) wrote every call to the same fixed temp file (`metadata.json.tmp`), so concurrent savers (extraction worker, API threadpool, maintenance jobs) renamed each other's temp away mid-cycle: the loser crashed with `[Errno 2] No such file or directory` (seen in production as `llm_extract: Failed to execute UPDATE for fact`, silently dropping the extracted update) and the winner could install a half-written file. `save()` now writes to a unique `mkstemp` temp per call (cleaned up on failure); a regression test hammers `save()` from 8 threads (84/120 calls crashed before the fix).
+- **Deflaked `test_extraction_dry_run` worker race** — `POST /memory/extract` returns 202 before the async extract worker dequeues the job, but the dry-run tests asserted on the captured profile immediately after the POST and let the `run_extraction` patch expire — on slow CI runners the worker lost the race (3 red runs across develop/main/PR #77 on 2026-06-10 alone, each passing on rerun). The tests now condition-wait for the capture inside the patch context instead of racing the queue.
+- **MCP server refuses redirecting backend URLs instead of silently corrupting requests** — `fetch` follows a 301/302 by re-issuing POST as GET (per spec), so an `http://` MEMORIES_URL behind an https-upgrading edge (Cloudflare) produced opaque `405 Method Not Allowed` on `/search` and `/memory/{id}/supersede` while GET tools (`memory_stats`, `memory_count`) kept working — a half-broken state that pointed everywhere but the URL scheme. `memoriesRequest` now sends `redirect: "manual"` and fails loudly with the redirect target ("Point this backend's URL at the redirect target") on real redirect statuses (301/302/303/307/308 — a 304 still surfaces as a plain API error), and the multi-backend fan-out aggregates per-backend failure reasons instead of a bare "All backends failed" (which would otherwise have swallowed the redirect diagnosis). Covered by `smoke-redirect.mjs` (`npm run smoke:redirect`: single-backend refusal with zero downgraded requests, multi-backend reason surfacing, 304 passthrough), wired into the pytest stdio suite.
+
 ## [5.7.0] - 2026-06-10
 
 ### Added

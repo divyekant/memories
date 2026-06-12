@@ -10,6 +10,7 @@ import math
 import os
 import re
 import shutil
+import tempfile
 import threading
 import gc
 from datetime import datetime, timezone
@@ -2961,20 +2962,33 @@ class MemoryEngine:
         interrupted by OOM-kill/SIGKILL corrupts it AND there may be no recent
         backup. Write to a temp file in the same directory, fsync, atomically
         replace, and keep the previous good file as .bak for load() fallback.
+
+        The temp file name must be unique per call: concurrent save() callers
+        (extraction worker, API threadpool, maintenance jobs) sharing one tmp
+        path rename each other's file away mid-cycle — the loser crashes with
+        ENOENT and the winner can install a half-written file.
+
+        This makes concurrent save() calls file-safe; it does NOT serialize
+        metadata mutation itself — mutate-and-save under self._write_lock.
         """
         for path, payload in ((self.metadata_path, self.metadata), (self.config_path, self.config)):
-            tmp_path = path.with_suffix(path.suffix + ".tmp")
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            if path.exists():
-                bak_path = path.with_suffix(path.suffix + ".bak")
-                try:
-                    shutil.copy2(path, bak_path)
-                except OSError as e:
-                    logger.warning("Could not refresh %s: %s", bak_path, e)
-            os.replace(tmp_path, path)
+            fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                if path.exists():
+                    bak_path = path.with_suffix(path.suffix + ".bak")
+                    try:
+                        shutil.copy2(path, bak_path)
+                    except OSError as e:
+                        logger.warning("Could not refresh %s: %s", bak_path, e)
+                os.replace(tmp_path, path)
+            except BaseException:
+                tmp_path.unlink(missing_ok=True)
+                raise
 
     def load(self, rebuild_on_mismatch: bool = False):
         """Load metadata/config and validate against Qdrant state."""

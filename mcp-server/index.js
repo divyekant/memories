@@ -75,16 +75,30 @@ function getBackendsForOp(op) {
 
 // -- HTTP helper -------------------------------------------------------------
 
+async function backendFetch(b, reqPath, options = {}) {
+  const url = `${b.url}${reqPath}`;
+  const headers = { "Content-Type": "application/json" };
+  if (b.apiKey) headers["X-API-Key"] = b.apiKey;
+  // redirect:"manual" — following a 301/302 re-issues POST as GET (fetch spec),
+  // which the POST-only backend rejects with an opaque 405. Fail loudly instead.
+  const response = await fetch(url, { ...options, headers: { ...headers, ...options.headers }, redirect: "manual" });
+  if ([301, 302, 303, 307, 308].includes(response.status)) {
+    const location = response.headers.get("location") || "unknown";
+    throw new Error(
+      `Memories API error: ${url} redirects (${response.status} -> ${location}). ` +
+      `Refusing to follow: a redirect silently downgrades POST to GET. ` +
+      `Point this backend's URL (MEMORIES_URL or backends.yaml) at the redirect target.`
+    );
+  }
+  return response;
+}
+
 async function memoriesRequest(reqPath, options = {}, op = "search") {
   const backends = getBackendsForOp(op);
 
   if (backends.length === 1) {
     // Single backend — direct call (backward compat)
-    const b = backends[0];
-    const url = `${b.url}${reqPath}`;
-    const headers = { "Content-Type": "application/json" };
-    if (b.apiKey) headers["X-API-Key"] = b.apiKey;
-    const response = await fetch(url, { ...options, headers: { ...headers, ...options.headers } });
+    const response = await backendFetch(backends[0], reqPath, options);
     if (!response.ok) {
       const body = await response.text();
       throw new Error(`Memories API error ${response.status}: ${body}`);
@@ -95,10 +109,7 @@ async function memoriesRequest(reqPath, options = {}, op = "search") {
   // Multi-backend — parallel fan-out
   const results = await Promise.allSettled(
     backends.map(async (b) => {
-      const url = `${b.url}${reqPath}`;
-      const headers = { "Content-Type": "application/json" };
-      if (b.apiKey) headers["X-API-Key"] = b.apiKey;
-      const response = await fetch(url, { ...options, headers: { ...headers, ...options.headers } });
+      const response = await backendFetch(b, reqPath, options);
       if (!response.ok) throw new Error(`${b.name}: HTTP ${response.status}`);
       const data = await response.json();
       return { backend: b.name, data };
@@ -108,7 +119,10 @@ async function memoriesRequest(reqPath, options = {}, op = "search") {
   // Collect successful results
   const successes = results.filter(r => r.status === "fulfilled").map(r => r.value);
   if (successes.length === 0) {
-    throw new Error("All backends failed");
+    const reasons = results
+      .filter(r => r.status === "rejected")
+      .map(r => r.reason?.message || String(r.reason));
+    throw new Error(`All backends failed: ${reasons.join("; ")}`);
   }
 
   // For non-search operations, return first success
