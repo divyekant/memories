@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+- **MCP server self-reported version was stuck at 5.4.0** — the `McpServer` constructor's version string was missed by three releases of version bumps (the bump grep searched for the previous version only). Now 5.7.1.
+
+### Changed
+- **Docs refreshed to v5.7.1 reality** — README capabilities/tool table/API reference catch up with 5.6–5.7 features (write doctrine + `on_duplicate`, `memory_update` / `POST /memory/{id}/supersede`, secret redaction, circuit breaker, paginated conflicts); README quick start uses the HTTPS clone URL and standalone `docker-compose.yml` (same fix GETTING_STARTED got in 5.7.0); `docs/api.md` documents the previously-missing endpoints (`/memory/conflicts/resolve`, `/memory/archive-batch`, `/memory/merge`, `/memory/missed`, `/maintenance/enforce-policies`, both supersede variants) with verified request shapes; `docs/api-coverage.md` parity table updated; cloud-sync quick-start curl includes the required API key. Point-in-time artifacts moved to `docs/archive/` (Qdrant cutover plan, Feb benchmark); stale March-era `docs/generated/` hermes output deleted (regenerable).
+
 ### Removed
 - **Transcript watcher (hookless capture)** — removed two days after shipping in 5.7.0. Its premise ("Claude Desktop does not fire per-turn or Stop hooks") no longer holds: a hook-probe experiment on Claude Code runtime 2.1.170 verified that Desktop-app local sessions fire SessionStart, UserPromptSubmit (with context injection reaching the model), Stop, PostToolUse, and SessionEnd, and that the plugin's own Stop hook submits extraction from Desktop sessions (backend logged `Extract queued … context=stop` at the probe session's Stop). The earlier gap was real but was closed upstream (PATH/env fixes landed April 2026; parity observed after an app restart picked up the current runtime). Hook-based capture is the single path again; the watcher's daemon, launchd agent, tests, and docs are gone. If a genuinely hookless client ever matters, resurrect from the 5.7.0 tag — and note PR #79 (closed unmerged) fixed a watermark-on-failure data-loss bug the 5.7.0 watcher shipped with.
 

@@ -132,8 +132,14 @@ In addition to the core tools, these are now available:
 
 | Tool | Description |
 |------|-------------|
+| `memory_update` | Update/correct a memory by ID — the old version is archived with a supersedes link |
+| `memory_get` | Fetch one memory by ID (full text after a compact search) |
+| `memory_timeline` | Date-ordered view of matching memories for temporal questions |
+| `memory_evidence` | Evidence packet: current answer, supporting/conflicting memories, confidence |
 | `memory_is_useful` | Submit search feedback (positive/negative) |
-| `memory_conflicts` | List memories with unresolved conflicts |
+| `memory_conflicts` | List memories with unresolved conflicts (paginated) |
+| `memory_missed` | Report a memory that should have been recalled but wasn't |
+| `memory_deferred` | List deferred/incomplete work captured in memories |
 
 ## 7) Monitor quality
 

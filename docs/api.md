@@ -328,11 +328,32 @@ Batch upsert.
 
 ### POST /memory/supersede
 
-Replace one memory with another (atomic delete + add).
+Replace one memory with another by request body.
+
+**Request body:**
+```json
+{"old_id": 42, "new_text": "corrected fact", "source": "optional — defaults to the original's"}
+```
+
+### POST /memory/{id}/supersede
+
+Replace memory `{id}` with new text. The old version is **archived** (recoverable, visible in timelines) with a supersedes link from the new memory; pinned memories refuse with 409 until unpinned. This is the endpoint the `memory_update` MCP tool calls.
+
+**Request body:**
+```json
+{"text": "corrected fact", "source": "optional", "metadata": {}}
+```
 
 ### GET /memory/conflicts
 
-List memories flagged as conflicting with existing memories. Conflicts are detected during extraction when the AUDN pipeline identifies contradictory facts that may both be valid.
+List memories flagged as conflicting with existing memories. Conflicts are detected during extraction when the AUDN pipeline identifies contradictory facts that may both be valid. Entries held for review (pinned losers, undated pairs) are annotated.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `limit` | int | 50 | Page size (max 500) |
+| `offset` | int | 0 | Pagination offset |
 
 **Response:**
 ```json
@@ -350,9 +371,51 @@ List memories flagged as conflicting with existing memories. Conflicts are detec
       }
     }
   ],
-  "count": 1
+  "count": 1,
+  "total": 7,
+  "offset": 0,
+  "has_more": true
 }
 ```
+
+### POST /memory/conflicts/resolve
+
+Drain the conflict queue under newest-wins: the newer memory of each pair stays live, the older is archived with a supersedes link (never deleted). Pinned losers and undated pairs stay queued as `needs_review`; orphaned markers are cleared. Dry-run by default; requires an unscoped key.
+
+**Request body:**
+```json
+{"dry_run": true, "max": 200}
+```
+
+`max` caps resolutions per run (0 = unlimited).
+
+### POST /memory/archive-batch
+
+Archive multiple memories by ID in one call (archived memories leave search but remain recoverable).
+
+**Request body:**
+```json
+{"ids": [1, 2, 3]}
+```
+
+### POST /memory/merge
+
+Merge several memories into one: the merged result is added and the sources are archived with supersedes links.
+
+**Request body:**
+```json
+{"ids": [1, 2, 3]}
+```
+
+At least 2 ids required.
+
+### POST /memory/missed
+
+Report a memory that should have been recalled for a query but wasn't (feeds recall-quality telemetry). Exposed as the `memory_missed` MCP tool.
+
+### POST /maintenance/enforce-policies
+
+Run lifecycle policies (per-prefix TTL, confidence-based auto-archive) on demand instead of waiting for the daily maintenance job. `dry_run` is a query parameter (default `true`): `POST /maintenance/enforce-policies?dry_run=false`.
 
 ---
 

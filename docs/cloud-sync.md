@@ -70,7 +70,8 @@ docker compose up -d
 ### 3. Verify it's working
 
 ```bash
-curl http://localhost:8900/sync/status
+curl http://localhost:8900/sync/status \
+  -H "X-API-Key: $API_KEY"
 ```
 
 ---
