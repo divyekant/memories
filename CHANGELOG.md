@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Transcript watcher no longer drops backlog on failed submits** — `run_once` advanced the per-session watermark even when the extraction submit failed, so any rejected submission (seen live: the cold-start sweep flooding the extract queue with 429s) silently skipped that session's messages forever. The watermark now only advances after a successful submit (or when there is nothing to send), so failed sessions are retried on the next poll pass.
+
 ## [5.7.1] - 2026-06-12
 
 ### Fixed

@@ -225,9 +225,10 @@ def run_once(cfg, state, now=None) -> int:
         if text:
             project = resolve_project(messages[-1].get("cwd", ""))
             source = f"{cfg['source_prefix']}/{project}"
-            if _submit_extraction(cfg["base"], cfg["key"], text, source):
-                captured += 1
-                print(f"[watcher] captured {len(text)} chars -> {source}", file=sys.stderr)
+            if not _submit_extraction(cfg["base"], cfg["key"], text, source):
+                continue  # leave the watermark in place — retried next pass
+            captured += 1
+            print(f"[watcher] captured {len(text)} chars -> {source}", file=sys.stderr)
         state[key] = {"mtime": st.st_mtime, "cursor": new_cursor}
     return captured
 

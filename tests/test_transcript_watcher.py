@@ -160,6 +160,26 @@ class TestRunOnce:
         self._write_transcript(cfg, "s.jsonl", [("user", "u1", "x" * 100)], mtime=1950.0)
         assert w.run_once(cfg, {}, now=2000.0) == 0
 
+    def test_failed_submit_does_not_advance_cursor(self, cfg, monkeypatch):
+        """A 429/error on submit must leave the watermark in place so the next
+        pass retries; advancing it silently drops the backlog (seen live when
+        the cold-start sweep flooded the extract queue)."""
+        import scripts.transcript_watcher as w
+        monkeypatch.setattr(w, "_backend_healthy", lambda *a: True)
+        monkeypatch.setattr(w, "_submit_extraction", lambda *a: False)
+        self._write_transcript(cfg, "s.jsonl", [
+            ("user", "u1", "Decision: we will use Qdrant for the vector store because it scales."),
+            ("assistant", "a1", "Got it, recording that decision."),
+        ], mtime=1000.0)
+
+        state = {}
+        assert w.run_once(cfg, state, now=2000.0) == 0
+
+        submitted = []
+        monkeypatch.setattr(w, "_submit_extraction", lambda base, key, text, source: submitted.append(text) or True)
+        assert w.run_once(cfg, state, now=2100.0) == 1
+        assert "Qdrant" in submitted[0]
+
     def test_watermark_prevents_recapture(self, cfg, monkeypatch):
         import scripts.transcript_watcher as w
         monkeypatch.setattr(w, "_backend_healthy", lambda *a: True)
