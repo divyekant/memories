@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.7.1] - 2026-06-12
 
 ### Fixed
 - **Concurrent `save()` calls no longer crash or cross-contaminate** — the atomic metadata/config save (added in 5.6.0) wrote every call to the same fixed temp file (`metadata.json.tmp`), so concurrent savers (extraction worker, API threadpool, maintenance jobs) renamed each other's temp away mid-cycle: the loser crashed with `[Errno 2] No such file or directory` (seen in production as `llm_extract: Failed to execute UPDATE for fact`, silently dropping the extracted update) and the winner could install a half-written file. `save()` now writes to a unique `mkstemp` temp per call (cleaned up on failure); a regression test hammers `save()` from 8 threads (84/120 calls crashed before the fix).
