@@ -21,7 +21,10 @@ Feature availability across the three interfaces: REST API, MCP tools, and CLI c
 | List Memories | GET /memories | memory_list | `list` | Full parity |
 | Count | GET /memories/count | memory_count | `count` | Full parity |
 | Is Novel | POST /memory/is-novel | memory_is_novel | `is-novel` | Full parity |
-| Supersede | POST /memory/supersede | -- | -- | API-only |
+| Supersede (by body) | POST /memory/supersede | -- | -- | API-only |
+| Supersede (by id) | POST /memory/{id}/supersede | memory_update | -- | Full parity; old version archived with supersedes link |
+| Archive Batch | POST /memory/archive-batch | -- | -- | API-only |
+| Merge Memories | POST /memory/merge | -- | -- | API-only (also in webui workbench) |
 
 ## Search
 
@@ -45,7 +48,10 @@ Feature availability across the three interfaces: REST API, MCP tools, and CLI c
 
 | Feature | API | MCP | CLI | Notes |
 |---------|-----|-----|-----|-------|
-| List Conflicts | GET /memory/conflicts | memory_conflicts | `admin conflicts` | Full parity |
+| List Conflicts | GET /memory/conflicts | memory_conflicts | `admin conflicts` | Full parity; paginated (limit/offset) |
+| Resolve Conflicts | POST /memory/conflicts/resolve | -- | -- | API-only; also runs as daily maintenance |
+| Missed Memory | POST /memory/missed | memory_missed | -- | Full parity |
+| Enforce Policies | POST /maintenance/enforce-policies | -- | -- | API-only |
 | Add Link | POST /memory/{id}/link | -- | -- | API-only |
 | Get Links | GET /memory/{id}/links | -- | -- | API-only |
 | Remove Link | DELETE /memory/{id}/link/{target_id} | -- | -- | API-only |
