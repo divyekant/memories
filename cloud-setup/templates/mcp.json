@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "memories": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["__BRIDGE_DIR__/index.js"],
+      "env": {
+        "MEMORIES_URL": "${MEMORIES_URL}",
+        "MEMORIES_API_KEY": "${MEMORIES_API_KEY}"
+      }
+    }
+  }
+}
