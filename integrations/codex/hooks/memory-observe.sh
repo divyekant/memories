@@ -32,6 +32,52 @@ MEMORY_IDS_JSON=$(_memory_ids_for_metrics "$INPUT" 2>/dev/null || echo '[]')
 
 # Append tool usage
 CLIENT=$(_memory_client_prefix 2>/dev/null || echo "codex")
+
+if [ "$TOOL" = "exec" ]; then
+  EXEC_INPUT=$(printf '%s' "$INPUT" | jq -r '
+    (.tool_input // .input // "") as $v |
+    if ($v | type) == "string" then $v
+    elif ($v | type) == "object" then ($v.input // $v.code // "")
+    else ""
+    end
+  ' 2>/dev/null || true)
+  NESTED_TOOLS=$(printf '%s' "$EXEC_INPUT" \
+    | { grep -oE 'tools\.mcp__memories__memory_[A-Za-z0-9_]+' || true; } \
+    | sed 's/^tools\.//' \
+    | sort -u)
+  [ -n "$NESTED_TOOLS" ] || exit 0
+  SOURCE_PREFIXES_JSON=$(printf '%s' "$EXEC_INPUT" \
+    | { grep -oE 'source_prefix[[:space:]]*:[[:space:]]*"[^"]*"' || true; } \
+    | sed -E 's/^[^:]+:[[:space:]]*"([^"]*)"$/\1/' \
+    | sort -u \
+    | jq -Rcs '[splits("\n") | select(length > 0)]' 2>/dev/null || echo '[]')
+  [ -z "$SOURCE_PREFIXES_JSON" ] && SOURCE_PREFIXES_JSON='[]'
+  NESTED_SOURCE_PREFIX=$(printf '%s' "$SOURCE_PREFIXES_JSON" | jq -r 'if length == 1 then .[0] else "" end')
+  if [ "$(printf '%s' "$SOURCE_PREFIXES_JSON" | jq -r 'length')" -eq 1 ]; then
+    NESTED_SOURCE_PREFIX_QUALITY=$(_source_prefix_quality "$NESTED_SOURCE_PREFIX" "$PROJECT")
+  else
+    NESTED_SOURCE_PREFIX_QUALITY="mixed_or_dynamic"
+  fi
+  while IFS= read -r NESTED_TOOL; do
+    [ -n "$NESTED_TOOL" ] || continue
+    echo "$(date -u +%FT%TZ) $NESTED_TOOL [$CLIENT] parent=exec" >> "$USAGE_LOG" 2>/dev/null || true
+    METRICS_EVENT=$(jq -nc \
+      --arg ts "$(date -u +%FT%TZ)" \
+      --arg client "$CLIENT" \
+      --arg session_id "$SESSION_ID" \
+      --arg project "$PROJECT" \
+      --arg tool_name "$NESTED_TOOL" \
+      --arg source_prefix "$NESTED_SOURCE_PREFIX" \
+      --arg source_prefix_quality "$NESTED_SOURCE_PREFIX_QUALITY" \
+      --argjson source_prefixes "$SOURCE_PREFIXES_JSON" \
+      --argjson memory_ids "$MEMORY_IDS_JSON" \
+      '{ts: $ts, event: "tool_call", client: $client, session_id: $session_id, project: $project, tool_name: $tool_name, source_prefix: $source_prefix, source_prefixes: $source_prefixes, source_prefix_quality: $source_prefix_quality, memory_ids: $memory_ids, parent_tool: "exec", observed_via: "nested_exec"}')
+    _active_search_metrics_log "$METRICS_EVENT"
+  done <<< "$NESTED_TOOLS"
+  _log_info "Nested memory tools observed in exec"
+  exit 0
+fi
+
 echo "$(date -u +%FT%TZ) $TOOL [$CLIENT]" >> "$USAGE_LOG" 2>/dev/null || true
 
 METRICS_EVENT=$(jq -nc \

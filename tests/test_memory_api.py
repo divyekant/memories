@@ -81,6 +81,34 @@ def test_get_memory_by_id(client):
     mock_engine.get_memory.assert_called_once_with(1)
 
 
+def test_get_memory_by_id_logs_attributed_usage(client):
+    test_client, _ = client
+    import app as app_module
+
+    tracker = MagicMock()
+    app_module.usage_tracker = tracker
+
+    response = test_client.get(
+        "/memory/1",
+        headers={
+            "X-API-Key": "test-key",
+            "X-Memories-Client": "codex",
+            "X-Memories-Session-Id": "session-get",
+            "X-Memories-Invocation": "mcp",
+        },
+    )
+
+    assert response.status_code == 200
+    tracker.log_api_event.assert_called_once_with(
+        "get",
+        "",
+        1,
+        client="codex",
+        session_id="session-get",
+        invocation="mcp",
+    )
+
+
 def test_get_memory_batch(client):
     test_client, mock_engine = client
     response = test_client.post(

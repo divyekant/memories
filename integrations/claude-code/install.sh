@@ -224,6 +224,47 @@ toml_escape() {
   printf '%s' "$value"
 }
 
+ensure_toml_string_key() {
+  local file="$1"
+  local section="$2"
+  local key="$3"
+  local value="$4"
+  awk -v section="$section" -v key="$key" -v value="$value" '
+    function emit_key() {
+      if (in_section && !key_written) {
+        print key " = \"" value "\""
+        key_written = 1
+      }
+    }
+    $0 == "[" section "]" {
+      section_found = 1
+      in_section = 1
+      print
+      next
+    }
+    in_section && /^\[[^]]+\][[:space:]]*$/ {
+      emit_key()
+      in_section = 0
+    }
+    {
+      if (in_section && $0 ~ "^[[:space:]]*" key "[[:space:]]*=") {
+        key_written = 1
+      }
+      print
+    }
+    END {
+      if (in_section) {
+        emit_key()
+      } else if (!section_found) {
+        print ""
+        print "[" section "]"
+        print key " = \"" value "\""
+      }
+    }
+  ' "$file" > "$file.tmp"
+  mv "$file.tmp" "$file"
+}
+
 remove_target() {
   local label="$1"
   local path="$2"
@@ -611,7 +652,7 @@ install_codex_target() {
       ($new.hooks // {}) as $nh |
       $existing * {hooks: (
         ($eh | keys) + ($nh | keys) | unique | map(. as $k |
-          {($k): (($eh[$k] // []) + ($nh[$k] // []) | unique_by(.hooks[0].command))}
+          {($k): (($nh[$k] // []) + ($eh[$k] // []) | unique_by(.hooks[0].command))}
         ) | add // {}
       )}
     ' "$codex_hooks_json" <(echo "$rendered_hooks"))
@@ -653,11 +694,13 @@ args = ["$escaped_repo_mcp"]
 [mcp_servers.memories.env]
 MEMORIES_URL = "$escaped_memories_url"
 MEMORIES_API_KEY = "$escaped_memories_api_key"
+MEMORIES_CLIENT = "codex"
 EOF
 )
     append_marked_block "$codex_config" "$CODEX_MCP_MARKER" "$mcp_block"
     echo -e "  ${GREEN}[OK]${NC} Added Codex MCP config in $codex_config"
   fi
+  ensure_toml_string_key "$codex_config" "mcp_servers.memories.env" "MEMORIES_CLIENT" "codex"
 
   # Developer instructions
   if grep -Eq '^[[:space:]]*developer_instructions[[:space:]]*=' "$codex_config"; then
@@ -849,10 +892,13 @@ echo -e "Installed targets: ${BLUE}$TARGETS_CSV${NC}"
 echo -e "Hook env file:     ${BLUE}$MEMORIES_ENV_FILE${NC}"
 [ -n "$EXTRACT_PROVIDER" ] && echo -e "Docker env file:   ${BLUE}$REPO_ROOT/.env${NC}"
 
-# Print hook summary from hooks.json
-if [ "$hooks_target_count" -gt 0 ] && [ -f "$HOOKS_SRC/hooks.json" ]; then
+# Print hook summaries from each selected client's actual hook config.
+print_hook_summary() {
+  local label="$1"
+  local hooks_file="$2"
+  [ -f "$hooks_file" ] || return 0
   echo ""
-  echo -e "${BLUE}Installed hooks:${NC}"
+  echo -e "${BLUE}Installed $label hooks:${NC}"
   jq -r '
     .hooks | to_entries[] |
     .key as $event |
@@ -861,7 +907,14 @@ if [ "$hooks_target_count" -gt 0 ] && [ -f "$HOOKS_SRC/hooks.json" ]; then
     .hooks[] |
     $event + " -> " + (.command | split("/") | last)
       + (if $matcher != "" then " (matcher: " + $matcher + ")" else "" end)
-  ' "$HOOKS_SRC/hooks.json" 2>/dev/null | while read -r line; do
+  ' "$hooks_file" 2>/dev/null | while read -r line; do
     echo -e "  ${GREEN}*${NC} $line"
   done
+}
+
+if [ "$TARGET_CLAUDE" = true ] || [ "$TARGET_CURSOR" = true ]; then
+  print_hook_summary "Claude Code/Cursor" "$HOOKS_SRC/hooks.json"
+fi
+if [ "$TARGET_CODEX" = true ]; then
+  print_hook_summary "Codex" "$CODEX_HOOKS_SRC/hooks.json"
 fi

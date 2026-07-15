@@ -40,6 +40,11 @@ MEMORIES_QUERY_FALLBACK_THRESHOLD="${MEMORIES_QUERY_FALLBACK_THRESHOLD:-0.55}"
 INPUT=$(cat)
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // .workspaceRoots[0] // empty')
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
+MEMORIES_USAGE_CLIENT=$(_memory_client_prefix 2>/dev/null || echo "codex")
+MEMORIES_USAGE_SESSION_ID="$SESSION_ID"
+MEMORIES_USAGE_INVOCATION="$MEMORIES_HOOK_NAME"
+MEMORIES_USAGE_SOURCE="hook:$MEMORIES_USAGE_CLIENT:$MEMORIES_HOOK_NAME"
 PROJECT=$(_memories_resolve_project "${CWD:-}" 2>/dev/null || basename "${CWD:-}")
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   PROJECT=""
@@ -89,25 +94,31 @@ extract_recent_context() {
   fi
 
   # Flexible transcript parsing: supports Claude Code (.type + .message.content),
-  # Codex JSONL (.message.role + .content), and other layouts.
+  # legacy Codex JSONL (.message.role + .content), and current Codex rollout
+  # response items (.payload.role + .payload.content).
   tail -200 "$transcript_path" 2>/dev/null | jq -sr '
     [
       .[]
       | select(
-          ((.type // .message.role // "") | tostring) as $r |
+          ((.payload.role // .message.role // .role // .type // "") | tostring) as $r |
           ($r == "user" or $r == "assistant")
         )
       | {
-          role: ((.type // .message.role // "") | tostring),
+          role: ((.payload.role // .message.role // .role // .type // "") | tostring),
           text: (
-            if (.message.content // null) != null then
+            if (.payload.content // null) != null then
+              if (.payload.content | type) == "string" then .payload.content
+              elif (.payload.content | type) == "array" then [.payload.content[] | .text? // empty] | join(" ")
+              else ""
+              end
+            elif (.message.content // null) != null then
               if (.message.content | type) == "string" then .message.content
-              elif (.message.content | type) == "array" then [.message.content[] | select(.type == "text") | .text] | join(" ")
+              elif (.message.content | type) == "array" then [.message.content[] | .text? // empty] | join(" ")
               else ""
               end
             elif (.content // null) != null then
               if (.content | type) == "string" then .content
-              elif (.content | type) == "array" then [.content[] | select(.type == "text") | .text] | join(" ")
+              elif (.content | type) == "array" then [.content[] | .text? // empty] | join(" ")
               else ""
               end
             elif ((.text // null) | type) == "string" then .text
@@ -200,10 +211,6 @@ fi
 if [ -z "$ENRICHED_QUERY" ] && [ -z "$QUERY_TEXT" ]; then
   exit 0
 fi
-if [ ${#PROMPT} -lt 20 ] && [ -z "$CONTEXT" ]; then
-  exit 0
-fi
-
 # --- Dual search strategy ---
 RAW_RESPONSES=""
 SEARCH_TMPDIR=$(mktemp -d 2>/dev/null || mktemp -d -t memories-query)
@@ -264,6 +271,7 @@ RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr '
 
 # Fallback if dual strategy returns empty
 if [ "$RESULTS_JSON" = "[]" ]; then
+  SEARCH_INDEX=$((SEARCH_INDEX + 1))
   FALLBACK_RESPONSE=$(search_memories "$QUERY_TEXT" "" "$MEMORIES_QUERY_FALLBACK_K" "$MEMORIES_QUERY_FALLBACK_THRESHOLD")
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
 fi
@@ -286,15 +294,14 @@ else
   ' 2>/dev/null) || true
 fi
 
-# Telemetry: log every prompt whose candidates were surfaced (plus every
-# active-search-required prompt, even with zero candidates). candidate_ids
-# feed the recall-feedback loop (scripts/apply_memory_feedback.py) — they go
-# to the local metrics log only, never into model context.
+# Telemetry: log every non-empty Codex prompt, including zero-candidate and
+# short follow-up prompts. candidate_ids feed the recall-feedback loop
+# (scripts/apply_memory_feedback.py) — they go to the local metrics log only,
+# never into model context.
 CANDIDATE_COUNT=$(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0)
 HOOK_RESULTS_INJECTED=0
 [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ] && HOOK_RESULTS_INJECTED=1
-if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ] || [ "$HOOK_RESULTS_INJECTED" = "1" ]; then
-  SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
+if [ -n "$PROMPT" ]; then
   CLIENT=$(_memory_client_prefix 2>/dev/null || echo "codex")
   PROMPT_HASH=$(_hash_for_metrics "$PROMPT" 2>/dev/null || echo "")
   SOURCE_PREFIXES_JSON=$(printf '%s' "$RESULTS_JSON" | jq -c '[.[].source // empty | select(. != "")] | unique' 2>/dev/null || echo '[]')
@@ -309,10 +316,11 @@ if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ] || [ "$HOOK_RESULTS_INJECTED" = "1" ]; th
     --arg prompt_hash "$PROMPT_HASH" \
     --argjson active_search_required "$ACTIVE_SEARCH_BOOL" \
     --argjson candidate_count "$CANDIDATE_COUNT" \
+    --argjson search_count "$SEARCH_INDEX" \
     --argjson hook_results_injected "$HOOK_RESULTS_INJECTED" \
     --argjson source_prefixes "$SOURCE_PREFIXES_JSON" \
     --argjson candidate_ids "$CANDIDATE_IDS_JSON" \
-    '{ts: $ts, event: "prompt_evaluated", client: $client, session_id: $session_id, project: $project, prompt_hash: $prompt_hash, active_search_required: $active_search_required, candidate_count: $candidate_count, hook_results_injected: ($hook_results_injected == 1), source_prefixes: $source_prefixes, candidate_ids: $candidate_ids}')
+    '{ts: $ts, event: "prompt_evaluated", client: $client, session_id: $session_id, project: $project, prompt_hash: $prompt_hash, active_search_required: $active_search_required, candidate_count: $candidate_count, search_count: $search_count, hook_results_injected: ($hook_results_injected == 1), source_prefixes: $source_prefixes, candidate_ids: $candidate_ids}')
   _active_search_metrics_log "$METRICS_EVENT" 2>/dev/null || true
 fi
 

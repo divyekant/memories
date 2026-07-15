@@ -33,7 +33,16 @@ PERIOD_SQL = {
 class NullTracker:
     """No-op tracker when usage tracking is disabled."""
 
-    def log_api_event(self, operation: str, source: str = "", count: int = 1) -> None:
+    def log_api_event(
+        self,
+        operation: str,
+        source: str = "",
+        count: int = 1,
+        *,
+        client: str = "",
+        session_id: str = "",
+        invocation: str = "",
+    ) -> None:
         pass
 
     def log_extraction_tokens(
@@ -99,7 +108,7 @@ class NullTracker:
     def get_failures(self, failure_type: str = "retrieval", limit: int = 10) -> Dict[str, Any]:
         return {"enabled": False}
 
-    def get_usage(self, period: str = "7d") -> Dict[str, Any]:
+    def get_usage(self, period: str = "7d", session_id: str = "") -> Dict[str, Any]:
         return {"enabled": False}
 
     def get_problem_queries(self, min_feedback: int = 2, min_negative_ratio: float = 0.5,
@@ -125,6 +134,9 @@ class UsageTracker:
                 ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
                 operation TEXT NOT NULL,
                 source TEXT DEFAULT '',
+                client TEXT DEFAULT '',
+                session_id TEXT DEFAULT '',
+                invocation TEXT DEFAULT '',
                 count INTEGER DEFAULT 1
             );
             CREATE TABLE IF NOT EXISTS extraction_tokens (
@@ -194,6 +206,15 @@ class UsageTracker:
             );
             CREATE INDEX IF NOT EXISTS idx_temporal_search_ts ON temporal_search_events(ts);
         """)
+        # Migrate API usage attribution for databases created before v5.7.2.
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(api_events)").fetchall()}
+            for name in ("client", "session_id", "invocation"):
+                if name not in cols:
+                    conn.execute(f"ALTER TABLE api_events ADD COLUMN {name} TEXT DEFAULT ''")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_api_events_session ON api_events(session_id)")
+        except Exception:
+            logger.debug("Failed to migrate API event attribution", exc_info=True)
         # Migrate existing DBs: add rank/result_count columns if missing
         try:
             cols = {row[1] for row in conn.execute("PRAGMA table_info(retrieval_log)").fetchall()}
@@ -234,12 +255,29 @@ class UsageTracker:
             self._local.conn = self._connect()
         return self._local.conn
 
-    def log_api_event(self, operation: str, source: str = "", count: int = 1) -> None:
+    def log_api_event(
+        self,
+        operation: str,
+        source: str = "",
+        count: int = 1,
+        *,
+        client: str = "",
+        session_id: str = "",
+        invocation: str = "",
+    ) -> None:
         try:
             conn = self._get_conn()
             conn.execute(
-                "INSERT INTO api_events (operation, source, count) VALUES (?, ?, ?)",
-                (operation, source, count),
+                "INSERT INTO api_events (operation, source, client, session_id, invocation, count) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    operation,
+                    source[:500],
+                    client[:100],
+                    session_id[:200],
+                    invocation[:100],
+                    count,
+                ),
             )
             conn.commit()
         except Exception:
@@ -599,23 +637,40 @@ class UsageTracker:
         finally:
             conn.close()
 
-    def get_usage(self, period: str = "7d") -> Dict[str, Any]:
+    def get_usage(self, period: str = "7d", session_id: str = "") -> Dict[str, Any]:
         period_filter = PERIOD_SQL.get(period, PERIOD_SQL["7d"])
+        session_filter = " AND session_id = ?" if session_id else ""
+        params = [session_id] if session_id else []
         conn = self._connect()
         conn.row_factory = sqlite3.Row
         try:
-            # Operations by source
+            # Operations by source and request attribution.
             rows = conn.execute(
-                f"SELECT operation, source, SUM(count) as total FROM api_events WHERE 1=1 {period_filter} GROUP BY operation, source"
+                f"SELECT operation, source, client, session_id, invocation, SUM(count) as total "
+                f"FROM api_events WHERE 1=1 {period_filter}{session_filter} "
+                "GROUP BY operation, source, client, session_id, invocation",
+                params,
             ).fetchall()
             operations: Dict[str, Any] = {}
             for row in rows:
                 op = row["operation"]
                 if op not in operations:
-                    operations[op] = {"total": 0, "by_source": {}}
+                    operations[op] = {
+                        "total": 0,
+                        "by_source": {},
+                        "by_client": {},
+                        "by_session": {},
+                        "by_invocation": {},
+                    }
                 operations[op]["total"] += row["total"]
                 src = row["source"] or "(unknown)"
+                client = row["client"] or "(unknown)"
+                event_session = row["session_id"] or "(unknown)"
+                invocation = row["invocation"] or "(unknown)"
                 operations[op]["by_source"][src] = operations[op]["by_source"].get(src, 0) + row["total"]
+                operations[op]["by_client"][client] = operations[op]["by_client"].get(client, 0) + row["total"]
+                operations[op]["by_session"][event_session] = operations[op]["by_session"].get(event_session, 0) + row["total"]
+                operations[op]["by_invocation"][invocation] = operations[op]["by_invocation"].get(invocation, 0) + row["total"]
 
             # Extraction tokens
             rows = conn.execute(
@@ -650,6 +705,7 @@ class UsageTracker:
             return {
                 "enabled": True,
                 "period": period,
+                "session_id": session_id or None,
                 "operations": operations,
                 "extraction": {
                     "total_calls": total_calls,

@@ -4,8 +4,11 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **OpenCode**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v5.4.0):**
+**Key capabilities (v5.7.2):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
+- **Write doctrine** — corrections supersede instead of being dropped: a colliding write replaces the similar memory and archives the old version with a supersedes link (`on_duplicate: supersede|skip|add`); agents update facts via `memory_update`
+- **Secret redaction** — credential-shaped content (API keys, JWTs, tokens, URL credentials) is redacted before any extraction LLM call or storage, with a context guard that spares placeholders and localhost DSNs
+- **Resilient capture** — hook circuit breaker (instant skip while the backend is down), extract-queue backpressure (429 + Retry-After), crash-safe atomic persistence
 - **Graph-aware retrieval** — automatic `related_to` links between memories, PPR-scored multi-hop traversal, +20% retrieval lift on 2-hop benchmarks
 - **Temporal reasoning** — `document_at` timestamps, version preservation on UPDATE (archive + supersedes link), `since`/`until` date-range filters
 - **Automatic extraction** — LLM-powered AUDN (Add/Update/Delete/Noop) with dry-run, per-fact approval, and auto-linking
@@ -26,9 +29,9 @@ Start here:
 
 ```bash
 # 1. Clone and build
-git clone git@github.com:divyekant/memories.git
+git clone https://github.com/divyekant/memories.git
 cd memories
-docker compose -f docker-compose.snippet.yml up -d
+docker compose up -d
 
 # 2. Verify
 curl http://localhost:8900/health
@@ -198,7 +201,7 @@ Detailed docs:
 
 ### Claude Code (CLI)
 
-The MCP server gives Claude Code native `memory_search`, `memory_add`, `memory_extract`, `memory_delete`, `memory_delete_batch`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, `memory_is_useful`, and `memory_conflicts` tools.
+The MCP server gives Claude Code native `memory_search`, `memory_get`, `memory_add`, `memory_update`, `memory_extract`, `memory_timeline`, `memory_evidence`, `memory_delete`, `memory_delete_batch`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, `memory_is_useful`, `memory_conflicts`, `memory_missed`, and `memory_deferred` tools.
 
 **Setup:**
 
@@ -339,6 +342,7 @@ args = ["/path/to/memories/mcp-server/index.js"]
 [mcp_servers.memories.env]
 MEMORIES_URL = "http://localhost:8900"
 MEMORIES_API_KEY = "your-api-key-here"
+MEMORIES_CLIENT = "codex"
 ```
 
 If your API key is prefix-scoped and does not allow `codex/*`, set hook source overrides in `~/.config/memories/env`:
@@ -756,8 +760,6 @@ Memories supports **multiple API keys** with role-based access control:
 - **Key management**: create, list, update, and revoke keys via `POST/GET/PATCH/DELETE /api/keys` or the Web UI (admin-only)
 - **Backward compatible**: the existing `API_KEY` env var still works as an implicit admin key
 
-See the [multi-auth design doc](docs/plans/2026-03-05-multi-auth-design.md) for details.
-
 ---
 
 ## API Reference
@@ -783,8 +785,19 @@ POST /search/batch
 
 ```
 POST /memory/add
-{"text": "...", "source": "file.md", "deduplicate": true}
+{"text": "...", "source": "file.md", "on_duplicate": "supersede"}
 ```
+
+`on_duplicate` controls the write doctrine when the text collides with a similar existing memory: `supersede` (replace it; the old version is archived with a supersedes link), `skip` (keep the existing memory; the response reports `blocked_by`), or `add` (store unconditionally). The legacy `deduplicate` flag still works but is superseded by `on_duplicate`.
+
+### Update / Supersede
+
+```
+POST /memory/{id}/supersede
+{"text": "corrected fact", "source": "file.md"}
+```
+
+Replaces memory `{id}` with the new text; the old version is archived (recoverable, visible in timelines) with a supersedes link. This is what the `memory_update` MCP tool calls. Pinned memories refuse with 409 until unpinned.
 
 ### Add Batch
 
@@ -952,9 +965,15 @@ When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools
 | `memory_count` | Count memories, optionally filtered by source prefix. |
 | `memory_list` | Browse with pagination and source prefix filter. |
 | `memory_stats` | Index stats (count, model, last updated). |
+| `memory_get` | Fetch one memory by ID (full text + metadata after a compact search). |
+| `memory_update` | Update/correct a memory by ID; the old version is archived with a supersedes link. |
+| `memory_timeline` | Date-ordered view of matching memories for temporal questions. |
+| `memory_evidence` | Evidence packet for a query: current answer, supporting/conflicting memories, confidence. |
 | `memory_is_novel` | Check if text is already known. |
 | `memory_is_useful` | Submit search feedback (positive/negative). |
-| `memory_conflicts` | List memories with unresolved conflicts. |
+| `memory_conflicts` | List memories with unresolved conflicts (paginated). |
+| `memory_missed` | Report a memory that should have been recalled but wasn't. |
+| `memory_deferred` | List deferred/incomplete work captured in memories. |
 
 ---
 
@@ -1052,11 +1071,14 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 | Session start | `hooks.json` -> `memory-recall.sh` | Loads project-scoped memories and recall guidance for the session |
 | Every prompt | `hooks.json` -> `memory-query.sh` | Retrieves relevant memories using transcript context for short follow-ups |
 | After response | `hooks.json` -> `memory-extract.sh` | Extracts facts via AUDN with beefier Stop sampling to compensate for missing compaction/session-end hooks |
-| Memory MCP tool calls | `hooks.json` -> `memory-observe.sh` (`PostToolUse` matcher `mcp__memories__`) | Logs memory MCP tool calls for observability |
+| Memory MCP tool calls | `hooks.json` -> `memory-observe.sh` (`PostToolUse` matcher `mcp__memories__|exec`) | Logs direct memory MCP calls and memory calls nested inside Codex `exec` envelopes |
 | File writes | `hooks.json` -> `memory-guard.sh` (`PreToolUse` matcher `Write|Edit`) | Blocks direct `MEMORY.md` edits |
 | On new turns | MCP tools + developer instructions | Encourages focused `memory_search` before implementation-heavy or prior-context responses |
 
 Codex uses `~/.codex/hooks.json` for these hooks, `~/.codex/settings.json` for permissions, and `~/.codex/config.toml` for MCP + developer instructions. Its `Stop` hook is intentionally beefier because Codex does not expose `PreCompact` or `SessionEnd`.
+Codex hook searches send client, session, and hook-invocation attribution to
+the usage tracker. The dashboard can filter usage by session id and retains
+unknown-source operations instead of silently dropping them.
 
 ### OpenCode Lifecycle
 
@@ -1254,7 +1276,7 @@ Observability:
 - `/metrics` includes `embedder_reload.auto` and `embedder_reload.manual` counters/state
 - manual reload endpoint: `POST /maintenance/embedder/reload`
 
-Reference benchmark: `docs/benchmarks/2026-02-17-memory-reclamation.md`
+Reference benchmark: `docs/archive/benchmarks/2026-02-17-memory-reclamation.md`
 
 ### Uninstall
 
@@ -1533,8 +1555,6 @@ The eval defaults target `http://localhost:8901`, which is the isolated instance
 - Scenario memories cleared before each run via Memories API
 
 Results are saved as JSON in `eval/results/` and printed as a human-readable summary.
-
-See the [design doc](docs/plans/2026-03-03-efficacy-design.md) for full details.
 
 ---
 

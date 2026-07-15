@@ -301,6 +301,23 @@ def _audit(request: Request, action: str, resource_id: str = "", source: str = "
     )
 
 
+def _log_usage_event(
+    request: Request,
+    operation: str,
+    source: str = "",
+    count: int = 1,
+) -> None:
+    """Record an API operation with caller/session attribution when supplied."""
+    usage_tracker.log_api_event(
+        operation,
+        source,
+        count,
+        client=request.headers.get("X-Memories-Client", "")[:100],
+        session_id=request.headers.get("X-Memories-Session-Id", "")[:200],
+        invocation=request.headers.get("X-Memories-Invocation", "")[:100],
+    )
+
+
 def _require_write(auth: AuthContext, source: str) -> None:
     if not auth.can_write(source):
         raise HTTPException(status_code=403, detail=f"Key does not have write access to source: {source}")
@@ -1156,7 +1173,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Memories API",
-    version="5.7.1",
+    version="5.7.2",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
 )
@@ -1474,7 +1491,7 @@ async def health(request: Request):
 
     Unauthenticated callers get minimal response; authenticated callers get full stats.
     """
-    base = {"status": "ok", "service": "memories", "version": "5.7.1"}
+    base = {"status": "ok", "service": "memories", "version": "5.7.2"}
     # Only include detailed stats for authenticated callers
     if not API_KEY or hmac.compare_digest(
         request.headers.get("X-API-Key", "").encode(), API_KEY.encode()
@@ -1604,11 +1621,12 @@ async def metrics(request: Request):
 async def usage(
     request: Request,
     period: str = Query("7d", pattern="^(today|7d|30d|all)$"),
+    session_id: str = Query("", max_length=200),
 ):
     """Persistent usage analytics (opt-in via USAGE_TRACKING=true)."""
     auth = _get_auth(request)
     _require_admin(auth)
-    return usage_tracker.get_usage(period)
+    return usage_tracker.get_usage(period, session_id=session_id)
 
 
 class SearchFeedbackRequest(BaseModel):
@@ -2046,7 +2064,7 @@ async def search(request_body: SearchRequest, request: Request):
             )
         results = annotate_relative_scores(auth.filter_results(results))
         result_count = len(results)
-        usage_tracker.log_api_event("search", request_body.source)
+        _log_usage_event(request, "search", request_body.source)
         for rank, r in enumerate(results, 1):
             if "id" in r:
                 usage_tracker.log_retrieval(
@@ -2187,7 +2205,7 @@ async def search_evidence(request_body: SearchRequest, request: Request):
         from evidence_packet import build_evidence_packet
 
         packet = build_evidence_packet(request_body.query, results)
-        usage_tracker.log_api_event("search_evidence", request_body.source)
+        _log_usage_event(request, "search_evidence", request_body.source)
         return {
             "query": request_body.query,
             "results": results,
@@ -2240,7 +2258,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                         rank=rank,
                         result_count=batch_result_count,
                     )
-            usage_tracker.log_api_event("search", item.source)
+            _log_usage_event(request, "search", item.source)
             outputs.append({"query": item.query, "results": results, "count": batch_result_count})
         return {"results": outputs, "count": len(outputs)}
     except Exception as e:
@@ -2267,7 +2285,7 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
                 metadata=request_body.metadata,
                 on_duplicate=request_body.on_duplicate,
             )
-            usage_tracker.log_api_event("add", request_body.source)
+            _log_usage_event(request, "add", request_body.source)
             audit_action = {
                 "added": "memory.created",
                 "superseded": "memory.superseded",
@@ -2282,7 +2300,7 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
             metadata_list=[request_body.metadata] if request_body.metadata else None,
             deduplicate=request_body.deduplicate,
         )
-        usage_tracker.log_api_event("add", request_body.source)
+        _log_usage_event(request, "add", request_body.source)
         result_id = ids[0] if ids else None
         response = {
             "success": True,
@@ -2328,7 +2346,7 @@ async def add_batch(request_body: AddBatchRequest, request: Request):
             metadata_list=metadata_list,
             deduplicate=request_body.deduplicate,
         )
-        usage_tracker.log_api_event("add", count=len(request_body.memories))
+        _log_usage_event(request, "add", count=len(request_body.memories))
         return {
             "success": True,
             "ids": ids,
@@ -2369,7 +2387,7 @@ async def supersede_memory_by_id(memory_id: int, request_body: SupersedeByIdRequ
             source=request_body.source or "",
             metadata=request_body.metadata,
         )
-        usage_tracker.log_api_event("supersede", existing.get("source", ""))
+        _log_usage_event(request, "supersede", existing.get("source", ""))
         _audit(request, "memory.superseded", resource_id=str(result.get("new_id") or ""), source=existing.get("source", ""))
         return {"success": True, **result}
     except ValueError as e:
@@ -2457,7 +2475,7 @@ async def delete_memory(memory_id: int, request: Request, force: bool = False):
             _require_write(auth, existing.get("source", ""))
         delete_source = existing.get("source", "")
         result = memory.delete_memory(memory_id, force=force)
-        usage_tracker.log_api_event("delete")
+        _log_usage_event(request, "delete", delete_source)
         _audit(request, "memory.deleted", resource_id=str(memory_id), source=delete_source)
         return {"success": True, **result}
     except HTTPException:
@@ -2479,6 +2497,7 @@ async def get_memory(memory_id: int, request: Request):
         result = memory.get_memory(memory_id)
         if not auth.can_read(result.get("source", "")):
             raise HTTPException(status_code=403, detail="Access denied to this memory's source")
+        _log_usage_event(request, "get")
         return result
     except HTTPException:
         raise
@@ -2496,6 +2515,7 @@ async def get_memory_batch(request_body: MemoryGetBatchRequest, request: Request
     try:
         result = memory.get_memories(request_body.ids)
         result["memories"] = auth.filter_results(result.get("memories", []))
+        _log_usage_event(request, "get_batch", count=len(result["memories"]))
         return {**result, "count": len(result["memories"])}
     except Exception as e:
         logger.exception("Get batch failed")
@@ -2563,7 +2583,7 @@ async def delete_memories_by_prefix(
     logger.info("Bulk delete by source prefix: %s", source)
     try:
         result = memory.delete_by_prefix(source)
-        usage_tracker.log_api_event("delete", count=result["deleted_count"])
+        _log_usage_event(request, "delete", source, count=result["deleted_count"])
         return {"count": result["deleted_count"]}
     except Exception as e:
         logger.exception("Bulk delete by prefix failed")
@@ -2584,7 +2604,7 @@ async def delete_batch(request_body: DeleteBatchRequest, request: Request):
     logger.info("Delete batch: count=%d", len(request_body.ids))
     try:
         result = memory.delete_memories(request_body.ids)
-        usage_tracker.log_api_event("delete", count=len(request_body.ids))
+        _log_usage_event(request, "delete", count=len(request_body.ids))
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete batch failed")
@@ -2759,7 +2779,7 @@ async def is_novel(request_body: IsNovelRequest, request: Request):
         is_new, similar = memory.is_novel(
             text=request_body.text, threshold=request_body.threshold
         )
-        usage_tracker.log_api_event("is_novel")
+        _log_usage_event(request, "is_novel")
         return {
             "is_novel": is_new,
             "threshold": request_body.threshold,
@@ -3297,7 +3317,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
         }
 
     _ensure_extract_workers_started()
-    usage_tracker.log_api_event("extract", request_body.source)
+    _log_usage_event(request, "extract", request_body.source)
     _audit(request, "extract", source=request_body.source)
     effective_source = request_body.source or "extract/unknown"
     profile = extraction_profiles.resolve(effective_source)

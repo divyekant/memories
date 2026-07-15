@@ -315,7 +315,7 @@ chmod +x ~/.codex/hooks/memory/*.sh
       }]
     }],
     "PostToolUse": [{
-      "matcher": "mcp__memories__",
+      "matcher": "mcp__memories__|exec",
       "hooks": [{
         "type": "command",
         "command": "/Users/you/.codex/hooks/memory/memory-observe.sh",
@@ -346,6 +346,7 @@ args = ["/path/to/memories/mcp-server/index.js"]
 [mcp_servers.memories.env]
 MEMORIES_URL = "http://localhost:8900"
 MEMORIES_API_KEY = "your-api-key-here"
+MEMORIES_CLIENT = "codex"
 ```
 
 **Step 4: Optional source overrides for scoped keys**
