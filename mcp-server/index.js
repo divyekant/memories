@@ -79,6 +79,12 @@ async function backendFetch(b, reqPath, options = {}) {
   const url = `${b.url}${reqPath}`;
   const headers = { "Content-Type": "application/json" };
   if (b.apiKey) headers["X-API-Key"] = b.apiKey;
+  const client = process.env.MEMORIES_CLIENT || (process.env.CODEX_THREAD_ID ? "codex" : "mcp");
+  const sessionId = process.env.MEMORIES_SESSION_ID || process.env.CODEX_THREAD_ID || "";
+  const invocation = process.env.MEMORIES_INVOCATION || "mcp";
+  headers["X-Memories-Client"] = client;
+  headers["X-Memories-Invocation"] = invocation;
+  if (sessionId) headers["X-Memories-Session-Id"] = sessionId;
   // redirect:"manual" — following a 301/302 re-issues POST as GET (fetch spec),
   // which the POST-only backend rejects with an opaque 405. Fail loudly instead.
   const response = await fetch(url, { ...options, headers: { ...headers, ...options.headers }, redirect: "manual" });
@@ -155,7 +161,7 @@ async function memoriesRequest(reqPath, options = {}, op = "search") {
 
 const server = new McpServer({
   name: "memories",
-  version: "5.7.1",
+  version: "5.7.2",
 });
 
 // -- Tools -------------------------------------------------------------------

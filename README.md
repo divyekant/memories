@@ -4,7 +4,7 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **OpenCode**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v5.7.1):**
+**Key capabilities (v5.7.2):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
 - **Write doctrine** — corrections supersede instead of being dropped: a colliding write replaces the similar memory and archives the old version with a supersedes link (`on_duplicate: supersede|skip|add`); agents update facts via `memory_update`
 - **Secret redaction** — credential-shaped content (API keys, JWTs, tokens, URL credentials) is redacted before any extraction LLM call or storage, with a context guard that spares placeholders and localhost DSNs
@@ -342,6 +342,7 @@ args = ["/path/to/memories/mcp-server/index.js"]
 [mcp_servers.memories.env]
 MEMORIES_URL = "http://localhost:8900"
 MEMORIES_API_KEY = "your-api-key-here"
+MEMORIES_CLIENT = "codex"
 ```
 
 If your API key is prefix-scoped and does not allow `codex/*`, set hook source overrides in `~/.config/memories/env`:
@@ -1070,11 +1071,14 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 | Session start | `hooks.json` -> `memory-recall.sh` | Loads project-scoped memories and recall guidance for the session |
 | Every prompt | `hooks.json` -> `memory-query.sh` | Retrieves relevant memories using transcript context for short follow-ups |
 | After response | `hooks.json` -> `memory-extract.sh` | Extracts facts via AUDN with beefier Stop sampling to compensate for missing compaction/session-end hooks |
-| Memory MCP tool calls | `hooks.json` -> `memory-observe.sh` (`PostToolUse` matcher `mcp__memories__`) | Logs memory MCP tool calls for observability |
+| Memory MCP tool calls | `hooks.json` -> `memory-observe.sh` (`PostToolUse` matcher `mcp__memories__|exec`) | Logs direct memory MCP calls and memory calls nested inside Codex `exec` envelopes |
 | File writes | `hooks.json` -> `memory-guard.sh` (`PreToolUse` matcher `Write|Edit`) | Blocks direct `MEMORY.md` edits |
 | On new turns | MCP tools + developer instructions | Encourages focused `memory_search` before implementation-heavy or prior-context responses |
 
 Codex uses `~/.codex/hooks.json` for these hooks, `~/.codex/settings.json` for permissions, and `~/.codex/config.toml` for MCP + developer instructions. Its `Stop` hook is intentionally beefier because Codex does not expose `PreCompact` or `SessionEnd`.
+Codex hook searches send client, session, and hook-invocation attribution to
+the usage tracker. The dashboard can filter usage by session id and retains
+unknown-source operations instead of silently dropping them.
 
 ### OpenCode Lifecycle
 

@@ -221,6 +221,105 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
         f"Expected transcript identifier in query, queries were: {[c['body']['query'][:80] for c in search_calls]}"
 
 
+def test_codex_memory_query_reads_current_rollout_payload_for_short_followups(tmp_path: Path) -> None:
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "Resume the BillingTelemetry rollout."}],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "The next step is session attribution."}],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 41,
+                        "source": "codex/memories",
+                        "text": "BillingTelemetry requires session-level attribution.",
+                        "similarity": 0.91,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+    metrics_log = tmp_path / "active-search.jsonl"
+    payload = {
+        "session_id": "codex-short-context",
+        "cwd": "/Users/example/memories",
+        "prompt": "Continue",
+        "transcript_path": str(transcript),
+    }
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-query.sh",
+        tmp_path,
+        payload,
+        responses,
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "BillingTelemetry requires session-level attribution." in ctx
+    assert any("BillingTelemetry" in call["body"]["query"] for call in calls)
+    event = json.loads(metrics_log.read_text(encoding="utf-8").splitlines()[0])
+    assert event["event"] == "prompt_evaluated"
+    assert event["search_count"] == 5
+
+
+def test_codex_memory_query_does_not_silently_skip_short_prompt_without_context(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    payload = {
+        "session_id": "codex-short-no-context",
+        "cwd": "/Users/example/memories",
+        "prompt": "Continue",
+    }
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-query.sh",
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert len([call for call in calls if call["url"].endswith("/search")]) == 6
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "MANDATORY FIRST ACTION" in ctx
+    event = json.loads(metrics_log.read_text(encoding="utf-8").splitlines()[0])
+    assert event["event"] == "prompt_evaluated"
+    assert event["session_id"] == "codex-short-no-context"
+    assert event["search_count"] == 6
+    assert event["hook_results_injected"] is False
+
+
 def test_memory_query_redacts_details_for_active_search_required_prompts(tmp_path: Path) -> None:
     responses = [
         {
@@ -1127,6 +1226,58 @@ def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp
     ]
 
 
+def test_codex_memory_recall_logs_session_metrics_and_attributes_searches(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 77,
+                        "source": "codex/memories",
+                        "text": "Session recall telemetry is enabled.",
+                        "similarity": 0.9,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+    payload = {
+        "session_id": "codex-session-recall",
+        "cwd": "/Users/example/memories",
+        "source": "resume",
+    }
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        payload,
+        responses,
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    search_calls = [call for call in calls if call["url"].endswith("/search")]
+    assert len(search_calls) == 5
+    assert {call["body"]["source"] for call in search_calls} == {"hook:codex:memory-recall"}
+    event = json.loads(metrics_log.read_text(encoding="utf-8").splitlines()[0])
+    assert event == {
+        "ts": event["ts"],
+        "event": "session_recall",
+        "client": "codex",
+        "session_id": "codex-session-recall",
+        "project": "memories",
+        "session_source": "resume",
+        "candidate_count": 1,
+        "candidate_ids": [77],
+        "source_prefixes": ["codex/memories"],
+        "search_count": 5,
+    }
+
+
 def test_memory_extract_drops_system_reminder_content_items(tmp_path: Path) -> None:
     """Hook-injected <system-reminder> items (recalled memories) must not be
     sent to the extraction endpoint — that re-ingests them every session."""
@@ -1549,3 +1700,57 @@ def test_codex_memory_observe_logs_memory_ids(tmp_path: Path) -> None:
     assert result.returncode == 0
     events = [json.loads(line) for line in metrics_log.read_text().splitlines()]
     assert events[0]["memory_ids"] == [314]
+
+
+def test_codex_memory_observe_logs_nested_exec_memory_tools(tmp_path: Path) -> None:
+    metrics_log = tmp_path / "active-search.jsonl"
+    payload = {
+        "session_id": "codex-nested-exec",
+        "cwd": "/Users/example/memories",
+        "tool_name": "exec",
+        "tool_input": {
+            "input": (
+                'const a = await tools.mcp__memories__memory_search({query:"release", '
+                'source_prefix:"codex/memories"});\n'
+                'const b = await tools.mcp__memories__memory_get({id:42});\n'
+                'text(JSON.stringify({a,b}));'
+            )
+        },
+        "tool_response": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Found 1 compact memories: [1] id=42 codex/memories",
+                }
+            ]
+        },
+    }
+
+    result, _, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-observe.sh",
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    events = [json.loads(line) for line in metrics_log.read_text(encoding="utf-8").splitlines()]
+    assert [event["tool_name"] for event in events] == [
+        "mcp__memories__memory_get",
+        "mcp__memories__memory_search",
+    ]
+    assert all(event["parent_tool"] == "exec" for event in events)
+    assert all(event["observed_via"] == "nested_exec" for event in events)
+    assert all(event["memory_ids"] == [42] for event in events)
+    search_event = next(event for event in events if event["tool_name"].endswith("memory_search"))
+    assert search_event["source_prefixes"] == ["codex/memories"]
+    assert search_event["source_prefix_quality"] == "exact_project"
+    assert "release" not in json.dumps(events)
+
+
+def test_codex_hooks_config_observes_exec_envelopes() -> None:
+    hooks = json.loads((CODEX_HOOKS_DIR / "hooks.json").read_text(encoding="utf-8"))
+    matcher = hooks["hooks"]["PostToolUse"][0]["matcher"]
+    assert "exec" in matcher
+    assert "mcp__memories__" in matcher

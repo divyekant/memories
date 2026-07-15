@@ -136,6 +136,8 @@ def test_codex_install_writes_standalone_hooks_json(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
+    assert "PostToolUse -> memory-observe.sh (matcher: mcp__memories__|exec)" in result.stdout
+    assert "PreCompact -> memory-flush.sh" not in result.stdout
 
     # Hooks config goes to standalone hooks.json (not settings.json)
     hooks_json = json.loads((home / ".codex" / "hooks.json").read_text())
@@ -168,6 +170,7 @@ def test_codex_install_writes_standalone_hooks_json(tmp_path: Path) -> None:
 
     config_toml = (home / ".codex" / "config.toml").read_text()
     assert "[mcp_servers.memories]" in config_toml
+    assert 'MEMORIES_CLIENT = "codex"' in config_toml
     assert "developer_instructions" in config_toml
     assert "replace {project} with the current working directory basename" in config_toml
     assert "Do not use broad family prefixes" in config_toml
@@ -181,6 +184,77 @@ def test_codex_install_writes_standalone_hooks_json(tmp_path: Path) -> None:
     assert (hook_dir / "memory-observe.sh").exists()
     assert (hook_dir / "_lib.sh").exists()
     assert (hook_dir / "response-hints.json").exists()
+
+
+def test_codex_install_adds_client_attribution_to_existing_mcp_config(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write_fake_curl(bin_dir)
+    codex_dir = home / ".codex"
+    codex_dir.mkdir(parents=True)
+    config_toml = codex_dir / "config.toml"
+    config_toml.write_text(
+        '[mcp_servers.memories]\ncommand = "node"\nargs = ["/custom/memories.js"]\n\n'
+        '[mcp_servers.memories.env]\nMEMORIES_URL = "http://localhost:8900"\n'
+    )
+
+    result = _run_installer(
+        home,
+        "--codex",
+        install_script=install_script,
+        input_text="4\n",
+        extra_env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    installed_config = config_toml.read_text()
+    assert 'args = ["/custom/memories.js"]' in installed_config
+    assert installed_config.count('MEMORIES_CLIENT = "codex"') == 1
+
+
+def test_codex_install_refreshes_managed_hook_matcher_and_preserves_other_hooks(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write_fake_curl(bin_dir)
+    codex_dir = home / ".codex"
+    codex_dir.mkdir(parents=True)
+    managed_command = f"{home}/.codex/hooks/memory/memory-observe.sh"
+    (codex_dir / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "mcp__memories__",
+                            "hooks": [{"type": "command", "command": managed_command, "timeout": 1}],
+                        },
+                        {
+                            "matcher": "other_tool",
+                            "hooks": [{"type": "command", "command": "/custom/observer.sh"}],
+                        },
+                    ]
+                }
+            }
+        )
+    )
+
+    result = _run_installer(
+        home,
+        "--codex",
+        install_script=install_script,
+        input_text="4\n",
+        extra_env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    post_hooks = json.loads((codex_dir / "hooks.json").read_text())["hooks"]["PostToolUse"]
+    by_command = {entry["hooks"][0]["command"]: entry for entry in post_hooks}
+    assert by_command[managed_command]["matcher"] == "mcp__memories__|exec"
+    assert by_command["/custom/observer.sh"]["matcher"] == "other_tool"
 
 
 def test_opencode_install_writes_mcp_skill_and_plugin_config(tmp_path: Path) -> None:

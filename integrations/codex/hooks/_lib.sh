@@ -499,6 +499,10 @@ _search_memories_multi() {
   local prefix="${2:-}"
   local limit="${3:-5}"
   local threshold="${4:-0.4}"
+  local usage_source="${MEMORIES_USAGE_SOURCE:-}"
+  local usage_client="${MEMORIES_USAGE_CLIENT:-$(_memory_client_prefix 2>/dev/null || echo codex)}"
+  local usage_session_id="${MEMORIES_USAGE_SESSION_ID:-}"
+  local usage_invocation="${MEMORIES_USAGE_INVOCATION:-${MEMORIES_HOOK_NAME:-hook}}"
 
   if _breaker_open; then
     MEMORIES_BACKEND_DOWN=1
@@ -513,11 +517,11 @@ _search_memories_multi() {
 
   local body
   if [ -n "$prefix" ]; then
-    body=$(jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
-      '{query: $q, source_prefix: $p, k: $k, hybrid: true, threshold: $t}')
+    body=$(jq -nc --arg q "$query" --arg p "$prefix" --arg s "$usage_source" --argjson k "$limit" --argjson t "$threshold" \
+      '{query: $q, source_prefix: $p, source: $s, k: $k, hybrid: true, threshold: $t}')
   else
-    body=$(jq -nc --arg q "$query" --argjson k "$limit" --argjson t "$threshold" \
-      '{query: $q, k: $k, hybrid: true, threshold: $t}')
+    body=$(jq -nc --arg q "$query" --arg s "$usage_source" --argjson k "$limit" --argjson t "$threshold" \
+      '{query: $q, source: $s, k: $k, hybrid: true, threshold: $t}')
   fi
 
   if [ "$count" -le 1 ]; then
@@ -529,6 +533,9 @@ _search_memories_multi() {
     if out=$(curl -sf --max-time 4 -X POST "$url/search" \
       -H "Content-Type: application/json" \
       -H "X-API-Key: $key" \
+      -H "X-Memories-Client: $usage_client" \
+      -H "X-Memories-Session-Id: $usage_session_id" \
+      -H "X-Memories-Invocation: $usage_invocation" \
       -d "$body" 2>/dev/null); then
       _breaker_reset
       printf '%s' "$out"
@@ -555,6 +562,9 @@ _search_memories_multi() {
       result=$(curl -sf --max-time 4 -X POST "$url/search" \
         -H "Content-Type: application/json" \
         -H "X-API-Key: $key" \
+        -H "X-Memories-Client: $usage_client" \
+        -H "X-Memories-Session-Id: $usage_session_id" \
+        -H "X-Memories-Invocation: $usage_invocation" \
         -d "$body" 2>/dev/null)
       if [ -n "$result" ]; then
         # Tag results with _backend

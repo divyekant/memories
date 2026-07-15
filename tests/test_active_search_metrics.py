@@ -118,6 +118,46 @@ def test_summarize_active_search_matches_one_search_to_one_recent_prompt() -> No
     assert summary["passive_risk_prompts"] == 1
 
 
+def test_summarize_counts_automatic_hook_searches_and_session_recall() -> None:
+    events = [
+        {
+            "ts": "2026-07-14T10:00:00Z",
+            "event": "session_recall",
+            "client": "codex",
+            "session_id": "s1",
+            "search_count": 5,
+            "candidate_count": 2,
+        },
+        {
+            "ts": "2026-07-14T10:01:00Z",
+            "event": "prompt_evaluated",
+            "client": "codex",
+            "session_id": "s1",
+            "active_search_required": False,
+            "hook_results_injected": False,
+            "search_count": 6,
+        },
+        {
+            "ts": "2026-07-14T10:02:00Z",
+            "event": "prompt_evaluated",
+            "client": "codex",
+            "session_id": "s1",
+            "active_search_required": True,
+            "hook_results_injected": True,
+            "search_count": 5,
+        },
+    ]
+
+    summary = summarize_events(events)
+
+    assert summary["prompt_evaluations"] == 2
+    assert summary["session_recall_events"] == 1
+    assert summary["automatic_searches"] == 16
+    assert summary["by_client"]["codex"]["prompt_evaluations"] == 2
+    assert summary["by_client"]["codex"]["session_recall_events"] == 1
+    assert summary["by_client"]["codex"]["automatic_searches"] == 16
+
+
 def test_load_events_skips_invalid_jsonl(tmp_path: Path) -> None:
     log = tmp_path / "active-search.jsonl"
     log.write_text('{"event":"prompt_evaluated"}\nnot-json\n{"event":"tool_call"}\n', encoding="utf-8")

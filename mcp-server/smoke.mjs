@@ -13,7 +13,7 @@ function assert(condition, message) {
 function startFakeMemoriesApi() {
   const requests = [];
   const server = http.createServer((req, res) => {
-    const record = { method: req.method, url: req.url };
+    const record = { method: req.method, url: req.url, headers: req.headers };
     requests.push(record);
     if (req.method === "GET" && req.url.startsWith("/memories/count")) {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -146,6 +146,8 @@ async function main() {
       MEMORIES_URL: fakeApi.url,
       MEMORIES_API_KEY: "test-key",
       MEMORIES_BACKENDS_FILE: "__mcp_smoke_single_backend__",
+      MEMORIES_CLIENT: "codex",
+      CODEX_THREAD_ID: "mcp-smoke-session",
     },
   });
 
@@ -283,6 +285,18 @@ async function main() {
     const fetchedText = fetched.content.map((item) => item.text || "").join("\n");
     assert(fetchedText.includes("[42] eval/mcp-smoke/decision"), "memory_get did not return requested memory");
     assert(fetchedText.length > compactText.length, "memory_get should return fuller detail than compact search");
+    assert(
+      fakeApi.requests.every((req) => req.headers["x-memories-client"] === "codex"),
+      `MCP requests missing client attribution: ${JSON.stringify(fakeApi.requests)}`,
+    );
+    assert(
+      fakeApi.requests.every((req) => req.headers["x-memories-session-id"] === "mcp-smoke-session"),
+      `MCP requests missing session attribution: ${JSON.stringify(fakeApi.requests)}`,
+    );
+    assert(
+      fakeApi.requests.every((req) => req.headers["x-memories-invocation"] === "mcp"),
+      `MCP requests missing invocation attribution: ${JSON.stringify(fakeApi.requests)}`,
+    );
 
     const writes = fakeApi.requests.filter(
       (req) => req.method !== "GET" && !["/search/evidence", "/search"].includes(req.url),

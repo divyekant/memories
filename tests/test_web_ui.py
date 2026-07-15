@@ -66,6 +66,15 @@ def test_app_js_has_health_page_title(client):
     assert "health:" in js_response.text
 
 
+def test_dashboard_usage_supports_session_filter_and_keeps_unknown_sources_visible(client):
+    js = client.get("/ui/static/app.js").text
+    assert 'placeholder: "Session ID (optional)"' in js
+    assert 'searchParams.set("session_id", sessionId)' in js
+    assert '.filter(([s]) => s !== "(unknown)")' not in js
+    assert "Top Clients" in js
+    assert "Invocation" in js
+
+
 def test_app_js_has_confidence_and_link_helpers(client):
     js_response = client.get("/ui/static/app.js")
     text = js_response.text

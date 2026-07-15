@@ -38,6 +38,11 @@ Usage analytics over a time period.
 
 **Query params:**
 - `period` (string, default `"7d"`): One of `today`, `7d`, `30d`, `all`
+- `session_id` (string, optional): Restrict API operation totals to one attributed session
+
+Operation rows include totals grouped by source, client, session, and
+invocation. Callers can attach attribution with `X-Memories-Client`,
+`X-Memories-Session-Id`, and `X-Memories-Invocation`.
 
 ---
 

@@ -394,15 +394,24 @@ registerPage("dashboard", async (container) => {
       periodSelect.appendChild(opt);
     });
     periodBar.appendChild(periodSelect);
+    const sessionInput = h("input", {
+      type: "search",
+      placeholder: "Session ID (optional)",
+      className: "period-select",
+      style: { minWidth: "260px" },
+    });
+    periodBar.appendChild(sessionInput);
     container.appendChild(periodBar);
 
     const usageContainer = h("div", { id: "dashboardUsage" });
     container.appendChild(usageContainer);
 
-    async function loadUsage(period) {
+    async function loadUsage(period, sessionId = "") {
       usageContainer.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
       try {
-        const usage = await api(`/usage?period=${encodeURIComponent(period)}`);
+        const searchParams = new URLSearchParams({ period });
+        if (sessionId) searchParams.set("session_id", sessionId);
+        const usage = await api(`/usage?${searchParams.toString()}`);
         usageContainer.innerHTML = "";
 
         // Usage stat cards
@@ -440,17 +449,26 @@ registerPage("dashboard", async (container) => {
         if (opTypes.length > 0) {
           const opTitle = h("div", { className: "text-muted mb-8", style: { fontSize: "0.84rem", fontWeight: "600" } }, "Operations Breakdown");
           const opTableWrap = h("div", { className: "table-wrap mb-16" });
-          let opHtml = `<table class="data-table"><thead><tr><th>Operation</th><th>Total</th><th>Top Sources</th></tr></thead><tbody>`;
+          let opHtml = `<table class="data-table"><thead><tr><th>Operation</th><th>Total</th><th>Top Sources</th><th>Top Clients</th><th>Invocation</th></tr></thead><tbody>`;
           for (const opType of opTypes) {
             const opData = ops[opType];
             const bySrc = opData.by_source || {};
             const topSources = Object.entries(bySrc)
-              .filter(([s]) => s !== "(unknown)")
               .sort((a, b) => b[1] - a[1])
               .slice(0, 3)
               .map(([s, c]) => `<span class="badge badge-info">${escHtml(s)}</span> ${escHtml(formatNumber(c))}`);
             const srcHtml = topSources.length > 0 ? topSources.join(", ") : '<span class="text-muted">—</span>';
-            opHtml += `<tr><td class="font-mono">${escHtml(opType)}</td><td>${escHtml(formatNumber(opData.total))}</td><td>${srcHtml}</td></tr>`;
+            const topClients = Object.entries(opData.by_client || {})
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 3)
+              .map(([name, count]) => `<span class="badge badge-info">${escHtml(name)}</span> ${escHtml(formatNumber(count))}`);
+            const topInvocations = Object.entries(opData.by_invocation || {})
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 3)
+              .map(([name, count]) => `<span class="badge badge-info">${escHtml(name)}</span> ${escHtml(formatNumber(count))}`);
+            const clientHtml = topClients.length > 0 ? topClients.join(", ") : '<span class="text-muted">—</span>';
+            const invocationHtml = topInvocations.length > 0 ? topInvocations.join(", ") : '<span class="text-muted">—</span>';
+            opHtml += `<tr><td class="font-mono">${escHtml(opType)}</td><td>${escHtml(formatNumber(opData.total))}</td><td>${srcHtml}</td><td>${clientHtml}</td><td>${invocationHtml}</td></tr>`;
           }
           opHtml += `</tbody></table>`;
           opTableWrap.innerHTML = opHtml;
@@ -483,8 +501,13 @@ registerPage("dashboard", async (container) => {
       }
     }
 
-    periodSelect.addEventListener("change", () => loadUsage(periodSelect.value));
-    await loadUsage("7d");
+    const reloadUsage = () => loadUsage(periodSelect.value, sessionInput.value.trim());
+    periodSelect.addEventListener("change", reloadUsage);
+    sessionInput.addEventListener("change", reloadUsage);
+    sessionInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") reloadUsage();
+    });
+    await loadUsage("7d", "");
   } catch (err) {
     container.innerHTML = "";
     container.appendChild(

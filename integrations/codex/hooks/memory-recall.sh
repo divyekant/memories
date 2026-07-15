@@ -37,6 +37,11 @@ RECALL_LIMIT="${MEMORIES_RECALL_LIMIT:-8}"
 
 INPUT=$(cat)
 CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // empty')
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
+MEMORIES_USAGE_CLIENT=$(_memory_client_prefix 2>/dev/null || echo "codex")
+MEMORIES_USAGE_SESSION_ID="$SESSION_ID"
+MEMORIES_USAGE_INVOCATION="$MEMORIES_HOOK_NAME"
+MEMORIES_USAGE_SOURCE="hook:$MEMORIES_USAGE_CLIENT:$MEMORIES_HOOK_NAME"
 if [ -z "$CWD" ]; then
   exit 0
 fi
@@ -87,6 +92,7 @@ query_for_prefix() {
 
 RAW_RESPONSES=""
 SCOPED_PREFIX_LIST=""
+SEARCH_COUNT=0
 IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
 for raw_prefix in "${prefix_templates[@]}"; do
   raw_prefix=$(echo "$raw_prefix" | xargs)
@@ -100,6 +106,7 @@ for raw_prefix in "${prefix_templates[@]}"; do
     learning/*|wip/*) limit=2 ;;
   esac
 
+  SEARCH_COUNT=$((SEARCH_COUNT + 1))
   response=$(search_memories "$query" "$prefix" "$limit" "$MEMORIES_RECALL_SCOPED_THRESHOLD")
   if [ -n "$response" ]; then
     RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
@@ -120,6 +127,7 @@ RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$RECALL_
 ' 2>/dev/null) || RESULTS_JSON="[]"
 
 if [ "$RESULTS_JSON" = "[]" ]; then
+  SEARCH_COUNT=$((SEARCH_COUNT + 1))
   FALLBACK_RESPONSE=$(search_memories "project $PROJECT conventions decisions patterns" "" 6 "$MEMORIES_RECALL_FALLBACK_THRESHOLD")
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
 fi
@@ -136,6 +144,7 @@ _log_info "Recalled $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null |
 
 # Dedicated deferred-work surfacing
 WIP_QUERY="deferred incomplete blocked todo revisit wip"
+SEARCH_COUNT=$((SEARCH_COUNT + 1))
 WIP_RESULTS=$(search_memories "$WIP_QUERY" "wip/$PROJECT" 5 0.3)
 WIP_COUNT=$(echo "$WIP_RESULTS" | jq -r '.count // 0')
 DEFERRED_SECTION=""
@@ -143,6 +152,22 @@ if [ "$WIP_COUNT" -gt 0 ] && [ "$WIP_COUNT" != "null" ]; then
   DEFERRED_ITEMS=$(echo "$WIP_RESULTS" | jq -r '.results[:5][] | "- [\(.source)] deferred candidate memory id=\(.id // .memory_id // "unknown"); call memory_search with this source prefix before answering deferred-work questions."')
   DEFERRED_SECTION="\n## Deferred Work\n$DEFERRED_ITEMS\n"
 fi
+
+CANDIDATE_COUNT=$(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null || echo 0)
+CANDIDATE_IDS_JSON=$(printf '%s' "$RESULTS_JSON" | jq -c '[.[].id | select(type == "number")] | unique | .[0:20]' 2>/dev/null || echo '[]')
+SOURCE_PREFIXES_JSON=$(printf '%s' "$RESULTS_JSON" | jq -c '[.[].source // empty | select(. != "")] | unique' 2>/dev/null || echo '[]')
+METRICS_EVENT=$(jq -nc \
+  --arg ts "$(date -u +%FT%TZ)" \
+  --arg client "$MEMORIES_USAGE_CLIENT" \
+  --arg session_id "$SESSION_ID" \
+  --arg project "$PROJECT" \
+  --arg session_source "$SESSION_SOURCE" \
+  --argjson candidate_count "$CANDIDATE_COUNT" \
+  --argjson candidate_ids "$CANDIDATE_IDS_JSON" \
+  --argjson source_prefixes "$SOURCE_PREFIXES_JSON" \
+  --argjson search_count "$SEARCH_COUNT" \
+  '{ts: $ts, event: "session_recall", client: $client, session_id: $session_id, project: $project, session_source: $session_source, candidate_count: $candidate_count, candidate_ids: $candidate_ids, source_prefixes: $source_prefixes, search_count: $search_count}')
+_active_search_metrics_log "$METRICS_EVENT" 2>/dev/null || true
 
 read -r -d '' PLAYBOOK <<EOF || true
 ## Memory Playbook

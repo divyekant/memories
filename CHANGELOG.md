@@ -1,9 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [5.7.2] - 2026-07-14
 
 ### Fixed
-- **MCP server self-reported version was stuck at 5.4.0** — the `McpServer` constructor's version string was missed by three releases of version bumps (the bump grep searched for the previous version only). Now 5.7.1.
+- **MCP server self-reported version was stuck at 5.4.0** — the `McpServer` constructor's version string was missed by three releases of version bumps (the bump grep searched for the previous version only). Now 5.7.2.
+- **Codex automatic recall is now fully observable** — short prompts use current Codex rollout transcript payloads instead of silently skipping retrieval, every prompt and SessionStart recall records its automatic search count, and the PostToolUse observer recognizes memory calls nested inside Codex `exec` envelopes.
+- **Usage analytics count and attribute automatic retrievals** — hook and MCP requests carry client/session/invocation attribution, `/usage` can filter by session, `memory_get` operations are counted, and the dashboard keeps unknown-source rows visible instead of filtering them out.
 
 ### Changed
 - **Docs refreshed to v5.7.1 reality** — README capabilities/tool table/API reference catch up with 5.6–5.7 features (write doctrine + `on_duplicate`, `memory_update` / `POST /memory/{id}/supersede`, secret redaction, circuit breaker, paginated conflicts); README quick start uses the HTTPS clone URL and standalone `docker-compose.yml` (same fix GETTING_STARTED got in 5.7.0); `docs/api.md` documents the previously-missing endpoints (`/memory/conflicts/resolve`, `/memory/archive-batch`, `/memory/merge`, `/memory/missed`, `/maintenance/enforce-policies`, both supersede variants) with verified request shapes; `docs/api-coverage.md` parity table updated; cloud-sync quick-start curl includes the required API key. Point-in-time artifacts moved to `docs/archive/` (Qdrant cutover plan, Feb benchmark); stale March-era `docs/generated/` hermes output deleted (regenerable).

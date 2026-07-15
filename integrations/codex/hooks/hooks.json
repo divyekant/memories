@@ -25,7 +25,7 @@
       }]
     }],
     "PostToolUse": [{
-      "matcher": "mcp__memories__",
+      "matcher": "mcp__memories__|exec",
       "hooks": [{
         "type": "command",
         "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-observe.sh",

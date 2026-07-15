@@ -59,6 +59,9 @@ def _parse_ts(value: str) -> datetime | None:
 
 def _empty_client_summary() -> dict[str, Any]:
     return {
+        "prompt_evaluations": 0,
+        "session_recall_events": 0,
+        "automatic_searches": 0,
         "required_prompts": 0,
         "required_prompts_with_memory_search": 0,
         "passive_risk_prompts": 0,
@@ -253,13 +256,32 @@ def summarize_events(
 
     sorted_events = sorted(events, key=lambda event: str(event.get("ts", "")))
     tool_events = [event for event in sorted_events if event.get("event") == "tool_call"]
+    all_prompt_events = [
+        event for event in sorted_events if event.get("event") == "prompt_evaluated"
+    ]
     prompt_events = [
         event
-        for event in sorted_events
-        if event.get("event") == "prompt_evaluated" and bool(event.get("active_search_required"))
+        for event in all_prompt_events
+        if bool(event.get("active_search_required"))
+    ]
+    session_recall_events = [
+        event for event in sorted_events if event.get("event") == "session_recall"
     ]
 
     by_client: dict[str, dict[str, Any]] = {}
+
+    automatic_searches = 0
+    for event in [*all_prompt_events, *session_recall_events]:
+        client = str(event.get("client") or "unknown")
+        by_client.setdefault(client, _empty_client_summary())
+        if event.get("event") == "prompt_evaluated":
+            by_client[client]["prompt_evaluations"] += 1
+        else:
+            by_client[client]["session_recall_events"] += 1
+        search_count = event.get("search_count", 0)
+        if isinstance(search_count, int) and not isinstance(search_count, bool) and search_count > 0:
+            automatic_searches += search_count
+            by_client[client]["automatic_searches"] += search_count
 
     memory_search_calls = 0
     exact_project_searches = 0
@@ -337,6 +359,9 @@ def summarize_events(
     candidates_ignored = sum(t["ignored"] for t in usage.values())
 
     return {
+        "prompt_evaluations": len(all_prompt_events),
+        "session_recall_events": len(session_recall_events),
+        "automatic_searches": automatic_searches,
         "required_prompts": required_prompts,
         "required_prompts_with_memory_search": prompts_with_search,
         "active_search_followup_rate": followup_rate,
