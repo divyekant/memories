@@ -1,8 +1,24 @@
 {
   "name": "memories-mcp",
-  "version": "5.8.0",
+  "version": "5.8.1",
   "description": "Memories — agent-agnostic memory for AI coding agents. MCP server + installer CLI.",
   "license": "MIT",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "modelcontextprotocol",
+    "memory",
+    "agent-memory",
+    "claude",
+    "claude-code",
+    "codex",
+    "cursor",
+    "semantic-search",
+    "ai-agents"
+  ],
+  "homepage": "https://github.com/divyekant/memories#readme",
+  "bugs": "https://github.com/divyekant/memories/issues",
+  "author": "Divyekant Gupta <divyekantg@gmail.com>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/divyekant/memories.git",
