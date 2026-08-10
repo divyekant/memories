@@ -27,7 +27,7 @@
   "type": "module",
   "main": "index.js",
   "bin": { "memories-mcp": "index.js", "memories": "cli/index.mjs" },
-  "files": ["index.js", "cli/", "assets/"],
+  "files": ["index.js", "lib-tools.mjs", "cli/", "assets/"],
   "engines": { "node": ">=20" },
   "scripts": {
     "start": "node index.js",
