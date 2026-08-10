@@ -48,4 +48,22 @@ test('bootstrapBackend copies compose, writes env, runs docker compose, polls he
   assert.ok(env.includes('EXTRACT_PROVIDER="anthropic"'));
   assert.ok(env.includes('ANTHROPIC_API_KEY="sk-test"'));
   assert.ok(calls.some((c) => c.join(' ').includes('compose') && c.includes('up')));
+  const envPath = join(home, '.config/memories/env');
+  assert.ok(calls.some((c) => c.includes('--env-file') && c[c.indexOf('--env-file') + 1] === envPath));
+});
+
+test('bootstrapBackend omits --env-file when no env file was created (no extract)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-be-'));
+  const calls = [];
+  let healthy = false;
+  const ctx = {
+    home, assetsDir, url: 'http://localhost:8900', dryRun: false, log: () => {},
+    execImpl: async (cmd, args) => { calls.push([cmd, ...args]); healthy = true; return { stdout: '' }; },
+    fetchImpl: async () => healthy
+      ? new Response(JSON.stringify({ total_memories: 0 }), { status: 200 })
+      : (() => { throw new Error('down'); })(),
+    sleepImpl: async () => {},
+  };
+  await bootstrapBackend(ctx);
+  assert.ok(!calls.some((c) => c.includes('--env-file')));
 });

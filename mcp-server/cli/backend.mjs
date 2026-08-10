@@ -46,8 +46,18 @@ export async function bootstrapBackend(ctx) {
     }
   }
 
+  // `docker compose` only auto-reads a file literally named `.env` in the
+  // compose project directory — it never reads our `env` file on its own, so
+  // provider settings written by ensureEnvVar above would silently be
+  // ignored. Pass --env-file explicitly, but only when the file exists: a
+  // fresh install with no `extract` provider never creates it.
+  const envFileExists = await exists(envPath);
+  const composeArgs = ['compose'];
+  if (envFileExists) composeArgs.push('--env-file', envPath);
+  composeArgs.push('-f', composePath, 'up', '-d');
+
   try {
-    await execImpl('docker', ['compose', '-f', composePath, 'up', '-d']);
+    await execImpl('docker', composeArgs);
   } catch (err) {
     throw new Error(`docker compose failed — is Docker installed and running? ${err.message}`);
   }
