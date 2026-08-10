@@ -120,6 +120,23 @@ test('createApp: oauth mode with an issuer does not throw on the missing-issuer 
   }));
 });
 
+// PR 83 follow-up #3, MINOR 5: mirrors main()'s existing
+// REMOTE_MCP_TOKEN_SECRET pre-flight check — tokenSecret signs every access
+// token (createHmac throws on a missing/empty key), so a direct createApp()
+// call with it omitted should fail fast at construction time instead of
+// surfacing as a confusing 500 the first time a token is issued.
+test('createApp: oauth mode without a tokenSecret throws', async () => {
+  const storeDir = await freshStoreDir();
+  assert.throws(
+    () => createApp({ authMode: 'oauth', issuer: 'http://issuer.invalid', passwordHash: 'x', storeDir }),
+    /tokenSecret/i
+  );
+});
+
+test('createApp: authMode "none" does not require a tokenSecret', async () => {
+  assert.doesNotThrow(() => createApp({ authMode: 'none', storeDir: 'unused-in-this-assertion' }));
+});
+
 test('validateIssuerScheme: https issuer is fine', () => {
   assert.doesNotThrow(() => validateIssuerScheme('https://mcp.example.com'));
 });
@@ -312,6 +329,29 @@ test('DELETE /mcp is 405 in stateless mode', async () => {
   try {
     const res = await fetch(`${baseUrl}/mcp`, { method: 'DELETE', headers: { Accept: MCP_ACCEPT } });
     assert.equal(res.status, 405);
+  } finally {
+    await close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting — /mcp (PR 83 follow-up #3, MINOR 3: defense-in-depth — a
+// leaked bearer token shouldn't buy unthrottled access to the backend). The
+// cap here (120) is deliberately generous compared to the unauthenticated
+// OAuth endpoints' cap (20) so normal interactive tool-call bursts aren't
+// throttled — this test just confirms the guard is wired in, not that the
+// limit is tight.
+// ---------------------------------------------------------------------------
+
+test('429 after exceeding the generous rate limit on /mcp', async () => {
+  const { baseUrl, close } = await noneModeApp();
+  try {
+    let sawTooMany = false;
+    for (let i = 0; i < 121; i++) {
+      const res = await mcpFetch(baseUrl, jsonRpc('tools/list', {}));
+      if (res.status === 429) sawTooMany = true;
+    }
+    assert.ok(sawTooMany, 'expected at least one 429 within 121 rapid requests to /mcp');
   } finally {
     await close();
   }

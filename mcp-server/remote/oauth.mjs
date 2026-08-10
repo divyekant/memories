@@ -8,8 +8,11 @@
 // (see store.mjs). No HTTP framework lives in this file — Task 3 wires these
 // into express routes.
 
-import { randomBytes, createHmac, createHash, timingSafeEqual, scryptSync } from 'node:crypto';
+import { randomBytes, createHmac, createHash, timingSafeEqual, scryptSync, scrypt as scryptCb } from 'node:crypto';
+import { promisify } from 'node:util';
 import { renderLogin } from './login.mjs';
+
+const scryptAsync = promisify(scryptCb);
 
 const ACCESS_TOKEN_TTL_S = 3600;
 const SCRYPT_N = 16384;
@@ -29,14 +32,23 @@ export function hashPassword(password) {
   return `scrypt:${salt.toString('base64')}:${hash.toString('base64')}`;
 }
 
-export function verifyPassword(password, stored) {
+// Async — hashPassword stays sync because it only ever runs at setup time
+// (generating a REMOTE_MCP_PASSWORD_HASH once), but verifyPassword runs on
+// every /authorize POST from an unauthenticated caller. scryptSync blocks
+// the event loop for ~20ms per attempt at these cost parameters; since
+// Node is single-threaded, that stalls EVERY concurrent request the
+// process is handling — including authenticated /mcp calls with a
+// perfectly valid bearer token — for the duration. scrypt's async form
+// runs on libuv's threadpool instead, so a login attempt (or a flood of
+// them) no longer blocks unrelated traffic.
+export async function verifyPassword(password, stored) {
   try {
     const parts = String(stored).split(':');
     if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
     const salt = Buffer.from(parts[1], 'base64');
     const expected = Buffer.from(parts[2], 'base64');
     if (salt.length === 0 || expected.length === 0) return false;
-    const actual = scryptSync(password, salt, expected.length, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
+    const actual = await scryptAsync(password, salt, expected.length, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   } catch {
     return false;
@@ -229,7 +241,7 @@ export function createOAuth({ issuer, passwordHash, tokenSecret, store }) {
     const { error, client } = await validateAuthorizeRequest(body);
     if (error) return error;
 
-    if (!verifyPassword(body.password || '', passwordHash)) {
+    if (!(await verifyPassword(body.password || '', passwordHash))) {
       return {
         status: 200,
         body: renderLogin({

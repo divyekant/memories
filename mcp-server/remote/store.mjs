@@ -88,7 +88,17 @@ async function claimFile(path) {
     throw err;
   }
   try {
-    return JSON.parse(await readFile(claimed, 'utf8'));
+    const raw = await readFile(claimed, 'utf8');
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // A corrupt (non-JSON) grant file should never happen — these are
+      // only ever written by saveCode/saveRefresh — but if disk corruption
+      // or a partial write somehow produces one, treat it the same as a
+      // missing grant (null -> caller returns invalid_grant) instead of
+      // letting JSON.parse's SyntaxError bubble into a 500.
+      return null;
+    }
   } finally {
     await unlink(claimed).catch(() => {});
   }
@@ -155,8 +165,19 @@ export function createStore(dir) {
   // Returns `{ ok: false }` when the registry is at MAX_CLIENTS and every
   // occupant is already activated — nothing safe to evict.
   async function upsertClient(clientId, updateFn) {
-    await ensureDirs();
+    // `ensureDirs()` deliberately runs INSIDE the serialized closure, not
+    // awaited here first. `serialize(fn)` captures this call's place in the
+    // queue synchronously (`chain = chain.then(fn, fn)`), so as long as
+    // nothing async happens between two callers' `upsertClient(...)`
+    // invocations and their `serialize(...)` calls, invocation order IS
+    // queue order. Awaiting `ensureDirs()` (real `mkdir` I/O) before
+    // `serialize()` broke that: two calls issued back-to-back could resolve
+    // their `ensureDirs()` in either order depending on filesystem timing,
+    // so the SECOND caller could win the race to `serialize()` and jump the
+    // queue ahead of the first — invocation order and write order could
+    // diverge.
     return serialize(async () => {
+      await ensureDirs();
       const clients = await readClients(clientsFile);
       const current = Object.hasOwn(clients, clientId) ? clients[clientId] : null;
 

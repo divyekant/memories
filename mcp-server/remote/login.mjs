@@ -50,21 +50,3 @@ ${hiddenInputs(params)}
 </html>`;
 }
 
-export function renderConsent({ clientName, params = {} } = {}) {
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Authorize</title>
-<style>${STYLE}</style>
-</head>
-<body>
-<h1>Authorize access</h1>
-<p>${esc(clientName || 'This app')} would like to access your memories.</p>
-<form method="POST" action="/authorize">
-${hiddenInputs(params)}
-<button type="submit">Allow</button>
-</form>
-</body>
-</html>`;
-}

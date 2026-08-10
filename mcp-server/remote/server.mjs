@@ -218,10 +218,27 @@ export function createApp(cfg = {}) {
   if (authMode === "oauth" && !issuer) {
     throw new Error("REMOTE_MCP_ISSUER is required when REMOTE_MCP_AUTH=oauth.");
   }
+  // Mirrors main()'s pre-flight check: tokenSecret signs/verifies every
+  // access token (createHmac('sha256', tokenSecret, ...) in oauth.mjs).
+  // createHmac throws on a missing/empty key, which — reached only the
+  // first time a token is issued or checked, not at startup — would surface
+  // as a confusing runtime 500 well after the process looked like it came
+  // up fine. Failing fast here catches a misconfigured direct createApp()
+  // call (main() already guards its own env-var path) at construction time
+  // instead.
+  if (authMode === "oauth" && !tokenSecret) {
+    throw new Error("tokenSecret is required when REMOTE_MCP_AUTH=oauth.");
+  }
 
   const store = createStore(storeDir);
   const oauth = createOAuth({ issuer, passwordHash, tokenSecret, store });
   const rateLimit = createRateLimiter();
+  // /mcp is the authenticated tool-call channel — a legitimate session can
+  // burst many rapid tool calls, so it gets a much more generous cap than
+  // the unauthenticated OAuth endpoints. This exists purely as
+  // defense-in-depth (a leaked bearer token shouldn't buy unthrottled
+  // access to the backend), not to throttle normal interactive usage.
+  const mcpRateLimit = createRateLimiter({ limit: 120 });
 
   const app = express();
   app.disable("x-powered-by");
@@ -284,7 +301,9 @@ export function createApp(cfg = {}) {
   }));
 
   // -- MCP: stateless StreamableHTTPServerTransport, fresh server per POST -
-  const mcpGuards = [originGuard];
+  // mcpRateLimit first — cheapest check, rejects a flood before spending
+  // cycles on origin/auth checks for it.
+  const mcpGuards = [mcpRateLimit, originGuard];
   if (authMode === "oauth") mcpGuards.push(bearerAuth(oauth, issuer));
 
   app.post("/mcp", ...mcpGuards, ah(async (req, res) => {

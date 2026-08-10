@@ -192,15 +192,15 @@ test('store: 50 concurrent saveClient calls with distinct ids all persist', asyn
 // hashPassword / verifyPassword
 // ---------------------------------------------------------------------------
 
-test('hashPassword/verifyPassword: correct password verifies', () => {
+test('hashPassword/verifyPassword: correct password verifies', async () => {
   const hash = hashPassword('hunter2');
   assert.ok(hash.startsWith('scrypt:'));
-  assert.equal(verifyPassword('hunter2', hash), true);
+  assert.equal(await verifyPassword('hunter2', hash), true);
 });
 
-test('hashPassword/verifyPassword: wrong password fails', () => {
+test('hashPassword/verifyPassword: wrong password fails', async () => {
   const hash = hashPassword('hunter2');
-  assert.equal(verifyPassword('wrong', hash), false);
+  assert.equal(await verifyPassword('wrong', hash), false);
 });
 
 test('hashPassword: two hashes of the same password differ (random salt)', () => {
@@ -209,15 +209,18 @@ test('hashPassword: two hashes of the same password differ (random salt)', () =>
   assert.notEqual(h1, h2);
 });
 
-test('verifyPassword: malformed hash string does not throw', () => {
-  assert.doesNotThrow(() => {
-    assert.equal(verifyPassword('anything', 'not-a-valid-hash'), false);
+// verifyPassword is now async (scrypt runs on libuv's threadpool instead of
+// blocking the event loop — see the comment in oauth.mjs) — assert the
+// returned promise resolves to false rather than rejecting/throwing.
+test('verifyPassword: malformed hash string resolves false, never rejects', async () => {
+  await assert.doesNotReject(async () => {
+    assert.equal(await verifyPassword('anything', 'not-a-valid-hash'), false);
   });
-  assert.doesNotThrow(() => {
-    assert.equal(verifyPassword('anything', ''), false);
+  await assert.doesNotReject(async () => {
+    assert.equal(await verifyPassword('anything', ''), false);
   });
-  assert.doesNotThrow(() => {
-    assert.equal(verifyPassword('anything', 'scrypt:onlyonepart'), false);
+  await assert.doesNotReject(async () => {
+    assert.equal(await verifyPassword('anything', 'scrypt:onlyonepart'), false);
   });
 });
 
@@ -756,6 +759,39 @@ test(
     );
   }
 );
+
+// ---------------------------------------------------------------------------
+// PR 83 follow-up #3, MINOR 1: upsertClient's write queue must preserve
+// invocation order (FIFO). ensureDirs() used to be awaited BEFORE
+// serialize(), so two upsertClient() calls issued back-to-back could have
+// their ensureDirs() resolve in either order depending on filesystem
+// timing — the second caller could win the race to serialize() and jump
+// the queue ahead of the first.
+// ---------------------------------------------------------------------------
+
+test('store: upsertClient preserves invocation order in the write queue (FIFO)', async () => {
+  const store = await freshStore();
+  const order = [];
+
+  // Both calls are issued synchronously, back-to-back, with no await in
+  // between — this is the exact shape that exposed the bug: whichever
+  // call's ensureDirs() happened to resolve first got to serialize()
+  // first, regardless of which was invoked first.
+  const pA = store.upsertClient('shared-id', (current) => {
+    order.push('A');
+    return { redirect_uris: ['https://claude.ai/cb'], seq: current ? `${current.seq}->A` : 'A' };
+  });
+  const pB = store.upsertClient('shared-id', (current) => {
+    order.push('B');
+    return { redirect_uris: ['https://claude.ai/cb'], seq: current ? `${current.seq}->B` : 'B' };
+  });
+
+  await Promise.all([pA, pB]);
+
+  assert.deepEqual(order, ['A', 'B'], 'updateFn callbacks must run in invocation order, not fs-timing order');
+  const final = await store.getClient('shared-id');
+  assert.equal(final.seq, 'A->B', "B's updateFn must observe A's already-committed write");
+});
 
 // ---------------------------------------------------------------------------
 // authorizePage (GET /authorize)
