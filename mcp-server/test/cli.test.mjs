@@ -167,6 +167,33 @@ test('init --cursor adopts a pre-existing legacy claude-code install into owners
   assert.equal(cursorMcp.mcpServers?.memories, undefined); // cursor entry gone
 });
 
+test('repeat init/update --cursor does not adopt claude-side wiring cursor itself created', async () => {
+  // Regression test: the Finding 6 preflight detected the cursor-created
+  // claude-side files on a SECOND `init`/`update --cursor` run (since
+  // claude-code was never explicitly tracked) and adopted 'claude-code' into
+  // state, making a later `uninstall --cursor` treat the shared wiring as
+  // independently claude-owned and leave it behind — the original bug back
+  // for anyone who ran `update` once.
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await mkdir(join(home, '.claude'), { recursive: true });
+  const opts = { home, log: () => {}, fetchImpl: async () => new Response('{"total_memories":0}', { status: 200 }) };
+
+  await run(['init', '--cursor', '--yes'], opts);
+  await run(['update', '--cursor', '--yes'], opts);
+
+  const state = await readJson(join(home, '.config/memories/state.json'));
+  assert.deepEqual(state.installedTargets, ['cursor']); // claude-code NOT adopted
+
+  await run(['uninstall', '--cursor', '--yes'], opts);
+
+  assert.equal(await exists(join(home, '.claude/hooks/memory')), false);
+  assert.equal(await exists(join(home, '.claude/skills/memories')), false);
+  const settings = await readJson(join(home, '.claude/settings.json'));
+  assert.equal(settings.mcpServers?.memories, undefined);
+  const cursorMcp = await readJson(join(home, '.cursor/mcp.json'));
+  assert.equal(cursorMcp.mcpServers?.memories, undefined);
+});
+
 test('bin symlink invocation reaches main (realpath guard)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mem-bin-'));
   const link = join(dir, 'memories');

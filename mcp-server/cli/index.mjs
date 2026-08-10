@@ -196,8 +196,21 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
       // indistinguishable from wiring cursor just created itself, and a
       // later `uninstall --cursor` would conclude cursor owns it and delete
       // it out from under the user.
+      //
+      // Gate on 'cursor' NOT already being tracked too: once cursor has run
+      // once, the claude-side files it delegated into existence are
+      // indistinguishable on disk from a genuinely pre-existing install — on
+      // a second `init`/`update --cursor`, presence detection would fire
+      // again and adopt 'claude-code' into state, making a later
+      // `uninstall --cursor` treat the shared wiring as independently
+      // claude-owned and leave it behind (reintroducing the original bug
+      // for anyone who runs `update` even once).
       const preState = await readState(ctx.home);
-      if (!preState.installedTargets.includes('claude-code') && await claudeSidePresent(ctx)) {
+      if (
+        !preState.installedTargets.includes('claude-code')
+        && !preState.installedTargets.includes('cursor')
+        && await claudeSidePresent(ctx)
+      ) {
         preState.installedTargets.push('claude-code');
         await writeState(ctx.home, preState);
       }
