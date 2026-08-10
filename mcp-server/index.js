@@ -34,7 +34,7 @@ if (CLI_COMMANDS.has(process.argv[2])) {
 const server = buildServer({
   url: process.env.MEMORIES_URL ?? "http://localhost:8900",
   apiKey: process.env.MEMORIES_API_KEY ?? "",
-  client: process.env.MEMORIES_CLIENT ?? "stdio",
+  client: process.env.MEMORIES_CLIENT ?? (process.env.CODEX_THREAD_ID ? "codex" : "mcp"),
 });
 
 // -- Start -------------------------------------------------------------------
