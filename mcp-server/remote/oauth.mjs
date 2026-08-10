@@ -74,6 +74,23 @@ const MAX_CLIENT_NAME_LENGTH = 200;
 const MAX_REDIRECT_URI_LENGTH = 2048;
 
 // ---------------------------------------------------------------------------
+// Deterministic client_id (dedup)
+// ---------------------------------------------------------------------------
+// client_id is derived from redirect_uris alone (client_name excluded) so a
+// client re-registering — which claude.ai does on essentially every
+// connection — always lands on the same registry slot instead of minting a
+// fresh one. A random id per call meant a registration flood (or even just
+// claude.ai's own normal reconnect traffic) could grow the registry
+// unbounded and, combined with the old "evict oldest" policy, eventually
+// evict the very client actually in use. Sorting redirect_uris before
+// hashing makes the id independent of the array's submitted order.
+
+function deriveClientId(redirectUris) {
+  const canonical = JSON.stringify({ redirect_uris: [...redirectUris].sort() });
+  return `c_${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+// ---------------------------------------------------------------------------
 // PKCE
 // ---------------------------------------------------------------------------
 
@@ -140,14 +157,39 @@ export function createOAuth({ issuer, passwordHash, tokenSecret, store }) {
     if (typeof body.client_name === 'string' && body.client_name.length > MAX_CLIENT_NAME_LENGTH) {
       return { status: 400, body: { error: 'invalid_client_metadata' } };
     }
-    const client = {
-      client_id: randomBytes(16).toString('base64url'),
-      redirect_uris: redirectUris,
-      client_name: typeof body.client_name === 'string' && body.client_name ? body.client_name : 'Claude',
-      token_endpoint_auth_method: 'none',
-      created_at: Date.now(),
-    };
-    await store.saveClient(client);
+
+    const clientId = deriveClientId(redirectUris);
+    const clientName = typeof body.client_name === 'string' && body.client_name ? body.client_name : 'Claude';
+    const now = Date.now();
+
+    // Re-registration with the same redirect_uris set lands on the same
+    // client_id — update in place (name can change, e.g. a client rename;
+    // created_at/activated_at are preserved) rather than minting a new
+    // registry slot. This is the common case: claude.ai re-runs DCR on
+    // essentially every connection.
+    const existing = await store.getClient(clientId);
+    const client = existing
+      ? { ...existing, redirect_uris: redirectUris, client_name: clientName, last_registered_at: now }
+      : {
+          client_id: clientId,
+          redirect_uris: redirectUris,
+          client_name: clientName,
+          token_endpoint_auth_method: 'none',
+          created_at: now,
+          last_registered_at: now,
+        };
+
+    const saved = await store.saveClient(client);
+    if (!saved) {
+      // Registry is at MAX_CLIENTS and every occupant is activated (a real
+      // user has completed login+consent for it) — nothing safe to evict.
+      // Reject rather than displace a live client for an unauthenticated
+      // registration attempt.
+      return {
+        status: 429,
+        body: { error: 'temporarily_unavailable', error_description: 'client registry full' },
+      };
+    }
     return { status: 201, body: client };
   }
 
@@ -222,6 +264,12 @@ export function createOAuth({ issuer, passwordHash, tokenSecret, store }) {
     if (!constantTimeStringEqual(s256(body.code_verifier), record.challenge)) {
       return { status: 400, body: { error: 'invalid_grant' } };
     }
+
+    // A successful authorization_code grant means a human completed the
+    // login+consent form for this client — mark it activated so it's never
+    // an eviction candidate for a registration flood (see store.mjs's
+    // saveClient/markClientActive).
+    await store.markClientActive(record.cid);
 
     const { accessToken } = issueTokens(record.cid);
     const refreshToken = randomBytes(32).toString('base64url');

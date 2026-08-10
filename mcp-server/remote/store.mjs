@@ -26,9 +26,14 @@ const CODE_TTL_MS = 10 * 60 * 1000;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 // Hard cap on the DCR-registered client registry. `saveClient` evicts the
-// oldest (by created_at) entries on write once this is exceeded — an
-// unauthenticated /register endpoint must never be able to grow clients.json
-// without bound.
+// oldest never-activated entry to make room for a new client once this is
+// hit — an unauthenticated /register endpoint must never be able to grow
+// clients.json without bound. Activated clients (a real user has completed
+// login+consent for them — see markClientActive) are never eviction
+// candidates: a registration flood must not be able to displace a client
+// that's actually in live use (PR 83 follow-up — the original "evict
+// oldest regardless of activation" policy let a flood displace claude.ai
+// itself).
 const MAX_CLIENTS = 100;
 
 function hashToken(token) {
@@ -119,27 +124,59 @@ export function createStore(dir) {
     return Object.hasOwn(clients, id) ? clients[id] : null;
   }
 
+  // Returns `true` once the client is persisted, `false` if the registry is
+  // at MAX_CLIENTS with every occupant already activated — there is nothing
+  // safe to evict, so the caller (oauth.mjs register()) must reject the
+  // registration rather than bump a live client out. Updating an EXISTING
+  // client_id (re-registration with identical metadata — see
+  // oauth.mjs's deterministic client_id derivation) never consumes a new
+  // slot and is therefore never blocked by the cap.
   async function saveClient(client) {
     await ensureDirs();
     return serialize(async () => {
       const clients = await readClients(clientsFile);
-      clients[client.client_id] = client;
+      const isNewClient = !Object.hasOwn(clients, client.client_id);
 
-      const ids = Object.keys(clients);
-      if (ids.length > MAX_CLIENTS) {
-        // Stable sort by created_at ascending (oldest first); entries with
-        // no created_at — pre-existing records from before this field
-        // existed — sort as oldest so they're evicted first.
-        ids.sort((a, b) => (clients[a].created_at ?? 0) - (clients[b].created_at ?? 0));
-        const evictCount = ids.length - MAX_CLIENTS;
-        const evicted = ids.slice(0, evictCount);
-        for (const id of evicted) delete clients[id];
-        console.warn(
-          `[remote-mcp] client registry at cap (${MAX_CLIENTS}); evicted ${evictCount} oldest client(s): ${evicted.join(', ')}`
-        );
+      if (isNewClient) {
+        const ids = Object.keys(clients);
+        if (ids.length >= MAX_CLIENTS) {
+          const evictable = ids.filter((id) => !clients[id].activated_at);
+          if (evictable.length === 0) {
+            return false;
+          }
+          // Stable sort by created_at ascending (oldest first); entries
+          // with no created_at — pre-existing records from before this
+          // field existed — sort as oldest so they're evicted first.
+          evictable.sort((a, b) => (clients[a].created_at ?? 0) - (clients[b].created_at ?? 0));
+          const victim = evictable[0];
+          console.warn(
+            `[remote-mcp] client registry at cap (${MAX_CLIENTS}); evicted never-activated client: ${victim}`
+          );
+          delete clients[victim];
+        }
       }
 
+      clients[client.client_id] = client;
       await atomicWriteJSON(clientsFile, clients);
+      return true;
+    });
+  }
+
+  // Marks a client as activated — a real user has completed a login+consent
+  // flow for it (called from oauth.mjs on a successful authorization_code
+  // grant). Idempotent: only the first call sets activated_at, so its
+  // timestamp reflects when the client first went live, not its most recent
+  // token grant. Returns false for an unknown client_id without throwing.
+  async function markClientActive(clientId) {
+    await ensureDirs();
+    return serialize(async () => {
+      const clients = await readClients(clientsFile);
+      if (!Object.hasOwn(clients, clientId)) return false;
+      if (!clients[clientId].activated_at) {
+        clients[clientId] = { ...clients[clientId], activated_at: Date.now() };
+        await atomicWriteJSON(clientsFile, clients);
+      }
+      return true;
     });
   }
 
@@ -173,5 +210,5 @@ export function createStore(dir) {
     return data;
   }
 
-  return { getClient, saveClient, saveCode, takeCode, saveRefresh, takeRefresh };
+  return { getClient, saveClient, markClientActive, saveCode, takeCode, saveRefresh, takeRefresh };
 }

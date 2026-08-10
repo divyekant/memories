@@ -18,11 +18,24 @@ async function freshStore() {
   return createStore(dir);
 }
 
+// Like freshStore, but also returns `dir` — needed by tests that inspect
+// clients.json directly (e.g. asserting the registry never exceeds
+// MAX_CLIENTS on disk) rather than through the store's own accessors.
+async function freshStoreWithDir() {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-oauth-'));
+  return { store: createStore(dir), dir };
+}
+
+async function registrySize(dir) {
+  const raw = await readFile(join(dir, 'clients.json'), 'utf8').catch(() => '{}');
+  return Object.keys(JSON.parse(raw)).length;
+}
+
 async function freshOAuth() {
-  const store = await freshStore();
+  const { store, dir } = await freshStoreWithDir();
   const passwordHash = hashPassword(PASSWORD);
   const oauth = createOAuth({ issuer: ISSUER, passwordHash, tokenSecret: TOKEN_SECRET, store });
-  return { oauth, store };
+  return { oauth, store, dir };
 }
 
 function b64url(buf) {
@@ -371,6 +384,129 @@ test('register: 105 sequential registrations cap the registry at 100, evicting t
   for (const c of newest100) {
     assert.ok(await store.getClient(c.client_id), `newest client ${c.client_id} should still be present`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// PR-83 P1: registration floods must not be able to evict an activated
+// (real user has completed login+consent) client.
+// ---------------------------------------------------------------------------
+
+test('store: markClientActive sets activated_at once and is idempotent', async () => {
+  const store = await freshStore();
+  await store.saveClient({ client_id: 'c1', redirect_uris: ['https://claude.ai/cb'], created_at: Date.now() });
+
+  assert.equal((await store.getClient('c1')).activated_at, undefined);
+  await store.markClientActive('c1');
+  const first = (await store.getClient('c1')).activated_at;
+  assert.equal(typeof first, 'number');
+
+  await store.markClientActive('c1');
+  const second = (await store.getClient('c1')).activated_at;
+  assert.equal(second, first, 'a second activation must not move the timestamp');
+});
+
+test('store: markClientActive on an unknown client_id is a no-op, returns false', async () => {
+  const store = await freshStore();
+  assert.equal(await store.markClientActive('nope'), false);
+});
+
+test(
+  'reviewer repro: an activated client survives a 150-registration flood, registry stays <= MAX_CLIENTS',
+  async () => {
+    const { oauth, store, dir } = await freshOAuth();
+
+    const legit = await registerClient(oauth, 'https://claude.ai/api/mcp/callback');
+    await store.markClientActive(legit.client_id);
+
+    for (let i = 0; i < 150; i++) {
+      const res = await oauth.register({ redirect_uris: [`https://claude.ai/flood-cb-${i}`] });
+      // Some of these are expected to be rejected once the registry fills
+      // and every never-activated slot has already been evicted — that's
+      // exactly the point (see the 429 test below). Only fail the test on
+      // an unexpected status.
+      assert.ok(res.status === 201 || res.status === 429, `unexpected status ${res.status} for flood registration ${i}`);
+    }
+
+    const resolved = await store.getClient(legit.client_id);
+    assert.ok(resolved, 'the legitimate, activated claude.ai client must still resolve');
+    assert.equal(resolved.client_id, legit.client_id);
+
+    assert.ok((await registrySize(dir)) <= 100, 'registry must never exceed MAX_CLIENTS');
+  }
+);
+
+test('register: re-registering identical redirect_uris returns the same client_id and does not grow the registry', async () => {
+  const { oauth, dir } = await freshOAuth();
+  const uris = ['https://claude.ai/api/mcp/callback'];
+
+  const first = await oauth.register({ redirect_uris: uris, client_name: 'Claude' });
+  assert.equal(first.status, 201);
+  const sizeAfterFirst = await registrySize(dir);
+
+  const second = await oauth.register({ redirect_uris: uris, client_name: 'Claude (renamed)' });
+  assert.equal(second.status, 201);
+
+  assert.equal(second.body.client_id, first.body.client_id, 're-registration must land on the same client_id');
+  assert.equal(await registrySize(dir), sizeAfterFirst, 're-registration must not consume a new registry slot');
+});
+
+test('register: re-registration with a cosmetic client_name change updates client_name in place', async () => {
+  const { oauth, store } = await freshOAuth();
+  const uris = ['https://claude.ai/api/mcp/callback'];
+
+  const first = await oauth.register({ redirect_uris: uris, client_name: 'Claude' });
+  const second = await oauth.register({ redirect_uris: uris, client_name: 'Claude Desktop' });
+
+  assert.equal(second.body.client_id, first.body.client_id);
+  const stored = await store.getClient(first.body.client_id);
+  assert.equal(stored.client_name, 'Claude Desktop');
+});
+
+test('register: two different client metadata payloads never collide on client_id', async () => {
+  const { oauth } = await freshOAuth();
+  const a = await oauth.register({ redirect_uris: ['https://claude.ai/cb-a'] });
+  const b = await oauth.register({ redirect_uris: ['https://claude.ai/cb-b'] });
+  assert.notEqual(a.body.client_id, b.body.client_id);
+});
+
+test('register: registry full of 100 ACTIVATED clients rejects a new registration with 429 temporarily_unavailable (no eviction)', async () => {
+  const { oauth, store, dir } = await freshOAuth();
+
+  const activatedIds = [];
+  for (let i = 0; i < 100; i++) {
+    const res = await oauth.register({ redirect_uris: [`https://claude.ai/activated-cb-${i}`] });
+    assert.equal(res.status, 201);
+    await store.markClientActive(res.body.client_id);
+    activatedIds.push(res.body.client_id);
+  }
+  assert.equal(await registrySize(dir), 100);
+
+  const overflow = await oauth.register({ redirect_uris: ['https://claude.ai/one-too-many'] });
+  assert.equal(overflow.status, 429);
+  assert.equal(overflow.body.error, 'temporarily_unavailable');
+
+  assert.equal(await registrySize(dir), 100, 'no client should have been evicted to make room');
+  for (const id of activatedIds) {
+    assert.ok(await store.getClient(id), `activated client ${id} must survive the rejected registration attempt`);
+  }
+});
+
+test('register: at cap with a mix of activated and never-activated clients, only a never-activated one is evicted', async () => {
+  const { oauth, store, dir } = await freshOAuth();
+
+  const activated = await registerClient(oauth, 'https://claude.ai/the-activated-one');
+  await store.markClientActive(activated.client_id);
+
+  for (let i = 0; i < 99; i++) {
+    const res = await oauth.register({ redirect_uris: [`https://claude.ai/never-activated-${i}`] });
+    assert.equal(res.status, 201);
+  }
+  assert.equal(await registrySize(dir), 100);
+
+  const res = await oauth.register({ redirect_uris: ['https://claude.ai/pushes-one-out'] });
+  assert.equal(res.status, 201, 'a never-activated victim is available, so this registration must succeed');
+  assert.equal(await registrySize(dir), 100);
+  assert.ok(await store.getClient(activated.client_id), 'the activated client must never be the eviction victim');
 });
 
 // ---------------------------------------------------------------------------

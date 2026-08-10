@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 
 import { createApp, createRateLimiter, validateAuthMode, validateIssuerScheme } from '../remote/server.mjs';
 import { hashPassword } from '../remote/oauth.mjs';
+import { createStore } from '../remote/store.mjs';
 
 const MCP_ACCEPT = 'application/json, text/event-stream';
 
@@ -343,7 +344,7 @@ test('429 after exceeding the rate limit on /token', async () => {
 // ---------------------------------------------------------------------------
 
 test('full oauth flow: register -> authorize (GET login page) -> authorize (POST password) -> token -> authed /mcp call', async () => {
-  const { baseUrl, close } = await oauthModeApp();
+  const { baseUrl, close, storeDir } = await oauthModeApp();
   try {
     // 1. Dynamic Client Registration
     const registerRes = await fetch(`${baseUrl}/register`, {
@@ -419,6 +420,12 @@ test('full oauth flow: register -> authorize (GET login page) -> authorize (POST
     // RFC 6749 §5.1 — token responses must never be cached (bearer material).
     assert.equal(tokenRes.headers.get('cache-control'), 'no-store');
     assert.equal(tokenRes.headers.get('pragma'), 'no-cache');
+
+    // A completed authorization_code grant marks the client activated —
+    // registration floods can no longer evict it (PR 83 follow-up).
+    const store = createStore(storeDir);
+    const persisted = await store.getClient(client.client_id);
+    assert.equal(typeof persisted.activated_at, 'number', 'client must be marked activated after a successful token grant');
   } finally {
     await close();
   }
