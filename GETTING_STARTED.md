@@ -4,6 +4,26 @@ This is the fastest path to a working Memories setup with optional automatic ext
 
 ## 1) Start the service
 
+### Fastest path: `npx memories-mcp init`
+
+```bash
+npx memories-mcp@latest init
+```
+
+This single command:
+- auto-detects Claude Code, Codex, and Cursor on your machine (or restrict with `--claude` / `--codex` / `--cursor` / `--generic`)
+- prompts for the backend URL (default `http://localhost:8900`) and API key, or pass `--url` / `--api-key`
+- checks backend health, and if it's unreachable, offers (interactively) to bootstrap it with Docker — writes `~/.config/memories/docker-compose.yml` and runs `docker compose up -d` for you
+- wires hooks, skills, and MCP config for each detected target (see step 4 for exactly what gets written)
+
+Non-interactive: add `--yes` to accept all defaults and skip every prompt — including the Docker bootstrap offer, so with `--yes` an unreachable backend is logged and skipped rather than auto-provisioned; run the manual backend setup below first, or omit `--yes` to get the interactive offer. Add `--dry-run` to print the plan and write nothing. Windows has no bash, so hooks aren't supported there — `init` falls back to the generic target and prints an MCP snippet to configure by hand.
+
+> `memories-mcp` has not been published to npm yet as of this release — `npx memories-mcp@latest init` will work once the first publish ships. Until then, use the manual backend setup below plus `npm --prefix mcp-server install` and the generic MCP snippet in step 4, or the still-working (but deprecated) `install.sh` path.
+
+### Manual backend setup (repo checkout, advanced)
+
+If you're already working from a repo checkout, or need options `init`'s auto-bootstrap doesn't offer (e.g. a multi-node vector cluster), start the backend directly:
+
 ```bash
 git clone https://github.com/divyekant/memories.git
 cd memories
@@ -12,7 +32,7 @@ docker compose up -d
 
 (`docker-compose.yml` brings up Qdrant + the Memories service. `docker-compose.snippet.yml` is NOT standalone — it is a snippet to merge into an existing compose file.)
 
-### Optional: Start with a vector cluster (N nodes)
+#### Optional: Start with a vector cluster (N nodes)
 
 ```bash
 python scripts/render_cluster_compose.py \
@@ -52,6 +72,37 @@ docker compose up -d --build memories
 
 ## 4) Install integrations (recommended)
 
+If you ran `npx memories-mcp@latest init` in step 1, this is already done for Claude Code, Codex, and Cursor — skip ahead to step 5. `init` wires:
+- Claude Code hooks (`~/.claude/hooks/memory`), the `memories` and `memories-setup` skills (`~/.claude/skills/`), the MCP entry, and a marked block in `~/.claude/CLAUDE.md`
+- Codex hooks (`~/.codex/hooks/memory`), permissions, and marked blocks in `~/.codex/config.toml` (MCP server + developer instructions)
+- Cursor's `~/.cursor/mcp.json` MCP entry (plus the shared `~/.claude` pieces above, since Cursor reads them via "Third-party skills") — you still need to flip **Settings → Features → Third-party skills → ON** and restart Cursor
+- other commands: `npx memories-mcp@latest doctor` (status + backend health + version check), `npx memories-mcp@latest update` (re-wire after upgrading), `npx memories-mcp@latest uninstall`
+
+### Other MCP clients (generic)
+
+Any MCP-capable client can be wired manually with:
+
+```json
+{
+  "mcpServers": {
+    "memories": {
+      "command": "npx",
+      "args": ["-y", "memories-mcp"],
+      "env": { "MEMORIES_URL": "http://localhost:8900", "MEMORIES_API_KEY": "" }
+    }
+  }
+}
+```
+
+`npx memories-mcp@latest init --generic` prints this same snippet with your configured URL/key filled in.
+
+For guided LLM setup, use:
+- [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md)
+
+### Manual: `install.sh` (deprecated)
+
+`install.sh` still works this release but is superseded by `npx memories-mcp init` above; it will be removed in the next release. It additionally covers OpenCode and OpenClaw, which the npm package does not yet wire.
+
 Prerequisites for installer mode:
 - `jq` and `curl` installed
 - running Memories service (`/health` responds)
@@ -83,9 +134,6 @@ for retrieval and `codex/{project}` for extraction. For scoped API keys, overrid
 The installer writes:
 - hook runtime vars to `~/.config/memories/env` (`MEMORIES_URL`, optional `MEMORIES_API_KEY`)
 - extraction provider vars to repo `.env` (`EXTRACT_PROVIDER`, provider keys/URL)
-
-For guided LLM setup, use:
-- [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md)
 
 ### Advanced: Multi-backend routing
 
@@ -193,6 +241,8 @@ curl -X POST http://localhost:8900/search \
 ```
 
 ## 10) Install the Memories skill (Claude Code, optional)
+
+`npx memories-mcp init` already installs this (and a companion `memories-setup` skill) to `~/.claude/skills/` for the `claude-code` target — skip this step if you used it. This section is for the manual/repo-checkout path.
 
 The Memories skill teaches Claude *when* to capture context and *when* to proactively search — the judgment layer that makes memory usage disciplined rather than ad-hoc.
 
