@@ -15,14 +15,19 @@ export function mergeHookSettings(settings, rendered) {
   const events = new Set([...Object.keys(rendered.hooks ?? {}), ...Object.keys(settings.hooks ?? {})]);
   const hooks = {};
   for (const k of events) {
-    const combined = [...(rendered.hooks?.[k] ?? []), ...(settings.hooks?.[k] ?? [])];
-    const seen = new Set();
-    hooks[k] = combined.filter((e) => {
-      const key = e.hooks?.[0]?.command ?? JSON.stringify(e);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    const renderedEntries = rendered.hooks?.[k] ?? [];
+    const existingEntries = settings.hooks?.[k] ?? [];
+    // Dedupe by individual hook COMMAND, not by whole-entry identity — an
+    // existing entry can pack a foreign hook alongside ours in the same
+    // matcher (hooks: [ours, foreign]); whole-entry dedup on hooks[0].command
+    // used to discard that entry wholesale, losing the foreign hook at
+    // index >= 1. Instead, strip only the commands we're re-rendering from
+    // each existing entry, and keep the entry if anything foreign remains.
+    const renderedCommands = new Set(renderedEntries.flatMap((e) => (e.hooks ?? []).map((h) => h.command)));
+    const survivingExisting = existingEntries
+      .map((e) => ({ ...e, hooks: (e.hooks ?? []).filter((h) => !renderedCommands.has(h.command)) }))
+      .filter((e) => e.hooks.length > 0);
+    hooks[k] = [...renderedEntries, ...survivingExisting];
   }
   return { ...settings, hooks };
 }

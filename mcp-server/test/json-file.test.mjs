@@ -32,6 +32,36 @@ test('mergeHookSettings unions per-event, ours first, foreign preserved', () => 
   assert.equal(merged.model, 'opus');
 });
 
+test('mergeHookSettings preserves a foreign hook packed into the SAME matcher entry as ours', () => {
+  // Regression test: dedup used to key on hooks[0].command only, so an
+  // existing entry whose hooks array was [oursOld, foreignHook] got discarded
+  // wholesale by the old entry, losing the foreign handler at index >= 1.
+  const existing = {
+    hooks: {
+      Stop: [{
+        matcher: '',
+        hooks: [
+          { type: 'command', command: '/h/memory-extract.sh' },
+          { type: 'command', command: '/user/foreign.sh' },
+        ],
+      }],
+    },
+  };
+  const rendered = {
+    hooks: {
+      Stop: [{ matcher: '', hooks: [{ type: 'command', command: '/h/memory-extract.sh', timeout: 30 }] }],
+    },
+  };
+  const merged = mergeHookSettings(existing, rendered);
+  assert.equal(merged.hooks.Stop.length, 2);
+  assert.equal(merged.hooks.Stop[0].hooks[0].command, '/h/memory-extract.sh');
+  assert.equal(merged.hooks.Stop[0].hooks[0].timeout, 30); // rendered wins
+  assert.deepEqual(
+    merged.hooks.Stop[1].hooks.map((h) => h.command),
+    ['/user/foreign.sh'],
+  ); // foreign hook survives, alone in its own entry
+});
+
 test('addPermissions unions and dedupes', () => {
   const s = addPermissions({ permissions: { allow: ['a'] } }, ['a', 'b']);
   assert.deepEqual(s.permissions.allow, ['a', 'b']);
