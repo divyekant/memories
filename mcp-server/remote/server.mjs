@@ -52,22 +52,70 @@ function originGuard(req, res, next) {
 }
 
 // -- Naive in-memory rate limiter (per-IP sliding window) --------------------
-// Single-process deployment; no need for a shared store. Not reset between
-// requests within the window — old hits just age out of the filter.
+// Single-process deployment; no need for a shared store. Bounded two ways so
+// it can't become the attack surface itself:
+//   1. A single flooding IP never grows its own array past `limit` — once at
+//      capacity we reject without pushing, so the array (and the per-request
+//      Array.filter cost) stays capped instead of growing unbounded with
+//      every rejected request.
+//   2. An attacker rotating source IPs to dodge the per-IP bucket can't grow
+//      the Map without bound either: a periodic sweep evicts IPs whose whole
+//      window has aged out, and a hard cap on distinct tracked IPs rejects
+//      requests from *new* IPs once at capacity (fails closed rather than
+//      growing the Map further).
+// `createRateLimiter` is exported so tests can drive it directly (synchronous
+// calls, sweepIntervalMs: 0 to disable the real timer) instead of needing 21
+// real HTTP round-trips per scenario.
 
-function createRateLimiter({ limit = 20, windowMs = 60_000 } = {}) {
+export function createRateLimiter({ limit = 20, windowMs = 60_000, sweepIntervalMs = 60_000, maxKeys = 10_000 } = {}) {
   const hits = new Map();
-  return function rateLimit(req, res, next) {
+
+  function sweep() {
+    const now = Date.now();
+    for (const [ip, timestamps] of hits) {
+      const fresh = timestamps.filter((t) => now - t < windowMs);
+      if (fresh.length === 0) hits.delete(ip);
+      else hits.set(ip, fresh);
+    }
+  }
+
+  let timer = null;
+  if (sweepIntervalMs > 0) {
+    timer = setInterval(sweep, sweepIntervalMs);
+    timer.unref?.();
+  }
+
+  function rateLimit(req, res, next) {
     const ip = req.ip || req.socket?.remoteAddress || "unknown";
     const now = Date.now();
-    const recent = (hits.get(ip) || []).filter((t) => now - t < windowMs);
-    recent.push(now);
-    hits.set(ip, recent);
-    if (recent.length > limit) {
+    const existing = hits.get(ip);
+    const recent = existing ? existing.filter((t) => now - t < windowMs) : [];
+
+    if (recent.length >= limit) {
+      // Already at capacity — reject WITHOUT pushing, so a sustained flood
+      // from one IP keeps its array pinned at `limit` instead of growing
+      // (and re-filtering) on every rejected request too.
+      hits.set(ip, recent);
       return res.status(429).json({ error: "rate_limited" });
     }
+    if (!existing && hits.size >= maxKeys) {
+      // Unknown IP arriving while we're already tracking the max distinct
+      // keys (e.g. an attacker rotating source IPs). Fail closed rather than
+      // let the Map grow without bound.
+      return res.status(429).json({ error: "rate_limited" });
+    }
+
+    recent.push(now);
+    hits.set(ip, recent);
     next();
-  };
+  }
+
+  rateLimit.sweep = sweep;
+  rateLimit.stop = () => { if (timer) clearInterval(timer); };
+  rateLimit.size = () => hits.size;
+  rateLimit.countFor = (ip) => (hits.get(ip) || []).length;
+
+  return rateLimit;
 }
 
 // -- Bearer auth middleware (oauth mode only) --------------------------------
@@ -97,6 +145,7 @@ export function createApp(cfg = {}) {
     memoriesUrl,
     memoriesApiKey,
     fetchImpl,
+    trustProxy = false,
   } = cfg;
 
   const store = createStore(storeDir);
@@ -105,6 +154,18 @@ export function createApp(cfg = {}) {
 
   const app = express();
   app.disable("x-powered-by");
+  // Off by default — req.ip is the raw socket address, so the naive per-IP
+  // rate limiter above buckets correctly with no config. Behind a reverse
+  // proxy (e.g. local Caddy) every client shares that socket address, which
+  // collapses the per-IP bucket into one global bucket — set
+  // REMOTE_MCP_TRUST_PROXY=loopback so Express derives req.ip from
+  // X-Forwarded-For instead. 'loopback' trusts exactly one hop: the XFF value
+  // is only honored when the directly-connecting peer is itself loopback (the
+  // local proxy). Never set this to `true` (trusts every hop in the chain)
+  // unless every hop in front of this process is a proxy you control — an
+  // internet-facing setup with `true` lets any client spoof X-Forwarded-For
+  // to pick its own rate-limit bucket.
+  if (trustProxy) app.set("trust proxy", trustProxy);
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 
@@ -199,6 +260,7 @@ function main() {
     storeDir: process.env.REMOTE_MCP_STORE_DIR || join(homedir(), ".memories", "remote-oauth-store"),
     memoriesUrl: process.env.MEMORIES_URL || "http://localhost:8900",
     memoriesApiKey: process.env.MEMORIES_API_KEY || "",
+    trustProxy: process.env.REMOTE_MCP_TRUST_PROXY || false,
   };
 
   if (authMode === "oauth" && (!cfg.passwordHash || !cfg.tokenSecret)) {

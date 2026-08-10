@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
-import { createApp } from '../remote/server.mjs';
+import { createApp, createRateLimiter } from '../remote/server.mjs';
 import { hashPassword } from '../remote/oauth.mjs';
 
 const MCP_ACCEPT = 'application/json, text/event-stream';
@@ -343,6 +343,165 @@ test('full oauth flow: register -> authorize (GET login page) -> authorize (POST
     const mcpBody = await mcpRes.json();
     const names = mcpBody.result.tools.map((t) => t.name);
     assert.ok(names.includes('memory_search'));
+  } finally {
+    await close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// createRateLimiter — bounded rate limiter (unit tests, no HTTP round-trips)
+// ---------------------------------------------------------------------------
+
+function fakeReqRes(ip) {
+  const req = { ip };
+  let status;
+  let body;
+  const res = {
+    status(code) { status = code; return this; },
+    json(payload) { body = payload; return this; },
+    get _status() { return status; },
+    get _body() { return body; },
+  };
+  return { req, res };
+}
+
+test('rate limiter: a flooding IP is capped at 429 without growing its tracked array past the limit', () => {
+  const limiter = createRateLimiter({ limit: 20, windowMs: 60_000, sweepIntervalMs: 0 });
+  let nextCalled = 0;
+  const next = () => { nextCalled++; };
+
+  let lastRes;
+  for (let i = 0; i < 21; i++) {
+    const { req, res } = fakeReqRes('203.0.113.5');
+    limiter(req, res, next);
+    lastRes = res;
+  }
+  assert.equal(nextCalled, 20, 'only the first 20 requests should pass through');
+  assert.equal(lastRes._status, 429, 'the 21st request is rejected');
+  assert.ok(limiter.countFor('203.0.113.5') <= 20, 'stored array must not grow past the limit');
+
+  // A further flood of rejected requests must not grow the array either.
+  for (let i = 0; i < 50; i++) {
+    const { req, res } = fakeReqRes('203.0.113.5');
+    limiter(req, res, next);
+  }
+  assert.equal(nextCalled, 20, 'still only the original 20 requests ever passed through');
+  assert.ok(limiter.countFor('203.0.113.5') <= 20, 'stored array stays capped after a sustained flood');
+
+  limiter.stop();
+});
+
+test('rate limiter: sweep evicts an idle IP once its whole window has aged out', async () => {
+  const limiter = createRateLimiter({ limit: 20, windowMs: 1, sweepIntervalMs: 0 });
+  const { req, res } = fakeReqRes('203.0.113.9');
+  const next = () => {};
+  limiter(req, res, next);
+  assert.equal(limiter.size(), 1, 'IP is tracked after its first hit');
+
+  await new Promise((resolve) => setTimeout(resolve, 20)); // let the 1ms window fully age out
+  limiter.sweep();
+  assert.equal(limiter.size(), 0, 'sweep drops IPs with no timestamps left in the window');
+
+  limiter.stop();
+});
+
+test('rate limiter: hard cap on distinct tracked IPs fails closed instead of growing without bound', () => {
+  const limiter = createRateLimiter({ limit: 20, windowMs: 60_000, sweepIntervalMs: 0, maxKeys: 2 });
+  const next = () => {};
+
+  const first = fakeReqRes('203.0.113.1');
+  limiter(first.req, first.res, next);
+  const second = fakeReqRes('203.0.113.2');
+  limiter(second.req, second.res, next);
+  assert.equal(limiter.size(), 2, 'two distinct IPs tracked, at the cap');
+
+  const third = fakeReqRes('203.0.113.3');
+  limiter(third.req, third.res, next);
+  assert.equal(third.res._status, 429, 'a new IP arriving at capacity is rejected, not tracked');
+  assert.equal(limiter.size(), 2, 'the Map never grows past maxKeys');
+
+  // An IP already being tracked still gets served normally even at the cap.
+  const firstAgain = fakeReqRes('203.0.113.1');
+  limiter(firstAgain.req, firstAgain.res, next);
+  assert.notEqual(firstAgain.res._status, 429);
+
+  limiter.stop();
+});
+
+// ---------------------------------------------------------------------------
+// trust proxy — per-client rate-limit buckets behind a reverse proxy
+// ---------------------------------------------------------------------------
+
+test('trustProxy "loopback": X-Forwarded-For gives each client its own rate-limit bucket', async () => {
+  const storeDir = await freshStoreDir();
+  const passwordHash = hashPassword('s3cret-pw');
+  const { baseUrl, close } = await startApp({
+    issuer: 'http://issuer.invalid',
+    authMode: 'oauth',
+    passwordHash,
+    tokenSecret: 'test-token-secret',
+    storeDir,
+    memoriesUrl: 'http://unused.invalid',
+    memoriesApiKey: '',
+    trustProxy: 'loopback',
+  });
+  try {
+    const hitToken = (clientIp) => fetch(`${baseUrl}/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Forwarded-For': clientIp,
+      },
+      body: 'grant_type=refresh_token&refresh_token=nope',
+    });
+
+    // These fetches originate from 127.0.0.1 (loopback), the one hop
+    // 'loopback' trusts, so Express derives req.ip from X-Forwarded-For.
+    let lastA;
+    for (let i = 0; i < 21; i++) {
+      lastA = await hitToken('203.0.113.5');
+    }
+    assert.equal(lastA.status, 429, 'client A is rate-limited after 21 rapid requests');
+
+    const resB = await hitToken('203.0.113.6');
+    assert.notEqual(resB.status, 429, 'client B has its own bucket, unaffected by A\'s flood');
+    assert.equal(resB.status, 400); // invalid_grant for the bogus refresh_token — proves the request was processed, not blocked
+  } finally {
+    await close();
+  }
+});
+
+test('trustProxy off (default): every request shares one socket-address bucket', async () => {
+  const storeDir = await freshStoreDir();
+  const passwordHash = hashPassword('s3cret-pw');
+  const { baseUrl, close } = await startApp({
+    issuer: 'http://issuer.invalid',
+    authMode: 'oauth',
+    passwordHash,
+    tokenSecret: 'test-token-secret',
+    storeDir,
+    memoriesUrl: 'http://unused.invalid',
+    memoriesApiKey: '',
+    // trustProxy intentionally omitted — defaults to false
+  });
+  try {
+    const hitToken = (clientIp) => fetch(`${baseUrl}/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Forwarded-For': clientIp,
+      },
+      body: 'grant_type=refresh_token&refresh_token=nope',
+    });
+
+    for (let i = 0; i < 20; i++) {
+      await hitToken('203.0.113.5');
+    }
+    // X-Forwarded-For is ignored without trust proxy, so this "different
+    // client" actually shares the loopback socket bucket with the 20 hits
+    // above and trips the limit on request 21.
+    const res = await hitToken('203.0.113.6');
+    assert.equal(res.status, 429, 'X-Forwarded-For is ignored — same bucket as the prior 20 hits');
   } finally {
     await close();
   }
