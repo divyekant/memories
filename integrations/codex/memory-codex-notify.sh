@@ -1,0 +1,1 @@
+../../mcp-server/assets/codex/memory-codex-notify.sh
