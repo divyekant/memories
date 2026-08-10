@@ -1,0 +1,23 @@
+# Remote MCP server for the claude.ai (Claude web) connector.
+#
+# Minimal image: OAuth 2.1 + Streamable HTTP front door (remote/) fronting the
+# existing Memories backend over MEMORIES_URL. Does not run the backend itself
+# — pair with the `memories` service (see docker-compose.yml).
+FROM node:24-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# index.js lazily imports cli/ (see index.js's dynamic `await import('./cli/index.mjs')`
+# for the `memories` bin) — not exercised by remote/server.mjs, but copied
+# here anyway to keep this image's source layout identical to the npm
+# package's and avoid a second, drifting COPY list.
+COPY index.js lib-tools.mjs ./
+COPY cli ./cli
+COPY remote ./remote
+
+EXPOSE 8910
+
+CMD ["node", "remote/server.mjs"]

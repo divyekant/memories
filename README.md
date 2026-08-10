@@ -711,6 +711,39 @@ ingress:
 
 Now every client — Claude Code on your laptop, Codex, OpenCode, Cursor, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
 
+### Claude web (claude.ai) connector
+
+`mcp-server/remote/` is a small OAuth 2.1 + Streamable HTTP front door that lets you add Memories as a **custom connector** in claude.ai, so Claude in the browser (or mobile) can search and write memories without a local MCP client. It sits in front of your existing `memories` service — it does not replace it.
+
+1. **Generate a password hash and a token secret:**
+
+```bash
+node -e "import('./mcp-server/remote/oauth.mjs').then(m => console.log(m.hashPassword(process.argv[1])))" 'your-password'
+openssl rand -hex 32
+```
+
+The first command prints a single line shaped like `scrypt:<base64-salt>:<base64-hash>` — that's `REMOTE_MCP_PASSWORD_HASH`. The second prints a 64-char hex string — that's `REMOTE_MCP_TOKEN_SECRET`.
+
+2. **Set the env vars** (e.g. in `.env` next to `docker-compose.yml`):
+
+```bash
+REMOTE_MCP_ISSUER=https://mcp.yourdomain.com   # public URL this will be reachable at
+REMOTE_MCP_PASSWORD_HASH=scrypt:...            # from step 1
+REMOTE_MCP_TOKEN_SECRET=...                    # from step 1
+```
+
+Put the service behind a Cloudflare Tunnel (or similar) the same way as the "Setup with Cloudflare Tunnel" section above, pointing at `http://localhost:8910` instead of `8900`.
+
+3. **Start it** (profile-gated, so it won't start on a plain `docker compose up`):
+
+```bash
+docker compose --profile remote-mcp up -d
+```
+
+4. **Add the connector** in claude.ai: Settings → Connectors → Add custom connector → `https://mcp.yourdomain.com/mcp`. Claude walks you through the OAuth login (the password from step 1); once authorized, Memories tools show up in the chat like any other connector.
+
+See `mcp-server/remote/server.mjs` for the full env contract (`REMOTE_MCP_AUTH=none` disables auth for local testing — never expose that mode publicly) and the commented-out `remote-mcp` block in `mcp-server/assets/backend/docker-compose.standalone.yml` for the standalone-deployment equivalent.
+
 ---
 
 ## Multi-Backend Routing (Optional)

@@ -38,6 +38,35 @@ services:
       retries: 3
       start_period: 15s
 
+  # Remote MCP server for the claude.ai (Claude web) connector — commented out
+  # by default. Standalone deployments use this pre-built image layout
+  # (no repo checkout), so there is no local build context for
+  # mcp-server/Dockerfile.remote to resolve here; this block is left as
+  # reference only until a published image exists (e.g. from a future
+  # ghcr.io registry build). See docker-compose.yml (repo checkout) for the
+  # working version, and README's "Claude web (claude.ai) connector" section
+  # for setup.
+  # remote-mcp:
+  #   image: ghcr.io/divyekant/memories-remote-mcp:${MEMORIES_IMAGE_TAG:-latest}
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - memories
+  #   ports:
+  #     - "127.0.0.1:8910:8910"
+  #   volumes:
+  #     - remote_mcp_data:/data/remote-mcp
+  #   environment:
+  #     - REMOTE_MCP_ISSUER=${REMOTE_MCP_ISSUER:-http://localhost:8910}
+  #     - REMOTE_MCP_PORT=8910
+  #     - REMOTE_MCP_AUTH=${REMOTE_MCP_AUTH:-oauth}
+  #     - REMOTE_MCP_PASSWORD_HASH=${REMOTE_MCP_PASSWORD_HASH:-}
+  #     - REMOTE_MCP_TOKEN_SECRET=${REMOTE_MCP_TOKEN_SECRET:-}
+  #     - REMOTE_MCP_STORE_DIR=/data/remote-mcp
+  #     - REMOTE_MCP_TRUST_PROXY=${REMOTE_MCP_TRUST_PROXY:-}
+  #     - MEMORIES_URL=http://memories:8000
+  #     - MEMORIES_API_KEY=${API_KEY:-}
+
 volumes:
   qdrant_data:
   memories_data:
+  # remote_mcp_data:  # uncomment alongside the remote-mcp service above
