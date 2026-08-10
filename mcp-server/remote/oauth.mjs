@@ -272,10 +272,21 @@ export function createOAuth({ issuer, passwordHash, tokenSecret, store }) {
     }
 
     // A successful authorization_code grant means a human completed the
-    // login+consent form for this client — mark it activated so it's never
-    // an eviction candidate for a registration flood (see store.mjs's
-    // saveClient/markClientActive).
-    await store.markClientActive(record.cid);
+    // login+consent form for this client — activate it so it's never an
+    // eviction candidate for a registration flood (see store.mjs's
+    // saveClient/markClientActive). Uses activateOrCreate, not
+    // markClientActive: a concurrent /register flood can evict this SAME
+    // client between /authorize issuing the code and this exchange — codes
+    // live in their own directory, entirely separate from the client
+    // registry, so takeCode() above still succeeded even though the
+    // client record may already be gone. markClientActive would silently
+    // no-op against a missing client, leaving it permanently unresurrected
+    // and perpetually flood-evictable despite the user having just
+    // consented. record.redirect_uri was already validated against this
+    // client's registered redirect_uris back at /authorize, and is
+    // re-checked against body.redirect_uri two lines above this comment,
+    // so it's safe to use as the sole redirect_uri on a recreated record.
+    await store.activateOrCreate(record.cid, { redirectUri: record.redirect_uri });
 
     const { accessToken } = issueTokens(record.cid);
     const refreshToken = randomBytes(32).toString('base64url');

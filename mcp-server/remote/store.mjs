@@ -221,6 +221,57 @@ export function createStore(dir) {
     return result.ok;
   }
 
+  // Like markClientActive, but resurrects a MISSING client instead of
+  // no-op'ing. Needed for the authorize->token window: a client that just
+  // finished /authorize (code issued, but not yet activated — activation
+  // only happens on a successful /token exchange) can be evicted by a
+  // concurrent /register flood before /token runs, because outstanding
+  // codes live in codesDir, entirely separate from the client registry —
+  // takeCode() still succeeds against an evicted client's code. If
+  // grantAuthorizationCode then called plain markClientActive(cid), it
+  // would find no client (current === null), its updateFn would return
+  // `undefined`, and upsertClient would silently no-op — leaving the
+  // client permanently absent and perpetually flood-evictable even though
+  // a human just completed login+consent for it (PR 83 follow-up).
+  //
+  // Recreating a minimal activated record here is safe specifically
+  // because the caller is grantAuthorizationCode: the code was only ever
+  // issued by /authorize after validating client_id + redirect_uri
+  // against the (then-existing) client record, and grantAuthorizationCode
+  // re-validates the redeemed redirect_uri against the code record before
+  // calling this. `redirectUri` is that already-twice-validated value, not
+  // caller-supplied at this point.
+  async function activateOrCreate(clientId, { redirectUri }) {
+    const result = await upsertClient(clientId, (current) => {
+      if (current) {
+        return { ...current, activated_at: current.activated_at || Date.now() };
+      }
+      return {
+        client_id: clientId,
+        redirect_uris: [redirectUri],
+        client_name: '(reactivated)',
+        token_endpoint_auth_method: 'none',
+        created_at: Date.now(),
+        activated_at: Date.now(),
+      };
+    });
+    if (!result.ok) {
+      // Registry is at MAX_CLIENTS and every occupant is already activated
+      // — there's no slot to resurrect this client into. Don't fail the
+      // grant over it: the user already consented and the tokens being
+      // issued are valid regardless of whether the client record persists.
+      // The cost is narrow — this client stays vulnerable to the same
+      // eviction race on its NEXT authorize->token window — not a security
+      // regression versus today, just an unresolved edge case logged for
+      // visibility.
+      console.warn(
+        `[remote-mcp] activateOrCreate: registry full of activated clients — could not persist ` +
+        `resurrected client ${clientId}; proceeding with token issuance anyway`
+      );
+    }
+    return result.ok;
+  }
+
   async function saveCode(code, data) {
     await ensureDirs();
     const record = { ...data, exp: Date.now() + CODE_TTL_MS };
@@ -251,5 +302,15 @@ export function createStore(dir) {
     return data;
   }
 
-  return { getClient, saveClient, upsertClient, markClientActive, saveCode, takeCode, saveRefresh, takeRefresh };
+  return {
+    getClient,
+    saveClient,
+    upsertClient,
+    markClientActive,
+    activateOrCreate,
+    saveCode,
+    takeCode,
+    saveRefresh,
+    takeRefresh,
+  };
 }

@@ -625,6 +625,139 @@ test(
 );
 
 // ---------------------------------------------------------------------------
+// PR 83 follow-up #3, IMPORTANT: activation window — a client that finishes
+// /authorize but hasn't yet redeemed its code at /token can be evicted by a
+// concurrent /register flood (codes live in a separate directory from the
+// client registry, so an evicted client's outstanding code still redeems
+// fine). grantAuthorizationCode must resurrect-and-activate rather than
+// silently no-op via markClientActive, or the client comes back from
+// /token with valid tokens but stays permanently absent from the registry
+// — flood-evictable forever despite the user having just consented.
+// ---------------------------------------------------------------------------
+
+test('store: activateOrCreate resurrects a missing client with the given redirect_uri, activated', async () => {
+  const store = await freshStore();
+  assert.equal(await store.getClient('gone'), null);
+
+  const ok = await store.activateOrCreate('gone', { redirectUri: 'https://claude.ai/cb' });
+  assert.equal(ok, true);
+
+  const resurrected = await store.getClient('gone');
+  assert.equal(resurrected.client_id, 'gone');
+  assert.deepEqual(resurrected.redirect_uris, ['https://claude.ai/cb']);
+  assert.equal(typeof resurrected.activated_at, 'number');
+  assert.equal(typeof resurrected.created_at, 'number');
+});
+
+test('store: activateOrCreate on an EXISTING client just activates it — does not overwrite redirect_uris', async () => {
+  const store = await freshStore();
+  await store.saveClient({
+    client_id: 'c1',
+    redirect_uris: ['https://claude.ai/cb', 'https://claude.ai/cb2'],
+    created_at: 12345,
+  });
+
+  const ok = await store.activateOrCreate('c1', { redirectUri: 'https://claude.ai/cb' });
+  assert.equal(ok, true);
+
+  const current = await store.getClient('c1');
+  assert.deepEqual(current.redirect_uris, ['https://claude.ai/cb', 'https://claude.ai/cb2']);
+  assert.equal(current.created_at, 12345, 'created_at must be untouched for an existing record');
+  assert.equal(typeof current.activated_at, 'number');
+});
+
+test('store: activateOrCreate on a full registry of activated clients logs and returns false, without throwing', async () => {
+  const store = await freshStore();
+  for (let i = 0; i < 100; i++) {
+    await store.saveClient({ client_id: `activated-${i}`, redirect_uris: ['https://claude.ai/cb'] });
+    await store.markClientActive(`activated-${i}`);
+  }
+
+  const originalWarn = console.warn;
+  let warned = '';
+  console.warn = (...args) => { warned += args.join(' '); };
+  let ok;
+  try {
+    ok = await store.activateOrCreate('newcomer', { redirectUri: 'https://claude.ai/cb' });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(ok, false);
+  assert.match(warned, /registry full/i);
+  assert.equal(await store.getClient('newcomer'), null, 'not persisted, but must not have thrown');
+});
+
+test(
+  'reviewer repro: a client evicted between /authorize and /token still gets tokens, and comes back activated',
+  async () => {
+    const { oauth, store } = await freshOAuth();
+
+    // 1. Register the legit client (never activated yet — activation only
+    // happens on a successful /token exchange, not at /authorize).
+    const client = await registerClient(oauth, 'https://claude.ai/api/mcp/callback');
+
+    // 2. Complete /authorize — issues a code without activating anything.
+    const { verifier, challenge } = pkcePair();
+    const authorizeRes = await oauth.handleAuthorize({
+      password: PASSWORD,
+      client_id: client.client_id,
+      redirect_uri: client.redirect_uris[0],
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    assert.ok(authorizeRes.redirect, 'expected a redirect with ?code=');
+    const code = new URL(authorizeRes.redirect).searchParams.get('code');
+    assert.ok(code);
+
+    // Sanity: still never-activated right after /authorize.
+    assert.equal((await store.getClient(client.client_id)).activated_at, undefined);
+
+    // 3. A registration flood evicts it. Outstanding codes live in their
+    // own directory, untouched by client-registry eviction, so the code
+    // issued above stays redeemable throughout.
+    for (let i = 0; i < 150; i++) {
+      await oauth.register({ redirect_uris: [`https://claude.ai/flood-cb-${i}`] });
+    }
+    assert.equal(
+      await store.getClient(client.client_id),
+      null,
+      'sanity: the flood evicted the never-activated client before /token ran'
+    );
+
+    // 4. /token still succeeds — grantAuthorizationCode trusts the code
+    // record's cid, not a live client-registry lookup.
+    const tokenRes = await oauth.token({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: client.redirect_uris[0],
+      client_id: client.client_id,
+      code_verifier: verifier,
+    });
+    assert.equal(tokenRes.status, 200);
+    assert.ok(tokenRes.body.access_token);
+
+    // 5. The fix: the client must be resurrected and activated — not left
+    // permanently absent, which would make it flood-evictable forever
+    // despite the user having just consented.
+    const resurrected = await store.getClient(client.client_id);
+    assert.ok(resurrected, 'client must be resurrected after a successful token exchange');
+    assert.equal(typeof resurrected.activated_at, 'number');
+    assert.deepEqual(resurrected.redirect_uris, [client.redirect_uris[0]]);
+
+    // 6. And it must actually be flood-proof now: another wave cannot
+    // evict it, because it's activated.
+    for (let i = 0; i < 50; i++) {
+      await oauth.register({ redirect_uris: [`https://claude.ai/flood-wave-2-${i}`] });
+    }
+    assert.ok(
+      await store.getClient(client.client_id),
+      'an activated (resurrected) client must survive a further flood'
+    );
+  }
+);
+
+// ---------------------------------------------------------------------------
 // authorizePage (GET /authorize)
 // ---------------------------------------------------------------------------
 
