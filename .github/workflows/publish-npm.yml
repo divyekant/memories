@@ -2,6 +2,7 @@ name: Publish memories-mcp to npm
 on:
   release:
     types: [published]
+  workflow_dispatch:   # manual re-publish (e.g. bootstrap first publish)
 permissions:
   contents: read
   id-token: write   # OIDC provenance
@@ -16,4 +17,9 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm install -g npm@latest
+      # TEMPORARY: token auth for the bootstrap publish (package must exist
+      # before a trusted publisher can be configured). Remove the env line
+      # and the NODE_AUTH_TOKEN secret once trusted publishing is set up.
       - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
