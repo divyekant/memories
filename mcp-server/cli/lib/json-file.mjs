@@ -12,7 +12,19 @@ export async function writeJson(path, obj) {
 }
 
 export function mergeHookSettings(settings, rendered) {
-  return { ...settings, hooks: { ...(settings.hooks ?? {}), ...rendered.hooks } };
+  const events = new Set([...Object.keys(rendered.hooks ?? {}), ...Object.keys(settings.hooks ?? {})]);
+  const hooks = {};
+  for (const k of events) {
+    const combined = [...(rendered.hooks?.[k] ?? []), ...(settings.hooks?.[k] ?? [])];
+    const seen = new Set();
+    hooks[k] = combined.filter((e) => {
+      const key = e.hooks?.[0]?.command ?? JSON.stringify(e);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+  return { ...settings, hooks };
 }
 
 export function addPermissions(settings, tools) {

@@ -18,13 +18,17 @@ test('writeJson creates parent dirs and round-trips', async () => {
   assert.ok((await readFile(p, 'utf8')).endsWith('\n'));
 });
 
-test('mergeHookSettings replaces per-event, preserves other keys', () => {
-  const existing = { model: 'opus', hooks: { Stop: [{ old: true }], SessionEnd: [{ keep: true }] } };
-  const rendered = { hooks: { Stop: [{ new: true }], SessionStart: [{ added: true }] } };
-  const merged = mergeHookSettings(existing, rendered);
-  assert.deepEqual(merged.hooks.Stop, [{ new: true }]);
-  assert.deepEqual(merged.hooks.SessionEnd, [{ keep: true }]);
-  assert.deepEqual(merged.hooks.SessionStart, [{ added: true }]);
+test('mergeHookSettings unions per-event, ours first, foreign preserved', () => {
+  const foreign = { matcher: '', hooks: [{ type: 'command', command: '/user/own-hook.sh' }] };
+  const oursOld = { matcher: '', hooks: [{ type: 'command', command: '/h/memory-extract.sh', timeout: 20 }] };
+  const oursNew = { matcher: '', hooks: [{ type: 'command', command: '/h/memory-extract.sh', timeout: 30 }] };
+  const existing = { model: 'opus', hooks: { Stop: [foreign, oursOld], SessionEnd: [{ matcher: '', hooks: [{ type: 'command', command: '/x/keep.sh' }] }] } };
+  const merged = mergeHookSettings(existing, { hooks: { Stop: [oursNew], SessionStart: [{ matcher: '', hooks: [{ type: 'command', command: '/h/memory-recall.sh' }] }] } });
+  assert.equal(merged.hooks.Stop.length, 2); // ours (refreshed) + foreign, deduped by command
+  assert.equal(merged.hooks.Stop[0].hooks[0].timeout, 30); // rendered wins the dedupe
+  assert.ok(merged.hooks.Stop.some((e) => e.hooks[0].command === '/user/own-hook.sh'));
+  assert.equal(merged.hooks.SessionEnd[0].hooks[0].command, '/x/keep.sh');
+  assert.equal(merged.hooks.SessionStart.length, 1);
   assert.equal(merged.model, 'opus');
 });
 

@@ -51,6 +51,16 @@ test('install preserves an existing foreign mcpServers.memories entry', async ()
   assert.equal(settings.mcpServers.memories.command, 'node'); // skip-if-exists preserved
 });
 
+test('install preserves a foreign Stop hook alongside the memories one', async () => {
+  const ctx = await freshCtx();
+  const foreign = { matcher: '', hooks: [{ type: 'command', command: '/user/own-hook.sh' }] };
+  await writeJson(join(ctx.home, '.claude/settings.json'), { hooks: { Stop: [foreign] } });
+  await adapter.install(ctx);
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  assert.ok(settings.hooks.Stop.some((e) => e.hooks[0].command === '/user/own-hook.sh'));
+  assert.ok(settings.hooks.Stop.some((e) => e.hooks[0].command === join(ctx.home, '.claude/hooks/memory/memory-extract.sh')));
+});
+
 test('status false on fresh home, true after install', async () => {
   const ctx = await freshCtx();
   assert.equal((await adapter.status(ctx)).installed, false);

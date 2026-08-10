@@ -1,6 +1,6 @@
 import { chmod, copyFile, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readJson, writeJson, addPermissions } from '../lib/json-file.mjs';
+import { readJson, writeJson, addPermissions, mergeHookSettings } from '../lib/json-file.mjs';
 import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS } from '../lib/hooks.mjs';
 import { appendMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../lib/toml.mjs';
 
@@ -29,22 +29,6 @@ const paths = (ctx) => ({
   config: join(ctx.home, '.codex/config.toml'),
 });
 
-function mergeCodexHooks(existing, rendered) {
-  const events = new Set([...Object.keys(rendered.hooks ?? {}), ...Object.keys(existing.hooks ?? {})]);
-  const hooks = {};
-  for (const k of events) {
-    const combined = [...(rendered.hooks?.[k] ?? []), ...(existing.hooks?.[k] ?? [])];
-    const seen = new Set();
-    hooks[k] = combined.filter((e) => {
-      const key = e.hooks?.[0]?.command ?? JSON.stringify(e);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }
-  return { ...existing, hooks };
-}
-
 export async function install(ctx) {
   const p = paths(ctx);
 
@@ -55,7 +39,7 @@ export async function install(ctx) {
   const hooksConfig = JSON.parse(await readFile(join(p.hooksSrc, 'hooks.json'), 'utf8'));
   const rendered = renderHooksJson(hooksConfig, p.hooksDest);
   const existingHooks = await readJson(p.hooksJson);
-  await writeJson(p.hooksJson, mergeCodexHooks(existingHooks, rendered));
+  await writeJson(p.hooksJson, mergeHookSettings(existingHooks, rendered));
 
   let settings = await readJson(p.settings);
   settings = addPermissions(settings, READONLY_MCP_TOOLS);
