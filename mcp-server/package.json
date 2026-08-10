@@ -3,6 +3,11 @@
   "version": "5.8.0",
   "description": "Memories — agent-agnostic memory for AI coding agents. MCP server + installer CLI.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/divyekant/memories.git",
+    "directory": "mcp-server"
+  },
   "type": "module",
   "main": "index.js",
   "bin": { "memories-mcp": "index.js", "memories": "cli/index.mjs" },
