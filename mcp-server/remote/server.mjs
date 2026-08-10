@@ -155,6 +155,15 @@ export function validateIssuerScheme(issuerStr, { allowInsecure = false } = {}) 
 
 // -- Bearer auth middleware (oauth mode only) --------------------------------
 
+// Wraps an async Express route handler so a rejected promise reaches
+// Express's error pipeline via `next(err)`. Express 4 only forwards thrown
+// *synchronous* errors automatically — an async handler that rejects (e.g. a
+// prototype-polluted client_id producing `undefined.includes(...)` deep
+// inside oauth.mjs) instead produces an unhandled promise rejection, which
+// crashes the whole process and takes every other in-flight request down
+// with it. Every async route below is wrapped in this.
+const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
 function bearerAuth(oauth, issuer) {
   return (req, res, next) => {
     const header = req.headers.authorization || "";
@@ -166,6 +175,23 @@ function bearerAuth(oauth, issuer) {
     }
     next();
   };
+}
+
+// Sentinel strings that mean "disable trust proxy" when REMOTE_MCP_TRUST_PROXY
+// is set explicitly rather than left unset. 'false' looks like the obvious
+// way to turn a boolean-ish setting off, but env vars are always strings —
+// passing the string "false" straight to `app.set("trust proxy", ...)`
+// makes Express hand it to proxy-addr, which only recognizes preset names
+// ('loopback', 'linklocal', 'uniquelocal') or IP/CIDR values and throws on
+// anything else, crashing startup. 'off' is the documented spelling; '' is
+// accepted too since that's what an emptied env var resolves to.
+const TRUST_PROXY_DISABLE_VALUES = new Set(['off', 'false', '']);
+
+function resolveTrustProxy(trustProxy) {
+  if (typeof trustProxy === 'string' && TRUST_PROXY_DISABLE_VALUES.has(trustProxy.trim().toLowerCase())) {
+    return false;
+  }
+  return trustProxy;
 }
 
 // -- App ----------------------------------------------------------------------
@@ -212,7 +238,8 @@ export function createApp(cfg = {}) {
   // hop in the chain) unless every hop in front of this process is a proxy
   // you control — an internet-facing setup with `true` lets any client spoof
   // X-Forwarded-For to pick its own rate-limit bucket.
-  if (trustProxy) app.set("trust proxy", trustProxy);
+  const resolvedTrustProxy = resolveTrustProxy(trustProxy);
+  if (resolvedTrustProxy) app.set("trust proxy", resolvedTrustProxy);
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 
@@ -229,32 +256,38 @@ export function createApp(cfg = {}) {
     res.json(oauth.metadataPR());
   });
 
-  app.post("/register", rateLimit, async (req, res) => {
+  app.post("/register", rateLimit, ah(async (req, res) => {
     const r = await oauth.register(req.body);
     res.status(r.status).json(r.body);
-  });
+  }));
 
-  app.get("/authorize", rateLimit, async (req, res) => {
+  app.get("/authorize", rateLimit, ah(async (req, res) => {
     const r = await oauth.authorizePage(req.query);
     res.status(r.status).type("html").send(r.body);
-  });
+  }));
 
-  app.post("/authorize", rateLimit, async (req, res) => {
+  app.post("/authorize", rateLimit, ah(async (req, res) => {
     const r = await oauth.handleAuthorize(req.body);
     if (r.redirect) return res.redirect(302, r.redirect);
     res.status(r.status).type("html").send(r.body);
-  });
+  }));
 
-  app.post("/token", rateLimit, async (req, res) => {
+  app.post("/token", rateLimit, ah(async (req, res) => {
     const r = await oauth.token(req.body);
+    // RFC 6749 §5.1 — token responses carry bearer material and must never
+    // be cached (by the client, or by any intermediary). Applied to both
+    // success and error bodies rather than branching on r.status: an
+    // error response can still leak grant-shaped information and there's
+    // no upside to caching it either.
+    res.set({ "Cache-Control": "no-store", "Pragma": "no-cache" });
     res.status(r.status).json(r.body);
-  });
+  }));
 
   // -- MCP: stateless StreamableHTTPServerTransport, fresh server per POST -
   const mcpGuards = [originGuard];
   if (authMode === "oauth") mcpGuards.push(bearerAuth(oauth, issuer));
 
-  app.post("/mcp", ...mcpGuards, async (req, res) => {
+  app.post("/mcp", ...mcpGuards, ah(async (req, res) => {
     const server = buildServer({
       url: memoriesUrl,
       apiKey: memoriesApiKey,
@@ -287,7 +320,7 @@ export function createApp(cfg = {}) {
         });
       }
     }
-  });
+  }));
 
   // Stateless mode has no session to GET (resume) or DELETE (terminate) —
   // 405 per SDK guidance for the stateless pattern.
@@ -300,6 +333,18 @@ export function createApp(cfg = {}) {
   };
   app.get("/mcp", ...mcpGuards, methodNotAllowed);
   app.delete("/mcp", ...mcpGuards, methodNotAllowed);
+
+  // Terminal error middleware — catches anything `ah()` forwards via
+  // next(err) (or that Express itself catches from a synchronous throw).
+  // Generic message only: an unhandled error's `.message`/`.stack` can
+  // contain file paths or internal state, and this runs for every route
+  // including unauthenticated ones, so nothing error-specific gets echoed
+  // back to the caller. Logged server-side for operators instead.
+  app.use((err, req, res, next) => {
+    console.error("[remote-mcp] unhandled error", err);
+    if (res.headersSent) return next(err);
+    res.status(500).json({ error: "internal_server_error" });
+  });
 
   return app;
 }

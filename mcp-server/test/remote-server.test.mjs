@@ -416,6 +416,9 @@ test('full oauth flow: register -> authorize (GET login page) -> authorize (POST
     const mcpBody = await mcpRes.json();
     const names = mcpBody.result.tools.map((t) => t.name);
     assert.ok(names.includes('memory_search'));
+    // RFC 6749 §5.1 — token responses must never be cached (bearer material).
+    assert.equal(tokenRes.headers.get('cache-control'), 'no-store');
+    assert.equal(tokenRes.headers.get('pragma'), 'no-cache');
   } finally {
     await close();
   }
@@ -614,4 +617,71 @@ test('429 after exceeding the rate limit on /register', async () => {
   } finally {
     await close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Prototype-pollution client_id — must not crash the server (P1)
+// ---------------------------------------------------------------------------
+
+for (const pollutingId of ['toString', 'constructor', '__proto__']) {
+  test(`GET /authorize?client_id=${pollutingId} does not crash the server — 4xx, and the app keeps serving`, async () => {
+    const { baseUrl, close } = await oauthModeApp();
+    try {
+      const params = new URLSearchParams({
+        client_id: pollutingId,
+        redirect_uri: 'https://claude.ai/cb',
+        code_challenge: 'x',
+        code_challenge_method: 'S256',
+      });
+      const res = await fetch(`${baseUrl}/authorize?${params}`);
+      assert.ok(res.status >= 400 && res.status < 500, `expected 4xx, got ${res.status}`);
+
+      // The process must still be alive and serving — a prior crash would
+      // manifest as this follow-up request failing (connection refused).
+      const health = await fetch(`${baseUrl}/healthz`);
+      assert.equal(health.status, 200);
+    } finally {
+      await close();
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// trust proxy sentinel values — 'off'/'false' must disable, never throw
+// ---------------------------------------------------------------------------
+
+test('trustProxy "off" disables trust proxy without throwing', async () => {
+  const app = createApp({
+    authMode: 'none',
+    storeDir: await freshStoreDir(),
+    trustProxy: 'off',
+  });
+  assert.ok(!app.get('trust proxy'));
+});
+
+test('trustProxy "false" (string) disables trust proxy without throwing (previously crashed proxy-addr)', async () => {
+  const app = createApp({
+    authMode: 'none',
+    storeDir: await freshStoreDir(),
+    trustProxy: 'false',
+  });
+  assert.ok(!app.get('trust proxy'));
+});
+
+test('trustProxy "" (empty string) disables trust proxy without throwing', async () => {
+  const app = createApp({
+    authMode: 'none',
+    storeDir: await freshStoreDir(),
+    trustProxy: '',
+  });
+  assert.ok(!app.get('trust proxy'));
+});
+
+test('trustProxy "OFF" (case-insensitive) disables trust proxy', async () => {
+  const app = createApp({
+    authMode: 'none',
+    storeDir: await freshStoreDir(),
+    trustProxy: 'OFF',
+  });
+  assert.ok(!app.get('trust proxy'));
 });

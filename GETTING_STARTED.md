@@ -315,7 +315,7 @@ docker compose --profile remote-mcp up -d
 
 Then in claude.ai: Settings → Connectors → Add custom connector → `https://<your-domain>/mcp`, and log in with the password from step 1. See the [Remote Access](README.md#remote-access) section in the README for the full walkthrough (tunnel setup, env vars, standalone-deployment notes).
 
-Behind Caddy/a tunnel (the topology above), leave `REMOTE_MCP_TRUST_PROXY` at its `docker-compose.yml` default of `uniquelocal` so the per-IP rate limiter sees real client IPs instead of one shared bridge-IP bucket; set it to empty to disable if you're running the server with no proxy in front of it. See the README's `REMOTE_MCP_TRUST_PROXY` note for details.
+Behind Caddy/a tunnel (the topology above), leave `REMOTE_MCP_TRUST_PROXY` at its `docker-compose.yml` default of `uniquelocal` so the per-IP rate limiter sees real client IPs instead of one shared bridge-IP bucket; set `REMOTE_MCP_TRUST_PROXY=off` to disable if you're running the server with no proxy in front of it. See the README's `REMOTE_MCP_TRUST_PROXY` note for details.
 
 ## 15) Where to go next
 
