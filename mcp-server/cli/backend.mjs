@@ -25,6 +25,7 @@ export async function bootstrapBackend(ctx) {
     assetsDir,
     url,
     extract,
+    apiKey,
     execImpl = defaultExecImpl,
     fetchImpl = globalThis.fetch,
     sleepImpl = defaultSleepImpl,
@@ -44,6 +45,15 @@ export async function bootstrapBackend(ctx) {
     if (extract.keyVar && extract.keyVal) {
       await ensureEnvVar(envPath, extract.keyVar, extract.keyVal);
     }
+  }
+
+  // The bundled compose file reads API_KEY to gate the backend itself (it
+  // publishes the port). MEMORIES_API_KEY only configures CLIENTS to send
+  // that key — without also writing API_KEY here, a user-supplied --api-key
+  // would configure clients while the backend it provisions stays
+  // unauthenticated.
+  if (apiKey) {
+    await ensureEnvVar(envPath, 'API_KEY', apiKey);
   }
 
   // `docker compose` only auto-reads a file literally named `.env` in the

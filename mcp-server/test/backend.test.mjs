@@ -52,6 +52,49 @@ test('bootstrapBackend copies compose, writes env, runs docker compose, polls he
   assert.ok(calls.some((c) => c.includes('--env-file') && c[c.indexOf('--env-file') + 1] === envPath));
 });
 
+test('bootstrapBackend writes API_KEY alongside extraction vars when ctx.apiKey is set', async () => {
+  // Regression test: the bundled compose reads API_KEY to gate the backend,
+  // but bootstrapBackend only wrote extraction vars — a user-supplied
+  // --api-key configured clients while the provisioned backend stayed
+  // unauthenticated on a published port.
+  const home = await mkdtemp(join(tmpdir(), 'mem-be-'));
+  let healthy = false;
+  const ctx = {
+    home, assetsDir, url: 'http://localhost:8900', dryRun: false, log: () => {},
+    apiKey: 'expected-backend-secret',
+    extract: { provider: 'anthropic', keyVar: 'ANTHROPIC_API_KEY', keyVal: 'sk-test' },
+    execImpl: async () => { healthy = true; return { stdout: '' }; },
+    fetchImpl: async () => healthy
+      ? new Response(JSON.stringify({ total_memories: 0 }), { status: 200 })
+      : (() => { throw new Error('down'); })(),
+    sleepImpl: async () => {},
+  };
+  await bootstrapBackend(ctx);
+  const env = await readFile(join(home, '.config/memories/env'), 'utf8');
+  assert.ok(env.includes('API_KEY="expected-backend-secret"'));
+  assert.ok(env.includes('EXTRACT_PROVIDER="anthropic"'));
+});
+
+test('bootstrapBackend writes no API_KEY line when ctx.apiKey is empty', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-be-'));
+  let healthy = false;
+  const ctx = {
+    home, assetsDir, url: 'http://localhost:8900', dryRun: false, log: () => {},
+    extract: { provider: 'anthropic', keyVar: 'ANTHROPIC_API_KEY', keyVal: 'sk-test' },
+    execImpl: async () => { healthy = true; return { stdout: '' }; },
+    fetchImpl: async () => healthy
+      ? new Response(JSON.stringify({ total_memories: 0 }), { status: 200 })
+      : (() => { throw new Error('down'); })(),
+    sleepImpl: async () => {},
+  };
+  await bootstrapBackend(ctx);
+  const env = await readFile(join(home, '.config/memories/env'), 'utf8');
+  // Regex, not includes() — "ANTHROPIC_API_KEY=" contains "API_KEY=" as a
+  // substring, so a naive includes() check would false-negative here.
+  assert.ok(!/(^|\n)API_KEY=/.test(env));
+  assert.ok(env.includes('ANTHROPIC_API_KEY="sk-test"'));
+});
+
 test('bootstrapBackend omits --env-file when no env file was created (no extract)', async () => {
   const home = await mkdtemp(join(tmpdir(), 'mem-be-'));
   const calls = [];
