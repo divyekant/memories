@@ -15,6 +15,12 @@ async function freshCtx() {
   return { home, assetsDir, url: 'http://localhost:8900', apiKey: 'k', dryRun: false, log: () => {} };
 }
 
+function rootPrefix(toml) {
+  const lines = toml.split('\n');
+  const firstSection = lines.findIndex((l) => /^\s*\[/.test(l));
+  return lines.slice(0, firstSection === -1 ? lines.length : firstSection).join('\n');
+}
+
 test('install writes hooks, hooks.json, settings perms, config.toml blocks', async () => {
   const ctx = await freshCtx();
   await adapter.install(ctx);
@@ -31,6 +37,10 @@ test('install writes hooks, hooks.json, settings perms, config.toml blocks', asy
   assert.ok(toml.includes('MEMORIES_CLIENT = "codex"'));
   assert.ok(toml.includes('# BEGIN Memories Codex developer instructions'));
   assert.ok(toml.includes('memory_search'));
+  assert.ok(
+    rootPrefix(toml).includes('developer_instructions'),
+    'developer_instructions must be in the TOML root table, before any [section]',
+  );
 });
 
 test('install is idempotent on config.toml', async () => {
@@ -38,7 +48,12 @@ test('install is idempotent on config.toml', async () => {
   await adapter.install(ctx);
   const snap = await readFile(join(ctx.home, '.codex/config.toml'), 'utf8');
   await adapter.install(ctx);
-  assert.equal(await readFile(join(ctx.home, '.codex/config.toml'), 'utf8'), snap);
+  const toml = await readFile(join(ctx.home, '.codex/config.toml'), 'utf8');
+  assert.equal(toml, snap);
+  assert.ok(
+    rootPrefix(toml).includes('developer_instructions'),
+    'developer_instructions must still be in the TOML root table after a second install',
+  );
 });
 
 test('install respects a pre-existing unmanaged [mcp_servers.memories]', async () => {
@@ -50,6 +65,10 @@ test('install respects a pre-existing unmanaged [mcp_servers.memories]', async (
   assert.ok(!toml.includes('# BEGIN Memories Codex MCP')); // no duplicate block
   assert.ok(toml.includes('command = "node"'));
   assert.ok(toml.includes('MEMORIES_CLIENT = "codex"')); // env key still ensured
+  assert.ok(
+    rootPrefix(toml).includes('developer_instructions'),
+    'developer_instructions must land at root even when the file already starts with a [section] on line 1',
+  );
 });
 
 test('uninstall removes blocks and hooks but keeps foreign toml', async () => {

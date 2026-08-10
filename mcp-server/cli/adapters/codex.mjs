@@ -2,7 +2,7 @@ import { chmod, copyFile, mkdir, readFile, rm, writeFile, access } from 'node:fs
 import { join } from 'node:path';
 import { readJson, writeJson, addPermissions } from '../lib/json-file.mjs';
 import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS } from '../lib/hooks.mjs';
-import { appendMarkedBlock, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../lib/toml.mjs';
+import { appendMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../lib/toml.mjs';
 
 const MARKER_NOTIFY = 'Memories Codex notify';
 const MARKER_MCP = 'Memories Codex MCP';
@@ -77,7 +77,7 @@ MEMORIES_CLIENT = "codex"`;
   toml = ensureTomlStringKey(toml, 'mcp_servers.memories.env', 'MEMORIES_CLIENT', 'codex');
 
   if (!hasTomlKey(toml, 'developer_instructions')) {
-    toml = appendMarkedBlock(toml, MARKER_DEV, DEVELOPER_INSTRUCTIONS);
+    toml = insertMarkedBlockAtRoot(toml, MARKER_DEV, DEVELOPER_INSTRUCTIONS);
   }
   await writeFile(p.config, toml);
 

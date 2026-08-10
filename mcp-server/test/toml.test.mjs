@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendMarkedBlock, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../cli/lib/toml.mjs';
+import { appendMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../cli/lib/toml.mjs';
 
 test('appendMarkedBlock appends once, idempotent', () => {
   const once = appendMarkedBlock('a = 1\n', 'Memories Codex MCP', '[mcp_servers.memories]\ncommand = "npx"');
@@ -42,6 +42,28 @@ test('ensureTomlStringKey creates missing section at EOF', () => {
 test('tomlEscape escapes backslashes then quotes', () => {
   assert.equal(tomlEscape('a"b\\c'), 'a\\"b\\\\c'); // input a"b\c → a\"b\\c
   assert.equal(tomlEscape('plain'), 'plain');
+});
+
+test('insertMarkedBlockAtRoot inserts before the first section', () => {
+  const text = '[mcp_servers.memories]\ncommand = "npx"\n\n[other]\nz = 1\n';
+  const out = insertMarkedBlockAtRoot(text, 'Dev Instructions', 'developer_instructions = "x"');
+  const firstSectionIdx = out.split('\n').findIndex((l) => /^\s*\[/.test(l));
+  const rootPart = out.split('\n').slice(0, firstSectionIdx).join('\n');
+  assert.ok(rootPart.includes('developer_instructions'));
+  assert.ok(out.indexOf('developer_instructions') < out.indexOf('[mcp_servers.memories]'));
+});
+
+test('insertMarkedBlockAtRoot appends when there are no sections', () => {
+  const out = insertMarkedBlockAtRoot('a = 1\n', 'Dev Instructions', 'developer_instructions = "x"');
+  assert.ok(out.includes('a = 1'));
+  assert.ok(out.includes('developer_instructions'));
+  assert.ok(!/^\s*\[/m.test(out.split('developer_instructions')[0].split('\n').pop() ?? ''));
+});
+
+test('insertMarkedBlockAtRoot is idempotent when the marker is already present', () => {
+  const once = insertMarkedBlockAtRoot('[s]\nk = 1\n', 'Dev Instructions', 'developer_instructions = "x"');
+  const twice = insertMarkedBlockAtRoot(once, 'Dev Instructions', 'developer_instructions = "y"');
+  assert.equal(twice, once);
 });
 
 test('hasTomlSection / hasTomlKey', () => {

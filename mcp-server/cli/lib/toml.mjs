@@ -6,6 +6,16 @@ export function appendMarkedBlock(text, marker, body) {
   return `${text}\n${start}\n${body}\n# END ${marker}\n`;
 }
 
+export function insertMarkedBlockAtRoot(text, marker, body) {
+  const start = `# BEGIN ${marker}`;
+  if (text.split('\n').some((l) => l === start)) return text;
+  const block = `${start}\n${body}\n# END ${marker}\n`;
+  const lines = text.split('\n');
+  const firstSection = lines.findIndex((l) => /^\s*\[/.test(l));
+  if (firstSection === -1) return `${text}\n${block}`;
+  return [...lines.slice(0, firstSection), block, ...lines.slice(firstSection)].join('\n');
+}
+
 export function removeMarkedBlock(text, marker) {
   const start = `# BEGIN ${marker}`, end = `# END ${marker}`;
   if (!text.split('\n').includes(start)) return text;
