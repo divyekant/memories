@@ -111,6 +111,34 @@ test('uninstall --claude reverses init', async () => {
   assert.equal(settings.mcpServers?.memories, undefined);
 });
 
+test('init --cursor then uninstall --cursor on a fresh home also tears down the shared claude-code wiring cursor created', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await mkdir(join(home, '.claude'), { recursive: true });
+  const opts = { home, log: () => {}, fetchImpl: async () => new Response('{"total_memories":0}', { status: 200 }) };
+  await run(['init', '--cursor', '--yes'], opts);
+  await run(['uninstall', '--cursor', '--yes'], opts);
+
+  const settings = await readJson(join(home, '.claude/settings.json'));
+  assert.equal(settings.mcpServers?.memories, undefined);
+  await assert.rejects(readFile(join(home, '.claude/hooks/memory/memory-recall.sh')));
+  const cursorMcp = await readJson(join(home, '.cursor/mcp.json'));
+  assert.equal(cursorMcp.mcpServers?.memories, undefined);
+});
+
+test('init --claude --cursor then uninstall --cursor leaves the claude-code side intact', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await mkdir(join(home, '.claude'), { recursive: true });
+  const opts = { home, log: () => {}, fetchImpl: async () => new Response('{"total_memories":0}', { status: 200 }) };
+  await run(['init', '--claude', '--cursor', '--yes'], opts);
+  await run(['uninstall', '--cursor', '--yes'], opts);
+
+  const settings = await readJson(join(home, '.claude/settings.json'));
+  assert.equal(settings.mcpServers.memories.command, 'npx'); // claude-code side survives
+  await assert.doesNotReject(readFile(join(home, '.claude/hooks/memory/memory-recall.sh')));
+  const cursorMcp = await readJson(join(home, '.cursor/mcp.json'));
+  assert.equal(cursorMcp.mcpServers?.memories, undefined); // cursor entry gone
+});
+
 test('bin symlink invocation reaches main (realpath guard)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mem-bin-'));
   const link = join(dir, 'memories');

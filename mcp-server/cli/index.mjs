@@ -2,15 +2,18 @@
 import os from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readFile } from 'node:fs/promises';
+import { readFile, access } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { detectAgents } from './detect.mjs';
 import { checkHealth, bootstrapBackend } from './backend.mjs';
 import { ask, askChoice } from './prompts.mjs';
+import { readState, writeState, statePath } from './lib/state.mjs';
 import * as claudeCode from './adapters/claude-code.mjs';
 import * as codex from './adapters/codex.mjs';
 import * as cursor from './adapters/cursor.mjs';
 import * as generic from './adapters/generic.mjs';
+
+const exists = (p) => access(p).then(() => true, () => false);
 
 const ADAPTERS = { 'claude-code': claudeCode, codex, cursor, generic };
 const DETECTABLE_TARGETS = ['claude-code', 'codex', 'cursor'];
@@ -167,6 +170,9 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
 
   for (const t of targets) {
     await ADAPTERS[t].install(ctx);
+    const state = await readState(ctx.home);
+    if (!state.installedTargets.includes(t)) state.installedTargets.push(t);
+    await writeState(ctx.home, state);
   }
   ctx.log(`${parsed.command === 'init' ? 'Init' : 'Update'} complete for: ${targets.join(', ')}`);
 }
@@ -210,8 +216,40 @@ async function runUninstall(parsed, ctx, restrictedTargets) {
     return;
   }
 
+  // cursor.install delegates to claude-code.install to wire the shared
+  // ~/.claude side (hooks/skills/CLAUDE.md/MCP entry), but cursor.uninstall
+  // only ever touched ~/.cursor/mcp.json — so `uninstall --cursor` used to
+  // leave all of that shared wiring behind. Use the ownership state file to
+  // tell whether cursor was the one that put it there (nothing else tracked
+  // 'claude-code'), and if so, tear it down too — but never when claude-code
+  // is *also* being uninstalled in this same run (it'll clean itself up).
+  const stateFileExisted = await exists(statePath(ctx.home));
+  const stateBefore = await readState(ctx.home);
+  const sharedOwnedByClaude = stateBefore.installedTargets.includes('claude-code');
+
   for (const t of targets) {
     await ADAPTERS[t].uninstall(ctx);
+    const state = await readState(ctx.home);
+    state.installedTargets = state.installedTargets.filter((x) => x !== t);
+    await writeState(ctx.home, state);
+
+    if (t === 'cursor') {
+      const cursorWasTracked = stateBefore.installedTargets.includes('cursor');
+      const claudeAlsoBeingUninstalled = targets.includes('claude-code');
+      if (stateFileExisted) {
+        if (cursorWasTracked && !sharedOwnedByClaude && !claudeAlsoBeingUninstalled) {
+          await ADAPTERS['claude-code'].uninstall(ctx);
+          const state2 = await readState(ctx.home);
+          state2.installedTargets = state2.installedTargets.filter((x) => x !== 'claude-code');
+          await writeState(ctx.home, state2);
+          ctx.log('Cursor owned the shared Claude-side wiring (hooks/skills/CLAUDE.md/MCP entry) — removed it too.');
+        }
+      } else {
+        // Pre-upgrade install with no state file: stay conservative, only
+        // touch the cursor entry, and tell the user how to finish the job.
+        ctx.log('Shared Claude-side wiring left in place — remove with `memories uninstall --claude` if unwanted.');
+      }
+    }
   }
   ctx.log(`Uninstall complete for: ${targets.join(', ')}`);
 }
