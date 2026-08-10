@@ -15,6 +15,15 @@ test('parseArgs defaults and flags', () => {
   assert.throws(() => parseArgs(['init', '--bogus']), /--bogus/);
 });
 
+test('parseArgs throws on trailing --url with no value', () => {
+  assert.throws(() => parseArgs(['init', '--url']), /--url/);
+  assert.throws(() => parseArgs(['init', '--url', '--yes']), /--url/);
+});
+
+test('parseArgs throws on trailing --api-key with no value', () => {
+  assert.throws(() => parseArgs(['init', '--api-key']), /--api-key/);
+});
+
 test('init --yes wires detected agents end-to-end (healthy backend)', async () => {
   const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
   await mkdir(join(home, '.claude'), { recursive: true });
@@ -42,6 +51,51 @@ test('double init --yes is idempotent', async () => {
   const snap = await readFile(join(home, '.claude/settings.json'), 'utf8');
   await run(['init', '--yes'], opts);
   assert.equal(await readFile(join(home, '.claude/settings.json'), 'utf8'), snap);
+});
+
+test('init --yes with healthy backend logs a health line', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await mkdir(join(home, '.claude'), { recursive: true });
+  const logs = [];
+  await run(['init', '--yes'], {
+    home, log: (m) => logs.push(m),
+    fetchImpl: async () => new Response(JSON.stringify({ total_memories: 3 }), { status: 200 }),
+  });
+  assert.ok(logs.some((l) => l.includes('Backend healthy') && l.includes('3')));
+});
+
+test('init interactive: declined bootstrap still wires adapters and prints manual steps', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await mkdir(join(home, '.claude'), { recursive: true });
+  const logs = [];
+  const askImpl = async (question, { def } = {}) => (question.startsWith('Provision the backend') ? 'n' : (def ?? ''));
+  const askChoiceImpl = async () => { throw new Error('askChoiceImpl should not be called when bootstrap is declined'); };
+  await run(['init', '--claude'], {
+    home, log: (m) => logs.push(m),
+    fetchImpl: async () => { throw new Error('ECONNREFUSED'); },
+    askImpl, askChoiceImpl,
+  });
+  const settings = await readJson(join(home, '.claude/settings.json'));
+  assert.equal(settings.mcpServers.memories.command, 'npx');
+  assert.ok(logs.some((l) => l.includes('docker compose -f')));
+  assert.ok(logs.some((l) => l.includes('memories doctor')));
+});
+
+test('init interactive: bootstrap accepted but docker fails — still wires adapters, does not throw', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await mkdir(join(home, '.claude'), { recursive: true });
+  const logs = [];
+  const askImpl = async (question, { def } = {}) => def ?? ''; // accept provision (def 'Y'), accept url/apiKey defaults
+  const askChoiceImpl = async (question, choices, { def }) => def; // 'skip'
+  await run(['init', '--claude'], {
+    home, log: (m) => logs.push(m),
+    fetchImpl: async () => { throw new Error('ECONNREFUSED'); },
+    execImpl: async () => { throw new Error('docker not found'); },
+    askImpl, askChoiceImpl,
+  });
+  const settings = await readJson(join(home, '.claude/settings.json'));
+  assert.equal(settings.mcpServers.memories.command, 'npx');
+  assert.ok(logs.some((l) => l.includes('Backend bootstrap failed')));
 });
 
 test('uninstall --claude reverses init', async () => {

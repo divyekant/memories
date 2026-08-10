@@ -60,8 +60,12 @@ export function parseArgs(argv) {
     } else if (a === '--yes') {
       result.yes = true;
     } else if (a === '--url') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --url');
       result.url = args[++i];
     } else if (a === '--api-key') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --api-key');
       result.apiKey = args[++i];
     } else if (a === '-h' || a === '--help') {
       result.command = 'help';
@@ -86,8 +90,8 @@ async function resolveTargets(parsed, ctx, restrictedTargets) {
 }
 
 async function resolveExtraction(ctx) {
-  const choice = await askChoice(
-    'Backend is unreachable. Choose an extraction provider to bootstrap it locally now (or skip):',
+  const choice = await ctx.askChoiceImpl(
+    'Choose an extraction provider to bootstrap it locally now (or skip):',
     [
       { label: 'Anthropic (recommended, ~$0.001/turn, full AUDN)', value: 'anthropic' },
       { label: 'OpenAI (~$0.001/turn, full AUDN)', value: 'openai' },
@@ -98,15 +102,41 @@ async function resolveExtraction(ctx) {
   );
 
   if (choice === 'anthropic') {
-    const keyVal = await ask('Anthropic API key', { def: '' });
+    const keyVal = await ctx.askImpl('Anthropic API key', { def: '' });
     return { provider: 'anthropic', keyVar: 'ANTHROPIC_API_KEY', keyVal };
   }
   if (choice === 'openai') {
-    const keyVal = await ask('OpenAI API key', { def: '' });
+    const keyVal = await ctx.askImpl('OpenAI API key', { def: '' });
     return { provider: 'openai', keyVar: 'OPENAI_API_KEY', keyVal };
   }
   if (choice === 'ollama') return { provider: 'ollama' };
   return undefined; // skip
+}
+
+// Interactive (non---yes) health-failure path: OFFER bootstrap, never force it.
+// Declining prints exact manual steps and falls through to adapter wiring.
+// bootstrapBackend itself is wrapped in try/catch — a Docker failure must not
+// abort the command, matching the resilience of the --yes path.
+async function offerBackendBootstrap(ctx) {
+  const composePath = join(ctx.home, '.config/memories/docker-compose.yml');
+  const provision = await ctx.askImpl('Provision the backend now with Docker? [Y/n]', { def: 'Y' });
+
+  if (!/^y/i.test(String(provision).trim())) {
+    ctx.log('Skipping automatic bootstrap. To provision manually:');
+    ctx.log(`  1. Compose file: ${composePath} (created by \`memories init\`, or copy assets/backend/docker-compose.standalone.yml there)`);
+    ctx.log(`  2. docker compose -f ${composePath} up -d`);
+    ctx.log('  3. Re-run `memories doctor` to confirm the backend is healthy.');
+    return;
+  }
+
+  const extract = await resolveExtraction(ctx);
+  try {
+    const result = await bootstrapBackend({ ...ctx, extract });
+    if (result.ok) ctx.log(`Backend bootstrapped and healthy (${result.totalMemories} memories).`);
+    else ctx.log(`Backend bootstrap did not become healthy: ${result.error}`);
+  } catch (err) {
+    ctx.log(`Backend bootstrap failed: ${err.message} — continuing without it; clients will work once the backend is up.`);
+  }
 }
 
 async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
@@ -118,8 +148,8 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
     return;
   }
 
-  const url = parsed.url ?? process.env.MEMORIES_URL ?? (parsed.yes ? DEFAULT_URL : await ask('Memories backend URL', { def: DEFAULT_URL }));
-  const apiKey = parsed.apiKey ?? process.env.MEMORIES_API_KEY ?? (parsed.yes ? '' : await ask('Memories API key (blank for none)', { def: '' }));
+  const url = parsed.url ?? process.env.MEMORIES_URL ?? (parsed.yes ? DEFAULT_URL : await ctx.askImpl('Memories backend URL', { def: DEFAULT_URL }));
+  const apiKey = parsed.apiKey ?? process.env.MEMORIES_API_KEY ?? (parsed.yes ? '' : await ctx.askImpl('Memories API key (blank for none)', { def: '' }));
   ctx.url = url;
   ctx.apiKey = apiKey;
 
@@ -128,11 +158,10 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
     if (parsed.yes) {
       ctx.log(`Backend unreachable at ${url} (${health.error}) — continuing; clients will work once it is up.`);
     } else {
-      const extract = await resolveExtraction(ctx);
-      const result = await bootstrapBackend({ ...ctx, extract });
-      if (result.ok) ctx.log(`Backend bootstrapped and healthy (${result.totalMemories} memories).`);
-      else ctx.log(`Backend bootstrap did not become healthy: ${result.error}`);
+      await offerBackendBootstrap(ctx);
     }
+  } else if (parsed.yes) {
+    ctx.log(`Backend healthy (${health.totalMemories} memories).`);
   }
 
   for (const t of targets) {
@@ -193,6 +222,10 @@ export async function run(argv, ctxOverrides = {}) {
   const assetsDir = ctxOverrides.assetsDir ?? join(dirname(fileURLToPath(import.meta.url)), '../assets');
   const log = ctxOverrides.log ?? console.log;
   const ctx = { ...ctxOverrides, home, assetsDir, log, dryRun: parsed.dryRun };
+  // Injectable so tests can simulate the interactive (non---yes) prompt path
+  // without touching stdin; default to the real readline-backed prompts.
+  ctx.askImpl = ctx.askImpl ?? ask;
+  ctx.askChoiceImpl = ctx.askChoiceImpl ?? askChoice;
 
   if (parsed.command === 'help') {
     log(HELP_TEXT);
