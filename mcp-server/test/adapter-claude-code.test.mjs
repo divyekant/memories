@@ -61,6 +61,19 @@ test('install preserves a foreign Stop hook alongside the memories one', async (
   assert.ok(settings.hooks.Stop.some((e) => e.hooks[0].command === join(ctx.home, '.claude/hooks/memory/memory-extract.sh')));
 });
 
+test('uninstall does not delete an unrelated npx-launched MCP entry named memories', async () => {
+  // Regression test: `m.command === 'npx'` alone was too broad — any npx-run
+  // server registered under the "memories" key, ours or not, got deleted.
+  const ctx = await freshCtx();
+  await writeJson(join(ctx.home, '.claude/settings.json'), {
+    mcpServers: { memories: { command: 'npx', args: ['-y', 'company-memories-proxy'] } },
+  });
+  await adapter.uninstall(ctx);
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  assert.equal(settings.mcpServers.memories.command, 'npx');
+  assert.deepEqual(settings.mcpServers.memories.args, ['-y', 'company-memories-proxy']);
+});
+
 test('status false on fresh home, true after install', async () => {
   const ctx = await freshCtx();
   assert.equal((await adapter.status(ctx)).installed, false);

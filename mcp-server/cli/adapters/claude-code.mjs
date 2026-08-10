@@ -52,7 +52,10 @@ export async function uninstall(ctx) {
   if (await exists(p.settings)) {
     let settings = await readJson(p.settings);
     const m = settings.mcpServers?.memories;
-    const ours = m && (m.command === 'npx' || (m.args ?? []).some((a) => String(a).includes('mcp-server/index.js')));
+    const ours = m && (
+      (m.command === 'npx' && (m.args ?? []).includes('memories-mcp'))
+      || (m.args ?? []).some((a) => String(a).includes('mcp-server/index.js'))
+    );
     if (ours) {
       delete settings.mcpServers.memories;
       if (Object.keys(settings.mcpServers).length === 0) delete settings.mcpServers;
