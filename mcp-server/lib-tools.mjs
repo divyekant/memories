@@ -14,6 +14,14 @@ import { z } from "zod";
 import fs from "fs";
 import path from "path";
 import yaml from "js-yaml";
+import { fileURLToPath } from "node:url";
+
+// Default server version: read from package.json next to this module (same
+// realpath-independent pattern as remote/server.mjs's PKG_VERSION) rather
+// than hardcoding a string here that inevitably drifts from the real release
+// version. Callers can still override via ctx.version.
+const here = path.dirname(fileURLToPath(import.meta.url));
+const PKG_VERSION = JSON.parse(fs.readFileSync(path.join(here, "package.json"), "utf8")).version;
 
 // -- Pure helpers (no ctx/env dependency) ------------------------------------
 
@@ -79,12 +87,30 @@ function timelineQueryVariants(query) {
 
 // -- Server factory -----------------------------------------------------------
 
-export function buildServer({ url, apiKey, client, fetchImpl } = {}) {
+export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = false, version } = {}) {
   const fetchFn = fetchImpl || fetch;
 
   // -- Config Loading ----------------------------------------------------------
 
   function loadBackends() {
+    // skipFileConfig: true means this caller's url/apiKey are the whole
+    // story — never touch .memories/backends.yaml or
+    // ~/.config/memories/backends.yaml, even if they exist on the host. This
+    // is for entry points (e.g. remote/server.mjs) whose backend is fully
+    // specified by their own config/env and must never be silently
+    // overridden by a file that happens to be lying around on disk.
+    if (skipFileConfig) {
+      return {
+        backends: [{
+          name: "default",
+          url: url || "http://localhost:8900",
+          apiKey: apiKey || "",
+          scenario: "",
+        }],
+        routing: {},
+      };
+    }
+
     // Resolution: MEMORIES_BACKENDS_FILE -> project -> global -> ctx fallback
     // If MEMORIES_BACKENDS_FILE is explicitly set (even to a nonexistent path),
     // skip project/global config resolution — this allows callers (like the eval
@@ -229,7 +255,7 @@ export function buildServer({ url, apiKey, client, fetchImpl } = {}) {
 
   const server = new McpServer({
     name: "memories",
-    version: "5.7.2",
+    version: version || PKG_VERSION,
   });
 
   // -- Tools -------------------------------------------------------------------

@@ -742,6 +742,8 @@ docker compose --profile remote-mcp up -d
 
 4. **Add the connector** in claude.ai: Settings → Connectors → Add custom connector → `https://mcp.yourdomain.com/mcp`. Claude walks you through the OAuth login (the password from step 1); once authorized, Memories tools show up in the chat like any other connector.
 
+**`REMOTE_MCP_TRUST_PROXY`** — the per-IP rate limiter buckets on `req.ip`, which by default is the raw TCP socket address. In the docker/tunnel topology above, every request arrives from the same container-bridge hop (e.g. Caddy or the tunnel sidecar), so without this setting every real client collapses into one shared bucket. `docker-compose.yml` defaults it to `uniquelocal` — an Express trust-proxy preset that trusts `X-Forwarded-For` only from private/link-local/unique-local ranges (RFC 1918 and friends), which is exactly the bridge network a container's proxy hop lives on — so `req.ip` becomes the real client IP again. Set it to empty (`REMOTE_MCP_TRUST_PROXY=`) to disable and bucket on the raw socket address instead (e.g. if you're running the server bare, with no proxy in front of it). Never set it to `true` (trusts every hop in the chain) on an internet-facing deployment — that lets any client spoof `X-Forwarded-For` to pick its own rate-limit bucket.
+
 See `mcp-server/remote/server.mjs` for the full env contract (`REMOTE_MCP_AUTH=none` disables auth for local testing — never expose that mode publicly) and the commented-out `remote-mcp` block in `mcp-server/assets/backend/docker-compose.standalone.yml` for the standalone-deployment equivalent.
 
 ---
