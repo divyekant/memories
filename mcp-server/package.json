@@ -9,7 +9,7 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "start": "node index.js",
-    "test": "node --test test/",
+    "test": "node --test",
     "smoke": "node smoke.mjs",
     "smoke:write": "node smoke-write.mjs",
     "smoke:redirect": "node smoke-redirect.mjs"
