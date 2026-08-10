@@ -3,6 +3,7 @@ import os from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { detectAgents } from './detect.mjs';
 import { checkHealth, bootstrapBackend } from './backend.mjs';
 import { ask, askChoice } from './prompts.mjs';
@@ -260,5 +261,16 @@ async function main() {
   }
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+// npm/npx invoke bin scripts through a symlink under node_modules/.bin, so
+// process.argv[1] is the symlink path, not this file's real path — a plain
+// === comparison against fileURLToPath(import.meta.url) never matches and
+// `npx memories-mcp init` silently no-ops. Resolve through realpath first.
+const selfPath = fileURLToPath(import.meta.url);
+const isMain = (() => {
+  try {
+    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === selfPath;
+  } catch {
+    return false;
+  }
+})();
 if (isMain) main();

@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { parseArgs, run } from '../cli/index.mjs';
 import { readJson } from '../cli/lib/json-file.mjs';
 
@@ -106,4 +109,12 @@ test('uninstall --claude reverses init', async () => {
   await run(['uninstall', '--claude', '--yes'], opts);
   const settings = await readJson(join(home, '.claude/settings.json'));
   assert.equal(settings.mcpServers?.memories, undefined);
+});
+
+test('bin symlink invocation reaches main (realpath guard)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-bin-'));
+  const link = join(dir, 'memories');
+  await symlink(join(dirname(fileURLToPath(import.meta.url)), '../cli/index.mjs'), link);
+  const { stdout } = await promisify(execFile)('node', [link, 'help']);
+  assert.match(stdout, /init/); // usage text proves main() ran
 });
