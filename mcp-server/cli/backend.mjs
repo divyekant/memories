@@ -11,6 +11,7 @@ const exists = (p) => access(p).then(() => true, () => false);
 export async function checkHealth(url, { fetchImpl = globalThis.fetch } = {}) {
   try {
     const res = await fetchImpl(`${url}/health`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     const body = await res.json();
     return { ok: true, totalMemories: body.total_memories ?? 0 };
   } catch (e) {
@@ -45,7 +46,11 @@ export async function bootstrapBackend(ctx) {
     }
   }
 
-  await execImpl('docker', ['compose', '-f', composePath, 'up', '-d']);
+  try {
+    await execImpl('docker', ['compose', '-f', composePath, 'up', '-d']);
+  } catch (err) {
+    throw new Error(`docker compose failed — is Docker installed and running? ${err.message}`);
+  }
 
   let result = { ok: false, error: 'not checked' };
   for (let i = 0; i < 12; i++) {

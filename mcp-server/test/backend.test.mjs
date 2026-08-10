@@ -21,6 +21,13 @@ test('checkHealth failure path', async () => {
   assert.match(r.error, /ECONNREFUSED/);
 });
 
+test('checkHealth non-2xx is failure even with JSON body', async () => {
+  const fetchImpl = async () => new Response(JSON.stringify({ detail: 'degraded' }), { status: 503 });
+  const r = await checkHealth('http://x', { fetchImpl });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /503/);
+});
+
 test('bootstrapBackend copies compose, writes env, runs docker compose, polls health', async () => {
   const home = await mkdtemp(join(tmpdir(), 'mem-be-'));
   const calls = [];
