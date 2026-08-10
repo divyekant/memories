@@ -62,7 +62,7 @@ Single copy of every hook/skill. `plugin/hooks`, `integrations/claude-code/hooks
 
 ### `init`
 1. Detect agents: Claude Code (`~/.claude` + `claude` on PATH), Codex (`~/.codex/config.toml`), Cursor (`~/.cursor`), else generic.
-2. Copy hook/skill assets to a stable home: `~/.memories/clients/<agent>/` (npx cache is ephemeral; client configs must reference stable paths).
+2. Copy hook/skill assets to the **existing** stable destinations install.sh already uses — `~/.claude/hooks/memory`, `~/.codex/hooks/memory`, skills under `~/.claude/skills/` — and runtime config at `~/.config/memories/` (env, docker-compose). No new `~/.memories/` directory: reusing the current paths means existing installs are updated in place, not duplicated. (npx cache is ephemeral; that's why assets are copied out rather than referenced.)
 3. Run each detected adapter's `install()`. `--claude/--codex/--cursor/--generic` flags override detection; `--dry-run` supported (parity with install.sh).
 4. Backend: `GET <MEMORIES_URL>/health`. On failure, offer `docker compose -f <bundled compose> up -d` (OrbStack/Docker Desktop), then re-check. Decline path prints exact manual steps.
 5. Idempotent: re-running `init` refreshes assets and configs in place (this is also what `update` does after an `npm cache`-busted `npx memories-mcp@latest init`).
