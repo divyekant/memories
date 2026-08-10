@@ -49,4 +49,3 @@ ${hiddenInputs(params)}
 </body>
 </html>`;
 }
-

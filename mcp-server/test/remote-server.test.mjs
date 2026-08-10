@@ -347,11 +347,42 @@ test('429 after exceeding the generous rate limit on /mcp', async () => {
   const { baseUrl, close } = await noneModeApp();
   try {
     let sawTooMany = false;
+    // No Origin header (non-browser client, always allowed) — this needs to
+    // actually reach mcpRateLimit, which now runs AFTER originGuard.
     for (let i = 0; i < 121; i++) {
       const res = await mcpFetch(baseUrl, jsonRpc('tools/list', {}));
       if (res.status === 429) sawTooMany = true;
     }
     assert.ok(sawTooMany, 'expected at least one 429 within 121 rapid requests to /mcp');
+  } finally {
+    await close();
+  }
+});
+
+// PR 83 follow-up #4, P2 (guard ordering regression): mcpRateLimit briefly
+// ran BEFORE originGuard, so a foreign-Origin caller — rejected 403 by
+// originGuard either way — still consumed a slot in the victim IP's
+// rate-limit bucket before being rejected. A malicious page (no token
+// needed, just a same-machine/same-IP browser tab) could flood /mcp with a
+// disallowed Origin and 429 the legitimate connector sharing that IP.
+// Reviewer's exact repro: 120 foreign-Origin POSTs (all 403) left the next
+// legit request 429'd. originGuard must gate BEFORE any quota is charged.
+test('foreign-Origin requests to /mcp are rejected before they touch the rate-limit bucket', async () => {
+  const { baseUrl, close } = await noneModeApp();
+  try {
+    // 120 requests with a disallowed Origin — every one must be 403, and
+    // none of them should count against the shared per-IP bucket that a
+    // legitimate (no-Origin) request from the same machine will hit next.
+    for (let i = 0; i < 120; i++) {
+      const res = await mcpFetch(baseUrl, jsonRpc('tools/list', {}), { Origin: 'https://evil.example' });
+      assert.equal(res.status, 403, `foreign-Origin request ${i} should be 403, not consume the rate-limit bucket`);
+    }
+
+    // The legitimate request right after must NOT be rate-limited — if
+    // originGuard ran after mcpRateLimit, this would come back 429 instead.
+    const legit = await mcpFetch(baseUrl, jsonRpc('tools/list', {}));
+    assert.notEqual(legit.status, 429, 'a legit request must not be rate-limited by a foreign-Origin flood');
+    assert.equal(legit.status, 200);
   } finally {
     await close();
   }

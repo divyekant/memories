@@ -301,9 +301,17 @@ export function createApp(cfg = {}) {
   }));
 
   // -- MCP: stateless StreamableHTTPServerTransport, fresh server per POST -
-  // mcpRateLimit first — cheapest check, rejects a flood before spending
-  // cycles on origin/auth checks for it.
-  const mcpGuards = [mcpRateLimit, originGuard];
+  // originGuard FIRST, before mcpRateLimit: originGuard is a cheap sync
+  // check with no shared state, so it must gate before any request is
+  // allowed to charge the per-IP rate-limit bucket. Getting this backwards
+  // (rate limit before origin check, as a previous round briefly had it) lets
+  // a malicious page flood /mcp with a foreign Origin — every request gets
+  // 403'd by originGuard, but only AFTER already consuming a slot in that
+  // IP's bucket — draining the legitimate connector's quota with zero
+  // knowledge of a bearer token. Reviewer reproduced: 120 foreign-Origin
+  // POSTs (all 403) left the next legit request 429'd. bearerAuth stays
+  // last since it's the most expensive check (HMAC verify).
+  const mcpGuards = [originGuard, mcpRateLimit];
   if (authMode === "oauth") mcpGuards.push(bearerAuth(oauth, issuer));
 
   app.post("/mcp", ...mcpGuards, ah(async (req, res) => {
