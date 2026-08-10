@@ -71,6 +71,7 @@ function isAllowedRedirectUri(uriStr) {
 
 const MAX_REDIRECT_URIS = 10;
 const MAX_CLIENT_NAME_LENGTH = 200;
+const MAX_REDIRECT_URI_LENGTH = 2048;
 
 // ---------------------------------------------------------------------------
 // PKCE
@@ -127,6 +128,12 @@ export function createOAuth({ issuer, passwordHash, tokenSecret, store }) {
     if (redirectUris.length > MAX_REDIRECT_URIS) {
       return { status: 400, body: { error: 'invalid_client_metadata' } };
     }
+    // Bounded before URL parsing/host validation for the same reason as the
+    // count cap above — an unauthenticated caller could otherwise submit a
+    // multi-megabyte redirect_uri to burn CPU/storage on every registration.
+    if (redirectUris.some((uri) => typeof uri !== 'string' || uri.length > MAX_REDIRECT_URI_LENGTH)) {
+      return { status: 400, body: { error: 'invalid_client_metadata' } };
+    }
     if (!redirectUris.every(isAllowedRedirectUri)) {
       return { status: 400, body: { error: 'invalid_redirect_uri' } };
     }
@@ -138,6 +145,7 @@ export function createOAuth({ issuer, passwordHash, tokenSecret, store }) {
       redirect_uris: redirectUris,
       client_name: typeof body.client_name === 'string' && body.client_name ? body.client_name : 'Claude',
       token_endpoint_auth_method: 'none',
+      created_at: Date.now(),
     };
     await store.saveClient(client);
     return { status: 201, body: client };

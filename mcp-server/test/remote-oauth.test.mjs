@@ -124,6 +124,58 @@ test('store: refresh tokens are stored hashed, not raw, on disk', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// store: prototype-pollution-safe registry lookups (P1)
+// ---------------------------------------------------------------------------
+
+for (const pollutingId of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+  test(`store: getClient('${pollutingId}') returns null instead of an inherited Object.prototype value`, async () => {
+    const store = await freshStore();
+    await store.saveClient({ client_id: 'real-client', redirect_uris: ['https://claude.ai/cb'] });
+    const client = await store.getClient(pollutingId);
+    assert.equal(client, null);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// store: atomic grant consume — concurrent takeCode/takeRefresh (P1)
+// ---------------------------------------------------------------------------
+
+test('store: concurrent takeCode on the same code — exactly one caller gets it', async () => {
+  const store = await freshStore();
+  await store.saveCode('shared-code', { cid: 'client1', redirect_uri: 'https://claude.ai/cb', challenge: 'xyz' });
+  const results = await Promise.all(Array.from({ length: 5 }, () => store.takeCode('shared-code')));
+  const nonNull = results.filter((r) => r !== null);
+  assert.equal(nonNull.length, 1, 'exactly one concurrent takeCode should succeed');
+  assert.equal(nonNull[0].cid, 'client1');
+});
+
+test('store: concurrent takeRefresh on the same token — exactly one caller gets it', async () => {
+  const store = await freshStore();
+  await store.saveRefresh('shared-refresh', { cid: 'client1' });
+  const results = await Promise.all(Array.from({ length: 5 }, () => store.takeRefresh('shared-refresh')));
+  const nonNull = results.filter((r) => r !== null);
+  assert.equal(nonNull.length, 1, 'exactly one concurrent takeRefresh should succeed');
+  assert.equal(nonNull[0].cid, 'client1');
+});
+
+// ---------------------------------------------------------------------------
+// store: saveClient concurrency — no lost updates (P1)
+// ---------------------------------------------------------------------------
+
+test('store: 50 concurrent saveClient calls with distinct ids all persist', async () => {
+  const store = await freshStore();
+  const ids = Array.from({ length: 50 }, (_, i) => `client-${i}`);
+  await Promise.all(
+    ids.map((id) => store.saveClient({ client_id: id, redirect_uris: ['https://claude.ai/cb'] }))
+  );
+  for (const id of ids) {
+    const client = await store.getClient(id);
+    assert.ok(client, `client ${id} should have persisted`);
+    assert.equal(client.client_id, id);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // hashPassword / verifyPassword
 // ---------------------------------------------------------------------------
 
@@ -274,6 +326,51 @@ test('register: still accepts http://localhost:3000/cb (localhost exempt from ht
   const { oauth } = await freshOAuth();
   const res = await oauth.register({ redirect_uris: ['http://localhost:3000/cb'] });
   assert.equal(res.status, 201);
+});
+
+test('register: rejects a redirect_uri longer than 2048 chars (invalid_client_metadata)', async () => {
+  const { oauth } = await freshOAuth();
+  const longUri = `https://claude.ai/cb?pad=${'a'.repeat(3000)}`;
+  const res = await oauth.register({ redirect_uris: [longUri] });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'invalid_client_metadata');
+});
+
+test('register: accepts a redirect_uri at exactly 2048 chars', async () => {
+  const { oauth } = await freshOAuth();
+  const prefix = 'https://claude.ai/cb?pad=';
+  const uri = prefix + 'a'.repeat(2048 - prefix.length);
+  assert.equal(uri.length, 2048);
+  const res = await oauth.register({ redirect_uris: [uri] });
+  assert.equal(res.status, 201);
+});
+
+test('register: client record carries created_at', async () => {
+  const { oauth } = await freshOAuth();
+  const before = Date.now();
+  const res = await oauth.register({ redirect_uris: ['https://claude.ai/cb'] });
+  assert.equal(res.status, 201);
+  assert.equal(typeof res.body.created_at, 'number');
+  assert.ok(res.body.created_at >= before);
+});
+
+test('register: 105 sequential registrations cap the registry at 100, evicting the 5 oldest', async () => {
+  const { oauth, store } = await freshOAuth();
+  const clients = [];
+  for (let i = 0; i < 105; i++) {
+    const res = await oauth.register({ redirect_uris: [`http://localhost:1234/cb${i}`] });
+    assert.equal(res.status, 201);
+    clients.push(res.body);
+  }
+  const oldest5 = clients.slice(0, 5);
+  const newest100 = clients.slice(5);
+
+  for (const c of oldest5) {
+    assert.equal(await store.getClient(c.client_id), null, `oldest client ${c.client_id} should have been evicted`);
+  }
+  for (const c of newest100) {
+    assert.ok(await store.getClient(c.client_id), `newest client ${c.client_id} should still be present`);
+  }
 });
 
 // ---------------------------------------------------------------------------
