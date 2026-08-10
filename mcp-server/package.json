@@ -1,11 +1,16 @@
 {
   "name": "memories-mcp",
-  "version": "5.7.2",
-  "description": "MCP server for Memories — semantic search, add, extract, delete, browse",
+  "version": "5.8.0",
+  "description": "Memories — agent-agnostic memory for AI coding agents. MCP server + installer CLI.",
+  "license": "MIT",
   "type": "module",
   "main": "index.js",
+  "bin": { "memories-mcp": "index.js", "memories": "cli/index.mjs" },
+  "files": ["index.js", "cli/", "assets/"],
+  "engines": { "node": ">=20" },
   "scripts": {
     "start": "node index.js",
+    "test": "node --test",
     "smoke": "node smoke.mjs",
     "smoke:write": "node smoke-write.mjs",
     "smoke:redirect": "node smoke-redirect.mjs"

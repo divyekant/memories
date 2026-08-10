@@ -4,7 +4,7 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **OpenCode**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v5.7.2):**
+**Key capabilities (v5.8.0):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
 - **Write doctrine** — corrections supersede instead of being dropped: a colliding write replaces the similar memory and archives the old version with a supersedes link (`on_duplicate: supersede|skip|add`); agents update facts via `memory_update`
 - **Secret redaction** — credential-shaped content (API keys, JWTs, tokens, URL credentials) is redacted before any extraction LLM call or storage, with a context guard that spares placeholders and localhost DSNs
@@ -198,6 +198,8 @@ Detailed docs:
 ---
 
 ## Integration Guides
+
+For Claude Code, Codex, and Cursor, `npx memories-mcp@latest init` (see [Quick setup](#quick-setup)) wires everything below automatically. The manual steps in this section remain accurate if you prefer to configure a client by hand or need a target the CLI doesn't cover yet (OpenCode, OpenClaw, ChatGPT).
 
 ### Claude Code (CLI)
 
@@ -1092,6 +1094,18 @@ OpenCode searches exact project prefixes first: `opencode/{project}`, `claude-co
 
 ### Quick setup
 
+**Recommended: `npx memories-mcp init`**
+
+```bash
+npx memories-mcp@latest init
+```
+
+Auto-detects Claude Code, Codex, and Cursor (or restrict with `--claude` / `--codex` / `--cursor` / `--generic`); prompts for backend URL/API key (or `--url` / `--api-key`); checks backend health and, interactively, offers to bootstrap it with Docker (`~/.config/memories/docker-compose.yml`) if it's not reachable; wires hooks/skills/MCP config per target. `--yes` skips all prompts (including the bootstrap offer — an unreachable backend is logged and skipped, not auto-provisioned); `--dry-run` previews without writing. Companion commands: `memories doctor` (status + backend health + version check), `memories update` (re-wire after upgrading), `memories uninstall`. Windows has no bash, so `init` restricts to the generic target there. Other MCP clients: use the generic snippet from `memories init --generic`, or see [`GETTING_STARTED.md`](GETTING_STARTED.md#4-install-integrations-recommended).
+
+`memories-mcp` has not published its first npm release yet — `npx memories-mcp@latest` will resolve once it does. It does not (yet) cover OpenCode or OpenClaw; use `install.sh` below for those.
+
+**Legacy: `install.sh` (deprecated, still works this release — removed next release)**
+
 **Prerequisites:**
 - `jq` and `curl` installed (required by installer)
 - running Memories service (`curl -s http://localhost:8900/health | jq .`)
@@ -1101,7 +1115,7 @@ OpenCode searches exact project prefixes first: `opencode/{project}`, `claude-co
 npm --prefix ./mcp-server install
 ```
 
-**One-command auto-detect installer (recommended):**
+**One-command auto-detect installer:**
 ```bash
 ./integrations/claude-code/install.sh --auto
 ```
@@ -1279,6 +1293,12 @@ Observability:
 Reference benchmark: `docs/archive/benchmarks/2026-02-17-memory-reclamation.md`
 
 ### Uninstall
+
+```bash
+npx memories-mcp@latest uninstall
+```
+
+Or, for the legacy path (OpenCode/OpenClaw, or if you installed via `install.sh`):
 
 ```bash
 ./integrations/claude-code/install.sh --uninstall
