@@ -3,6 +3,9 @@
 # Usage: ./install.sh [--auto] [--claude] [--codex] [--cursor] [--opencode] [--openclaw] [--uninstall] [--dry-run]
 set -euo pipefail
 
+echo -e "\033[1;33m[DEPRECATED]\033[0m install.sh is superseded by: npx memories-mcp init"
+echo -e "It still works this release, but will be removed in the next one.\n"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'

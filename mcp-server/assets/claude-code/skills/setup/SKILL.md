@@ -30,18 +30,29 @@ If running, show the version and ask if the user wants to update.
 ### Step 3: Deploy or update
 
 If not running (fresh install):
-1. Find and copy docker-compose.standalone.yml from the plugin's assets directory.
-   The plugin is installed at one of these locations — check in order:
-   - `~/.claude/plugins/marketplaces/dk-marketplace/plugins/memories/assets/`
-   - `~/.claude/plugins/cache/dk-marketplace/memories/*/assets/`
+1. Prefer the CLI bootstrapper — it fetches the compose file, prompts for consent, and wires the backend for you:
+   ```bash
+   npx memories-mcp@latest init
+   ```
+   This is the primary path. Only fall back to the manual steps below if `npx` is unavailable or the bootstrapper fails.
+2. Manual fallback — find and copy docker-compose.standalone.yml:
+   The plugin symlink resolves to `assets/claude-code`, which does **not** contain `backend/` — so look in the plugin's parent asset tree and the npm package layout, in order:
    ```bash
    mkdir -p ~/.config/memories
-   PLUGIN_ASSETS=$(find ~/.claude/plugins -path "*/memories/assets/docker-compose.standalone.yml" 2>/dev/null | head -1)
-   cp "$PLUGIN_ASSETS" ~/.config/memories/docker-compose.yml
+   PLUGIN_ASSETS=$(find ~/.claude/plugins -path "*/memories/**/backend/docker-compose.standalone.yml" 2>/dev/null | head -1)
+   NPM_ASSETS=$(find / -path "*/memories-mcp/assets/backend/docker-compose.standalone.yml" 2>/dev/null | head -1)
+   if [ -n "$PLUGIN_ASSETS" ]; then
+     cp "$PLUGIN_ASSETS" ~/.config/memories/docker-compose.yml
+   elif [ -n "$NPM_ASSETS" ]; then
+     cp "$NPM_ASSETS" ~/.config/memories/docker-compose.yml
+   else
+     # Always-safe fallback: pull directly from the repo
+     curl -fsSL https://raw.githubusercontent.com/divyekant/memories/main/mcp-server/assets/backend/docker-compose.standalone.yml -o ~/.config/memories/docker-compose.yml
+   fi
    ```
-2. Ask about extraction provider: Anthropic (recommended) / OpenAI / Ollama / Skip
-3. Write ~/.config/memories/env with chosen settings
-4. Start: `cd ~/.config/memories && docker compose up -d`
+3. Ask about extraction provider: Anthropic (recommended) / OpenAI / Ollama / Skip
+4. Write ~/.config/memories/env with chosen settings
+5. Start: `cd ~/.config/memories && docker compose up -d`
 
 If running (upgrade):
 1. `cd ~/.config/memories && docker compose pull && docker compose up -d`
