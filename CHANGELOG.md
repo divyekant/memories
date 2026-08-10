@@ -1,5 +1,10 @@
 # Changelog
 
+## [5.8.1] - 2026-08-10
+
+### Changed
+- npm listing: `mcp-server/README.md` added (rendered on npmjs.com), plus `keywords`, `homepage`, `bugs`, and `author` fields in the package manifest.
+
 ## [5.8.0] - 2026-08-10
 
 ### Added
