@@ -163,24 +163,30 @@ export function createOAuth({ issuer, passwordHash, tokenSecret, store }) {
     const now = Date.now();
 
     // Re-registration with the same redirect_uris set lands on the same
-    // client_id — update in place (name can change, e.g. a client rename;
-    // created_at/activated_at are preserved) rather than minting a new
-    // registry slot. This is the common case: claude.ai re-runs DCR on
-    // essentially every connection.
-    const existing = await store.getClient(clientId);
-    const client = existing
-      ? { ...existing, redirect_uris: redirectUris, client_name: clientName, last_registered_at: now }
-      : {
-          client_id: clientId,
-          redirect_uris: redirectUris,
-          client_name: clientName,
-          token_endpoint_auth_method: 'none',
-          created_at: now,
-          last_registered_at: now,
-        };
+    // client_id — update in place (name can change, e.g. a client rename)
+    // rather than minting a new registry slot. This is the common case:
+    // claude.ai re-runs DCR on essentially every connection.
+    //
+    // No pre-read here (PR 83 follow-up — queue-boundary race): the
+    // previous version called store.getClient() outside the write queue,
+    // then wrote that snapshot inside it via saveClient(). A
+    // markClientActive() landing in the gap between the read and the write
+    // got silently clobbered — a concurrent re-registration could erase
+    // activated_at, making a live client evictable again. upsertClient()
+    // does the read, the merge, and the write in one serialized step, so
+    // created_at/activated_at always survive regardless of what races
+    // with it — this updateFn doesn't even need to know whether the
+    // client existed before or was ever activated.
+    const result = await store.upsertClient(clientId, () => ({
+      client_id: clientId,
+      redirect_uris: redirectUris,
+      client_name: clientName,
+      token_endpoint_auth_method: 'none',
+      created_at: now, // reasserted to the original value by upsertClient if this client already existed
+      last_registered_at: now,
+    }));
 
-    const saved = await store.saveClient(client);
-    if (!saved) {
+    if (!result.ok) {
       // Registry is at MAX_CLIENTS and every occupant is activated (a real
       // user has completed login+consent for it) — nothing safe to evict.
       // Reject rather than displace a live client for an unauthenticated
@@ -190,7 +196,7 @@ export function createOAuth({ issuer, passwordHash, tokenSecret, store }) {
         body: { error: 'temporarily_unavailable', error_description: 'client registry full' },
       };
     }
-    return { status: 201, body: client };
+    return { status: 201, body: result.client };
   }
 
   // Shared validation for both the GET (render form) and POST (submit password)

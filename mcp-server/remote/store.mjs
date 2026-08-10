@@ -25,7 +25,7 @@ import { createHash, randomUUID } from 'node:crypto';
 const CODE_TTL_MS = 10 * 60 * 1000;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-// Hard cap on the DCR-registered client registry. `saveClient` evicts the
+// Hard cap on the DCR-registered client registry. `upsertClient` evicts the
 // oldest never-activated entry to make room for a new client once this is
 // hit — an unauthenticated /register endpoint must never be able to grow
 // clients.json without bound. Activated clients (a real user has completed
@@ -106,9 +106,9 @@ export function createStore(dir) {
   }
 
   // In-process write queue serializing every clients.json mutation. Without
-  // this, concurrent saveClient calls each do read-modify-write against the
-  // same in-memory snapshot of the file — the last writer to finish wins and
-  // every other writer's registration is silently lost. Chaining through a
+  // this, concurrent mutations each do read-modify-write against the same
+  // in-memory snapshot of the file — the last writer to finish wins and
+  // every other writer's change is silently lost. Chaining through a
   // single promise forces mutations to run one at a time. `fn` is passed as
   // both the fulfillment and rejection handler so a failed mutation doesn't
   // wedge the queue — the next `serialize` call still runs even if the
@@ -124,25 +124,60 @@ export function createStore(dir) {
     return Object.hasOwn(clients, id) ? clients[id] : null;
   }
 
-  // Returns `true` once the client is persisted, `false` if the registry is
-  // at MAX_CLIENTS with every occupant already activated — there is nothing
-  // safe to evict, so the caller (oauth.mjs register()) must reject the
-  // registration rather than bump a live client out. Updating an EXISTING
-  // client_id (re-registration with identical metadata — see
-  // oauth.mjs's deterministic client_id derivation) never consumes a new
-  // slot and is therefore never blocked by the cap.
-  async function saveClient(client) {
+  // Runs `updateFn` against the client currently stored at `clientId`
+  // entirely inside the write queue — the read, the merge, the eviction
+  // check, and the write all happen in one serialized step. This closes a
+  // race that existed when a caller (register(), originally) read a client
+  // OUTSIDE the queue via getClient() and only entered the queue later, to
+  // write: a second mutation (markClientActive) could land on the queue in
+  // between, and the first caller's eventual write — built from the
+  // now-stale pre-queue snapshot — would clobber it. Concretely, a
+  // concurrent re-registration could silently erase activated_at, making a
+  // client a real user was actively using evictable again (PR 83
+  // follow-up).
+  //
+  // `updateFn(current)` receives the client currently stored at `clientId`,
+  // or `null` if it isn't registered yet, and returns the record to
+  // persist. Returning `undefined` means "no-op" (e.g. markClientActive on
+  // an unknown id) — nothing is written and `{ ok: false }` comes back.
+  //
+  // Server-owned fields (`created_at`, `activated_at`) are re-applied to
+  // whatever `updateFn` returns, unconditionally, using the `current`
+  // record read inside this same serialized step. That's what makes the
+  // race impossible rather than just less likely: register()'s updateFn
+  // builds a brand-new record from submitted metadata with no idea whether
+  // an activation landed a moment ago, and doesn't need to — this function
+  // reasserts the truth from a snapshot taken atomically alongside the
+  // write, not from anything the caller read earlier.
+  //
+  // Also applies the MAX_CLIENTS eviction policy for brand-new client_ids
+  // (never for updates to an existing id — those never consume a new slot).
+  // Returns `{ ok: false }` when the registry is at MAX_CLIENTS and every
+  // occupant is already activated — nothing safe to evict.
+  async function upsertClient(clientId, updateFn) {
     await ensureDirs();
     return serialize(async () => {
       const clients = await readClients(clientsFile);
-      const isNewClient = !Object.hasOwn(clients, client.client_id);
+      const current = Object.hasOwn(clients, clientId) ? clients[clientId] : null;
 
+      const next = updateFn(current);
+      if (next === undefined) {
+        return { ok: false };
+      }
+
+      if (current) {
+        next.created_at = current.created_at;
+        if (current.activated_at) next.activated_at = current.activated_at;
+      }
+      next.client_id = clientId;
+
+      const isNewClient = !current;
       if (isNewClient) {
         const ids = Object.keys(clients);
         if (ids.length >= MAX_CLIENTS) {
           const evictable = ids.filter((id) => !clients[id].activated_at);
           if (evictable.length === 0) {
-            return false;
+            return { ok: false };
           }
           // Stable sort by created_at ascending (oldest first); entries
           // with no created_at — pre-existing records from before this
@@ -156,28 +191,34 @@ export function createStore(dir) {
         }
       }
 
-      clients[client.client_id] = client;
+      clients[clientId] = next;
       await atomicWriteJSON(clientsFile, clients);
-      return true;
+      return { ok: true, client: next };
     });
+  }
+
+  // Thin wrapper over upsertClient for callers — mainly tests — that
+  // already have a complete record to persist rather than an updateFn.
+  // Note this still goes through the same atomic upsert path: server-owned
+  // fields on an existing record win over whatever `client` contains, and
+  // the eviction policy still applies for a brand-new client_id.
+  async function saveClient(client) {
+    const result = await upsertClient(client.client_id, () => ({ ...client }));
+    return result.ok;
   }
 
   // Marks a client as activated — a real user has completed a login+consent
   // flow for it (called from oauth.mjs on a successful authorization_code
   // grant). Idempotent: only the first call sets activated_at, so its
   // timestamp reflects when the client first went live, not its most recent
-  // token grant. Returns false for an unknown client_id without throwing.
+  // token grant. Returns false for an unknown client_id without throwing or
+  // creating a phantom record.
   async function markClientActive(clientId) {
-    await ensureDirs();
-    return serialize(async () => {
-      const clients = await readClients(clientsFile);
-      if (!Object.hasOwn(clients, clientId)) return false;
-      if (!clients[clientId].activated_at) {
-        clients[clientId] = { ...clients[clientId], activated_at: Date.now() };
-        await atomicWriteJSON(clientsFile, clients);
-      }
-      return true;
+    const result = await upsertClient(clientId, (current) => {
+      if (!current) return undefined;
+      return { ...current, activated_at: current.activated_at || Date.now() };
     });
+    return result.ok;
   }
 
   async function saveCode(code, data) {
@@ -210,5 +251,5 @@ export function createStore(dir) {
     return data;
   }
 
-  return { getClient, saveClient, markClientActive, saveCode, takeCode, saveRefresh, takeRefresh };
+  return { getClient, saveClient, upsertClient, markClientActive, saveCode, takeCode, saveRefresh, takeRefresh };
 }

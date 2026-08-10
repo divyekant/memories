@@ -510,6 +510,121 @@ test('register: at cap with a mix of activated and never-activated clients, only
 });
 
 // ---------------------------------------------------------------------------
+// PR 83 follow-up (P1, reviewer-orchestrated): register() used to read the
+// existing client OUTSIDE the write queue and write that stale snapshot
+// INSIDE it — a markClientActive() landing between the read and the write
+// got silently clobbered. Fixed via store.upsertClient(), which does the
+// read-modify-write in one serialized step.
+// ---------------------------------------------------------------------------
+
+test('store: upsertClient creates a new record when none exists', async () => {
+  const store = await freshStore();
+  const result = await store.upsertClient('c1', (current) => {
+    assert.equal(current, null);
+    return { redirect_uris: ['https://claude.ai/cb'], client_name: 'Claude' };
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.client.client_id, 'c1');
+  const stored = await store.getClient('c1');
+  assert.equal(stored.client_name, 'Claude');
+});
+
+test('store: upsertClient re-applies created_at/activated_at even when updateFn omits them', async () => {
+  const store = await freshStore();
+  await store.saveClient({ client_id: 'c1', redirect_uris: ['https://claude.ai/cb'], created_at: 12345 });
+  await store.markClientActive('c1');
+  const activatedAt = (await store.getClient('c1')).activated_at;
+  assert.equal(typeof activatedAt, 'number');
+
+  // updateFn returns a record with NO created_at/activated_at at all —
+  // exactly what register()'s updateFn does (it has no idea whether the
+  // client existed before or was ever activated).
+  const result = await store.upsertClient('c1', () => ({
+    redirect_uris: ['https://claude.ai/cb'],
+    client_name: 'Renamed',
+  }));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.client.created_at, 12345, 'created_at must survive even though updateFn never set it');
+  assert.equal(result.client.activated_at, activatedAt, 'activated_at must survive even though updateFn never set it');
+  assert.equal(result.client.client_name, 'Renamed');
+});
+
+test('store: upsertClient with an updateFn returning undefined is a no-op — no phantom record created', async () => {
+  const store = await freshStore();
+  const result = await store.upsertClient('nope', () => undefined);
+  assert.equal(result.ok, false);
+  assert.equal(await store.getClient('nope'), null);
+});
+
+test(
+  'store: a stale pre-queue snapshot (the exact old register() pattern) never clobbers a concurrent activation',
+  async () => {
+    const store = await freshStore();
+    await store.saveClient({ client_id: 'c1', redirect_uris: ['https://claude.ai/cb'], created_at: Date.now() });
+
+    // This reproduces the exact buggy sequence the old register() executed:
+    // read a snapshot OUTSIDE any serialization...
+    const staleSnapshot = await store.getClient('c1');
+    // ...then a concurrent markClientActive() lands and completes first...
+    await store.markClientActive('c1');
+    assert.ok((await store.getClient('c1')).activated_at, 'sanity: activation landed');
+    // ...then the original caller's save proceeds, built from the now-stale
+    // snapshot (no activated_at in it).
+    await store.saveClient({ ...staleSnapshot, client_name: 'Renamed by a racing re-registration' });
+
+    const current = await store.getClient('c1');
+    assert.equal(
+      typeof current.activated_at,
+      'number',
+      'activated_at must survive a save built from a pre-activation snapshot'
+    );
+    assert.equal(current.client_name, 'Renamed by a racing re-registration');
+  }
+);
+
+test(
+  'reviewer repro: concurrent re-registration + activation never loses activated_at, over 20 jittered iterations',
+  async () => {
+    const jitter = () => new Promise((resolve) => setImmediate(resolve));
+
+    for (let i = 0; i < 20; i++) {
+      // Fresh store per iteration: once a client is durably activated, a
+      // register() that reads it will always see activated_at already
+      // set (no race window left), so each iteration needs its own
+      // never-yet-activated client to give the race a fresh chance to
+      // manifest. Varying which side gets the jitter alternates which
+      // operation is more likely to "win" the queue first across
+      // iterations.
+      const { oauth, store } = await freshOAuth();
+      const redirectUris = [`https://claude.ai/race-cb-${i}`];
+
+      const seeded = await oauth.register({ redirect_uris: redirectUris, client_name: 'Claude' });
+      assert.equal(seeded.status, 201);
+      const clientId = seeded.body.client_id;
+
+      await Promise.all([
+        (async () => {
+          if (i % 2 === 0) await jitter();
+          await oauth.register({ redirect_uris: redirectUris, client_name: `Claude re-reg ${i}` });
+        })(),
+        (async () => {
+          if (i % 2 === 1) await jitter();
+          await store.markClientActive(clientId);
+        })(),
+      ]);
+
+      const current = await store.getClient(clientId);
+      assert.equal(
+        typeof current.activated_at,
+        'number',
+        `iteration ${i}: activated_at lost to a concurrent re-registration (queue-boundary race)`
+      );
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
 // authorizePage (GET /authorize)
 // ---------------------------------------------------------------------------
 
