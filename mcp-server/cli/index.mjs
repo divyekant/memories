@@ -8,6 +8,7 @@ import { detectAgents } from './detect.mjs';
 import { checkHealth, bootstrapBackend } from './backend.mjs';
 import { ask, askChoice } from './prompts.mjs';
 import { readState, writeState, statePath } from './lib/state.mjs';
+import { readJson } from './lib/json-file.mjs';
 import * as claudeCode from './adapters/claude-code.mjs';
 import * as codex from './adapters/codex.mjs';
 import * as cursor from './adapters/cursor.mjs';
@@ -93,6 +94,25 @@ async function resolveTargets(parsed, ctx, restrictedTargets) {
   return autoDetectTargets(ctx.home);
 }
 
+// Detects a pre-existing ~/.claude-side install that predates state.json
+// (e.g. from install.sh or a marketplace plugin install). Deliberately does
+// NOT use adapters['claude-code'].status(), which requires BOTH hooks and an
+// mcpServers entry — a marketplace-plugin install can have the MCP entry
+// wired without our hooks dir, so any one of these signals must suffice.
+async function claudeSidePresent(ctx) {
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  if (settings.mcpServers?.memories) return true;
+  if (await exists(join(ctx.home, '.claude/hooks/memory'))) return true;
+  if (await exists(join(ctx.home, '.claude/skills/memories'))) return true;
+  try {
+    const md = await readFile(join(ctx.home, '.claude/CLAUDE.md'), 'utf8');
+    if (md.includes(`# BEGIN ${claudeCode.MARKER}`)) return true;
+  } catch {
+    // no CLAUDE.md — not present
+  }
+  return false;
+}
+
 async function resolveExtraction(ctx) {
   const choice = await ctx.askChoiceImpl(
     'Choose an extraction provider to bootstrap it locally now (or skip):',
@@ -169,6 +189,19 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
   }
 
   for (const t of targets) {
+    if (t === 'cursor') {
+      // Adopt a pre-existing claude-code install into ownership state BEFORE
+      // cursor's delegation writes anything — otherwise a legacy install.sh
+      // / marketplace-plugin claude-code setup (no state.json yet) looks
+      // indistinguishable from wiring cursor just created itself, and a
+      // later `uninstall --cursor` would conclude cursor owns it and delete
+      // it out from under the user.
+      const preState = await readState(ctx.home);
+      if (!preState.installedTargets.includes('claude-code') && await claudeSidePresent(ctx)) {
+        preState.installedTargets.push('claude-code');
+        await writeState(ctx.home, preState);
+      }
+    }
     await ADAPTERS[t].install(ctx);
     const state = await readState(ctx.home);
     if (!state.installedTargets.includes(t)) state.installedTargets.push(t);

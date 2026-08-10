@@ -1,13 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, symlink, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { parseArgs, run } from '../cli/index.mjs';
-import { readJson } from '../cli/lib/json-file.mjs';
+import { readJson, writeJson } from '../cli/lib/json-file.mjs';
+
+const exists = (p) => access(p).then(() => true, () => false);
 
 test('parseArgs defaults and flags', () => {
   assert.deepEqual(parseArgs(['init']).command, 'init');
@@ -135,6 +137,32 @@ test('init --claude --cursor then uninstall --cursor leaves the claude-code side
   const settings = await readJson(join(home, '.claude/settings.json'));
   assert.equal(settings.mcpServers.memories.command, 'npx'); // claude-code side survives
   await assert.doesNotReject(readFile(join(home, '.claude/hooks/memory/memory-recall.sh')));
+  const cursorMcp = await readJson(join(home, '.cursor/mcp.json'));
+  assert.equal(cursorMcp.mcpServers?.memories, undefined); // cursor entry gone
+});
+
+test('init --cursor adopts a pre-existing legacy claude-code install into ownership state, so uninstall --cursor does not delete it', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await mkdir(join(home, '.claude'), { recursive: true });
+  // Simulate a legacy install.sh/marketplace claude-code install that
+  // predates state.json entirely: no state file, but real wiring present.
+  await writeJson(join(home, '.claude/settings.json'), {
+    mcpServers: { memories: { command: 'node', args: ['/old/path.js'] } },
+  });
+  await mkdir(join(home, '.claude/hooks/memory'), { recursive: true });
+  await writeFile(join(home, '.claude/hooks/memory/memory-recall.sh'), '#!/bin/sh\necho legacy\n');
+
+  const opts = { home, log: () => {}, fetchImpl: async () => new Response('{"total_memories":0}', { status: 200 }) };
+  await run(['init', '--cursor', '--yes'], opts);
+
+  const stateAfterInit = await readJson(join(home, '.config/memories/state.json'));
+  assert.ok(stateAfterInit.installedTargets.includes('claude-code'));
+
+  await run(['uninstall', '--cursor', '--yes'], opts);
+
+  assert.ok(await exists(join(home, '.claude/hooks/memory'))); // claude side preserved
+  const settings = await readJson(join(home, '.claude/settings.json'));
+  assert.ok(settings.mcpServers?.memories); // claude side preserved
   const cursorMcp = await readJson(join(home, '.cursor/mcp.json'));
   assert.equal(cursorMcp.mcpServers?.memories, undefined); // cursor entry gone
 });
