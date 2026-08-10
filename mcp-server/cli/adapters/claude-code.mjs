@@ -32,9 +32,9 @@ export async function install(ctx) {
   if (skipped) ctx.log('MCP entry "memories" already present — left untouched');
 
   await mkdir(p.skillMemories, { recursive: true });
-  await cp(join(p.skillsSrc, 'memories/SKILL.md'), join(p.skillMemories, 'SKILL.md'));
+  await cp(join(p.skillsSrc, 'memories/SKILL.md'), join(p.skillMemories, 'SKILL.md'), { dereference: true });
   await mkdir(p.skillSetup, { recursive: true });
-  await cp(join(p.skillsSrc, 'setup/SKILL.md'), join(p.skillSetup, 'SKILL.md'));
+  await cp(join(p.skillsSrc, 'setup/SKILL.md'), join(p.skillSetup, 'SKILL.md'), { dereference: true });
 
   const rules = await readFile(p.rulesSrc, 'utf8');
   const existing = (await exists(p.claudeMd)) ? await readFile(p.claudeMd, 'utf8') : '';

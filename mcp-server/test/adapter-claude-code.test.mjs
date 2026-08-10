@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, access, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, access, mkdir, symlink, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,4 +72,14 @@ test('uninstall reverses install but keeps foreign settings keys', async () => {
   assert.equal(await exists(join(ctx.home, '.claude/skills/memories')), false);
   const md = await readFile(join(ctx.home, '.claude/CLAUDE.md'), 'utf8');
   assert.ok(!md.includes('BEGIN Memories Claude rules'));
+});
+
+test('install copies skill content even when the asset is reached via symlink', async () => {
+  const ctx = await freshCtx();
+  const linkRoot = await mkdtemp(join(tmpdir(), 'mem-link-'));
+  await symlink(join(assetsDir, 'claude-code'), join(linkRoot, 'claude-code'));
+  await adapter.install({ ...ctx, assetsDir: linkRoot });
+  const st = await lstat(join(ctx.home, '.claude/skills/memories/SKILL.md'));
+  assert.equal(st.isSymbolicLink(), false);
+  assert.ok((await readFile(join(ctx.home, '.claude/skills/memories/SKILL.md'), 'utf8')).length > 0);
 });
