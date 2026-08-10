@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
@@ -70,6 +70,36 @@ test('store: code is single-use — second take returns null', async () => {
 test('store: unknown code returns null', async () => {
   const store = await freshStore();
   assert.equal(await store.takeCode('never-saved'), null);
+});
+
+test('store: path-traversal code does not escape codesDir — takeCode returns null, clients.json survives', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-oauth-'));
+  const store = createStore(dir);
+  await store.saveClient({ client_id: 'abc', redirect_uris: ['https://claude.ai/cb'] });
+  const clientsPath = join(dir, 'clients.json');
+  assert.doesNotReject(() => access(clientsPath));
+
+  const result = await store.takeCode('../clients');
+  assert.equal(result, null);
+  await access(clientsPath); // throws if the file was deleted — proves no traversal
+  const client = await store.getClient('abc');
+  assert.equal(client.client_id, 'abc');
+});
+
+test('store: path-traversal code with multiple segments does not throw and touches nothing outside codesDir', async () => {
+  const store = await freshStore();
+  await assert.doesNotReject(async () => {
+    const result = await store.takeCode('../../etc/passwd');
+    assert.equal(result, null);
+  });
+});
+
+test('store: code round-trips normally after the filename-hashing fix', async () => {
+  const store = await freshStore();
+  await store.saveCode('a-normal-code', { cid: 'client1', redirect_uri: 'https://claude.ai/cb', challenge: 'xyz' });
+  const record = await store.takeCode('a-normal-code');
+  assert.equal(record.cid, 'client1');
+  assert.equal(record.challenge, 'xyz');
 });
 
 test('store: refresh token rotates — take deletes it', async () => {
@@ -427,6 +457,59 @@ test('token: unknown code yields invalid_grant', async () => {
   assert.equal(tokenRes.body.error, 'invalid_grant');
 });
 
+test('token: missing client_id on authorization_code grant is invalid_request', async () => {
+  const { oauth } = await freshOAuth();
+  const client = await registerClient(oauth);
+  const { verifier, challenge } = pkcePair();
+
+  const authRes = await oauth.handleAuthorize({
+    password: PASSWORD,
+    client_id: client.client_id,
+    redirect_uri: client.redirect_uris[0],
+    state: 's',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  });
+  const code = new URL(authRes.redirect).searchParams.get('code');
+
+  const tokenRes = await oauth.token({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: client.redirect_uris[0],
+    code_verifier: verifier,
+    // client_id intentionally omitted
+  });
+  assert.equal(tokenRes.status, 400);
+  assert.equal(tokenRes.body.error, 'invalid_request');
+});
+
+test('token: client_id that does not match the code issuer is invalid_grant', async () => {
+  const { oauth } = await freshOAuth();
+  const client = await registerClient(oauth);
+  const otherClient = await registerClient(oauth, 'https://claude.ai/other-callback');
+  const { verifier, challenge } = pkcePair();
+
+  const authRes = await oauth.handleAuthorize({
+    password: PASSWORD,
+    client_id: client.client_id,
+    redirect_uri: client.redirect_uris[0],
+    state: 's',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  });
+  const code = new URL(authRes.redirect).searchParams.get('code');
+
+  const tokenRes = await oauth.token({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: client.redirect_uris[0],
+    client_id: otherClient.client_id,
+    code_verifier: verifier,
+  });
+  assert.equal(tokenRes.status, 400);
+  assert.equal(tokenRes.body.error, 'invalid_grant');
+});
+
 test('token: unsupported grant_type is rejected', async () => {
   const { oauth } = await freshOAuth();
   const res = await oauth.token({ grant_type: 'client_credentials' });
@@ -523,6 +606,57 @@ test('refresh: unknown refresh_token yields invalid_grant', async () => {
   const res = await oauth.token({ grant_type: 'refresh_token', refresh_token: 'never-issued' });
   assert.equal(res.status, 400);
   assert.equal(res.body.error, 'invalid_grant');
+});
+
+test('refresh: expired refresh record yields invalid_grant', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-oauth-'));
+  const store = createStore(dir);
+  const passwordHash = hashPassword(PASSWORD);
+  const oauth = createOAuth({ issuer: ISSUER, passwordHash, tokenSecret: TOKEN_SECRET, store });
+
+  const rawToken = 'expired-refresh-token';
+  // saveRefresh always stamps a fresh 30-day exp; to exercise the expiry path,
+  // write an already-expired record directly using the same sha256-hex
+  // filename scheme store.mjs uses to key refresh tokens on disk.
+  await store.saveRefresh(rawToken, { cid: 'some-client' });
+  const filename = `${createHash('sha256').update(rawToken).digest('hex')}.json`;
+  await writeFile(join(dir, 'refresh', filename), JSON.stringify({ cid: 'some-client', exp: Date.now() - 1000 }));
+
+  const res = await oauth.token({ grant_type: 'refresh_token', refresh_token: rawToken });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'invalid_grant');
+});
+
+test('refresh: rotated replacement gets a fresh (non-expired) exp', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-oauth-'));
+  const store = createStore(dir);
+  const passwordHash = hashPassword(PASSWORD);
+  const oauth = createOAuth({ issuer: ISSUER, passwordHash, tokenSecret: TOKEN_SECRET, store });
+  const client = await registerClient(oauth);
+  const { verifier, challenge } = pkcePair();
+
+  const authRes = await oauth.handleAuthorize({
+    password: PASSWORD,
+    client_id: client.client_id,
+    redirect_uri: client.redirect_uris[0],
+    state: 's',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  });
+  const code = new URL(authRes.redirect).searchParams.get('code');
+  const first = await oauth.token({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: client.redirect_uris[0],
+    client_id: client.client_id,
+    code_verifier: verifier,
+  });
+
+  const refreshed = await oauth.token({ grant_type: 'refresh_token', refresh_token: first.body.refresh_token });
+  assert.equal(refreshed.status, 200);
+  const filename = `${createHash('sha256').update(refreshed.body.refresh_token).digest('hex')}.json`;
+  const onDisk = JSON.parse(await readFile(join(dir, 'refresh', filename), 'utf8'));
+  assert.ok(onDisk.exp > Date.now(), 'new refresh record must have a future exp');
 });
 
 // ---------------------------------------------------------------------------

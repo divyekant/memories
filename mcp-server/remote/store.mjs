@@ -2,7 +2,14 @@
 //
 // Layout under `dir`:
 //   clients.json        — map of client_id -> client record (DCR-registered clients)
-//   codes/<code>.json    — one file per outstanding authorization code (single-use, 10-min TTL)
+//   codes/<hash>.json    — one file per outstanding authorization code, keyed by
+//                          sha256(code) hex — NOT the raw code. Filenames are never built
+//                          from caller-supplied input: an unauthenticated caller controls
+//                          `code` at the /token endpoint, and interpolating it directly into
+//                          a path let a value like "../../clients" delete arbitrary store
+//                          files before the code was even validated. Hashing collapses any
+//                          input to a fixed-width hex string, eliminating that class of bug
+//                          (same pattern the refresh path already used).
 //   refresh/<hash>.json  — one file per outstanding refresh token, keyed by sha256(token) —
 //                          NOT the raw token, so a leaked directory listing or backup never
 //                          exposes a bearer-usable refresh token.
@@ -16,6 +23,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
 const CODE_TTL_MS = 10 * 60 * 1000;
+const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 function hashToken(token) {
   return createHash('sha256').update(token).digest('hex');
@@ -57,12 +65,12 @@ export function createStore(dir) {
   async function saveCode(code, data) {
     await ensureDirs();
     const record = { ...data, exp: Date.now() + CODE_TTL_MS };
-    await writeFile(join(codesDir, `${code}.json`), JSON.stringify(record));
+    await writeFile(join(codesDir, `${hashToken(code)}.json`), JSON.stringify(record));
   }
 
   async function takeCode(code) {
     await ensureDirs();
-    const path = join(codesDir, `${code}.json`);
+    const path = join(codesDir, `${hashToken(code)}.json`);
     const data = await readJsonSafe(path);
     if (!data) return null;
     await unlink(path).catch(() => {});
@@ -72,7 +80,8 @@ export function createStore(dir) {
 
   async function saveRefresh(token, data) {
     await ensureDirs();
-    await writeFile(join(refreshDir, `${hashToken(token)}.json`), JSON.stringify(data));
+    const record = { ...data, exp: Date.now() + REFRESH_TTL_MS };
+    await writeFile(join(refreshDir, `${hashToken(token)}.json`), JSON.stringify(record));
   }
 
   async function takeRefresh(token) {
@@ -81,6 +90,7 @@ export function createStore(dir) {
     const data = await readJsonSafe(path);
     if (!data) return null;
     await unlink(path).catch(() => {});
+    if (typeof data.exp !== 'number' || data.exp < Date.now()) return null;
     return data;
   }
 

@@ -189,13 +189,13 @@ export function createOAuth({ issuer, passwordHash, tokenSecret, store }) {
   }
 
   async function grantAuthorizationCode(body) {
-    if (!body.code || !body.redirect_uri || !body.code_verifier) {
+    if (!body.code || !body.redirect_uri || !body.code_verifier || !body.client_id) {
       return { status: 400, body: { error: 'invalid_request' } };
     }
     const record = await store.takeCode(body.code);
     if (!record) return { status: 400, body: { error: 'invalid_grant' } };
     if (record.redirect_uri !== body.redirect_uri) return { status: 400, body: { error: 'invalid_grant' } };
-    if (body.client_id && record.cid !== body.client_id) return { status: 400, body: { error: 'invalid_grant' } };
+    if (record.cid !== body.client_id) return { status: 400, body: { error: 'invalid_grant' } };
     if (!constantTimeStringEqual(s256(body.code_verifier), record.challenge)) {
       return { status: 400, body: { error: 'invalid_grant' } };
     }
