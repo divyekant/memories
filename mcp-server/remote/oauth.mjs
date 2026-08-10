@@ -55,15 +55,22 @@ function isAllowedRedirectUri(uriStr) {
     return false;
   }
   const host = url.hostname;
+  const isLocal = host === 'localhost' || host === '127.0.0.1';
+  // https required except on localhost/127.0.0.1 — a redirect_uri is where
+  // the authorization code lands, so http on a real host would let it be
+  // intercepted in transit.
+  if (url.protocol !== 'https:' && !(isLocal && url.protocol === 'http:')) return false;
   return (
     host === 'claude.ai' ||
     host.endsWith('.claude.ai') ||
     host === 'claude.com' ||
     host.endsWith('.claude.com') ||
-    host === 'localhost' ||
-    host === '127.0.0.1'
+    isLocal
   );
 }
+
+const MAX_REDIRECT_URIS = 10;
+const MAX_CLIENT_NAME_LENGTH = 200;
 
 // ---------------------------------------------------------------------------
 // PKCE
@@ -115,8 +122,16 @@ export function createOAuth({ issuer, passwordHash, tokenSecret, store }) {
     if (!redirectUris || redirectUris.length === 0) {
       return { status: 400, body: { error: 'invalid_redirect_uri' } };
     }
+    // Bounded before any per-URI validation work — an unauthenticated caller
+    // could otherwise submit an arbitrarily large array to burn CPU/storage.
+    if (redirectUris.length > MAX_REDIRECT_URIS) {
+      return { status: 400, body: { error: 'invalid_client_metadata' } };
+    }
     if (!redirectUris.every(isAllowedRedirectUri)) {
       return { status: 400, body: { error: 'invalid_redirect_uri' } };
+    }
+    if (typeof body.client_name === 'string' && body.client_name.length > MAX_CLIENT_NAME_LENGTH) {
+      return { status: 400, body: { error: 'invalid_client_metadata' } };
     }
     const client = {
       client_id: randomBytes(16).toString('base64url'),

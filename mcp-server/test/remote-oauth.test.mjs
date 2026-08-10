@@ -230,6 +230,52 @@ test('register: rejects missing redirect_uris', async () => {
   assert.equal(res.status, 400);
 });
 
+test('register: rejects more than 10 redirect_uris (invalid_client_metadata)', async () => {
+  const { oauth } = await freshOAuth();
+  const uris = Array.from({ length: 11 }, (_, i) => `https://claude.ai/cb${i}`);
+  const res = await oauth.register({ redirect_uris: uris });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'invalid_client_metadata');
+});
+
+test('register: accepts exactly 10 redirect_uris', async () => {
+  const { oauth } = await freshOAuth();
+  const uris = Array.from({ length: 10 }, (_, i) => `https://claude.ai/cb${i}`);
+  const res = await oauth.register({ redirect_uris: uris });
+  assert.equal(res.status, 201);
+});
+
+test('register: rejects client_name longer than 200 chars (invalid_client_metadata)', async () => {
+  const { oauth } = await freshOAuth();
+  const res = await oauth.register({
+    redirect_uris: ['https://claude.ai/cb'],
+    client_name: 'x'.repeat(201),
+  });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'invalid_client_metadata');
+});
+
+test('register: accepts client_name at exactly 200 chars', async () => {
+  const { oauth } = await freshOAuth();
+  const res = await oauth.register({
+    redirect_uris: ['https://claude.ai/cb'],
+    client_name: 'x'.repeat(200),
+  });
+  assert.equal(res.status, 201);
+});
+
+test('register: rejects http:// redirect_uri on claude.ai (https required except localhost)', async () => {
+  const { oauth } = await freshOAuth();
+  const res = await oauth.register({ redirect_uris: ['http://claude.ai/cb'] });
+  assert.equal(res.status, 400);
+});
+
+test('register: still accepts http://localhost:3000/cb (localhost exempt from https requirement)', async () => {
+  const { oauth } = await freshOAuth();
+  const res = await oauth.register({ redirect_uris: ['http://localhost:3000/cb'] });
+  assert.equal(res.status, 201);
+});
+
 // ---------------------------------------------------------------------------
 // authorizePage (GET /authorize)
 // ---------------------------------------------------------------------------

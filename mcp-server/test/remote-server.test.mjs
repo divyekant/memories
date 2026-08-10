@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
-import { createApp, createRateLimiter } from '../remote/server.mjs';
+import { createApp, createRateLimiter, validateAuthMode, validateIssuerScheme } from '../remote/server.mjs';
 import { hashPassword } from '../remote/oauth.mjs';
 
 const MCP_ACCEPT = 'application/json, text/event-stream';
@@ -66,6 +66,79 @@ async function mcpFetch(baseUrl, body, extraHeaders = {}) {
     body: JSON.stringify(body),
   });
 }
+
+// ---------------------------------------------------------------------------
+// authMode validation — fails closed instead of open (item 1)
+// ---------------------------------------------------------------------------
+
+test('validateAuthMode: rejects anything other than "oauth" or "none"', () => {
+  assert.throws(() => validateAuthMode('Oauth'), /REMOTE_MCP_AUTH/);
+  assert.throws(() => validateAuthMode(''), /REMOTE_MCP_AUTH/);
+  assert.throws(() => validateAuthMode(undefined), /REMOTE_MCP_AUTH/);
+  assert.doesNotThrow(() => validateAuthMode('oauth'));
+  assert.doesNotThrow(() => validateAuthMode('none'));
+});
+
+test('createApp: invalid authMode throws instead of failing open', async () => {
+  const storeDir = await freshStoreDir();
+  assert.throws(() => createApp({ authMode: 'Oauth', storeDir }), /REMOTE_MCP_AUTH/);
+});
+
+test("createApp: authMode 'none' logs a loud console.warn that auth is disabled", async () => {
+  const originalWarn = console.warn;
+  let warned = '';
+  console.warn = (...args) => { warned += args.join(' '); };
+  try {
+    createApp({ authMode: 'none', storeDir: await freshStoreDir() });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.match(warned, /AUTH DISABLED/);
+  assert.match(warned, /REMOTE_MCP_AUTH=none/);
+});
+
+// ---------------------------------------------------------------------------
+// Issuer fail-fast (item 5)
+// ---------------------------------------------------------------------------
+
+test('createApp: oauth mode without an issuer throws', async () => {
+  const storeDir = await freshStoreDir();
+  assert.throws(
+    () => createApp({ authMode: 'oauth', passwordHash: 'x', tokenSecret: 'y', storeDir }),
+    /issuer/i
+  );
+});
+
+test('createApp: oauth mode with an issuer does not throw on the missing-issuer check', async () => {
+  assert.doesNotThrow(() => createApp({
+    authMode: 'oauth',
+    issuer: 'http://issuer.invalid',
+    passwordHash: 'x',
+    tokenSecret: 'y',
+    storeDir: 'unused-in-this-assertion',
+  }));
+});
+
+test('validateIssuerScheme: https issuer is fine', () => {
+  assert.doesNotThrow(() => validateIssuerScheme('https://mcp.example.com'));
+});
+
+test('validateIssuerScheme: http issuer on a non-localhost host throws without override', () => {
+  assert.throws(() => validateIssuerScheme('http://mcp.example.com'), /https/i);
+});
+
+test('validateIssuerScheme: http issuer on localhost/127.0.0.1 is allowed', () => {
+  assert.doesNotThrow(() => validateIssuerScheme('http://localhost:8910'));
+  assert.doesNotThrow(() => validateIssuerScheme('http://127.0.0.1:8910'));
+});
+
+test('validateIssuerScheme: http issuer on a non-localhost host is allowed with allowInsecure override', () => {
+  assert.doesNotThrow(() => validateIssuerScheme('http://mcp.example.com', { allowInsecure: true }));
+});
+
+test('validateIssuerScheme: not-a-url throws', () => {
+  assert.throws(() => validateIssuerScheme('not-a-url'));
+});
 
 // ---------------------------------------------------------------------------
 // /healthz
@@ -502,6 +575,42 @@ test('trustProxy off (default): every request shares one socket-address bucket',
     // above and trips the limit on request 21.
     const res = await hitToken('203.0.113.6');
     assert.equal(res.status, 429, 'X-Forwarded-For is ignored — same bucket as the prior 20 hits');
+  } finally {
+    await close();
+  }
+});
+
+test(
+  'trustProxy "uniquelocal": express trust-proxy setting reflects cfg ' +
+  '(the real docker/tunnel topology has a bridge-IP peer, not loopback — ' +
+  'full bridge-IP simulation is not feasible in-process, so this asserts the setting is applied)',
+  async () => {
+    const app = createApp({
+      authMode: 'none',
+      storeDir: await freshStoreDir(),
+      trustProxy: 'uniquelocal',
+    });
+    assert.equal(app.get('trust proxy'), 'uniquelocal');
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Rate limiting — /register (unauthenticated disk-fill guard)
+// ---------------------------------------------------------------------------
+
+test('429 after exceeding the rate limit on /register', async () => {
+  const { baseUrl, close } = await oauthModeApp();
+  try {
+    let sawTooMany = false;
+    for (let i = 0; i < 21; i++) {
+      const res = await fetch(`${baseUrl}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ redirect_uris: ['https://claude.ai/cb'] }),
+      });
+      if (res.status === 429) sawTooMany = true;
+    }
+    assert.ok(sawTooMany, 'expected at least one 429 within 21 rapid requests to /register');
   } finally {
     await close();
   }

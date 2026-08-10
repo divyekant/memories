@@ -118,6 +118,41 @@ export function createRateLimiter({ limit = 20, windowMs = 60_000, sweepInterval
   return rateLimit;
 }
 
+// -- Config validation --------------------------------------------------------
+// Fails closed: an unrecognized authMode must never silently behave like
+// "no auth" (or like oauth). Anything other than the two known modes throws
+// so the caller (createApp, main()) refuses to start rather than guessing.
+
+export function validateAuthMode(mode) {
+  if (mode !== "oauth" && mode !== "none") {
+    throw new Error(
+      `Invalid REMOTE_MCP_AUTH="${mode}" — must be "oauth" or "none". Refusing to start rather than guess.`
+    );
+  }
+}
+
+// Issuer scheme/host check for oauth mode. https: is required except when the
+// issuer's hostname is localhost/127.0.0.1 (local dev/testing), or the
+// operator explicitly opts out via REMOTE_MCP_ALLOW_INSECURE_ISSUER=1. An
+// http issuer on a real hostname would leak the bearer token and the
+// password-login form over plaintext.
+export function validateIssuerScheme(issuerStr, { allowInsecure = false } = {}) {
+  let url;
+  try {
+    url = new URL(issuerStr);
+  } catch {
+    throw new Error(`REMOTE_MCP_ISSUER is not a valid absolute URL: "${issuerStr}"`);
+  }
+  if (url.protocol === "https:") return;
+  const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol === "http:" && isLocal) return;
+  if (allowInsecure) return;
+  throw new Error(
+    `REMOTE_MCP_ISSUER="${issuerStr}" must use https: unless the hostname is localhost/127.0.0.1. ` +
+    `Set REMOTE_MCP_ALLOW_INSECURE_ISSUER=1 to override (not recommended for a real deployment).`
+  );
+}
+
 // -- Bearer auth middleware (oauth mode only) --------------------------------
 
 function bearerAuth(oauth, issuer) {
@@ -148,6 +183,16 @@ export function createApp(cfg = {}) {
     trustProxy = false,
   } = cfg;
 
+  validateAuthMode(authMode);
+  if (authMode === "none") {
+    console.warn(
+      "[remote-mcp] AUTH DISABLED (REMOTE_MCP_AUTH=none) — do not expose this to the internet"
+    );
+  }
+  if (authMode === "oauth" && !issuer) {
+    throw new Error("REMOTE_MCP_ISSUER is required when REMOTE_MCP_AUTH=oauth.");
+  }
+
   const store = createStore(storeDir);
   const oauth = createOAuth({ issuer, passwordHash, tokenSecret, store });
   const rateLimit = createRateLimiter();
@@ -156,15 +201,17 @@ export function createApp(cfg = {}) {
   app.disable("x-powered-by");
   // Off by default — req.ip is the raw socket address, so the naive per-IP
   // rate limiter above buckets correctly with no config. Behind a reverse
-  // proxy (e.g. local Caddy) every client shares that socket address, which
-  // collapses the per-IP bucket into one global bucket — set
-  // REMOTE_MCP_TRUST_PROXY=loopback so Express derives req.ip from
-  // X-Forwarded-For instead. 'loopback' trusts exactly one hop: the XFF value
-  // is only honored when the directly-connecting peer is itself loopback (the
-  // local proxy). Never set this to `true` (trusts every hop in the chain)
-  // unless every hop in front of this process is a proxy you control — an
-  // internet-facing setup with `true` lets any client spoof X-Forwarded-For
-  // to pick its own rate-limit bucket.
+  // proxy (e.g. local Caddy, or the docker/tunnel topology this project
+  // ships) every client shares that socket address, which collapses the
+  // per-IP bucket into one global bucket. The direct peer in that topology is
+  // a container-bridge IP (e.g. 172.17.x.x), NOT loopback — 'loopback' never
+  // matches there, so set REMOTE_MCP_TRUST_PROXY=uniquelocal instead: it's an
+  // Express trust-proxy preset covering private/link-local/unique-local
+  // ranges (RFC 1918 + friends), which is exactly the bridge network a
+  // container's proxy hop lives on. Never set this to `true` (trusts every
+  // hop in the chain) unless every hop in front of this process is a proxy
+  // you control — an internet-facing setup with `true` lets any client spoof
+  // X-Forwarded-For to pick its own rate-limit bucket.
   if (trustProxy) app.set("trust proxy", trustProxy);
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: false, limit: "1mb" }));
@@ -182,7 +229,7 @@ export function createApp(cfg = {}) {
     res.json(oauth.metadataPR());
   });
 
-  app.post("/register", async (req, res) => {
+  app.post("/register", rateLimit, async (req, res) => {
     const r = await oauth.register(req.body);
     res.status(r.status).json(r.body);
   });
@@ -208,7 +255,17 @@ export function createApp(cfg = {}) {
   if (authMode === "oauth") mcpGuards.push(bearerAuth(oauth, issuer));
 
   app.post("/mcp", ...mcpGuards, async (req, res) => {
-    const server = buildServer({ url: memoriesUrl, apiKey: memoriesApiKey, client: "claude-web", fetchImpl });
+    const server = buildServer({
+      url: memoriesUrl,
+      apiKey: memoriesApiKey,
+      client: "claude-web",
+      fetchImpl,
+      // The remote entry point's backend is fully specified by env
+      // (MEMORIES_URL/MEMORIES_API_KEY) — never let a stray
+      // .memories/backends.yaml or ~/.config/memories/backends.yaml on the
+      // host silently redirect it to a different backend.
+      skipFileConfig: true,
+    });
     try {
       // enableJsonResponse: true — plain JSON response instead of SSE. This is a
       // stateless, single-shot request/response exchange with no server-push
@@ -251,6 +308,14 @@ export function createApp(cfg = {}) {
 
 function main() {
   const authMode = process.env.REMOTE_MCP_AUTH || "oauth";
+
+  try {
+    validateAuthMode(authMode);
+  } catch (err) {
+    console.error(`[remote-mcp] ${err.message}`);
+    process.exit(1);
+  }
+
   const cfg = {
     issuer: process.env.REMOTE_MCP_ISSUER,
     port: Number(process.env.REMOTE_MCP_PORT) || 8910,
@@ -263,12 +328,26 @@ function main() {
     trustProxy: process.env.REMOTE_MCP_TRUST_PROXY || false,
   };
 
-  if (authMode === "oauth" && (!cfg.passwordHash || !cfg.tokenSecret)) {
-    console.error(
-      "REMOTE_MCP_PASSWORD_HASH and REMOTE_MCP_TOKEN_SECRET are required when REMOTE_MCP_AUTH=oauth. " +
-      "Set REMOTE_MCP_AUTH=none for local/dev testing without auth."
-    );
-    process.exit(1);
+  if (authMode === "oauth") {
+    if (!cfg.passwordHash || !cfg.tokenSecret) {
+      console.error(
+        "REMOTE_MCP_PASSWORD_HASH and REMOTE_MCP_TOKEN_SECRET are required when REMOTE_MCP_AUTH=oauth. " +
+        "Set REMOTE_MCP_AUTH=none for local/dev testing without auth."
+      );
+      process.exit(1);
+    }
+    if (!cfg.issuer) {
+      console.error("[remote-mcp] REMOTE_MCP_ISSUER is required when REMOTE_MCP_AUTH=oauth.");
+      process.exit(1);
+    }
+    try {
+      validateIssuerScheme(cfg.issuer, {
+        allowInsecure: process.env.REMOTE_MCP_ALLOW_INSECURE_ISSUER === "1",
+      });
+    } catch (err) {
+      console.error(`[remote-mcp] ${err.message}`);
+      process.exit(1);
+    }
   }
 
   const app = createApp(cfg);
