@@ -1,11 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [5.8.0] - 2026-08-10
 
 ### Added
 - **`memories-mcp` npm package: installer/manager CLI** — `npx memories-mcp init` (bin: `memories`) replaces the shell-based `install.sh` flow with a single cross-platform command. Subcommands: `init` (detect + wire), `doctor` (status per target + backend health + deployed-vs-package version check), `update` (re-run wiring after an upgrade), `uninstall`. Flags: `--claude` / `--codex` / `--cursor` / `--generic` (restrict targets; default auto-detect), `--url` / `--api-key` (backend config), `--dry-run` (print the plan, write nothing), `--yes` (non-interactive). Adapters cover Claude Code (hooks + `memories`/`memories-setup` skills + MCP entry + marked `CLAUDE.md` block), Codex (hooks + MCP/developer-instructions marked blocks in `config.toml`), Cursor (`~/.cursor/mcp.json` + shared Claude-side hooks via "Third-party skills", with an on-screen reminder to enable that setting and restart), and a generic target that prints an MCP client snippet (`npx -y memories-mcp` + `MEMORIES_URL`/`MEMORIES_API_KEY`) for any other MCP-capable client. Windows has no bash, so hooks are unsupported there — `init`/`doctor`/`uninstall` restrict to the generic target automatically.
 - **Backend bootstrap** — when the configured backend fails its health check, interactive `init` (no `--yes`) offers to provision it with Docker: writes `~/.config/memories/docker-compose.yml` from the bundled standalone compose file and runs `docker compose up -d`, polling until healthy. Declining prints the exact manual steps. `--yes` skips the offer entirely (logs the unreachable backend and continues without it). A Docker failure is caught and logged rather than aborting the rest of the wiring.
-- 51 Node tests (`cd mcp-server && npm test`) cover argument parsing, all four adapters, backend health/bootstrap, and the doctor/uninstall/update flows.
+- 65 Node tests (`cd mcp-server && npm test`) cover argument parsing, all four adapters, backend health/bootstrap, and the doctor/uninstall/update flows.
 
 ### Changed
 - **Client assets consolidated into `mcp-server/assets/`** — hooks, skills, `CLAUDE.md` rules, and the backend's standalone compose file moved from `plugin/`, `integrations/{claude-code,codex}/`, and `plugins/memories/skills/` into `mcp-server/assets/{claude-code,codex,backend}/`, so the npm package can ship them via its `files` field. `mcp-server/package.json` gained `bin.memories-mcp` (MCP server) and `bin.memories` (this CLI).
