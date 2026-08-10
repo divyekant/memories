@@ -32,7 +32,7 @@ Usage:
   memories init [--claude] [--codex] [--cursor] [--generic] [--url <u>] [--api-key <k>] [--dry-run] [--yes]
   memories update [same flags as init]
   memories doctor [--claude] [--codex] [--cursor] [--generic]
-  memories uninstall [--claude] [--codex] [--cursor] [--generic] [--yes]
+  memories uninstall [--claude] [--codex] [--cursor] [--generic]
   memories --help
 
 Flags:

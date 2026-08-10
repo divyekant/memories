@@ -2,6 +2,7 @@
   "name": "memories-mcp",
   "version": "5.7.2",
   "description": "Memories — agent-agnostic memory for AI coding agents. MCP server + installer CLI.",
+  "license": "MIT",
   "type": "module",
   "main": "index.js",
   "bin": { "memories-mcp": "index.js", "memories": "cli/index.mjs" },
