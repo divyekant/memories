@@ -74,10 +74,15 @@ test('uninstall reverses install but keeps foreign settings keys', async () => {
   assert.ok(!md.includes('BEGIN Memories Claude rules'));
 });
 
-test('install copies skill content even when the asset is reached via symlink', async () => {
+test('install copies skill content even when the asset files are symlinks', async () => {
   const ctx = await freshCtx();
   const linkRoot = await mkdtemp(join(tmpdir(), 'mem-link-'));
-  await symlink(join(assetsDir, 'claude-code'), join(linkRoot, 'claude-code'));
+  await mkdir(join(linkRoot, 'claude-code/skills/memories'), { recursive: true });
+  await mkdir(join(linkRoot, 'claude-code/skills/setup'), { recursive: true });
+  await symlink(join(assetsDir, 'claude-code/skills/memories/SKILL.md'), join(linkRoot, 'claude-code/skills/memories/SKILL.md'));
+  await symlink(join(assetsDir, 'claude-code/skills/setup/SKILL.md'), join(linkRoot, 'claude-code/skills/setup/SKILL.md'));
+  await symlink(join(assetsDir, 'claude-code/hooks'), join(linkRoot, 'claude-code/hooks'));
+  await symlink(join(assetsDir, 'claude-code/CLAUDE.md'), join(linkRoot, 'claude-code/CLAUDE.md'));
   await adapter.install({ ...ctx, assetsDir: linkRoot });
   const st = await lstat(join(ctx.home, '.claude/skills/memories/SKILL.md'));
   assert.equal(st.isSymbolicLink(), false);
