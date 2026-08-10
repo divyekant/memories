@@ -26,11 +26,23 @@
   },
   "type": "module",
   "main": "index.js",
-  "bin": { "memories-mcp": "index.js", "memories": "cli/index.mjs" },
-  "files": ["index.js", "lib-tools.mjs", "cli/", "assets/"],
-  "engines": { "node": ">=20" },
+  "bin": {
+    "memories-mcp": "index.js",
+    "memories": "cli/index.mjs"
+  },
+  "files": [
+    "index.js",
+    "lib-tools.mjs",
+    "cli/",
+    "assets/",
+    "remote/"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node index.js",
+    "start:remote": "node remote/server.mjs",
     "test": "node --test",
     "smoke": "node smoke.mjs",
     "smoke:write": "node smoke-write.mjs",
@@ -38,6 +50,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "4.22.2",
     "js-yaml": "^4.1.1"
   }
 }

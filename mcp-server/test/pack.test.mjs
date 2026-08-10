@@ -14,6 +14,11 @@ test('npm pack ships exactly what we intend', async () => {
   assert.ok(files.includes('cli/index.mjs'));
   assert.ok(files.includes('assets/claude-code/hooks/hooks.json'));
   assert.ok(files.includes('assets/backend/docker-compose.standalone.yml'));
+  assert.ok(files.includes('lib-tools.mjs'));
+  assert.ok(files.includes('remote/server.mjs'));
+  assert.ok(files.includes('remote/oauth.mjs'));
+  assert.ok(files.includes('remote/store.mjs'));
+  assert.ok(files.includes('remote/login.mjs'));
   assert.ok(!files.some((f) => f.startsWith('test/')));
   assert.ok(!files.some((f) => f.includes('smoke')));
   assert.ok(!files.some((f) => f.includes('node_modules')));
