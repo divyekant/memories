@@ -19,11 +19,20 @@ Stop cutting a release per work item. The flow is now:
 
 ## Mechanics of a promotion
 
-- Bump every version string (the seven: `pyproject.toml`,
-  `plugin/package.json`, `mcp-server/package.json` + lockfile,
-  `plugin/assets/BACKEND_VERSION`, `app.py` (FastAPI + /health),
-  `tests/test_api_contract_compat.py`, `plugins/memories/.codex-plugin/plugin.json`)
-  and grep the old version project-wide before committing.
+- Bump every version string (the eight, current as of v5.9.0: `pyproject.toml`,
+  `mcp-server/package.json` + lockfile, `uv.lock`,
+  `mcp-server/assets/backend/BACKEND_VERSION`, `app.py` (FastAPI + /health),
+  `tests/test_api_contract_compat.py`, `plugins/memories/.codex-plugin/plugin.json`,
+  `mcp-server/assets/claude-code/.claude-plugin/plugin.json` (Claude Code plugin
+  manifest — `dk-marketplace/sync.sh` reads its version into `marketplace.json`,
+  so a stale value here silently mis-advertises the plugin), plus `README.md`'s
+  "Key capabilities (vX.Y.Z)" line.
+  `plugin/package.json` and `plugin/assets/BACKEND_VERSION` are GONE as of the
+  v5.8.0 asset consolidation — `plugin/` is now a symlink to
+  `mcp-server/assets/claude-code`.
+  Grep the old version project-wide before committing, and include `*.mjs`/`*.js`
+  in that grep: a hardcoded `version:` in `mcp-server/lib-tools.mjs` was missed
+  for two releases because earlier sweeps only checked json/toml/py/md.
 - Retitle CHANGELOG `[Unreleased]` to the version + date.
 - Full suite green → `chore: release vX.Y.Z` on develop → `--no-ff` merge to
   `main` → tag → push → GitHub release → deploy (compose build + up) → sync
