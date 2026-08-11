@@ -1240,6 +1240,48 @@ def test_memory_rehydrate_syncs_pointers_not_full_memory_text(tmp_path: Path) ->
     assert "Compaction should not rehydrate full memory text" not in updated
 
 
+def test_memory_rehydrate_merges_batches_without_similarity_field(tmp_path: Path) -> None:
+    """Hybrid search returns rrf_score, not similarity. Merging a second batch
+    sorted with `-.similarity // -.rrf_score` throws, because jq negates
+    .similarity before the alternative is considered — so a null similarity is
+    an error, not a fallback. Two prefixes are required: the merge only runs
+    once RESULTS is already non-empty."""
+    memory_file = (
+        tmp_path / "home" / ".claude" / "projects" / "Users-example-memories" / "memory" / "MEMORY.md"
+    )
+    memory_file.parent.mkdir(parents=True)
+    memory_file.write_text("# Manual note\n", encoding="utf-8")
+
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {"results": [{"id": 11, "source": "claude-code/memories", "rrf_score": 0.4}], "count": 1},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "learning/memories",
+            "response": {"results": [{"id": 22, "source": "learning/memories", "rrf_score": 0.9}], "count": 1},
+        },
+    ]
+
+    payload = {"cwd": "/Users/example/memories", "compact_summary": "rehydrate merge"}
+    result, _, _ = _run_hook(
+        REHYDRATE_SCRIPT,
+        tmp_path,
+        payload,
+        responses,
+        extra_env={"MEMORIES_SOURCE_PREFIXES": "claude-code/memories,learning/memories"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "cannot be negated" not in result.stderr
+    updated = memory_file.read_text(encoding="utf-8")
+    # Both batches survive the merge, ranked by the score that is present.
+    assert "candidate memory id=22" in updated
+    assert "candidate memory id=11" in updated
+
+
 def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     installed_recall = _install_hook_fixture(home_dir, "memory-recall.sh")

@@ -53,7 +53,10 @@ for tpl in $(echo "$PREFIXES" | tr ',' ' '); do
 
   BATCH_RESULTS=$(echo "$BATCH" | jq -r '.results // []')
   if [ -n "$RESULTS" ]; then
-    RESULTS=$(echo "$RESULTS $BATCH_RESULTS" | jq -s 'add | unique_by(.id) | sort_by(-.similarity // -.rrf_score) | .[0:6]')
+    # Negate the resolved score, not each candidate: `-.similarity // -.rrf_score`
+    # negates before the alternative is considered, so a hybrid-search result
+    # (rrf_score, no similarity) aborts the merge instead of falling through.
+    RESULTS=$(echo "$RESULTS $BATCH_RESULTS" | jq -s 'add | unique_by(.id) | sort_by(-(.similarity // .rrf_score // 0)) | .[0:6]')
   else
     RESULTS="$BATCH_RESULTS"
   fi

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Post-compaction rehydration aborted whenever it merged a second batch.** `memory-rehydrate.sh` ranked merged results with `sort_by(-.similarity // -.rrf_score)`, but jq negates `.similarity` before considering the alternative, so a hybrid-search result — which carries `rrf_score` and no `similarity` — raised `null (null) cannot be negated` and the hook exited non-zero with no context injected. It only triggered from the second source prefix onward, which is why it looked intermittent; the existing test supplied a single batch with `similarity` present and never exercised the merge.
+
 ### Added
 - **`init --mcp-name <name>`** — writes the read-only permission allowlist for a differently-named MCP server in addition to `memories`. Claude Code's `permissions.allow` only accepts a tool glob after a literal, glob-free server segment (`mcp__*__memory_search` is skipped with a warning and auto-approves nothing), so an installer cannot pre-approve tools on a server whose name it does not know. The allowlist stays enumerated per tool rather than collapsing to `mcp__<server>__*`, which would also pre-approve `memory_delete`.
 
