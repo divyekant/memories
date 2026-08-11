@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.9.0] - 2026-08-10
 
 ### Added
 - **Remote MCP server for the claude.ai connector** — `mcp-server/remote/` adds an OAuth 2.1 (authorization-code + mandatory PKCE, dynamic client registration) + Streamable HTTP front door in front of the existing Memories backend, so Claude web/mobile can connect to Memories as a custom connector without a local MCP client. New `mcp-server/Dockerfile.remote` and a profile-gated `remote-mcp` service in `docker-compose.yml` (`docker compose --profile remote-mcp up -d`; disabled on a plain `docker compose up`), plus a commented-out reference block in the standalone compose file for non-repo deployments. README and GETTING_STARTED document setup (password-hash/token-secret generation, tunnel exposure, adding the connector in claude.ai).
