@@ -3118,6 +3118,45 @@ def test_repo_hooks_stand_down_when_the_plugin_is_installed(tmp_path: Path) -> N
     assert "hookSpecificOutput" in absent.stdout, "gate blocked the hook when no plugin present"
 
 
+def test_repo_hooks_stand_down_for_installer_written_hooks_too(tmp_path: Path) -> None:
+    """The gate must key on "these hooks are already registered", not "the
+    plugin is installed".
+
+    A cloud environment's setup script would wire them with
+    `memories-mcp init`, which writes user-scope hooks into
+    ~/.claude/settings.json and ~/.claude/hooks/memory/ — a different location
+    from the plugin registry. Checking only the registry would let the repo
+    wiring double-fire alongside an installer-provisioned container, which is
+    the very environment this wiring exists to serve.
+    """
+    launcher = REPO_ROOT / "mcp-server" / "assets" / "claude-code" / "hooks" / "repo-hook.sh"
+    payload = json.dumps({"cwd": str(REPO_ROOT), "session_id": "gate"})
+
+    def run(config: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", str(launcher), "memory-recall.sh"],
+            input=payload, capture_output=True, text=True,
+            env={**os.environ, "CLAUDE_CONFIG_DIR": str(config), "MEMORIES_ENABLED": "1",
+                 "MEMORIES_URL": "http://127.0.0.1:1", "MEMORIES_API_KEY": "x"},
+        )
+
+    installer = tmp_path / "installer"
+    installer.mkdir()
+    (installer / "settings.json").write_text(json.dumps({"hooks": {"SessionStart": [
+        {"matcher": "", "hooks": [{"type": "command",
+                                   "command": "/root/.claude/hooks/memory/memory-recall.sh"}]}]}}),
+        encoding="utf-8")
+    assert run(installer).stdout.strip() == "", "did not stand down for installer-written hooks"
+
+    # Must not over-detect: someone else's hooks are not ours.
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    (foreign / "settings.json").write_text(json.dumps({"hooks": {"Stop": [
+        {"matcher": "", "hooks": [{"type": "command", "command": "/usr/local/bin/other.sh"}]}]}}),
+        encoding="utf-8")
+    assert "hookSpecificOutput" in run(foreign).stdout, "stood down for unrelated hooks"
+
+
 def test_repo_wiring_omits_the_config_guard() -> None:
     """memory-config-guard.sh runs without CLAUDE_PLUGIN_ROOT under repo wiring,
     takes its legacy path, and checks only ~/.claude/settings.json for the hook
@@ -3130,3 +3169,32 @@ def test_repo_wiring_omits_the_config_guard() -> None:
         (REPO_ROOT / "mcp-server" / "assets" / "claude-code" / "hooks" / "hooks.json").read_text(encoding="utf-8")
     )["hooks"]
     assert "ConfigChange" in plugin_hooks, "exclusion is only meaningful while the plugin wires it"
+
+
+def test_env_file_does_not_clobber_environment_supplied_url(tmp_path: Path) -> None:
+    """An explicitly-set MEMORIES_URL must beat ~/.config/memories/env.
+
+    A cloud environment supplies MEMORIES_URL as a real env var, but its setup
+    script runs `memories-mcp init` BEFORE those vars exist, so the installer
+    falls back to the localhost default and writes it into the env file.
+    Sourcing that file plainly overwrote the correct URL with a dead one and
+    the session reported the backend unreachable — observed in a real cloud
+    container. Two distinct dead ports make it unambiguous which one won.
+    """
+    home = tmp_path / "home"
+    (home / ".config" / "memories").mkdir(parents=True)
+    (home / ".config" / "memories" / "env").write_text(
+        'MEMORIES_URL="http://127.0.0.1:9102"\n', encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        ["bash", str(HOOKS_DIR / "memory-recall.sh")],
+        input=json.dumps({"cwd": "/tmp/proj", "session_id": "prec"}),
+        capture_output=True, text=True,
+        env={**os.environ, "HOME": str(home), "MEMORIES_URL": "http://127.0.0.1:9101",
+             "MEMORIES_ENABLED": "1", "MEMORIES_HOOK_BUDGET_MS": "3000"},
+    )
+    assert result.returncode == 0, result.stderr
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "9101" in context, f"env-supplied URL lost to the file: {context[:200]}"
+    assert "9102" not in context, "env file clobbered the environment"
