@@ -37,9 +37,20 @@ Stop cutting a release per work item. The flow is now:
 - Full suite green → `chore: release vX.Y.Z` on develop → `--no-ff` merge to
   `main` → tag → push → GitHub release → deploy (compose build + up) → bump the
   marketplace pin and refresh the installed plugin (both below).
-- Push the tag explicitly (`git push origin vX.Y.Z`). `--follow-tags` skips
-  lightweight tags, and `gh release create` refuses to run until the tag is on
-  the remote.
+- Push the tag explicitly (`git push origin vX.Y.Z`) — `--follow-tags` skips
+  lightweight tags — and create the release with `--verify-tag`:
+
+  ```bash
+  git push origin vX.Y.Z
+  gh release create vX.Y.Z --verify-tag --title ... --notes ...
+  ```
+
+  `--verify-tag` is what enforces the invariant. Without it, `gh release
+  create` creates any missing tag from the latest state of the default branch,
+  so a forgotten or failed push publishes a release pointing at the wrong
+  commit. During v5.11.0 `gh` did refuse — but only because the tag existed
+  locally and not on the remote, which it treats as ambiguous; that refusal is
+  a side effect of one particular state, not a guarantee to rely on.
 - A client-only release (hooks, skills, CLI — no `app.py` or backend change
   beyond its version string) needs no deploy. Skipping it leaves the running
   backend reporting the previous version, which is cosmetic; redeploying a
@@ -69,15 +80,40 @@ Stop cutting a release per work item. The flow is now:
   Confirm by checking that `installed_plugins.json`'s `gitCommitSha` equals the
   release commit — not just that `version` moved, which can advance while the
   files on disk do not.
-- **Old cache directories linger and can still execute.** `claude plugin update`
-  adds a new versioned directory rather than replacing the old one, and stale
-  ones stay marked `.in_use`. A v5.4.0 directory from four months earlier was
-  still running hooks during v5.11.0 and emitting a bogus "Backend Update
-  Available — latest is v5.7.0" banner, sourced from an `assets/BACKEND_VERSION`
-  that no current version even ships (see the dangling-path note in
-  `memory-recall.sh`). After restarting, prune the directories under
-  `~/.claude/plugins/cache/dk-marketplace/memories/` that are not the current
-  version.
+- **Old cache directories linger and can still execute — do not blind-prune
+  them.** `claude plugin update` adds a new versioned directory rather than
+  replacing the old one, and long-lived sessions keep running from whichever
+  path they started with. During v5.11.0 a v5.4.0 directory from four months
+  earlier was still executing hooks and emitting a bogus "Backend Update
+  Available — latest is v5.7.0" banner, sourced from an
+  `assets/BACKEND_VERSION` that no current version even ships (see the
+  dangling-path note in `memory-recall.sh`).
+
+  `.in_use` is **a directory of per-process lease records**, not a stale
+  boolean left behind by `update`: each entry is a PID whose contents look like
+  `{"pid":11409,"procStart":"..."}`. Testing `[ -e .in_use ]` therefore says
+  nothing about whether anything is actually using the directory — an empty
+  lease directory persists after every session that held it exits. Count live
+  leases instead, and note that restarting one session does not release
+  another's:
+
+  ```bash
+  for d in ~/.claude/plugins/cache/dk-marketplace/memories/*/; do
+    live=0
+    for pid in $(ls "$d.in_use" 2>/dev/null); do
+      kill -0 "$pid" 2>/dev/null && live=$((live+1))
+    done
+    echo "$(basename "$d"): $live live lease(s)"
+  done
+  ```
+
+  (`ls` rather than a glob: under zsh's default `nomatch`, an empty
+  `.in_use/*` aborts the loop instead of yielding zero iterations.)
+
+  Delete a non-current directory only once it reports zero live leases. At the
+  time of the v5.11.0 release the v5.4.0 directory held seven live leases, all
+  with `--plugin-dir` pointing into it, so removing it would have pulled hook
+  and skill files out from under seven running sessions.
 - Anything user-behavior-changing ships behind an eval gate where one exists
   (active-search eval for hook behavior, tier-1 recall A/B for retrieval).
 
