@@ -80,3 +80,29 @@ def test_add_memory_contract_shape(client):
     assert response.status_code == 200
     body = response.json()
     assert {"success", "id", "message"} <= set(body)
+
+
+def test_backend_version_marker_matches_health_version(client):
+    """The packaged BACKEND_VERSION marker and the version /health reports must
+    move together.
+
+    `runDoctor` compares these two exact values and, on any difference, prints
+    a mismatch recommending `memories update` — a command that only rewires
+    clients and cannot update a running backend. So a checkout where they
+    disagree produces a permanent, unactionable warning for anyone who builds
+    the backend from it. A client-only release must freeze both rather than
+    bumping one.
+    """
+    from pathlib import Path
+
+    marker = (
+        Path(__file__).parent.parent / "mcp-server" / "assets" / "backend" / "BACKEND_VERSION"
+    ).read_text(encoding="utf-8").strip()
+
+    test_client, _ = client
+    reported = test_client.get("/health").json()["version"]
+
+    assert marker == reported, (
+        f"BACKEND_VERSION says {marker!r} but /health reports {reported!r}. "
+        "These are compared by `memories doctor`; bump both or neither."
+    )

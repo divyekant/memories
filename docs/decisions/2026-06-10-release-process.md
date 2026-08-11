@@ -21,9 +21,7 @@ Stop cutting a release per work item. The flow is now:
 
 - Bump every version string (the eight, current as of v5.11.0: `pyproject.toml`,
   `mcp-server/package.json` + lockfile, `uv.lock`,
-  `mcp-server/assets/backend/BACKEND_VERSION` (**skip on a client-only release
-  that is not deploying — see the client-only note below**),
-  `app.py` (FastAPI + /health),
+  `mcp-server/assets/backend/BACKEND_VERSION`, `app.py` (FastAPI + /health),
   `tests/test_api_contract_compat.py`, `plugins/memories/.codex-plugin/plugin.json`,
   `mcp-server/assets/claude-code/.claude-plugin/plugin.json` (Claude Code plugin
   manifest — `dk-marketplace/sync.sh` reads its version into `marketplace.json`,
@@ -35,6 +33,9 @@ Stop cutting a release per work item. The flow is now:
   Grep the old version project-wide before committing, and include `*.mjs`/`*.js`
   in that grep: a hardcoded `version:` in `mcp-server/lib-tools.mjs` was missed
   for two releases because earlier sweeps only checked json/toml/py/md.
+  The backend-facing subset (`BACKEND_VERSION`, both `app.py` strings, the
+  health-contract assertion) is exempt on a client-only release — see the
+  client-only note below; those four move together or not at all.
 - Retitle CHANGELOG `[Unreleased]` to the version + date.
 - Full suite green → `chore: release vX.Y.Z` on develop → `--no-ff` merge to
   `main` → tag → push → GitHub release → deploy (compose build + up) → bump the
@@ -54,17 +55,27 @@ Stop cutting a release per work item. The flow is now:
   locally and not on the remote, which it treats as ambiguous; that refusal is
   a side effect of one particular state, not a guarantee to rely on.
 - **A client-only release (hooks, skills, CLI — no backend change) needs no
-  deploy, and must therefore NOT bump `mcp-server/assets/backend/BACKEND_VERSION`.**
-  That file describes the deployed backend; bumping it without deploying makes
-  it describe something that does not exist. The cost is not cosmetic:
+  deploy, and must freeze every backend-facing version source together:**
+  `mcp-server/assets/backend/BACKEND_VERSION`, **both** version strings in
+  `app.py` (the FastAPI arg and the `/health` body), and the assertion in
+  `tests/test_api_contract_compat.py`. Freezing only the marker is worse than
+  freezing nothing: the marker would then claim the old version while a backend
+  built from that same tag reports the new one, so anyone running it gets the
+  mismatch immediately. A `pytest` guard
+  (`test_backend_version_marker_matches_health_version`) now enforces the pair,
+  so a half-applied bump fails CI rather than shipping. `pyproject.toml` and
+  `uv.lock` are Python package metadata that nothing compares against the
+  marker, so they track the release version as usual.
+
+  Why the marker matters at all — the cost is not cosmetic:
   `runDoctor` (`mcp-server/cli/index.mjs`) compares the marker against
   `/health` and, on any difference, prints `(mismatch — consider \`memories
   update\`)`. `memories update` routes to `runInitOrUpdate`, which rewires
   clients and only offers to provision a backend when the health check *fails* —
   so against a healthy older backend the recommendation cannot do anything. The
   result is a permanent warning pointing at a command that will never clear it.
-  Leave the marker at the deployed version and let the next backend-affecting
-  release move both together.
+  Leave all four backend-facing sources at the deployed version and let the next
+  backend-affecting release move them together.
 
   Known exception in flight: v5.11.0 bumped the marker to 5.11.0 while
   deliberately skipping the deploy (client-only fixes), so `doctor` reports a

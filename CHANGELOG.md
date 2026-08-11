@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Version-consistency guard.** `test_backend_version_marker_matches_health_version` asserts that `mcp-server/assets/backend/BACKEND_VERSION` matches the version `/health` reports. `memories doctor` compares those two exact values and recommends `memories update` on any difference — a command that only rewires clients and cannot update a running backend — so a checkout where they disagree produces a permanent, unactionable warning. A half-applied version bump now fails CI instead of shipping.
+
 ## [5.11.0] - 2026-08-11
 
 ### Fixed
