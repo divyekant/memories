@@ -2,7 +2,7 @@ import { chmod, copyFile, mkdir, readFile, rm, writeFile, access } from 'node:fs
 import { join } from 'node:path';
 import { readJson, writeJson, addPermissions, removePermissions, mergeHookSettings } from '../lib/json-file.mjs';
 import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS } from '../lib/hooks.mjs';
-import { installStatePath, recordPermissions, takeRecordedPermissions } from '../lib/install-state.mjs';
+import { installStatePath, recordPermissions, readRecordedPermissions, clearRecordedPermissions } from '../lib/install-state.mjs';
 import { appendMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../lib/toml.mjs';
 
 const MARKER_NOTIFY = 'Memories Codex notify';
@@ -78,7 +78,7 @@ export async function uninstall(ctx) {
   const p = paths(ctx);
   // Captured before the removal below erases the evidence.
   const wasInstalled = await exists(p.hooksDest);
-  const recordedRules = await takeRecordedPermissions(installStatePath(ctx.home), 'codex');
+  const recordedRules = await readRecordedPermissions(installStatePath(ctx.home), 'codex');
   await rm(p.hooksDest, { recursive: true, force: true });
 
   if (await exists(p.hooksJson)) {
@@ -109,6 +109,9 @@ export async function uninstall(ctx) {
     await writeFile(p.config, toml);
   }
 
+  // Last: a throw anywhere above must leave the record intact so a retry can
+  // still identify what we own.
+  await clearRecordedPermissions(installStatePath(ctx.home), 'codex');
   ctx.log('Codex integration removed');
 }
 

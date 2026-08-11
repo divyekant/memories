@@ -2,7 +2,7 @@ import { cp, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readJson, writeJson, mergeHookSettings, addPermissions, removePermissions, registerMcp } from '../lib/json-file.mjs';
 import { renderHooksJson, copyHookScripts, readonlyMcpTools } from '../lib/hooks.mjs';
-import { installStatePath, recordPermissions, takeRecordedPermissions } from '../lib/install-state.mjs';
+import { installStatePath, recordPermissions, readRecordedPermissions, clearRecordedPermissions } from '../lib/install-state.mjs';
 import { appendMarkedBlock, removeMarkedBlock } from '../lib/toml.mjs';
 import { ensureEnvVar } from '../lib/env-file.mjs';
 
@@ -60,7 +60,7 @@ export async function uninstall(ctx) {
   const p = paths(ctx);
   // Captured before the removals below erase the evidence.
   const wasInstalled = (await exists(p.hooksDest)) || (await exists(p.skillMemories));
-  const recordedRules = await takeRecordedPermissions(installStatePath(ctx.home), 'claude-code');
+  const recordedRules = await readRecordedPermissions(installStatePath(ctx.home), 'claude-code');
   await rm(p.hooksDest, { recursive: true, force: true });
   if (await exists(p.settings)) {
     let settings = await readJson(p.settings);
@@ -94,6 +94,9 @@ export async function uninstall(ctx) {
   await rm(p.skillMemories, { recursive: true, force: true });
   await rm(p.skillSetup, { recursive: true, force: true });
   if (await exists(p.claudeMd)) await writeFile(p.claudeMd, removeMarkedBlock(await readFile(p.claudeMd, 'utf8'), MARKER));
+  // Last: a throw anywhere above must leave the record intact so a retry can
+  // still identify what we own.
+  await clearRecordedPermissions(installStatePath(ctx.home), 'claude-code');
   ctx.log('Claude Code integration removed');
 }
 

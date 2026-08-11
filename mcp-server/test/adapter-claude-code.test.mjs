@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, access, mkdir, symlink, lstat, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, access, mkdir, symlink, lstat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as adapter from '../cli/adapters/claude-code.mjs';
 import { readJson, writeJson } from '../cli/lib/json-file.mjs';
+import { readRecordedPermissions } from '../cli/lib/install-state.mjs';
 
 const assetsDir = join(dirname(fileURLToPath(import.meta.url)), '../assets');
 const exists = (p) => access(p).then(() => true, () => false);
@@ -211,4 +212,29 @@ test('a rule the user already had is not removed even under the default name', a
 
   const allow = (await readJson(join(ctx.home, '.claude/settings.json'))).permissions?.allow ?? [];
   assert.deepEqual(allow, ['mcp__memories__memory_search']);
+});
+
+test('a failed uninstall keeps its record so a retry still clears custom --mcp-name rules', async () => {
+  const ctx = await freshCtx();
+  await adapter.install({ ...ctx, mcpNames: ['memories', 'Remote_Memories'] });
+  const statePath = join(ctx.home, '.config/memories/install-state.json');
+  assert.equal((await readRecordedPermissions(statePath, 'claude-code')).length, 14);
+
+  // Malformed settings.json makes uninstall throw before it can remove
+  // anything from permissions.allow.
+  await writeFile(join(ctx.home, '.claude/settings.json'), '{ not json');
+  await assert.rejects(() => adapter.uninstall(ctx));
+
+  // Provenance must survive: hooks/skills are gone, so a retry could no
+  // longer infer that the Remote_Memories rules were ours.
+  assert.equal((await readRecordedPermissions(statePath, 'claude-code')).length, 14);
+
+  await writeJson(join(ctx.home, '.claude/settings.json'), {
+    permissions: { allow: ['mcp__Remote_Memories__memory_search', 'mcp__memories__memory_search', 'Bash(ls)'] },
+  });
+  await adapter.uninstall(ctx);
+
+  const allow = (await readJson(join(ctx.home, '.claude/settings.json'))).permissions?.allow ?? [];
+  assert.deepEqual(allow, ['Bash(ls)']);
+  assert.equal(await readRecordedPermissions(statePath, 'claude-code'), null);
 });

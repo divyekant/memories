@@ -118,3 +118,27 @@ test('uninstall preserves an unrelated memory product rule and an unmanaged mach
     foreignAllow, // both survive: one is a foreign server, one the user already had
   );
 });
+
+test('a failed uninstall keeps its ownership record so a retry still cleans up', async () => {
+  const ctx = await freshCtx();
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  await adapter.install(ctx);
+  const statePath = join(ctx.home, '.config/memories/install-state.json');
+  assert.equal((await readJson(statePath)).permissions.codex.length, 7);
+
+  // Make uninstall throw partway through, after the point where provenance
+  // used to be consumed.
+  await writeFile(join(ctx.home, '.codex/hooks.json'), '{ not json');
+  await assert.rejects(() => adapter.uninstall(ctx));
+
+  // The record must survive the failure — the on-disk artifacts it would
+  // otherwise be inferred from are already gone.
+  assert.deepEqual((await readJson(statePath)).permissions.codex.length, 7);
+
+  await writeFile(join(ctx.home, '.codex/hooks.json'), '{}');
+  await adapter.uninstall(ctx);
+
+  assert.equal((await readJson(join(ctx.home, '.codex/settings.json'))).permissions, undefined);
+  // Cleared only now that cleanup succeeded.
+  assert.equal((await readJson(statePath)).permissions, undefined);
+});

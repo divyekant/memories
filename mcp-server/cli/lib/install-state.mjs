@@ -21,19 +21,28 @@ export async function recordPermissions(path, target, rules) {
   await writeJson(path, { ...state, permissions });
 }
 
-// Returns the rules recorded for `target` and clears the entry, or null when
-// nothing was ever recorded — the caller distinguishes "we added none" (an
-// empty array) from "this predates the manifest" (null) and must not treat
-// them alike.
-export async function takeRecordedPermissions(path, target) {
+// Returns the rules recorded for `target`, or null when nothing was ever
+// recorded — the caller distinguishes "we added none" (an empty array) from
+// "this predates the manifest" (null) and must not treat them alike.
+//
+// Reading is deliberately non-destructive. An uninstall that throws partway
+// through gets retried, and the retry needs the same provenance: consuming
+// the record up front would strand the very rules it identifies (the
+// artifacts it would otherwise infer ownership from are already gone by
+// then). Callers clear the entry with clearRecordedPermissions only after
+// the cleanup that depends on it has succeeded.
+export async function readRecordedPermissions(path, target) {
+  const recorded = (await readJson(path)).permissions?.[target];
+  return Array.isArray(recorded) ? recorded : null;
+}
+
+export async function clearRecordedPermissions(path, target) {
   const state = await readJson(path);
-  const recorded = state.permissions?.[target];
-  if (!Array.isArray(recorded)) return null;
+  if (!state.permissions || !(target in state.permissions)) return;
   const permissions = { ...state.permissions };
   delete permissions[target];
   const next = { ...state };
   if (Object.keys(permissions).length) next.permissions = permissions;
   else delete next.permissions;
   await writeJson(path, next);
-  return recorded;
 }
