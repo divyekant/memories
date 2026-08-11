@@ -4,7 +4,7 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **OpenCode**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v5.8.1):**
+**Key capabilities (v5.9.0):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
 - **Write doctrine** — corrections supersede instead of being dropped: a colliding write replaces the similar memory and archives the old version with a supersedes link (`on_duplicate: supersede|skip|add`); agents update facts via `memory_update`
 - **Secret redaction** — credential-shaped content (API keys, JWTs, tokens, URL credentials) is redacted before any extraction LLM call or storage, with a context guard that spares placeholders and localhost DSNs
@@ -710,6 +710,41 @@ ingress:
 ```
 
 Now every client — Claude Code on your laptop, Codex, OpenCode, Cursor, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
+
+### Claude web (claude.ai) connector
+
+`mcp-server/remote/` is a small OAuth 2.1 + Streamable HTTP front door that lets you add Memories as a **custom connector** in claude.ai, so Claude in the browser (or mobile) can search and write memories without a local MCP client. It sits in front of your existing `memories` service — it does not replace it.
+
+1. **Generate a password hash and a token secret:**
+
+```bash
+node -e "import('./mcp-server/remote/oauth.mjs').then(m => console.log(m.hashPassword(process.argv[1])))" 'your-password'
+openssl rand -hex 32
+```
+
+The first command prints a single line shaped like `scrypt:<base64-salt>:<base64-hash>` — that's `REMOTE_MCP_PASSWORD_HASH`. The second prints a 64-char hex string — that's `REMOTE_MCP_TOKEN_SECRET`.
+
+2. **Set the env vars** (e.g. in `.env` next to `docker-compose.yml`):
+
+```bash
+REMOTE_MCP_ISSUER=https://mcp.yourdomain.com   # public URL this will be reachable at
+REMOTE_MCP_PASSWORD_HASH=scrypt:...            # from step 1
+REMOTE_MCP_TOKEN_SECRET=...                    # from step 1
+```
+
+Put the service behind a Cloudflare Tunnel (or similar) the same way as the "Setup with Cloudflare Tunnel" section above, pointing at `http://localhost:8910` instead of `8900`.
+
+3. **Start it** (profile-gated, so it won't start on a plain `docker compose up`):
+
+```bash
+docker compose --profile remote-mcp up -d
+```
+
+4. **Add the connector** in claude.ai: Settings → Connectors → Add custom connector → `https://mcp.yourdomain.com/mcp`. Claude walks you through the OAuth login (the password from step 1); once authorized, Memories tools show up in the chat like any other connector.
+
+**`REMOTE_MCP_TRUST_PROXY`** — the per-IP rate limiter buckets on `req.ip`, which by default is the raw TCP socket address. In the docker/tunnel topology above, every request arrives from the same container-bridge hop (e.g. Caddy or the tunnel sidecar), so without this setting every real client collapses into one shared bucket. `docker-compose.yml` defaults it to `uniquelocal` — an Express trust-proxy preset that trusts `X-Forwarded-For` only from private/link-local/unique-local ranges (RFC 1918 and friends), which is exactly the bridge network a container's proxy hop lives on — so `req.ip` becomes the real client IP again. Set `REMOTE_MCP_TRUST_PROXY=off` to disable and bucket on the raw socket address instead (e.g. if you're running the server bare, with no proxy in front of it) — `false` and an empty value are also accepted as the same "disabled" sentinel. Never set it to `true` (trusts every hop in the chain) on an internet-facing deployment — that lets any client spoof `X-Forwarded-For` to pick its own rate-limit bucket.
+
+See `mcp-server/remote/server.mjs` for the full env contract (`REMOTE_MCP_AUTH=none` disables auth for local testing — never expose that mode publicly) and the commented-out `remote-mcp` block in `mcp-server/assets/backend/docker-compose.standalone.yml` for the standalone-deployment equivalent.
 
 ---
 

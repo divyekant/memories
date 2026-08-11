@@ -299,7 +299,25 @@ Set `document_at` when adding memories to provide a stable content date:
 
 Version history: UPDATE now archives the old memory instead of deleting it. Search with `include_archived=true` to see previous versions.
 
-## 14) Where to go next
+## 14) Claude web (claude.ai) connector
+
+Want Memories inside claude.ai (browser or mobile), not just local MCP clients? `mcp-server/remote/` adds an OAuth 2.1 + Streamable HTTP front door in front of your `memories` service.
+
+```bash
+# 1. Generate credentials
+node -e "import('./mcp-server/remote/oauth.mjs').then(m => console.log(m.hashPassword(process.argv[1])))" 'your-password'
+openssl rand -hex 32
+
+# 2. Set REMOTE_MCP_ISSUER, REMOTE_MCP_PASSWORD_HASH, REMOTE_MCP_TOKEN_SECRET
+#    in .env, then start it (profile-gated — plain `docker compose up` skips it)
+docker compose --profile remote-mcp up -d
+```
+
+Then in claude.ai: Settings → Connectors → Add custom connector → `https://<your-domain>/mcp`, and log in with the password from step 1. See the [Remote Access](README.md#remote-access) section in the README for the full walkthrough (tunnel setup, env vars, standalone-deployment notes).
+
+Behind Caddy/a tunnel (the topology above), leave `REMOTE_MCP_TRUST_PROXY` at its `docker-compose.yml` default of `uniquelocal` so the per-IP rate limiter sees real client IPs instead of one shared bridge-IP bucket; set `REMOTE_MCP_TRUST_PROXY=off` to disable if you're running the server with no proxy in front of it. See the README's `REMOTE_MCP_TRUST_PROXY` note for details.
+
+## 15) Where to go next
 
 - Full architecture: [`docs/architecture.md`](docs/architecture.md)
 - Decisions/tradeoffs: [`docs/decisions.md`](docs/decisions.md)

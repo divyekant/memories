@@ -263,6 +263,19 @@ This keeps steady-state usage near baseline while allowing occasional burst capa
 
 Local-only is the default. If exposed publicly, additionally use HTTPS + strong API key + network controls + WAF/rate-limiting upstream.
 
+### Remote MCP front door (`mcp-server/remote/`)
+
+Two ways to reach the same `memory_*` tools (`mcp-server/lib-tools.mjs`), built for different exposure models:
+
+- **stdio transport** (`mcp-server/index.js`) — the default for local MCP clients (Claude Code, Claude Desktop, Cursor, etc.). One process per client, no network listener, no auth layer needed — the client already controls the process.
+- **Remote/HTTP transport** (`mcp-server/remote/server.mjs`) — a stateless `StreamableHTTPServerTransport` behind Express, for the claude.ai (Claude web) custom-connector flow, where the client is a browser and there is no local process to trust implicitly.
+
+Both call `buildServer()` and register the identical tool set, so the two transports never drift in capability. The remote entry point pins its backend explicitly (`skipFileConfig: true`) so a host-level `.memories/backends.yaml` can't silently redirect a deployed remote server to the wrong backend.
+
+The remote front door adds a single-user OAuth 2.1 layer (`oauth.mjs`) in front of the tools: authorization-code + mandatory PKCE (S256), Dynamic Client Registration (rate-limited, with bounds on redirect-uri count and client-name length), refresh-token rotation, and an HMAC-signed bearer access token — no `client_credentials`, since there is exactly one user. `REMOTE_MCP_AUTH` must be exactly `oauth` or `none` (anything else refuses to start); `none` is for local testing only and logs a loud warning on every startup. In `oauth` mode, `REMOTE_MCP_ISSUER` must be set and must be `https:` unless the host is `localhost`/`127.0.0.1`, so the authorization code and bearer token are never sent over plaintext to a real host.
+
+Deployment is a profile-gated `remote-mcp` service in `docker-compose.yml`, sitting behind a reverse proxy/tunnel (Caddy, Cloudflare Tunnel) and the `memories` service — see the "Claude web (claude.ai) connector" section in the README for setup, including `REMOTE_MCP_TRUST_PROXY` for correct per-client rate-limit buckets behind that proxy hop.
+
 ---
 
 ## 8) Efficacy Eval Harness
