@@ -82,3 +82,14 @@ test('uninstall removes blocks and hooks but keeps foreign toml', async () => {
   assert.ok(toml.includes('model = "gpt-5.5"'));
   assert.ok(!toml.includes('Memories Codex'));
 });
+
+test('uninstall clears the read-only allowlist it wrote', async () => {
+  const ctx = await freshCtx();
+  await adapter.install(ctx);
+  const afterInstall = await readJson(join(ctx.home, '.codex/settings.json'));
+  assert.ok(afterInstall.permissions.allow.includes('mcp__memories__memory_search'));
+
+  await adapter.uninstall(ctx);
+  const settings = await readJson(join(ctx.home, '.codex/settings.json'));
+  assert.equal(settings.permissions, undefined);
+});

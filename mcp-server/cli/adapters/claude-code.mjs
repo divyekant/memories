@@ -1,7 +1,7 @@
 import { cp, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readJson, writeJson, mergeHookSettings, addPermissions, registerMcp } from '../lib/json-file.mjs';
-import { renderHooksJson, copyHookScripts, readonlyMcpTools } from '../lib/hooks.mjs';
+import { readJson, writeJson, mergeHookSettings, addPermissions, removePermissions, registerMcp } from '../lib/json-file.mjs';
+import { renderHooksJson, copyHookScripts, readonlyMcpTools, isReadonlyMcpRule } from '../lib/hooks.mjs';
 import { appendMarkedBlock, removeMarkedBlock } from '../lib/toml.mjs';
 import { ensureEnvVar } from '../lib/env-file.mjs';
 
@@ -72,6 +72,9 @@ export async function uninstall(ctx) {
       }
       if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
     }
+    // Name-agnostic: clears the rules any past `init --mcp-name` wrote, so
+    // uninstall needs no matching flag.
+    settings = removePermissions(settings, isReadonlyMcpRule);
     await writeJson(p.settings, settings);
   }
   await rm(p.skillMemories, { recursive: true, force: true });

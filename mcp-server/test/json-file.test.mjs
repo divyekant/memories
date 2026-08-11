@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readJson, writeJson, mergeHookSettings, addPermissions, registerMcp } from '../cli/lib/json-file.mjs';
+import { readJson, writeJson, mergeHookSettings, addPermissions, removePermissions, registerMcp } from '../cli/lib/json-file.mjs';
+import { isReadonlyMcpRule } from '../cli/lib/hooks.mjs';
 
 test('readJson returns fallback for missing file', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mem-'));
@@ -76,4 +77,50 @@ test('registerMcp adds npx entry once, skips when present', () => {
   const second = registerMcp({ mcpServers: { memories: { command: 'node' } } }, { url: 'x', apiKey: '' });
   assert.equal(second.skipped, true);
   assert.equal(second.settings.mcpServers.memories.command, 'node'); // untouched
+});
+
+test('removePermissions drops matched rules and keeps the rest', () => {
+  const s = removePermissions(
+    { model: 'opus', permissions: { allow: ['Bash(ls)', 'mcp__memories__memory_search'], deny: ['Bash(rm)'] } },
+    isReadonlyMcpRule,
+  );
+  assert.deepEqual(s.permissions.allow, ['Bash(ls)']);
+  assert.deepEqual(s.permissions.deny, ['Bash(rm)']); // untouched
+  assert.equal(s.model, 'opus');
+});
+
+test('removePermissions prunes empty containers instead of leaving {} / []', () => {
+  const s = removePermissions({ permissions: { allow: ['mcp__memories__memory_search'] } }, isReadonlyMcpRule);
+  assert.equal('permissions' in s, false);
+  const kept = removePermissions(
+    { permissions: { allow: ['mcp__memories__memory_search'], deny: ['x'] } },
+    isReadonlyMcpRule,
+  );
+  assert.equal('allow' in kept.permissions, false);
+  assert.deepEqual(kept.permissions.deny, ['x']);
+});
+
+test('removePermissions is a no-op when nothing matches or allow is absent', () => {
+  const untouched = { permissions: { allow: ['Bash(ls)'] } };
+  assert.equal(removePermissions(untouched, isReadonlyMcpRule), untouched); // same reference
+  const noAllow = { permissions: { deny: ['x'] } };
+  assert.equal(removePermissions(noAllow, isReadonlyMcpRule), noAllow);
+  assert.equal(removePermissions({}, isReadonlyMcpRule).permissions, undefined);
+});
+
+test('isReadonlyMcpRule matches any server name but only our read-only tools', () => {
+  for (const rule of [
+    'mcp__memories__memory_search',
+    'mcp__Remote_Memories__memory_stats',
+    'mcp__843a7d55-4d6a-4efb-b73e-90428866e135__memory_is_novel',
+  ]) assert.ok(isReadonlyMcpRule(rule), rule);
+
+  for (const rule of [
+    'mcp__memories__memory_delete',        // write tool — never ours to remove
+    'mcp__memories__memory_update',
+    'mcp__memories__*',                    // user-authored wildcard
+    'mcp__memories__memory_search_extra',  // longer tool name
+    'Bash(ls)',
+    'memory_search',
+  ]) assert.equal(isReadonlyMcpRule(rule), false, rule);
 });

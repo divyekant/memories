@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readJson, writeJson, addPermissions, mergeHookSettings } from '../lib/json-file.mjs';
-import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS } from '../lib/hooks.mjs';
+import { readJson, writeJson, addPermissions, removePermissions, mergeHookSettings } from '../lib/json-file.mjs';
+import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS, isReadonlyMcpRule } from '../lib/hooks.mjs';
 import { appendMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../lib/toml.mjs';
 
 const MARKER_NOTIFY = 'Memories Codex notify';
@@ -83,6 +83,10 @@ export async function uninstall(ctx) {
       }
     }
     await writeJson(p.hooksJson, hooksJson);
+  }
+
+  if (await exists(p.settings)) {
+    await writeJson(p.settings, removePermissions(await readJson(p.settings), isReadonlyMcpRule));
   }
 
   if (await exists(p.config)) {

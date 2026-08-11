@@ -134,3 +134,26 @@ test('install copies skill content even when the asset files are symlinks', asyn
   assert.equal(st.isSymbolicLink(), false);
   assert.ok((await readFile(join(ctx.home, '.claude/skills/memories/SKILL.md'), 'utf8')).length > 0);
 });
+
+test('uninstall clears read-only rules for every server name a past init wrote', async () => {
+  const ctx = await freshCtx();
+  await writeJson(join(ctx.home, '.claude/settings.json'), {
+    permissions: { allow: ['Bash(ls)', 'mcp__memories__memory_delete'], deny: ['Bash(rm -rf /)'] },
+  });
+  // A past `init --mcp-name Remote_Memories` — uninstall is given no such flag.
+  await adapter.install({ ...ctx, mcpNames: ['memories', 'Remote_Memories'] });
+
+  const afterInstall = await readJson(join(ctx.home, '.claude/settings.json'));
+  assert.ok(afterInstall.permissions.allow.includes('mcp__Remote_Memories__memory_search'));
+
+  await adapter.uninstall(ctx);
+
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  const allow = settings.permissions?.allow ?? [];
+  assert.deepEqual(
+    allow.filter((r) => r.startsWith('mcp__')),
+    ['mcp__memories__memory_delete'], // pre-existing user rule, not ours to remove
+  );
+  assert.ok(allow.includes('Bash(ls)'));
+  assert.deepEqual(settings.permissions.deny, ['Bash(rm -rf /)']);
+});
