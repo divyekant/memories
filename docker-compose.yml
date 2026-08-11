@@ -118,5 +118,36 @@ services:
       retries: 3
       start_period: 15s
 
+  # Remote MCP server for the claude.ai (Claude web) connector — OAuth 2.1 +
+  # Streamable HTTP front door in front of the `memories` service above.
+  # Profile-gated: `docker compose up` alone does NOT start this; opt in with
+  # `docker compose --profile remote-mcp up -d`. See README's "Claude web
+  # (claude.ai) connector" section for setup.
+  remote-mcp:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile.remote
+    image: memories-remote-mcp
+    container_name: remote-mcp
+    profiles: ["remote-mcp"]
+    restart: unless-stopped
+    depends_on:
+      - memories
+    ports:
+      - "127.0.0.1:8910:8910"
+    volumes:
+      - remote_mcp_data:/data/remote-mcp
+    environment:
+      - REMOTE_MCP_ISSUER=${REMOTE_MCP_ISSUER:-http://localhost:8910}
+      - REMOTE_MCP_PORT=8910
+      - REMOTE_MCP_AUTH=${REMOTE_MCP_AUTH:-oauth}
+      - REMOTE_MCP_PASSWORD_HASH=${REMOTE_MCP_PASSWORD_HASH:-}
+      - REMOTE_MCP_TOKEN_SECRET=${REMOTE_MCP_TOKEN_SECRET:-}
+      - REMOTE_MCP_STORE_DIR=/data/remote-mcp
+      - REMOTE_MCP_TRUST_PROXY=${REMOTE_MCP_TRUST_PROXY-uniquelocal}
+      - MEMORIES_URL=http://memories:8000
+      - MEMORIES_API_KEY=${API_KEY:-}
+
 volumes:
   qdrant-storage:
+  remote_mcp_data:
