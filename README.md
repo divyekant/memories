@@ -779,6 +779,8 @@ MEMORIES_API_KEY=...
 
 Values are copied into the VM **once at session start**, so edits only affect sessions you start afterwards. Note that cloud environment variables are **not a secrets vault** — anyone with access to the environment can read them in plaintext. Weigh that before putting a backend key there; the connector route keeps credentials out of the VM entirely.
 
+If you do put a key in a cloud environment, use a **scoped** key rather than your full-access one — the backend supports restricting a key to specific source prefixes via `MEMORIES_SOURCE_PREFIXES` (read/search) and `MEMORIES_EXTRACT_SOURCE` (writes from extraction), so a leaked cloud-session key can't read or write memories outside the project it was issued for. Create it with a `prefixes` list rather than an admin/unrestricted key.
+
 **3. Allow the backend's domain.** This is the step that silently breaks everything if skipped. Hook `curl`s are ordinary session traffic and are subject to the environment's network policy — unlike connector traffic, which is exempt. The default **Trusted** level is a closed list (package registries, GitHub, the major clouds) and will **not** include your backend. In the same dialog, set **Network access → Custom**, add your host to **Allowed domains** (one bare domain per line; a leading `*.` matches subdomains), and tick *"Also include default list of common package managers"* so package installs keep working.
 
 A blocked domain does not return a tidy 403 — it fails at the proxy's connect stage with no readable error, so a hook that "does nothing" is the symptom. Debug by logging `curl -v` output or `$?` from the hook rather than hunting for an error body. Changing the allowlist also invalidates the environment's cached snapshot, so its setup script re-runs on the next session.
@@ -1155,7 +1157,7 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 | Session start | `hooks.json` -> `memory-recall.sh` | Loads project-scoped memories and recall guidance for the session |
 | Every prompt | `hooks.json` -> `memory-query.sh` | Retrieves relevant memories using transcript context for short follow-ups |
 | After response | `hooks.json` -> `memory-extract.sh` | Extracts facts via AUDN with beefier Stop sampling to compensate for missing compaction/session-end hooks |
-| Memory MCP tool calls | `hooks.json` -> `memory-observe.sh` (`PostToolUse` matcher `mcp__memories__|exec`) | Logs direct memory MCP calls and memory calls nested inside Codex `exec` envelopes |
+| Memory MCP tool calls | `hooks.json` -> `memory-observe.sh` (`PostToolUse` matcher `mcp__.*__memory_|exec`) | Logs direct memory MCP calls and memory calls nested inside Codex `exec` envelopes |
 | File writes | `hooks.json` -> `memory-guard.sh` (`PreToolUse` matcher `Write|Edit`) | Blocks direct `MEMORY.md` edits |
 | On new turns | MCP tools + developer instructions | Encourages focused `memory_search` before implementation-heavy or prior-context responses |
 
