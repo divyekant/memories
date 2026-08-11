@@ -82,16 +82,19 @@ def test_add_memory_contract_shape(client):
     assert {"success", "id", "message"} <= set(body)
 
 
-def test_backend_version_marker_matches_health_version(client):
-    """The packaged BACKEND_VERSION marker and the version /health reports must
-    move together.
+def test_backend_version_sources_agree(client):
+    """Every backend-facing version source must move together: the packaged
+    BACKEND_VERSION marker, the version /health reports, and the FastAPI
+    metadata version (served as OpenAPI `info.version`).
 
-    `runDoctor` compares these two exact values and, on any difference, prints
-    a mismatch recommending `memories update` — a command that only rewires
-    clients and cannot update a running backend. So a checkout where they
-    disagree produces a permanent, unactionable warning for anyone who builds
-    the backend from it. A client-only release must freeze both rather than
-    bumping one.
+    `runDoctor` compares the marker against /health and, on any difference,
+    prints a mismatch recommending `memories update` — a command that only
+    rewires clients and cannot update a running backend, so a checkout where
+    they disagree produces a permanent, unactionable warning. The FastAPI
+    metadata is public API surface, and nothing else asserts it, so a bump
+    applied there alone would otherwise ship silently.
+
+    A client-only release must freeze all of these rather than bumping some.
     """
     from pathlib import Path
 
@@ -101,8 +104,15 @@ def test_backend_version_marker_matches_health_version(client):
 
     test_client, _ = client
     reported = test_client.get("/health").json()["version"]
+    metadata = test_client.app.version
+    openapi = test_client.get("/openapi.json").json()["info"]["version"]
 
-    assert marker == reported, (
-        f"BACKEND_VERSION says {marker!r} but /health reports {reported!r}. "
-        "These are compared by `memories doctor`; bump both or neither."
+    assert marker == reported == metadata == openapi, (
+        "backend version sources disagree — bump all or none:\n"
+        f"  BACKEND_VERSION      {marker!r}\n"
+        f"  /health              {reported!r}\n"
+        f"  FastAPI(version=)    {metadata!r}\n"
+        f"  openapi info.version {openapi!r}\n"
+        "The first two are compared by `memories doctor`; the rest are public "
+        "API metadata."
     )
