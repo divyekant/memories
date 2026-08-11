@@ -2924,28 +2924,36 @@ def _lib_eval(expr: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_breaker_not_tripped_when_our_own_budget_starved_the_call() -> None:
-    """A curl timeout (exit 28) on a budget we shrank below the requested cap
-    says nothing about backend health — it is our deadline, not their downtime.
+def test_breaker_trip_decision_distinguishes_starvation_from_a_hanging_backend() -> None:
+    """A curl timeout (exit 28) is evidence about the backend only if the
+    backend got substantially the time we meant to give it.
 
     Measured against a real backend, /search takes 1.2-2.1s while the
     minimum-call floor is 0.3s, so a SessionStart recall's tail calls are
-    issued with budgets that cannot succeed. Tripping on those marks a healthy
-    backend down for the breaker cooldown, and the NEXT session's health check
-    then reports 'not reachable' without ever probing.
-    """
-    # Timed out on a starved budget (1.0s granted of a 4s cap) -> must not trip.
-    starved = _lib_eval('_should_trip_breaker 28 1.0 4 && echo TRIP || echo NOTRIP')
-    assert starved.stdout.strip() == "NOTRIP", starved.stderr
+    issued with budgets that cannot succeed; tripping on those marks a healthy
+    backend down and the next session reports "not reachable" without probing.
 
-    # Timed out with the full cap -> genuinely slow/unreachable, must trip.
-    full = _lib_eval('_should_trip_breaker 28 4 4 && echo TRIP || echo NOTRIP')
-    assert full.stdout.strip() == "TRIP", full.stderr
+    But "starved" must mean materially less, not merely less: health and
+    version probes run before search, so overhead trims a 4s cap to ~3.9s. A
+    backend that hangs through 3.9 of 4 seconds IS unhealthy, and failing to
+    trip there makes every later session re-pay the full timeout.
+    """
+    cap = 4
+
+    # Got most of the intended cap and still timed out -> real evidence.
+    for budget in ("4", "3.9", "3.0"):  # 3.0 is the 0.75 boundary, inclusive
+        r = _lib_eval(f'_should_trip_breaker 28 {budget} {cap} && echo TRIP || echo NOTRIP')
+        assert r.stdout.strip() == "TRIP", f"budget={budget}: {r.stderr}"
+
+    # Materially starved -> our deadline, not their downtime.
+    for budget in ("2.9", "1.0", "0.54"):
+        r = _lib_eval(f'_should_trip_breaker 28 {budget} {cap} && echo TRIP || echo NOTRIP')
+        assert r.stdout.strip() == "NOTRIP", f"budget={budget}: {r.stderr}"
 
     # Non-timeout failures say something real regardless of budget.
     for rc in (7, 22, 52):
-        other = _lib_eval(f'_should_trip_breaker {rc} 1.0 4 && echo TRIP || echo NOTRIP')
-        assert other.stdout.strip() == "TRIP", f"rc={rc}: {other.stderr}"
+        r = _lib_eval(f'_should_trip_breaker {rc} 0.54 {cap} && echo TRIP || echo NOTRIP')
+        assert r.stdout.strip() == "TRIP", f"rc={rc}: {r.stderr}"
 
 
 def test_codex_memory_observe_nested_exec_matches_non_memories_server_names(tmp_path: Path) -> None:

@@ -479,13 +479,23 @@ _breaker_reset() {
 # is too small to probe fairly; this is the same invariant for the search
 # path, which previously lacked it. Any non-timeout failure (connection
 # refused, TLS, HTTP error) is real evidence and still trips.
+# "Starved" must mean materially less time than we intended, not merely less.
+# Health and version probes run before search, so ordinary overhead shaves a
+# 4s cap to ~3.9s; treating that as inconclusive would leave a genuinely
+# hanging backend un-tripped and re-paying its full timeout every session.
+# A call that got most of the intended cap is real evidence.
+_MEMORIES_BREAKER_FAIR_BUDGET_RATIO="${MEMORIES_BREAKER_FAIR_BUDGET_RATIO:-0.75}"
+
 _should_trip_breaker() {
   local rc="$1" budget="$2" cap="$3"
   [ "$rc" = "28" ] || return 0
-  local starved
-  starved=$(jq -n --argjson b "$budget" --argjson c "$cap" '$b < $c' 2>/dev/null) || starved="false"
-  [ "$starved" = "true" ] && return 1
-  return 0
+  local fair
+  # Default to tripping if jq is unavailable or the comparison fails: losing
+  # the breaker entirely is worse than an occasional early trip.
+  fair=$(jq -n --argjson b "$budget" --argjson c "$cap" --argjson r "$_MEMORIES_BREAKER_FAIR_BUDGET_RATIO" \
+    '$b >= ($c * $r)' 2>/dev/null) || fair="true"
+  [ "$fair" = "true" ] && return 0
+  return 1
 }
 
 # Health check — returns 0 if the ROUTED search backend set has at least
