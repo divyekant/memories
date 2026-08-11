@@ -327,13 +327,17 @@ _MEMORIES_BREAKER_FILE="${MEMORIES_BREAKER_FILE:-$HOME/.config/memories/backend-
 _MEMORIES_BREAKER_COOLDOWN="${MEMORIES_BREAKER_COOLDOWN:-60}"
 
 _breaker_file_for() {
-  local name="${1:-default}"
-  local safe
-  safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_-' '_')
-  if [ -z "$safe" ] || [ "$safe" = "default" ]; then
+  local name="${1-default}"
+  if [ "$name" = "default" ]; then
     printf '%s' "$_MEMORIES_BREAKER_FILE"
   else
-    printf '%s.%s' "$_MEMORIES_BREAKER_FILE" "$safe"
+    # Backend names are arbitrary YAML keys. Encode every byte rather than
+    # replacing punctuation, so names such as foo/bar and foo?bar cannot
+    # share a breaker file. `od` is available on macOS and Linux; the fixed
+    # namespace keeps these paths distinct from the historical default file.
+    local encoded
+    encoded=$(printf '%s' "$name" | LC_ALL=C od -An -tx1 | tr -d '[:space:]')
+    printf '%s.backend-%s' "$_MEMORIES_BREAKER_FILE" "$encoded"
   fi
 }
 

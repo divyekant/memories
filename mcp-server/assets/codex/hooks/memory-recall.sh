@@ -256,19 +256,27 @@ EOF
 CREDENTIAL_WARNING=""
 if [ "$AUTH_FAILED" = "true" ]; then
   AUTH_BACKEND_LABELS=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'map("\(.name) (\(.url))") | join(", ")')
+  AUTH_DEFAULT_ONLY=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'length > 0 and all(.[]; (.name // "") == "default")')
   _log_warn "Backend(s) rejected the API key (401): $AUTH_BACKEND_LABELS"
-  if [ "$CANDIDATE_COUNT" -gt 0 ]; then
+  if [ "$AUTH_DEFAULT_ONLY" = "true" ]; then
     CREDENTIAL_WARNING=$(cat <<CWEOF
 ## Memories Credential Warning
 
-Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Set MEMORIES_API_KEY for those backends; healthy routed backends still returned candidates this session.
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Set MEMORIES_API_KEY; memory recall/search is unavailable for this backend.
+CWEOF
+    )
+  elif [ "$CANDIDATE_COUNT" -gt 0 ]; then
+    CREDENTIAL_WARNING=$(cat <<CWEOF
+## Memories Credential Warning
+
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key for those backends or its referenced environment variable; healthy routed backends still returned candidates this session.
 CWEOF
     )
   else
     CREDENTIAL_WARNING=$(cat <<CWEOF
 ## Memories Credential Warning
 
-Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Set MEMORIES_API_KEY for those backends.
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key for those backends or its referenced environment variable.
 CWEOF
     )
   fi

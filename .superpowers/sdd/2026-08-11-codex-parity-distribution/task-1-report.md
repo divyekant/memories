@@ -61,3 +61,18 @@ diagnostics, and the missing fair-timeout decision helper.
 - Resulting follow-up commit: this report is included in the commit carrying
   `fix(codex): correct multi-backend hook diagnostics` (inspect `git log -1`
   for its hash).
+
+## Follow-up breaker and auth guidance correction
+
+- Follow-up base: `d67129928b72b45601797ee2db4645b61308e0c9`.
+- RED command: `uv run pytest -q tests/test_claude_memory_hooks.py -k 'codex and (named_backend or punctuation or multi_backend_401)'`.
+- RED result: `3 failed, 80 deselected` (punctuation-heavy breaker names
+  collided, named 401 guidance prescribed `MEMORIES_API_KEY`, and mixed
+  backend recall retained that default-only wording).
+- GREEN selector: `3 passed, 80 deselected`.
+- GREEN broader suite: `uv run pytest -q tests/test_claude_memory_hooks.py -k 'codex or memory_hooks'` -> `83 passed in 57.00s`.
+- GREEN full suite: `uv run pytest -q tests/test_claude_memory_hooks.py tests/test_codex_notify_hook.py` -> `89 passed in 57.78s`.
+- `bash -n` on all three Codex hook scripts and `git diff --check`: passed.
+- Resulting follow-up commit: this report is included in the commit carrying
+  `fix(codex): isolate backend breaker and auth guidance` (inspect `git log -1`
+  for its hash).

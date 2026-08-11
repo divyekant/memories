@@ -1792,7 +1792,9 @@ def test_codex_memory_hooks_per_backend_breaker_isolation(tmp_path: Path) -> Non
     assert not any(str(c["url"]).endswith("/search") and "failing.example" in str(c["url"]) for c in calls)
     ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "candidate memory id=702" in ctx
-    assert (home_dir / ".config" / "memories" / "backend-down.failing").exists()
+    named_breakers = list((home_dir / ".config" / "memories").glob("backend-down.*"))
+    assert len(named_breakers) == 1
+    assert named_breakers[0].name != "backend-down.failing"
     assert not (home_dir / ".config" / "memories" / "backend-down").exists()
 
 
@@ -1903,6 +1905,7 @@ def test_codex_memory_recall_multi_backend_401_keeps_candidate_and_identity(tmp_
     assert "https://auth-second.example" in ctx
     assert "https://healthy-first.example" not in ctx
     assert "memory recall and extraction are disabled" not in ctx.lower()
+    assert "MEMORIES_API_KEY" not in ctx
 
 
 def test_codex_memory_recall_search_health_warning_does_not_claim_extraction_down(tmp_path: Path) -> None:
@@ -1998,6 +2001,46 @@ def test_codex_memory_recall_fanout_backend_names_are_collision_free(tmp_path: P
     ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "candidate memory id=902" in ctx
     assert "candidate memory id=903" in ctx
+
+
+def test_codex_memory_query_named_backend_401_guidance_uses_backend_config(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  named_auth:\n"
+        "    url: https://named-auth.example\n"
+        "    api_key: ${NAMED_AUTH_KEY}\n"
+    )
+    responses = [
+        {
+            "url_contains": "named-auth.example",
+            "url_suffix": "/search",
+            "source_prefix": "codex/project",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        }
+    ]
+
+    result, _, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-query.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "prompt": "hello"},
+        responses=responses,
+        extra_env={
+            "MEMORIES_URL": "",
+            "MEMORIES_BACKENDS_FILE": str(backends_file),
+            "NAMED_AUTH_KEY": "rejected-key",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "named_auth" in ctx
+    assert "https://named-auth.example" in ctx
+    assert "configured" in ctx.lower() or "environment variable" in ctx.lower()
+    assert "MEMORIES_API_KEY" not in ctx
 
 
 def test_memory_hooks_unconfigured_url_is_silent_noop(tmp_path: Path) -> None:
@@ -3382,6 +3425,20 @@ def test_codex_breaker_timeout_budget_is_materially_short_not_trip() -> None:
             f'_should_trip_breaker 28 {budget} {cap} && echo TRIP || echo NOTRIP'
         )
         assert result.stdout.strip() == "NOTRIP", f"budget={budget}: {result.stderr}"
+
+
+def test_codex_breaker_names_with_punctuation_are_collision_free() -> None:
+    result = _codex_lib_eval(
+        "tmp=$(mktemp -d); "
+        "MEMORIES_LOG=\"$tmp/log\"; "
+        "_MEMORIES_BREAKER_FILE=\"$tmp/backend-down\"; "
+        "a=$(_breaker_file_for 'foo/bar'); "
+        "b=$(_breaker_file_for 'foo?bar'); "
+        "_breaker_trip 'foo/bar'; "
+        "if [ \"$a\" != \"$b\" ] && _breaker_open 'foo/bar' && ! _breaker_open 'foo?bar' "
+        "&& [ \"$(_breaker_file_for default)\" = \"$tmp/backend-down\" ]; then echo PASS; fi"
+    )
+    assert result.stdout.strip() == "PASS", result.stderr
 
 
 def test_codex_memory_observe_nested_exec_matches_non_memories_server_names(tmp_path: Path) -> None:

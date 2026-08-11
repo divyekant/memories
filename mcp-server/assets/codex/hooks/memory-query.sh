@@ -304,7 +304,12 @@ fi
 CREDENTIAL_WARNING=""
 if [ "$AUTH_FAILED" = "true" ]; then
   AUTH_BACKEND_LABELS=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'map("\(.name) (\(.url))") | join(", ")')
-  CREDENTIAL_WARNING="Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Set MEMORIES_API_KEY for those backends."
+  AUTH_DEFAULT_ONLY=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'length > 0 and all(.[]; (.name // "") == "default")')
+  if [ "$AUTH_DEFAULT_ONLY" = "true" ]; then
+    CREDENTIAL_WARNING="Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Set MEMORIES_API_KEY for this backend."
+  else
+    CREDENTIAL_WARNING="Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key for those backends or its referenced environment variable."
+  fi
 fi
 
 if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
