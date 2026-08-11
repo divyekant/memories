@@ -1596,6 +1596,254 @@ def test_codex_memory_hooks_honor_disabled_flag(tmp_path: Path) -> None:
     assert result.stdout.strip() == ""
 
 
+def test_codex_memory_hooks_unconfigured_url_is_silent_noop(tmp_path: Path) -> None:
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": "/Users/example/memories", "source": "startup"},
+        responses=[],
+        extra_env={"MEMORIES_URL": ""},
+    )
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""
+
+
+def test_codex_memory_hooks_enabled_false_wins_over_url(tmp_path: Path) -> None:
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": "/Users/example/memories", "source": "startup"},
+        responses=[],
+        extra_env={"MEMORIES_ENABLED": "false"},
+    )
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""
+
+
+def test_codex_memory_hooks_explicit_backends_file_wins_over_project_root(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  root:\n"
+        "    url: https://project-root.example\n"
+        "    api_key: test-key\n"
+    )
+    explicit_file = tmp_path / "explicit-backends.yaml"
+    explicit_file.write_text(
+        "backends:\n"
+        "  explicit:\n"
+        "    url: https://explicit-override.example\n"
+        "    api_key: test-key\n"
+    )
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "source": "startup"},
+        responses=[],
+        extra_env={
+            "MEMORIES_URL": "",
+            "MEMORIES_BACKENDS_FILE": str(explicit_file),
+            "CODEX_PROJECT_DIR": str(project_dir),
+        },
+    )
+
+    assert result.returncode == 0
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    assert search_calls
+    urls = [str(c["url"]) for c in search_calls]
+    assert all(url.startswith("https://explicit-override.example") for url in urls)
+    assert not any("project-root.example" in url for url in urls)
+
+
+def test_codex_memory_hooks_routed_health_excludes_non_routed_dead_backend(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  down_first:\n"
+        "    url: https://down-first.example\n"
+        "    api_key: test-key\n"
+        "  reachable:\n"
+        "    url: https://reachable.example\n"
+        "    api_key: test-key\n"
+        "routing:\n"
+        "  search: [reachable]\n"
+    )
+    responses = [
+        {"url_contains": "localhost:8900", "fail": True},
+        {"url_contains": "down-first.example", "fail": True},
+        {
+            "url_contains": "reachable.example",
+            "url_suffix": "/search",
+            "source_prefix": "codex/project",
+            "response": {
+                "results": [
+                    {
+                        "id": 701,
+                        "source": "codex/project",
+                        "text": "Reached the routed Codex backend.",
+                        "similarity": 0.9,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    result, calls, home_dir = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "source": "startup"},
+        responses=responses,
+        extra_env={
+            "MEMORIES_URL": "",
+            "MEMORIES_BACKENDS_FILE": str(backends_file),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    down_calls = [c for c in calls if "down-first.example" in str(c["url"])]
+    localhost_calls = [c for c in calls if "localhost:8900" in str(c["url"])]
+    reachable_calls = [c for c in calls if "reachable.example" in str(c["url"])]
+    assert down_calls == []
+    assert localhost_calls == []
+    assert reachable_calls
+    assert any(str(c["url"]).endswith("/search") for c in reachable_calls)
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=701" in ctx
+    assert "codex/project" in ctx
+    assert "down_first" not in ctx
+    assert not (home_dir / ".config" / "memories" / "backend-down").exists()
+
+
+def test_codex_memory_hooks_preexisting_open_breaker_does_not_crash(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    breaker_dir = home_dir / ".config" / "memories"
+    breaker_dir.mkdir(parents=True, exist_ok=True)
+    (breaker_dir / "backend-down").write_text(str(int(time.time())))
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": "/Users/example/memories", "source": "startup"},
+        responses=[],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "unbound variable" not in result.stderr
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "not reachable" in ctx or "Memory Playbook" in ctx
+    assert calls == []
+
+
+def test_codex_memory_hooks_per_backend_breaker_isolation(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  failing:\n"
+        "    url: https://failing.example\n"
+        "    api_key: test-key\n"
+        "  healthy:\n"
+        "    url: https://healthy.example\n"
+        "    api_key: test-key\n"
+    )
+    responses = [
+        {"url_contains": "failing.example", "fail": True},
+        {
+            "url_contains": "healthy.example",
+            "url_suffix": "/search",
+            "source_prefix": "codex/project",
+            "response": {
+                "results": [
+                    {
+                        "id": 702,
+                        "source": "codex/project",
+                        "text": "Healthy backend remains available.",
+                        "similarity": 0.91,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    result, calls, home_dir = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "source": "startup"},
+        responses=responses,
+        extra_env={
+            "MEMORIES_URL": "",
+            "MEMORIES_BACKENDS_FILE": str(backends_file),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert any("healthy.example" in str(c["url"]) for c in calls)
+    assert not any(str(c["url"]).endswith("/search") and "failing.example" in str(c["url"]) for c in calls)
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=702" in ctx
+    assert (home_dir / ".config" / "memories" / "backend-down.failing").exists()
+    assert not (home_dir / ".config" / "memories" / "backend-down").exists()
+
+
+def test_codex_memory_hooks_tiny_budget_exhausted_from_start_exits_cleanly(tmp_path: Path) -> None:
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": "/Users/example/memories", "source": "startup"},
+        responses=[],
+        extra_env={"MEMORIES_HOOK_BUDGET_MS": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "Memory Playbook" in ctx
+    assert "budget exhausted" in ctx.lower() or "not reachable" in ctx.lower()
+    assert calls == []
+
+
+def test_codex_memory_recall_401_shows_credential_warning_not_reachability(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": prefix,
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        }
+        for prefix in (
+            "codex/memories",
+            "claude-code/memories",
+            "learning/memories",
+            "wip/memories",
+        )
+    ]
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": "/Users/example/memories", "source": "startup"},
+        responses=responses,
+    )
+
+    assert result.returncode == 0, result.stderr
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "rejected the API key" in ctx
+    assert "MEMORIES_API_KEY" in ctx
+    assert "Check that the service is running" not in ctx
+    assert calls
+
+
 def test_memory_hooks_unconfigured_url_is_silent_noop(tmp_path: Path) -> None:
     """A repo that ships .claude/settings.json but no MEMORIES_URL must be a true
     no-op for contributors who never opted in: exit 0, no stdout, no curl call."""
@@ -2924,6 +3172,16 @@ def _lib_eval(expr: str) -> subprocess.CompletedProcess:
     )
 
 
+def _codex_lib_eval(expr: str) -> subprocess.CompletedProcess:
+    """Source the Codex hook lib and evaluate a shell expression against it."""
+    lib = CODEX_HOOKS_DIR / "_lib.sh"
+    return subprocess.run(
+        ["bash", "-c", f'MEMORIES_HOOK_NAME=test; . "{lib}" >/dev/null 2>&1; {expr}'],
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_breaker_trip_decision_distinguishes_starvation_from_a_hanging_backend() -> None:
     """A curl timeout (exit 28) is evidence about the backend only if the
     backend got substantially the time we meant to give it.
@@ -2954,6 +3212,20 @@ def test_breaker_trip_decision_distinguishes_starvation_from_a_hanging_backend()
     for rc in (7, 22, 52):
         r = _lib_eval(f'_should_trip_breaker {rc} 0.54 {cap} && echo TRIP || echo NOTRIP')
         assert r.stdout.strip() == "TRIP", f"rc={rc}: {r.stderr}"
+
+
+def test_codex_breaker_timeout_budget_is_materially_short_not_trip() -> None:
+    cap = 4
+    for budget in ("4", "3.9", "3.0"):
+        result = _codex_lib_eval(
+            f'_should_trip_breaker 28 {budget} {cap} && echo TRIP || echo NOTRIP'
+        )
+        assert result.stdout.strip() == "TRIP", f"budget={budget}: {result.stderr}"
+    for budget in ("2.9", "1.0", "0.54"):
+        result = _codex_lib_eval(
+            f'_should_trip_breaker 28 {budget} {cap} && echo TRIP || echo NOTRIP'
+        )
+        assert result.stdout.strip() == "NOTRIP", f"budget={budget}: {result.stderr}"
 
 
 def test_codex_memory_observe_nested_exec_matches_non_memories_server_names(tmp_path: Path) -> None:

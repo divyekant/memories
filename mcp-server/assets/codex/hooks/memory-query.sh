@@ -11,12 +11,13 @@ set -euo pipefail
 
 # Load from dedicated env file — avoids requiring shell profile changes
 [ -f "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}" ] && . "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
-_LIB="$(dirname "$0")/_lib.sh"
+_LIB="$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 if [ -f "$_LIB" ]; then
   source "$_LIB"
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
+  _resolve_primary_backend_url() { printf '%s' "${MEMORIES_URL:-http://localhost:8900}"; }
   _default_source_prefixes() { echo 'codex/{project},claude-code/{project},learning/{project},wip/{project}'; }
   # Degraded fallbacks when _lib.sh is missing: keep the active-search
   # classifier identical and gate the playbook on candidate count only.
@@ -49,12 +50,14 @@ PROJECT=$(_memories_resolve_project "${CWD:-}" 2>/dev/null || basename "${CWD:-}
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   PROJECT=""
 fi
+TARGET_URL=$(_resolve_primary_backend_url)
+AUTH_FAILED="false"
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // .transcriptPath // empty')
 TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
 
 build_response_hint() {
   local prompt_lower="$1"
-  local hints_file="$(dirname "$0")/response-hints.json"
+  local hints_file="$(dirname "${BASH_SOURCE[0]}")/response-hints.json"
 
   [ -f "$hints_file" ] || return
 
@@ -259,6 +262,10 @@ if ls "$SEARCH_TMPDIR"/result_*.json >/dev/null 2>&1; then
 fi
 rm -rf "$SEARCH_TMPDIR"
 
+if [ -n "$RAW_RESPONSES" ] && printf '%s\n' "$RAW_RESPONSES" | jq -se 'any(.[]; .auth_failed == true)' >/dev/null 2>&1; then
+  AUTH_FAILED="true"
+fi
+
 # Merge, deduplicate, cap at 6
 RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr '
   map(select(type == "object") | (.results // []))
@@ -273,7 +280,15 @@ RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr '
 if [ "$RESULTS_JSON" = "[]" ]; then
   SEARCH_INDEX=$((SEARCH_INDEX + 1))
   FALLBACK_RESPONSE=$(search_memories "$QUERY_TEXT" "" "$MEMORIES_QUERY_FALLBACK_K" "$MEMORIES_QUERY_FALLBACK_THRESHOLD")
+  if printf '%s' "$FALLBACK_RESPONSE" | jq -e '.auth_failed == true' >/dev/null 2>&1; then
+    AUTH_FAILED="true"
+  fi
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
+fi
+
+CREDENTIAL_WARNING=""
+if [ "$AUTH_FAILED" = "true" ]; then
+  CREDENTIAL_WARNING="Memories reached $TARGET_URL but it rejected the API key. Set MEMORIES_API_KEY."
 fi
 
 if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
@@ -332,11 +347,11 @@ PLAYBOOK_MODE=$(_playbook_injection_mode "$PROMPT" "$CANDIDATE_COUNT")
 
 if [ "$PLAYBOOK_MODE" = "minimal" ]; then
   _log_info "Playbook gate: minimal reminder (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
-  jq -n --arg down "${MEMORIES_BACKEND_DOWN:-0}" '{
+  jq -n --arg down "${MEMORIES_BACKEND_DOWN:-0}" --arg credential_warning "$CREDENTIAL_WARNING" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
-	  additionalContext: (if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first." end)
-	}
+	  additionalContext: (if ($credential_warning | length) > 0 then $credential_warning + "\n\n" else "" end) + (if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first." end)
+		}
 }'
   exit 0
 fi
@@ -347,11 +362,11 @@ if [ "$PLAYBOOK_MODE" = "memories" ]; then
   # Candidates matched but the prompt is not prior-work-shaped: inject the
   # memories with a short preamble instead of the full directive mandate.
   _log_info "Playbook gate: memories without mandate (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
-  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
+  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" --arg credential_warning "$CREDENTIAL_WARNING" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
-	    "Memories from prior sessions matched this prompt (keyword retrieval; may be incomplete). Consider them; if this task turns out to depend on prior decisions or project history, verify with memory_search before relying on assumptions.\n\n## Retrieved Memories\n" + $memories +
+	    (if ($credential_warning | length) > 0 then $credential_warning + "\n\n" else "" end) + "Memories from prior sessions matched this prompt (keyword retrieval; may be incomplete). Consider them; if this task turns out to depend on prior decisions or project history, verify with memory_search before relying on assumptions.\n\n## Retrieved Memories\n" + $memories +
 	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
 	  )
 	}
@@ -362,11 +377,11 @@ fi
 _log_info "Playbook gate: full mandate (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
 
 if [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ]; then
-  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
+  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" --arg credential_warning "$CREDENTIAL_WARNING" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
-	    "IMPORTANT: hook-injected memories are keyword-matched starting points, not a substitute for active search.\n\nMANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, deferred work, conventions, or continuation of prior work, you MUST call memory_search before answering. Do not answer from injected memories alone. Do not use memory_get as a substitute for memory_search. Use exact source prefixes shown below before broad family prefixes or unscoped search.\n\n## Retrieved Memories\n" + $memories +
+	    (if ($credential_warning | length) > 0 then $credential_warning + "\n\n" else "" end) + "IMPORTANT: hook-injected memories are keyword-matched starting points, not a substitute for active search.\n\nMANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, deferred work, conventions, or continuation of prior work, you MUST call memory_search before answering. Do not answer from injected memories alone. Do not use memory_get as a substitute for memory_search. Use exact source prefixes shown below before broad family prefixes or unscoped search.\n\n## Retrieved Memories\n" + $memories +
 	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
 	  )
 	}
@@ -375,11 +390,11 @@ else
   # Prior-work-shaped prompt with no candidate memories: keep the directive
   # mandate (directive strength is required to survive context dilution) but
   # without a Retrieved Memories block.
-  jq -n --arg response_hint "$RESPONSE_HINT" --arg prefixes "$SCOPED_PREFIX_LIST" '{
+  jq -n --arg response_hint "$RESPONSE_HINT" --arg prefixes "$SCOPED_PREFIX_LIST" --arg credential_warning "$CREDENTIAL_WARNING" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
-	    "IMPORTANT: This prompt references prior work, but hook keyword retrieval returned no candidate memories. Keyword retrieval is incomplete — stored decisions may still exist.\n\nMANDATORY FIRST ACTION: you MUST call memory_search before answering. Do not answer from assumptions about prior work alone. Do not use memory_get as a substitute for memory_search. Use exact project-scoped source prefixes" +
+	    (if ($credential_warning | length) > 0 then $credential_warning + "\n\n" else "" end) + "IMPORTANT: This prompt references prior work, but hook keyword retrieval returned no candidate memories. Keyword retrieval is incomplete — stored decisions may still exist.\n\nMANDATORY FIRST ACTION: you MUST call memory_search before answering. Do not answer from assumptions about prior work alone. Do not use memory_get as a substitute for memory_search. Use exact project-scoped source prefixes" +
 	    (if ($prefixes | length) > 0 then " (" + $prefixes + ")" else "" end) +
 	    " before broad family prefixes or unscoped search." +
 	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)

@@ -1,0 +1,49 @@
+# Task 1 report: Codex hook runtime reliability parity
+
+## Commits
+
+- Base (merge-base with `origin/develop`): `f50b05d2c461b244be10c68c13f4980eb9e4ab57`.
+- Branch head before Task 1: `8f1b2de` (`docs: plan Codex parity implementation`).
+- Resulting task commit: this report is included in the commit carrying
+  `fix(codex): match hook runtime reliability guarantees` (inspect `git log -1`
+  for its hash).
+
+## Files changed
+
+- `mcp-server/assets/codex/hooks/_lib.sh`
+- `mcp-server/assets/codex/hooks/memory-recall.sh`
+- `mcp-server/assets/codex/hooks/memory-query.sh`
+- `tests/test_claude_memory_hooks.py`
+- `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-1-report.md`
+
+## TDD evidence
+
+Added Codex parity cases before production edits. RED command:
+
+```text
+uv run pytest -q tests/test_claude_memory_hooks.py -k 'codex and (unconfigured or enabled_false or backends_file or routed or breaker or budget or 401 or timeout)'
+```
+
+RED result: `7 failed, 2 passed, 69 deselected`; failures covered activation
+gating, routed health, per-backend breaker isolation, tiny-budget output, 401
+diagnostics, and the missing fair-timeout decision helper.
+
+## GREEN verification
+
+- The same parity selector: `9 passed, 69 deselected`.
+- `uv run pytest -q tests/test_claude_memory_hooks.py -k 'codex or memory_hooks'`:
+  `78 passed`.
+- `uv run pytest -q tests/test_claude_memory_hooks.py tests/test_codex_notify_hook.py`:
+  `84 passed`.
+- `bash -n mcp-server/assets/codex/hooks/_lib.sh
+  mcp-server/assets/codex/hooks/memory-recall.sh
+  mcp-server/assets/codex/hooks/memory-query.sh` and `git diff --check`: passed.
+
+## Notes and risks
+
+- Codex-specific source-prefix ordering, request `source` payload, usage
+  headers, session metadata, and hook JSON output were retained.
+- Activation resolves explicit/project/global backend files before stdin is
+  available. A file that exists only at a payload cwd different from both
+  `$PWD` and `CODEX_PROJECT_DIR` still requires `MEMORIES_ENABLED=true` to
+  force activation; once active, the loader resolves that cwd file.
