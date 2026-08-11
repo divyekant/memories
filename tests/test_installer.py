@@ -136,7 +136,7 @@ def test_codex_install_writes_standalone_hooks_json(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "PostToolUse -> memory-observe.sh (matcher: mcp__memories__|exec)" in result.stdout
+    assert "PostToolUse -> memory-observe.sh (matcher: mcp__.*__memory_|exec)" in result.stdout
     assert "PreCompact -> memory-flush.sh" not in result.stdout
 
     # Hooks config goes to standalone hooks.json (not settings.json)
@@ -253,7 +253,7 @@ def test_codex_install_refreshes_managed_hook_matcher_and_preserves_other_hooks(
     assert result.returncode == 0, result.stderr
     post_hooks = json.loads((codex_dir / "hooks.json").read_text())["hooks"]["PostToolUse"]
     by_command = {entry["hooks"][0]["command"]: entry for entry in post_hooks}
-    assert by_command[managed_command]["matcher"] == "mcp__memories__|exec"
+    assert by_command[managed_command]["matcher"] == "mcp__.*__memory_|exec"
     assert by_command["/custom/observer.sh"]["matcher"] == "other_tool"
 
 

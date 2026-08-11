@@ -42,7 +42,7 @@ if [ "$TOOL" = "exec" ]; then
     end
   ' 2>/dev/null || true)
   NESTED_TOOLS=$(printf '%s' "$EXEC_INPUT" \
-    | { grep -oE 'tools\.mcp__memories__memory_[A-Za-z0-9_]+' || true; } \
+    | { grep -oE 'tools\.mcp__[A-Za-z0-9_-]+__memory_[A-Za-z0-9_]+' || true; } \
     | sed 's/^tools\.//' \
     | sort -u)
   [ -n "$NESTED_TOOLS" ] || exit 0
