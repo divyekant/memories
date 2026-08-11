@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as adapter from '../cli/adapters/codex.mjs';
-import { readJson } from '../cli/lib/json-file.mjs';
+import { readJson, writeJson } from '../cli/lib/json-file.mjs';
 
 const assetsDir = join(dirname(fileURLToPath(import.meta.url)), '../assets');
 const exists = (p) => access(p).then(() => true, () => false);
@@ -92,4 +92,29 @@ test('uninstall clears the read-only allowlist it wrote', async () => {
   await adapter.uninstall(ctx);
   const settings = await readJson(join(ctx.home, '.codex/settings.json'));
   assert.equal(settings.permissions, undefined);
+});
+
+test('uninstall preserves an unrelated memory product rule and an unmanaged machine', async () => {
+  const foreignAllow = ['mcp__other_memory_product__memory_search', 'mcp__memories__memory_search'];
+
+  // (a) never installed here — nothing may be removed
+  const fresh = await freshCtx();
+  await mkdir(join(fresh.home, '.codex'), { recursive: true });
+  await writeJson(join(fresh.home, '.codex/settings.json'), { permissions: { allow: [...foreignAllow] } });
+  await adapter.uninstall(fresh);
+  assert.deepEqual(
+    (await readJson(join(fresh.home, '.codex/settings.json'))).permissions.allow,
+    foreignAllow,
+  );
+
+  // (b) installed here — only rules we introduced go
+  const ctx = await freshCtx();
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  await writeJson(join(ctx.home, '.codex/settings.json'), { permissions: { allow: [...foreignAllow] } });
+  await adapter.install(ctx);
+  await adapter.uninstall(ctx);
+  assert.deepEqual(
+    (await readJson(join(ctx.home, '.codex/settings.json'))).permissions.allow,
+    foreignAllow, // both survive: one is a foreign server, one the user already had
+  );
 });

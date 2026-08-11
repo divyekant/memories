@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, access, mkdir, symlink, lstat } from 'node:fs/promises';
+import { mkdtemp, readFile, access, mkdir, symlink, lstat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -156,4 +156,59 @@ test('uninstall clears read-only rules for every server name a past init wrote',
   );
   assert.ok(allow.includes('Bash(ls)'));
   assert.deepEqual(settings.permissions.deny, ['Bash(rm -rf /)']);
+});
+
+test('uninstall preserves an unrelated memory product\'s read-only rule', async () => {
+  const ctx = await freshCtx();
+  // Same tool suffix, different server — indistinguishable by shape, so only
+  // recorded provenance can tell them apart.
+  await writeJson(join(ctx.home, '.claude/settings.json'), {
+    permissions: { allow: ['mcp__other_memory_product__memory_search'] },
+  });
+  await adapter.install(ctx);
+  await adapter.uninstall(ctx);
+
+  const allow = (await readJson(join(ctx.home, '.claude/settings.json'))).permissions?.allow ?? [];
+  assert.deepEqual(allow, ['mcp__other_memory_product__memory_search']);
+});
+
+test('uninstall on a machine this installer never touched removes nothing', async () => {
+  const ctx = await freshCtx();
+  const foreign = {
+    permissions: { allow: [
+      'mcp__other_memory_product__memory_search',
+      'mcp__memories__memory_search', // our own default name, but WE did not write it
+      'Bash(ls)',
+    ] },
+  };
+  await writeJson(join(ctx.home, '.claude/settings.json'), foreign);
+
+  await adapter.uninstall(ctx); // no install ever ran
+
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  assert.deepEqual(settings.permissions.allow, foreign.permissions.allow);
+});
+
+test('uninstall still clears rules from an install predating the manifest', async () => {
+  const ctx = await freshCtx();
+  await adapter.install(ctx);
+  // Simulate the older layout: artifacts on disk, no recorded provenance.
+  await rm(join(ctx.home, '.config/memories/install-state.json'), { force: true });
+
+  await adapter.uninstall(ctx);
+
+  const allow = (await readJson(join(ctx.home, '.claude/settings.json'))).permissions?.allow ?? [];
+  assert.deepEqual(allow.filter((r) => r.startsWith('mcp__')), []);
+});
+
+test('a rule the user already had is not removed even under the default name', async () => {
+  const ctx = await freshCtx();
+  await writeJson(join(ctx.home, '.claude/settings.json'), {
+    permissions: { allow: ['mcp__memories__memory_search'] },
+  });
+  await adapter.install(ctx); // records the other 6, not this one
+  await adapter.uninstall(ctx);
+
+  const allow = (await readJson(join(ctx.home, '.claude/settings.json'))).permissions?.allow ?? [];
+  assert.deepEqual(allow, ['mcp__memories__memory_search']);
 });

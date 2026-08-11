@@ -1,7 +1,8 @@
 import { cp, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readJson, writeJson, mergeHookSettings, addPermissions, removePermissions, registerMcp } from '../lib/json-file.mjs';
-import { renderHooksJson, copyHookScripts, readonlyMcpTools, isReadonlyMcpRule } from '../lib/hooks.mjs';
+import { renderHooksJson, copyHookScripts, readonlyMcpTools } from '../lib/hooks.mjs';
+import { installStatePath, recordPermissions, takeRecordedPermissions } from '../lib/install-state.mjs';
 import { appendMarkedBlock, removeMarkedBlock } from '../lib/toml.mjs';
 import { ensureEnvVar } from '../lib/env-file.mjs';
 
@@ -29,7 +30,12 @@ export async function install(ctx) {
   // Default 'memories' plus any --mcp-name overrides, deduped by
   // readonlyMcpTools() per name and again by addPermissions' Set.
   const mcpNames = ctx.mcpNames?.length ? ctx.mcpNames : ['memories'];
-  settings = addPermissions(settings, mcpNames.flatMap(readonlyMcpTools));
+  const desiredRules = mcpNames.flatMap(readonlyMcpTools);
+  // Record only rules we actually introduce: a rule the user already had is
+  // theirs, and uninstall must leave it behind.
+  const alreadyPresent = new Set(settings.permissions?.allow ?? []);
+  const addedRules = desiredRules.filter((rule) => !alreadyPresent.has(rule));
+  settings = addPermissions(settings, desiredRules);
   const { settings: withMcp, skipped } = registerMcp(settings, { url: ctx.url, apiKey: ctx.apiKey });
   await writeJson(p.settings, withMcp);
   if (skipped) ctx.log('MCP entry "memories" already present — left untouched');
@@ -46,11 +52,15 @@ export async function install(ctx) {
 
   await ensureEnvVar(p.envFile, 'MEMORIES_URL', ctx.url);
   if (ctx.apiKey) await ensureEnvVar(p.envFile, 'MEMORIES_API_KEY', ctx.apiKey);
+  await recordPermissions(installStatePath(ctx.home), 'claude-code', addedRules);
   ctx.log(`Claude Code wired (hooks: ${p.hooksDest})`);
 }
 
 export async function uninstall(ctx) {
   const p = paths(ctx);
+  // Captured before the removals below erase the evidence.
+  const wasInstalled = (await exists(p.hooksDest)) || (await exists(p.skillMemories));
+  const recordedRules = await takeRecordedPermissions(installStatePath(ctx.home), 'claude-code');
   await rm(p.hooksDest, { recursive: true, force: true });
   if (await exists(p.settings)) {
     let settings = await readJson(p.settings);
@@ -72,9 +82,13 @@ export async function uninstall(ctx) {
       }
       if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
     }
-    // Name-agnostic: clears the rules any past `init --mcp-name` wrote, so
-    // uninstall needs no matching flag.
-    settings = removePermissions(settings, isReadonlyMcpRule);
+    // Remove only rules this install recorded as its own. Installs predating
+    // the manifest have no record, so fall back to the default-name rule set
+    // — the only names any earlier version ever wrote — and only when there
+    // is evidence we installed here at all. A machine we never touched, or a
+    // third party's `mcp__<other>__memory_search`, is left alone.
+    const owned = new Set(recordedRules ?? (wasInstalled ? readonlyMcpTools() : []));
+    settings = removePermissions(settings, (rule) => owned.has(rule));
     await writeJson(p.settings, settings);
   }
   await rm(p.skillMemories, { recursive: true, force: true });

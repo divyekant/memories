@@ -23,18 +23,6 @@ export function readonlyMcpTools(serverName = 'memories') {
 // Back-compat export: the default-name rule set, byte-identical to before.
 export const READONLY_MCP_TOOLS = readonlyMcpTools();
 
-// Matches a rule this installer could have written, for ANY server name.
-// Uninstall cannot know which --mcp-name values a past init was given, so it
-// identifies our rules by their tool suffix instead — the same
-// name-agnostic principle the hooks use. Anchored at both ends so a
-// user-authored wildcard (`mcp__memories__*`) or a longer tool name is left
-// alone.
-const READONLY_MCP_RULE_RE = new RegExp(`^mcp__.+__(${READONLY_MCP_TOOL_NAMES.join('|')})$`);
-
-export function isReadonlyMcpRule(rule) {
-  return READONLY_MCP_RULE_RE.test(String(rule));
-}
-
 export function renderHooksJson(config, hooksDir) {
   const out = structuredClone(config);
   for (const entries of Object.values(out.hooks ?? {}))
