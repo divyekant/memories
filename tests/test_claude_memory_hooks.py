@@ -1844,6 +1844,162 @@ def test_codex_memory_recall_401_shows_credential_warning_not_reachability(tmp_p
     assert calls
 
 
+def test_codex_memory_recall_multi_backend_401_keeps_candidate_and_identity(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  healthy_first:\n"
+        "    url: https://healthy-first.example\n"
+        "    api_key: test-key\n"
+        "  auth_second:\n"
+        "    url: https://auth-second.example\n"
+        "    api_key: rejected-key\n"
+    )
+    responses = [
+        {
+            "url_contains": "healthy-first.example",
+            "url_suffix": "/search",
+            "source_prefix": "codex/project",
+            "response": {
+                "results": [
+                    {
+                        "id": 901,
+                        "source": "codex/project",
+                        "text": "Healthy candidate survives an auth failure on a peer.",
+                        "similarity": 0.95,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+        {
+            "url_contains": "auth-second.example",
+            "url_suffix": "/search",
+            "source_prefix": "codex/project",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        },
+    ]
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "source": "startup"},
+        responses=responses,
+        extra_env={
+            "MEMORIES_URL": "",
+            "MEMORIES_BACKENDS_FILE": str(backends_file),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert any("healthy-first.example" in str(call["url"]) for call in calls)
+    assert any("auth-second.example" in str(call["url"]) for call in calls)
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=901" in ctx
+    assert "auth_second" in ctx
+    assert "https://auth-second.example" in ctx
+    assert "https://healthy-first.example" not in ctx
+    assert "memory recall and extraction are disabled" not in ctx.lower()
+
+
+def test_codex_memory_recall_search_health_warning_does_not_claim_extraction_down(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  search_dead:\n"
+        "    url: https://search-dead.example\n"
+        "    api_key: test-key\n"
+    )
+    responses = [{"url_contains": "search-dead.example", "fail": True}]
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "source": "startup"},
+        responses=responses,
+        extra_env={
+            "MEMORIES_URL": "",
+            "MEMORIES_BACKENDS_FILE": str(backends_file),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert any("search-dead.example/health" in str(call["url"]) for call in calls)
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "recall/search is unavailable this session" in ctx.lower()
+    assert "extraction" not in ctx.lower()
+
+
+def test_codex_memory_recall_fanout_backend_names_are_collision_free(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  foo-bar:\n"
+        "    url: https://foo-bar.example\n"
+        "    api_key: test-key\n"
+        "  foo_bar:\n"
+        "    url: https://foo-bar-underscore.example\n"
+        "    api_key: test-key\n"
+    )
+    responses = [
+        {
+            "url_contains": "foo-bar.example",
+            "url_suffix": "/search",
+            "source_prefix": "codex/project",
+            "response": {
+                "results": [
+                    {
+                        "id": 902,
+                        "source": "codex/project",
+                        "text": "Candidate from the hyphenated backend.",
+                        "similarity": 0.94,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+        {
+            "url_contains": "foo-bar-underscore.example",
+            "url_suffix": "/search",
+            "source_prefix": "codex/project",
+            "response": {
+                "results": [
+                    {
+                        "id": 903,
+                        "source": "codex/project",
+                        "text": "Candidate from the underscored backend.",
+                        "similarity": 0.93,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    result, _, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "source": "startup"},
+        responses=responses,
+        extra_env={
+            "MEMORIES_URL": "",
+            "MEMORIES_BACKENDS_FILE": str(backends_file),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=902" in ctx
+    assert "candidate memory id=903" in ctx
+
+
 def test_memory_hooks_unconfigured_url_is_silent_noop(tmp_path: Path) -> None:
     """A repo that ships .claude/settings.json but no MEMORIES_URL must be a true
     no-op for contributors who never opted in: exit 0, no stdout, no curl call."""

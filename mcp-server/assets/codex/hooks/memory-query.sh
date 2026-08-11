@@ -50,8 +50,20 @@ PROJECT=$(_memories_resolve_project "${CWD:-}" 2>/dev/null || basename "${CWD:-}
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   PROJECT=""
 fi
-TARGET_URL=$(_resolve_primary_backend_url)
 AUTH_FAILED="false"
+AUTH_FAILED_BACKENDS_JSON='[]'
+_note_auth_status() {
+  local resp="$1"
+  local flag backends
+  flag=$(printf '%s' "$resp" | jq -r '.auth_failed // false' 2>/dev/null) || flag="false"
+  [ "$flag" = "true" ] && AUTH_FAILED="true"
+  backends=$(printf '%s' "$resp" | jq -c '.auth_failed_backends // []' 2>/dev/null) || backends='[]'
+  AUTH_FAILED_BACKENDS_JSON=$(jq -nc \
+    --argjson existing "$AUTH_FAILED_BACKENDS_JSON" \
+    --argjson incoming "$backends" \
+    '$existing + $incoming | unique_by((.name // "") + "|" + (.url // ""))')
+  return 0
+}
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // .transcriptPath // empty')
 TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
 
@@ -262,8 +274,13 @@ if ls "$SEARCH_TMPDIR"/result_*.json >/dev/null 2>&1; then
 fi
 rm -rf "$SEARCH_TMPDIR"
 
-if [ -n "$RAW_RESPONSES" ] && printf '%s\n' "$RAW_RESPONSES" | jq -se 'any(.[]; .auth_failed == true)' >/dev/null 2>&1; then
-  AUTH_FAILED="true"
+if [ -n "$RAW_RESPONSES" ]; then
+  AUTH_FAILED_BACKENDS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sc \
+    '[.[].auth_failed_backends[]?] | unique_by((.name // "") + "|" + (.url // ""))' \
+    2>/dev/null) || AUTH_FAILED_BACKENDS_JSON='[]'
+  if printf '%s\n' "$RAW_RESPONSES" | jq -se 'any(.[]; .auth_failed == true)' >/dev/null 2>&1; then
+    AUTH_FAILED="true"
+  fi
 fi
 
 # Merge, deduplicate, cap at 6
@@ -280,15 +297,14 @@ RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr '
 if [ "$RESULTS_JSON" = "[]" ]; then
   SEARCH_INDEX=$((SEARCH_INDEX + 1))
   FALLBACK_RESPONSE=$(search_memories "$QUERY_TEXT" "" "$MEMORIES_QUERY_FALLBACK_K" "$MEMORIES_QUERY_FALLBACK_THRESHOLD")
-  if printf '%s' "$FALLBACK_RESPONSE" | jq -e '.auth_failed == true' >/dev/null 2>&1; then
-    AUTH_FAILED="true"
-  fi
+  _note_auth_status "$FALLBACK_RESPONSE"
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
 fi
 
 CREDENTIAL_WARNING=""
 if [ "$AUTH_FAILED" = "true" ]; then
-  CREDENTIAL_WARNING="Memories reached $TARGET_URL but it rejected the API key. Set MEMORIES_API_KEY."
+  AUTH_BACKEND_LABELS=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'map("\(.name) (\(.url))") | join(", ")')
+  CREDENTIAL_WARNING="Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Set MEMORIES_API_KEY for those backends."
 fi
 
 if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then

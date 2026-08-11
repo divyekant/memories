@@ -406,22 +406,23 @@ _health_check() {
 
   local tmpdir
   tmpdir=$(mktemp -d)
-  local backend url name safe
+  local backend url name backend_idx
+  backend_idx=0
   while read -r backend; do
+    backend_idx=$((backend_idx + 1))
     url=$(printf '%s' "$backend" | jq -r '.url')
     name=$(printf '%s' "$backend" | jq -r '.name')
-    safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_' '_')
     if _breaker_open "$name"; then
-      printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${safe}"
+      printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${backend_idx}"
       continue
     fi
     (
       if curl -sf --max-time "$probe_budget" "$url/health" >/dev/null 2>&1; then
         _breaker_reset "$name"
-        : > "$tmpdir/up_${safe}"
+        : > "$tmpdir/up_${backend_idx}"
       else
         _breaker_trip "$name"
-        printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${safe}"
+        printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${backend_idx}"
       fi
     ) &
   done < <(printf '%s' "$backends" | jq -c '.[]')
@@ -771,7 +772,8 @@ _search_memories_multi() {
         401)
           _breaker_reset "$name"
           MEMORIES_AUTH_FAILED=1
-          echo '{"results":[],"count":0,"auth_failed":true}'
+          jq -nc --arg name "$name" --arg url "$url" \
+            '{results: [], count: 0, auth_failed: true, auth_failed_backends: [{name: $name, url: $url}]}'
           ;;
         *)
           _breaker_trip "$name"
@@ -801,12 +803,14 @@ _search_memories_multi() {
   local tmpdir
   tmpdir=$(mktemp -d)
   local attempted=0
+  local backend_idx=0
   while read -r backend; do
-    local url key name safe
+    backend_idx=$((backend_idx + 1))
+    local url key name output_id
     url=$(echo "$backend" | jq -r '.url')
     key=$(echo "$backend" | jq -r '.api_key')
     name=$(echo "$backend" | jq -r '.name')
-    safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_' '_')
+    output_id="$backend_idx"
     if _breaker_open "$name"; then
       continue
     fi
@@ -826,11 +830,12 @@ _search_memories_multi() {
         case "$status" in
           2??)
             _breaker_reset "$name"
-            echo "$result" | jq -c --arg b "$name" '.results[] | . + {_backend: $b}' > "$tmpdir/result_${safe}.jsonl"
+            echo "$result" | jq -c --arg b "$name" '.results[] | . + {_backend: $b}' > "$tmpdir/result_${output_id}.jsonl"
             ;;
           401)
             _breaker_reset "$name"
-            : > "$tmpdir/auth_failed_${safe}"
+            jq -nc --arg name "$name" --arg url "$url" \
+              '{name: $name, url: $url}' > "$tmpdir/auth_failed_${output_id}.json"
             ;;
           *)
             _breaker_trip "$name"
@@ -863,8 +868,15 @@ _search_memories_multi() {
     | unique_by(.text)
     | sort_by(-(.similarity // .rrf_score // 0))
   ' | jq -c '{results: ., count: length}')
-  if compgen -G "$tmpdir/auth_failed_*" >/dev/null 2>&1; then
-    printf '%s' "$merged" | jq -c '. + {auth_failed: true}'
+  local auth_backends='[]'
+  local auth_file
+  for auth_file in "$tmpdir"/auth_failed_*.json; do
+    [ -e "$auth_file" ] || continue
+    auth_backends=$(cat "$auth_file" | jq -c --argjson existing "$auth_backends" '$existing + [.] | unique_by((.name // "") + "|" + (.url // ""))')
+  done
+  if [ "$auth_backends" != "[]" ]; then
+    printf '%s' "$merged" | jq -c --argjson auth_backends "$auth_backends" \
+      '. + {auth_failed: true, auth_failed_backends: $auth_backends}'
   else
     printf '%s' "$merged"
   fi

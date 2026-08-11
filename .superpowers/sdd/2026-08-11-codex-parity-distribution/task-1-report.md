@@ -47,3 +47,17 @@ diagnostics, and the missing fair-timeout decision helper.
   available. A file that exists only at a payload cwd different from both
   `$PWD` and `CODEX_PROJECT_DIR` still requires `MEMORIES_ENABLED=true` to
   force activation; once active, the loader resolves that cwd file.
+
+## Follow-up diagnostics correction
+
+- Follow-up base: `7f666db303643b4dcc5c8f9ba60b590f4eeffd4a`.
+- RED command: `uv run pytest -q tests/test_claude_memory_hooks.py -k 'codex and (identity or extraction or collision)'`.
+- RED result: `3 failed, 78 deselected` (missing multi-backend auth identity,
+  extraction overclaim, and colliding fan-out temp paths).
+- GREEN selector: `3 passed, 78 deselected`.
+- GREEN broader suite: `uv run pytest -q tests/test_claude_memory_hooks.py -k 'codex or memory_hooks'` -> `81 passed`.
+- GREEN full suite: `uv run pytest -q tests/test_claude_memory_hooks.py tests/test_codex_notify_hook.py` -> `87 passed`.
+- `bash -n` on all three Codex hook scripts and `git diff --check`: passed.
+- Resulting follow-up commit: this report is included in the commit carrying
+  `fix(codex): correct multi-backend hook diagnostics` (inspect `git log -1`
+  for its hash).

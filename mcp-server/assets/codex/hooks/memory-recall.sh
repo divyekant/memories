@@ -71,19 +71,23 @@ if ! _health_check; then
   HEALTH_WARNING=$(cat <<HWEOF
 ## Memories Service Warning
 
-Memories service is not reachable ($HEALTH_DOWN_NAMES). Memory recall and extraction are unavailable this session. Check that the service is running.
+Memories recall/search is unavailable this session ($HEALTH_DOWN_NAMES). Check that the service is running.
 HWEOF
 )
 fi
 
-TARGET_URL=$(_resolve_primary_backend_url)
-
 AUTH_FAILED="false"
+AUTH_FAILED_BACKENDS_JSON='[]'
 _note_auth_status() {
   local resp="$1"
-  local flag
+  local flag backends
   flag=$(printf '%s' "$resp" | jq -r '.auth_failed // false' 2>/dev/null) || flag="false"
   [ "$flag" = "true" ] && AUTH_FAILED="true"
+  backends=$(printf '%s' "$resp" | jq -c '.auth_failed_backends // []' 2>/dev/null) || backends='[]'
+  AUTH_FAILED_BACKENDS_JSON=$(jq -nc \
+    --argjson existing "$AUTH_FAILED_BACKENDS_JSON" \
+    --argjson incoming "$backends" \
+    '$existing + $incoming | unique_by((.name // "") + "|" + (.url // ""))')
   return 0
 }
 
@@ -251,13 +255,23 @@ EOF
 # search key separately from a backend reachability warning.
 CREDENTIAL_WARNING=""
 if [ "$AUTH_FAILED" = "true" ]; then
-  _log_warn "Backend rejected the API key (401) at $TARGET_URL"
-  CREDENTIAL_WARNING=$(cat <<CWEOF
+  AUTH_BACKEND_LABELS=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'map("\(.name) (\(.url))") | join(", ")')
+  _log_warn "Backend(s) rejected the API key (401): $AUTH_BACKEND_LABELS"
+  if [ "$CANDIDATE_COUNT" -gt 0 ]; then
+    CREDENTIAL_WARNING=$(cat <<CWEOF
 ## Memories Credential Warning
 
-Memories reached $TARGET_URL but it rejected the API key. Set MEMORIES_API_KEY (memory recall and extraction are disabled this session).
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Set MEMORIES_API_KEY for those backends; healthy routed backends still returned candidates this session.
 CWEOF
-)
+    )
+  else
+    CREDENTIAL_WARNING=$(cat <<CWEOF
+## Memories Credential Warning
+
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Set MEMORIES_API_KEY for those backends.
+CWEOF
+    )
+  fi
 fi
 
 # --- Output context for Codex ---
