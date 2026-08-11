@@ -2,196 +2,365 @@
 shaping: true
 ---
 
-# Shared Spaces — Multi-Collaborator Team Memory — Design
+# Shared Project Memory — Multi-Collaborator Design
 
-## Source
+## Status
 
-> Design "Shared Spaces" — first-class multi-collaborator team memory for Memories (dk + Darshan sharing project context across their individual agents). fplguru is the first consumer, but this is a Memories product feature.
+Revised 2026-08-11 after review of the original Shared Spaces proposal.
 
-Design approved 2026-08-03 (brainstorm session, memory id 52316). This spec documents the approved design and pins the concrete behavior for the implementation plan.
+The original proposal correctly identified the collaboration problem, but made source-prefix conventions carry person identity, project identity, visibility, provenance, and routing at the same time. A later Entity + Space design separated those concepts correctly, but introduced too many new runtime components for the first use case.
+
+This revision keeps **Project** first-class in the product while implementing it as a thin, explicit namespace and policy over the machinery Memories already has. Generic Entity and Space registries remain a future evolution, not a prerequisite.
 
 ## Problem
 
-Two people (dk and Darshan) collaborate on a project (fplguru) using their own agents (Claude Code, Codex). Each person's agents accumulate decisions, handoffs, and blockers in their own memory — the other person's agents never see them. Decisions get re-derived, contradicted, or lost at the seam between collaborators.
+Two people collaborate on the same project using their own agents and sessions. Each person's agents accumulate decisions, constraints, handoffs, and operational knowledge, but the other person's agents cannot reliably recall them. Decisions are re-derived, contradicted, or lost at the collaborator boundary.
 
-Memories already solves the multi-*agent* case for one person (prefix-scoped keys, multi-backend fan-out). Shared Spaces extends the same primitives to the multi-*person* case without introducing sync, replication, or a new server mode.
+For the first consumer:
 
-## Current State (verified against `develop`)
+- dk and Darshan both work on FPLGuru.
+- Either may use Codex, Claude Code, another supported client, or a cloud session.
+- They may work on the same item or different items.
+- Durable project knowledge must be available to both people regardless of who or which agent captured it.
+- Personal memory must remain private.
 
-**Server-side prefix ACLs already exist and are sufficient:**
-- [auth_context.py](../../../auth_context.py) — `AuthContext` carries `role`, `prefixes`, `key_name`, `key_id`; `can_read`/`can_write` enforce prefix matching; `filter_results` (line 68) strips non-matching sources from search results.
-- [key_store.py](../../../key_store.py) — managed key storage; key records carry `name`, `role`, `prefixes`.
-- Key CRUD endpoints exist at [app.py:1513](../../../app.py:1513)–1571 (`/api/keys/me`, `POST/GET/PATCH/DELETE /api/keys`), admin-only, non-admin keys require ≥1 prefix.
+The feature is part of the OSS Memories product. FPLGuru is the proving case, not a hard-coded special case.
 
-**Multi-backend client routing already exists:**
-- `~/.config/memories/backends.yaml` (project override: `.memories/backends.yaml`) — named backends with `url`, `api_key`, `scenario`, plus an optional `routing:` map of op → backend names.
-- MCP bridge: [mcp-server/index.js:58](../../../mcp-server/index.js:58) `getBackendsForOp` — search fans out to all backends and merges/dedupes with backend labels (`_backend` tag, line 141); extract/feedback go to `dev`/`personal` scenarios.
-- Hooks: [plugin/hooks/_lib.sh:454](../../../plugin/hooks/_lib.sh:454) `_get_backends_for_op` mirrors the same logic in shell; `_extract_multi` (line 599) fans extraction out per the `extract` op.
+## Design Principles
 
-**Confirmed gaps:**
-1. **No attribution.** `/memory/add` ([app.py:2271](../../../app.py:2271)) and `/memory/extract` ([app.py:3236](../../../app.py:3236)) have `auth.key_name` in hand but never stamp it into the stored memory. In a shared space you cannot tell who wrote what.
-2. **Write fan-out is wrong for multi-person.** `getBackendsForOp("add")` returns ALL backends ([index.js:70](../../../mcp-server/index.js:70)); `_get_backends_for_op add` in `_lib.sh` does the same. A personal memory written while a team backend is configured would land on the team instance (and vice-versa fails ACL).
-3. **No promotion guidance.** Nothing tells an agent when a decision belongs in the team space.
-4. **No onboarding path** for a collaborator (key minting flow, client config, conventions).
+1. **Project is a collaboration boundary.** It is not an agent prefix and not a person's private memory.
+2. **Person, Project, Visibility, and Source are separate concepts.** Authorization follows visibility; attribution follows person; provenance records the producing client or session.
+3. **Reuse existing enforcement.** Prefix-scoped managed keys remain the authorization mechanism in this version.
+4. **Inference never grants access.** An agent or extractor may classify whether a memory is project-relevant; only deterministic policy and server authorization may place it in a shared namespace.
+5. **Fail private.** Missing context, invalid configuration, classifier failure, stale authorization, or reconciliation failure must not widen visibility.
+6. **One storage path.** Memories continue through the existing metadata + Qdrant write path. This feature does not introduce a second canonical memory store, transactional outbox, replication protocol, or server mode.
+7. **Generalize after a second proven boundary.** Preserve stable identifiers and additive migrations, but do not build generic Entity, Space, alias, profile, or relationship subsystems yet.
 
-**Storage/read mechanics that make this cheap** (verified): `add_memories` flattens caller metadata into the memory record ([memory_engine.py:717](../../../memory_engine.py:717) `**filtered_extra`), and `search` returns the full record (`{**meta, similarity}`). A metadata key stamped at write time therefore surfaces in every search/recall result with zero read-path changes.
+## Current State (verified against `develop` at the original PR head)
+
+Memories already has most of the required mechanics:
+
+- [auth_context.py](../../../auth_context.py) carries the authenticated key context and enforces source-prefix reads and writes. Search results are filtered again before disclosure.
+- [key_store.py](../../../key_store.py) persists managed keys with roles and allowed prefixes.
+- [memory_engine.py](../../../memory_engine.py) stores caller metadata with a memory, returns that metadata from search, supports source-only transitions, and already provides supersede, archive, and link operations.
+- [qdrant_store.py](../../../qdrant_store.py) supports payload filtering used by project-scoped retrieval.
+- [mcp-server/index.js](../../../mcp-server/index.js) and the client hooks already support single- and multi-backend routing.
+- The container already runs scheduled maintenance. Candidate reconciliation can extend that mechanism instead of creating another service.
+
+The confirmed gaps are:
+
+1. Existing sources such as `codex/fplguru` identify a client, not a person. They cannot be a reliable private ownership boundary.
+2. Shared project knowledge has no explicit, portable project declaration.
+3. Managed writes do not stamp a stable person identity onto memories server-authoritatively.
+4. Multi-backend writes do not consistently choose the personal or project backend from the destination namespace.
+5. Agents and extractors have no shared promotion contract.
+6. Existing maintenance does not revisit uncertain project candidates.
+7. Collaborator onboarding and revocation are not documented end to end.
 
 ## Requirements
 
-| ID | Requirement | Status |
-|----|-------------|--------|
-| R1 | Two collaborators share team memory through a single host instance + prefix-scoped keys. No sync/replication. | Must-have |
-| R2 | Works whether or not the collaborator runs their own instance (host-only mode and federated mode via backends.yaml). | Must-have |
-| R3 | Team memories carry authorship — every write through a managed key is attributed, server-authoritatively. | Must-have |
-| R4 | Writes route by source prefix: `team/*` → team backend only, everything else → personal backend only. No dual-writes. | Must-have |
-| R5 | Reads require no agent decision — existing fan-out surfaces team results labeled with backend + author. | Must-have |
-| R6 | Existing single-backend and dev/prod multi-backend setups keep working unchanged (backward compatible). | Must-have |
-| R7 | Plugin skill teaches promotion ("does this affect the other person?") and team-recall respect ("their decisions are decisions, not context to overwrite"). | Must-have |
-| R8 | A collaborator can onboard in ~10 minutes from a doc (COLLABORATOR.md) + one minted key. | Must-have |
-| R9 | Design must not preclude OAuth 2.1 identities mapping onto AuthContext later. | Constraint |
-| R10 | `team/fplguru/decisions` seeded with standing shared decisions. | Must-have |
+| ID | Requirement |
+|---|---|
+| R1 | Two or more collaborators can recall durable project knowledge from local or cloud sessions. |
+| R2 | Personal memories remain person-scoped and are not readable by other project members. |
+| R3 | Every managed write is attributed to a server-derived principal; clients cannot impersonate another author. |
+| R4 | A repository can explicitly declare its stable project identity and promotion mode without containing credentials or granting access. |
+| R5 | Shared project reads require no per-result agent decision; the server enforces the caller's prefix authorization. |
+| R6 | Writes route to either the personal or project destination, never both by default. |
+| R7 | Explicitly collaborative projects default to automatic promotion, with deterministic exclusions and private fallback. |
+| R8 | Uncertain candidates can be revisited by existing scheduled maintenance without a new service or cross-server sync protocol. |
+| R9 | Existing single-user and unconfigured repositories continue working unchanged. |
+| R10 | The design leaves an additive path to future entity types such as People and Organizations. |
 
-## Approved Design
+## Conceptual Model
 
-### Topology
+The product model has four orthogonal concepts:
 
-Single shared **host instance** (dk's DO droplet, `memory.divyekant.com`) holds the team namespaces. Collaborators get prefix-scoped API keys. There is no replication and no server-to-server traffic — all multi-instance behavior is client-side routing via the existing `backends.yaml` fan-out.
+| Concept | Example | Responsibility |
+|---|---|---|
+| Person | `dk`, `darshan` | Authorship and private ownership |
+| Project | `fplguru` | Durable collaboration boundary |
+| Visibility | `private`, `project` | Who may read the memory |
+| Source | `codex`, `claude-code`, `hook`, `manual` | Provenance only |
 
-Two supported collaborator modes:
+Project is first-class conceptually, but this version does not materialize a generic entity graph. Its concrete representation is a stable project ID, an explicit repository declaration, and a project-qualified source namespace.
 
-1. **Host-only** (Darshan today): no instance of his own. His `backends.yaml` has one entry — dk's instance with his scoped key. Single-backend fast path everywhere; his personal prefixes and the team prefixes both live on dk's instance.
-2. **Federated** (Darshan later, or any collaborator with their own instance): `backends.yaml` gains two entries — `personal` (their instance) and `team` (dk's instance, scoped key). Search fans out across both; writes route by prefix (below).
+## Project Declaration
 
-dk himself is in federated shape already conceptually — his instance is both his personal and the team backend, so he stays single-entry.
-
-### Namespaces
-
-Two team prefixes per project, with distinct semantics:
-
-- `team/<project>/decisions` — durable team truth. Standing decisions, conventions, architecture choices that bind both collaborators. Long-lived; superseded explicitly, never casually overwritten.
-- `team/<project>/state` — handoffs, blockers, "where I left it". Ephemeral by nature; freely superseded.
-
-Personal write-own prefixes (`claude-code/<project>`, `codex/<project>`, `wip/…`, `learning/…`) are unchanged.
-
-First consumer: `team/fplguru/decisions` and `team/fplguru/state`.
-
-### Auth & identity
-
-- Mint Darshan a **read-write managed key** on the host instance, scoped to `["team/fplguru", "codex/fplguru", "claude-code/fplguru"]` (team space + his personal project prefixes on the host). Key `name` identifies the person: `darshan`.
-- **Key naming convention:** `name` = person identifier (`dk`, `darshan`), optionally `-<agent>` suffixed if a person wants per-agent keys later. `name` is the attribution identity (below), so per-person is the default.
-- **dk's existing per-agent keys must gain the team prefixes.** Server-side `filter_results` strips sources a key can't read, so a key scoped to `claude-code/memories` alone will never see `team/*` results. Onboarding includes `PATCH /api/keys/{id}` to append `team/fplguru` to each existing agent key. This is an ops step, not a code change.
-- Prefix ACL enforcement is entirely existing code (`auth_context.py`, `key_store.py`). No server auth changes.
-- **OAuth forward-compatibility (R9):** attribution reads only `AuthContext.key_name`. When OAuth 2.1 lands, the token-validation layer constructs an `AuthContext` with `key_name` = OAuth subject identity and everything downstream (attribution, ACLs, audit) works untouched. Nothing in this design assumes X-API-Key specifically.
-
-### Read path — no agent decision
-
-Hooks and `memory_search` already fan out to all configured backends and merge results. Team results arrive labeled twice:
-
-- **Backend label:** the bridge's existing `_backend` tag (and the hooks' equivalent) tells the agent which instance a result came from.
-- **Author label:** the new `author` metadata field (below) tells the agent *who* wrote it.
-
-The plugin skill (component 4) instructs: **a team memory authored by the other person is a decision to respect, not context to overwrite.** Contradicting it requires an explicit superseding write to the team space, ideally after human confirmation.
-
-### Write path — prefix-based routing (the one behavioral change)
-
-Rule, applied identically in the MCP bridge and the shell hooks:
-
-1. **Single backend configured → that backend.** (Unchanged fast path; covers Darshan host-only mode and dk today.)
-2. **Explicit `routing:` map in backends.yaml → honored as today.** (Unchanged escape hatch.)
-3. **New: prefix claims.** A backend entry may declare `write_prefixes: ["team/"]` (list of source prefixes, same matching semantics as server-side ACLs). For a write with source `S`:
-   - If any backend claims `S` via `write_prefixes` → route to exactly the claiming backend(s).
-   - Else → route to all backends that declare **no** `write_prefixes` (the personal/default sinks).
-4. **No backend declares `write_prefixes` → current behavior preserved** (add fans out to all; dev/prod dual-write setups keep working). This is the R6 backward-compat guarantee.
-
-Federated example:
+A collaborative repository may commit `.memories/project.yaml`:
 
 ```yaml
-backends:
-  personal:
-    url: https://memories.darshan.dev
-    api_key: ${DARSHAN_MEMORIES_KEY}
-    scenario: personal
-  team:
-    url: https://memory.divyekant.com
-    api_key: ${DARSHAN_TEAM_KEY}
-    scenario: team
-    write_prefixes: ["team/"]
+project_id: fplguru
+shared_memory: true
+promotion: auto
 ```
 
-`memory_add(source="team/fplguru/state", …)` → team only. `memory_add(source="codex/fplguru", …)` → personal only. Search still fans out to both.
+Fields:
 
-Extraction routing follows the same rule keyed on the extraction `source`: personal-prefixed extraction never reaches the team backend. (In practice team writes come from explicit `memory_add` promotion, not extraction; extraction into `team/*` is allowed but not part of the default flow.)
+- `project_id` is a stable, explicit slug. A repository basename or worktree directory may suggest it during setup, but must not silently establish a shared identity.
+- `shared_memory` opts the repository into project memory. If absent or false, existing personal behavior is unchanged.
+- `promotion` is `auto`, `review`, or `off`. For a repository with `shared_memory: true`, omission defaults to `auto`.
+
+The declaration is portable across clones and cloud sessions. It contains no backend URL, API key, member list, or secret.
+
+Supported hooks and clients resolve the file and send a normalized project context with add or extraction requests. The Memories server does not need access to the caller's repository filesystem. An invalid file never falls back to a directory basename for shared writes.
+
+The declaration **never grants access**. A malicious or accidental repository file cannot make a caller a project member; the server still requires a key authorized for the project's namespace.
+
+If the file is missing, invalid, or contains an unsupported promotion value, automatic project writes are disabled and extraction stays private. Explicit writes to a project namespace still require normal server authorization.
+
+## Namespaces
+
+This version uses two ownership boundaries:
+
+```text
+person/<principal_id>/<project_id>/<kind>
+project/<project_id>/<kind>
+```
+
+For FPLGuru:
+
+```text
+person/dk/fplguru/knowledge
+person/darshan/fplguru/knowledge
+project/fplguru/decisions
+project/fplguru/knowledge
+project/fplguru/state
+project/fplguru/operations
+```
+
+The project kinds are deliberately small:
+
+- `decisions` — accepted choices, rationale, and boundary conditions; superseded explicitly.
+- `knowledge` — domain and system facts, constraints, conventions, and durable references.
+- `state` — current work, handoffs, blockers, and temporary coordination; freely superseded.
+- `operations` — runbooks, release/deploy procedures, and recurring operational knowledge.
+
+The prefix is the access and routing boundary. The producing client is metadata, not part of ownership. This avoids treating `codex/fplguru` and `claude-code/fplguru` as different owners or sharing domains.
+
+Legacy personal prefixes remain readable and writable for backward compatibility. New collaborative setup uses person-qualified prefixes; migration of old personal memories is explicit and out of the initial write path.
+
+## Identity and Authorization
+
+Managed keys need a stable `principal_id` representing the person. In the first implementation it may default to the managed key name for backward compatibility, but it must be carried separately in the authenticated context so multiple client keys can later map to the same person without parsing naming conventions.
+
+Server-authoritative fields:
+
+- `author` is stamped from `AuthContext.principal_id` on add, batch add, and extraction.
+- A client-supplied `author` is overwritten.
+- The producing key ID remains audit data and is not used as the displayed person identity.
+- OAuth can later populate the same principal field from its authenticated subject.
+
+Project membership reuses existing prefix authorization:
+
+- a personal key receives `person/<principal_id>/...`;
+- a collaborator key receives the required `project/<project_id>` prefix;
+- read-only and read-write behavior uses existing key roles;
+- revocation removes or narrows the relevant key scopes.
+
+There is no separate membership database or project-role model in this version. All read-write project keys are equivalent contributors. Owner/maintainer governance is deferred until there is an operation that needs the distinction.
+
+Every project retrieval is pre-filtered by authorized source prefixes and checked again before results are returned. Link expansion, related-memory retrieval, summaries, and any later derived views must apply the same filter to their final records.
+
+## Memory Metadata
+
+Only metadata needed for attribution and the promotion lifecycle is added:
+
+| Field | Authority | Purpose |
+|---|---|---|
+| `author` | Server | Stable person attribution |
+| `origin_client` | Client, validated as descriptive | Codex, Claude Code, hook, manual, or other producer |
+| `promotion_state` | Server pipeline | `direct`, `candidate`, or `promoted` |
+| `promotion_reason` | Server pipeline | Short auditable reason for a promoted memory |
+| `promotion_project_id` | Server pipeline | Target project for a private candidate |
+| `promotion_mode` | Server pipeline | Captured `auto` or `review` behavior for a private candidate |
+
+The server also retains the originating managed key ID as internal audit context for candidates. It is not a displayed author field, but lets scheduled maintenance recheck the exact credential that requested the candidate before changing visibility. Promotion fields and audit context are reserved: client metadata cannot overwrite the server pipeline's values.
+
+The source prefix already carries the active owner/project and kind, so this version does not duplicate them into a generic `entity_id`, `space_id`, or policy object. Classification confidence may be recorded in the audit event for diagnosis, but it is not an authorization signal and need not become permanent memory metadata.
+
+Existing timestamps, supersede links, archive state, and memory IDs remain unchanged.
+
+## Write and Promotion Flow
+
+### Explicit writes
+
+An authorized agent or human may write directly to `project/<project_id>/<kind>`. The server verifies the caller's project prefix, stamps the author, and stores the memory once through the existing write path.
+
+### Automatic extraction
+
+For a valid collaborative project declaration:
+
+1. The agent or existing extraction LLM classifies a candidate as personal, clearly project-relevant, or uncertain.
+2. Deterministic guards in the backend promotion path reject automatic sharing of credentials, secrets, authentication material, raw transcripts, personal preferences, and content without explicit project context. Prompt instructions may help classification, but they are not the enforcement layer.
+3. A clearly project-relevant memory in `auto` mode is written directly to `project/<project_id>/<kind>` after the current authenticated context passes the project write check.
+4. A personal memory stays in `person/<principal_id>/<project_id>/<kind>`.
+5. An uncertain memory stays private with `promotion_state: candidate` and a target `promotion_project_id`.
+6. In `review` mode, project-relevant results are candidates until explicitly approved.
+7. In `off` mode, automatic extraction never creates or promotes shared project memories; explicit authorized writes still work.
+
+MiniLM remains a semantic similarity mechanism for duplicate detection, candidate linking, and reconciliation support. It does not classify privacy, select a destination, or authorize a write.
+
+The critical invariant is:
+
+> Model output may recommend a project destination, but only explicit project context, deterministic safety checks, and server authorization can make the memory shared.
+
+## Scheduled Reconciliation
+
+Reconciliation extends the existing in-container maintenance schedule. It is a bounded job, not a standalone service or generic workflow engine.
+
+For each private `candidate` on the same Memories instance, the job:
+
+1. reloads the memory and its current state;
+2. verifies the captured promotion mode is valid for automatic or reviewed promotion;
+3. verifies the originating managed key is still active and authorized to write the target project prefix;
+4. reapplies deterministic sensitivity exclusions;
+5. checks for an equivalent project memory using existing similarity and duplicate mechanisms;
+6. either leaves the candidate private, records a proposed review item, or transitions its source in place to the project namespace;
+7. records the old source, new source, author, reason, and timestamp in the audit log.
+
+The job is idempotent. Reprocessing an already promoted memory must not create a second copy or widen access again. A maintenance failure leaves the memory private and eligible for a later run.
+
+Source-in-place promotion is preferred on a single instance because it preserves the memory ID and provenance and avoids personal/project duplicates. It uses the existing source-only update path.
+
+There is no server-to-server reconciliation. In federated installations, clear project memories can still route directly to the project backend at write time, but a private candidate on a different personal backend cannot be promoted by the project host's cron. Cross-backend candidate promotion requires a later authorized client action and remains outside the first implementation.
+
+## Read Path
+
+When a valid project declaration is active, recall searches the caller's authorized personal project prefix and the shared project prefix. Existing fan-out may query more than one configured backend, but each backend enforces its own source ACL before returning records.
+
+Project results include author and origin-client labels. An agent should treat another contributor's project memory as attributed shared knowledge, not unquestionable truth: contradictions are resolved by an explicit superseding project memory with rationale and boundary conditions.
+
+Project retrieval must not:
+
+- return another person's private prefix;
+- follow a memory link to an unauthorized target;
+- broaden from `project/fplguru` into another project during similarity expansion;
+- use vector metadata as a substitute for server authorization.
+
+## Backend Routing
+
+The routing rule is destination-based:
+
+1. One backend configured: use it, subject to its server ACL.
+2. An explicit operation routing map: honor it if it produces a backend authorized for the requested namespace.
+3. A backend may claim write prefixes such as `project/` or `person/darshan/`.
+4. Route a write to the one matching destination. Do not dual-write personal and project memories.
+5. If no destination is safe and unambiguous, fail the project write or keep automatic extraction private.
+
+Search may continue to fan out and merge authorized results.
+
+Prefix matching uses segment boundaries: `project/fplguru` matches `project/fplguru/state`, not `project/fplgurux`. Ambiguous overlapping write claims are a configuration error and must not fan out silently.
+
+The MCP bridge and shell hooks currently duplicate backend parsing. Implementation must share fixtures and contract tests across the Node and shell paths so their routing behavior cannot drift unnoticed.
+
+## Failure Semantics
+
+| Failure | Required result |
+|---|---|
+| Missing or invalid project declaration | Personal behavior only; no automatic sharing |
+| Classifier or extraction unavailable | No automatic project write; retain or write private memory when possible |
+| Deterministic safety guard matches | Private only; do not allow confidence to override |
+| Caller lacks project write scope | Project write denied; no alternate shared destination |
+| Reconciler unavailable | Candidates remain private and wait |
+| Candidate authorization was revoked | Candidate remains private |
+| Duplicate or repeated reconciliation | At most one shared memory; stable memory ID on in-place promotion |
+| Backend routing is ambiguous | Fail closed; never dual-write |
+| Repository config is malicious | It cannot grant server access or impersonate an author |
+| Project membership is revoked | Subsequent shared reads and writes are denied by prefix ACL |
+
+Automatic promotion deliberately accepts possible false negatives. A missed promotion can be reviewed and corrected; an unintended disclosure cannot be made unseen.
+
+## Compatibility and Migration
+
+- Repositories without `.memories/project.yaml` behave exactly as they do today.
+- Existing source prefixes and API keys remain valid.
+- Existing memories are not silently renamed, copied, or shared.
+- Collaborators may explicitly promote selected legacy memories after reviewing their contents.
+- A hosted instance may contain private prefixes for several people, but each managed key sees only its authorized person and project prefixes.
+- The initial FPLGuru setup uses one host instance, which allows direct shared writes and same-instance candidate reconciliation without replication.
 
 ## Build List
 
-### 1. Backend: attribution stamping (the only server delta)
+### Phase 1 — Explicit project memory
 
-- `/memory/add` ([app.py:2271](../../../app.py:2271)) and `/memory/add-batch` ([app.py:2328](../../../app.py:2328)): after `_require_write`, stamp `metadata["author"] = auth.key_name` when `auth.key_name` is set. **Server-authoritative:** overwrite any client-supplied `author` — a scoped key must not be able to impersonate. Env/admin callers with no `key_name` leave `author` unset (absence = instance owner).
-- `/memory/extract` ([app.py:3236](../../../app.py:3236)): thread `auth.key_name` through both the queued path (`run_extraction`, [llm_extract.py:935](../../../llm_extract.py:935)) and the fallback path (`_run_fallback_extraction`) so every stored extracted memory carries the same `author` stamp. The queued worker runs detached from the request, so `key_name` must be captured into the job payload at enqueue time — the job record already captures `auth_key_id` this way; attribution extends the same pattern to the memories themselves.
-- Surfacing is free: metadata flattens into the record and search returns the full record, so `author` appears in `memory_search` / recall results with no read-path changes. Client formatting (bridge tool output, hook injection templates) should render it for `team/*` results.
-- Reserved-key note: add `author` handling deliberately — it is *not* added to `_reserved_add` (server writes it before the engine sees it), but the endpoint must set it after accepting client metadata so the overwrite wins.
+1. Parse and validate `.memories/project.yaml` in supported clients and hooks.
+2. Add stable `principal_id` to managed authentication context and server-authoritative author stamping.
+3. Introduce person- and project-qualified namespace helpers with segment-safe matching.
+4. Route explicit writes by destination prefix without dual writes.
+5. Recall authorized personal + project prefixes and render author/provenance labels.
+6. Document collaborator key minting, verification, revocation, and federated routing.
+7. Seed reviewed FPLGuru decisions into `project/fplguru/decisions` only after the access path is verified.
 
-### 2. MCP bridge: prefix-based write routing
+### Phase 2 — Write-time automatic promotion
 
-- [mcp-server/index.js:58](../../../mcp-server/index.js:58) `getBackendsForOp(op)` → becomes `getBackendsForOp(op, source)`. Implement the four-step rule above. Parse optional `write_prefixes` per backend in `loadBackends()`.
-- Call sites for `add` / `extract` / `feedback` pass the operation's `source` through `memoriesRequest`.
-- Prefix matching mirrors `source_matches_prefixes` semantics (exact segment boundary: `team` claims `team/x` but not `teamx`).
+1. Add the promotion rubric to agent and extractor instructions.
+2. Implement `auto`, `review`, and `off` behavior.
+3. Add deterministic exclusions and fail-private error handling.
+4. Store uncertain results as private candidates.
 
-### 3. Hooks: same routing in shell
+### Phase 3 — Scheduled candidate reconciliation
 
-- [plugin/hooks/_lib.sh:454](../../../plugin/hooks/_lib.sh:454) `_get_backends_for_op` gains the same `source`-aware rule; `_parse_backends_yaml` (line 298) and the node fallback parser (line 426) learn `write_prefixes`.
-- `_extract_multi` (line 599) passes its `source` into routing.
+1. Extend existing scheduled maintenance with a bounded candidate scan.
+2. Recheck current authorization and exclusions.
+3. Perform idempotent same-instance source transitions with audit events.
+4. Expose candidate and promotion counts for operations and evaluation.
 
-### 4. Plugin skill: promotion + team recall
+Each phase must be useful and safe on its own. Phase 1 does not depend on automatic classification; Phase 2 does not depend on the scheduled reconciler.
 
-Add a "Shared Spaces" section to the Memories plugin skill:
+## Test Contract
 
-- **Promotion rule:** after a decision, ask "does this affect the other person?" If yes → *also* write `team/<project>/decisions` (durable) or `team/<project>/state` (handoff/blocker). Personal extraction continues unchanged; promotion is an explicit additional `memory_add`.
-- **Wording discipline:** team memories name the decision, the why, and boundary conditions (`until`/`unless`/`because`) — they are read by someone without this session's context.
-- **Team recall:** results with `author` ≠ you from `team/*` are the other person's decisions. Respect them; supersede explicitly (with attribution, via `on_duplicate=supersede`) rather than writing a contradicting personal memory.
-- **State hygiene:** `team/<project>/state` entries should be superseded when the handoff is picked up.
+The implementation plan must include, at minimum:
 
-### 5. COLLABORATOR.md + key minting flow
+- person A cannot read or search person B's private namespace;
+- both authorized people can read the project namespace;
+- a client-supplied author cannot override the authenticated principal;
+- absent, invalid, and disabled project declarations never trigger automatic sharing;
+- clear project, personal, uncertain, and sensitive examples exercise every promotion mode;
+- model confidence cannot bypass deterministic exclusions or prefix authorization;
+- single-backend and federated direct-write routing choose one destination;
+- overlapping backend claims fail closed;
+- a revoked key cannot promote a queued candidate;
+- reconciliation is idempotent and preserves the memory ID;
+- link and related-memory expansion cannot escape authorized project prefixes;
+- legacy repositories and existing source prefixes remain unchanged;
+- Claude Code, Codex, and the generic MCP path satisfy the same namespace and routing fixtures.
 
-`docs/COLLABORATOR.md` — Darshan's 10-minute setup, host-only mode first:
+## Deliberately Deferred
 
-1. Host admin mints the key: `POST /api/keys` with `name`, `role: read-write`, `prefixes` (exact curl provided).
-2. Collaborator installs the plugin/MCP bridge, writes minimal `backends.yaml` (single entry, host URL + key via env var — never a plaintext literal, per the existing credential-hygiene finding).
-3. Verify: `GET /api/keys/me`, one test write to `team/<project>/state`, one search.
-4. Federated upgrade path: the two-entry `backends.yaml` from this spec, when they stand up their own instance.
-5. Conventions: namespace semantics, promotion rule, supersede etiquette.
+- Generic `Entity` and `Space` tables
+- Entity aliases and automatic entity resolution
+- Project membership or role tables separate from managed-key ACLs
+- People profiles or project profile builders
+- Generic relationship graphs beyond existing memory links
+- Per-memory ACLs
+- Cross-project inference and linking
+- Server-to-server synchronization or replication
+- Cross-backend background promotion
+- SQLite as a second canonical memory store or a transactional outbox
+- Global/federated memory IDs
+- OAuth 2.1 implementation
+- UI or web dashboard changes
 
-Also covers the host-side ops step: extending existing agent keys with the team prefix.
+## Generalization Triggers
 
-### 6. Seed `team/fplguru/decisions`
+The thin representation intentionally leaves room for later first-class entities:
 
-Backfill the standing fplguru decisions both collaborators already operate under (collected from existing `codex/fplguru` + conversation history) as attributed team memories. Done via `memory_add` with dk's key after components 1–2 land, so seeds carry attribution and route correctly.
+- Introduce a generic **Space** registry only when a second collaboration boundary has membership or policy semantics materially different from Project.
+- Introduce generic **Entity** records only when at least two implemented entity types need shared identity, aliases, or relationships that project-qualified fields cannot safely express.
+- Introduce a dedicated membership model only when authorization can no longer be represented correctly by managed-key prefix scopes.
+- Introduce global memory IDs or synchronization only when a proven cross-server workflow requires them.
 
-## Fit Check
+At that point, existing stable `principal_id` and `project_id` values can be migrated additively into entity and space records without changing current namespace identity.
 
-| Req | Requirement | Met by |
-|-----|-------------|--------|
-| R1 | Shared host + scoped keys, no sync | Topology; existing ACLs; component 5 |
-| R2 | Host-only and federated modes | Write-routing rules 1 & 3; COLLABORATOR.md §4 |
-| R3 | Server-authoritative attribution | Component 1 |
-| R4 | Prefix-based write routing | Components 2–3 |
-| R5 | Zero-decision reads, labeled results | Existing fan-out + `_backend` tag + `author` surfacing |
-| R6 | Backward compatible | Routing rules 1, 2, 4 (no `write_prefixes` → today's behavior) |
-| R7 | Promotion + respect rules | Component 4 |
-| R8 | 10-minute onboarding | Component 5 |
-| R9 | OAuth forward-compat | Attribution reads only `AuthContext.key_name` |
-| R10 | Seeded team space | Component 6 |
+## Success Criteria
 
-## Out of Scope (deferred, do not design in)
+The design succeeds when:
 
-- **MCP-over-HTTP + OAuth 2.1** for claude.ai remote connectors. The "claude.ai Memories" connector stays broken until then — the backend speaks only REST + X-API-Key; Claude Code works via the local stdio bridge. This design keeps the door open (R9) but builds none of it.
-- Server-to-server sync/replication between instances (explicitly rejected in favor of client-side routing).
-- Per-memory ACLs, roles beyond the existing three, or >2-person group mechanics (the design scales to N collaborators via more keys + prefixes, but nothing N-specific is built now).
-- UI/webui changes for team views.
-
-## Risks & Notes
-
-- **Read visibility depends on key prefixes** — the most likely onboarding bug is a key missing `team/<project>` and silently seeing no team results (`filter_results` strips them without error). COLLABORATOR.md's verify step exists to catch this.
-- **Attribution only covers managed keys.** Writes with the env admin key are unattributed; acceptable because team writes flow through named keys by convention. Revisit if it becomes noise.
-- **`author` collides with any pre-existing client metadata named `author`.** Server overwrite is intentional (anti-spoofing); grep confirmed no current writer uses the field.
-- **Hook parser duplication:** `write_prefixes` must be added in three parsers (index.js, `_parse_backends_yaml`, the node fallback in `_lib.sh`). Tests should cover all three to prevent drift.
+1. dk and Darshan can each start a fresh local or cloud session in FPLGuru and recall the same reviewed project decisions and current state.
+2. Neither can recall the other's private project memories.
+3. Every shared memory shows who authored it and where it originated.
+4. Clearly project-relevant knowledge is shared automatically for an opted-in project, while ambiguous or sensitive content remains private.
+5. A failed classifier, scheduler, backend route, or revoked key reduces sharing availability but does not widen access.
+6. Existing users who do not configure project memory see no behavioral change.
+7. The implementation adds no new service, storage authority, or generic entity subsystem.
