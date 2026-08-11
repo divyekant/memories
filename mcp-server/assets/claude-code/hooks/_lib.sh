@@ -181,34 +181,23 @@ _memories_disabled() {
 }
 
 # Any of the supported backend-config sources counts as "configured": a
-# single-backend MEMORIES_URL, an explicit MEMORIES_BACKENDS_FILE, the global
-# backends.yaml, or the per-project .memories/backends.yaml (see
-# _load_backends below for the authoritative, full-fidelity version of this
-# resolution order, which runs later once the hook has parsed its stdin
-# payload and knows the real project cwd).
+# single-backend MEMORIES_URL, or a backends.yaml resolved by
+# _resolve_backends_file (defined below, in the Multi-Backend Config
+# section) — the SAME function _load_backends uses to actually load the
+# file. Sharing one resolver is deliberate: an earlier version of this gate
+# checked CLAUDE_PROJECT_DIR directly while _load_backends checked only the
+# payload's cwd, so a repo with `.memories/backends.yaml` at the project
+# root but a session cwd in a subdirectory would activate the hook here and
+# then have _load_backends fail to find that same file, silently falling
+# back to querying http://localhost:8900 — worse than the no-op this gate is
+# for. Routing both checks through one function makes that impossible.
 #
-# This early check runs BEFORE stdin is read, so it can't use the payload's
-# `.cwd` field yet. Claude Code exports CLAUDE_PROJECT_DIR to every hook
-# process at spawn time specifically for this (verified against
-# https://code.claude.com/docs/en/hooks.md: "hooks run in the current
-# directory" — $PWD is NOT guaranteed to be the project root, but
-# CLAUDE_PROJECT_DIR is documented and exported regardless of how the script
-# was launched) — so that's checked first, with $PWD as a best-effort
-# fallback for non-Claude-Code callers (this plugin is agent-agnostic) that
-# don't set it.
-#
-# Residual limitation: a caller that (a) doesn't export CLAUDE_PROJECT_DIR
-# and (b) isn't running with $PWD == the project root — e.g. a wrapper that
-# cd's elsewhere before invoking the hook — will not detect a project-only
-# backends.yaml and will silently no-op. Set MEMORIES_ENABLED=true to force
-# activation in that case.
+# This early check runs BEFORE stdin is read, so it calls
+# _resolve_backends_file with no cwd argument (payload cwd isn't known yet);
+# see that function's docstring for what that omits and why it's safe.
 _memories_has_backend_config() {
   [ -n "${MEMORIES_URL:-}" ] && return 0
-  [ -n "${MEMORIES_BACKENDS_FILE:-}" ] && [ -f "${MEMORIES_BACKENDS_FILE}" ] && return 0
-  [ -f "$HOME/.config/memories/backends.yaml" ] && return 0
-  local project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
-  [ -n "$project_dir" ] && [ -f "$project_dir/.memories/backends.yaml" ] && return 0
-  return 1
+  _resolve_backends_file >/dev/null
 }
 
 # Decide whether hooks should run at all, evaluated in this precedence:
@@ -451,6 +440,55 @@ _parse_backends_yaml() {
   jq -nc --argjson b "$backends_json" --argjson r "$routing_json" '{backends: $b, routing: $r}'
 }
 
+# Single source of truth for "which backends.yaml file, if any, applies" —
+# shared by _memories_has_backend_config (the activation gate, called before
+# the hook has read stdin) and _load_backends (called after, once the hook
+# knows the payload's .cwd). Precedence:
+#   1. $MEMORIES_BACKENDS_FILE            — explicit override, if it exists
+#   2. $CLAUDE_PROJECT_DIR/.memories/backends.yaml  — stable project root
+#      (falls back to $PWD if CLAUDE_PROJECT_DIR is unset: this plugin is
+#      agent-agnostic, and non-Claude-Code callers won't have that variable;
+#      $PWD doesn't change mid-script, so this is consistent across every
+#      call in a single hook invocation, gate included)
+#   3. <cwd arg>/.memories/backends.yaml  — the hook's actual working
+#      directory, from the payload's .cwd. Kept as a fallback so an existing
+#      cwd-only setup (no root-level file, no CLAUDE_PROJECT_DIR match)
+#      still loads — backward compat, do not drop.
+#   4. $HOME/.config/memories/backends.yaml — global fallback
+#
+# `cwd` is optional and only step 3 uses it: the activation gate runs before
+# the hook parses stdin, so it has no payload cwd yet and simply omits that
+# step (calls this with no argument). Residual limitation: a backends.yaml
+# that exists ONLY at a cwd that differs from both CLAUDE_PROJECT_DIR and
+# $PWD (e.g. a subdirectory session with no project-root config) is invisible
+# to the gate — same class of limitation already documented on
+# _memories_has_backend_config — and needs MEMORIES_ENABLED=true to force
+# activation; but once running, _load_backends (which DOES pass cwd) still
+# finds it, since it goes through this same function.
+#
+# Prints the resolved path and returns 0, or prints nothing and returns 1.
+_resolve_backends_file() {
+  local cwd="${1:-}"
+  if [ -n "${MEMORIES_BACKENDS_FILE:-}" ] && [ -f "${MEMORIES_BACKENDS_FILE}" ]; then
+    printf '%s' "${MEMORIES_BACKENDS_FILE}"
+    return 0
+  fi
+  local project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
+  if [ -n "$project_dir" ] && [ -f "$project_dir/.memories/backends.yaml" ]; then
+    printf '%s' "$project_dir/.memories/backends.yaml"
+    return 0
+  fi
+  if [ -n "$cwd" ] && [ -f "$cwd/.memories/backends.yaml" ]; then
+    printf '%s' "$cwd/.memories/backends.yaml"
+    return 0
+  fi
+  if [ -f "$HOME/.config/memories/backends.yaml" ]; then
+    printf '%s' "$HOME/.config/memories/backends.yaml"
+    return 0
+  fi
+  return 1
+}
+
 _load_backends() {
   # Return cached if already loaded
   if [ -n "$_BACKENDS_CACHE" ]; then
@@ -458,16 +496,8 @@ _load_backends() {
     return 0
   fi
 
-  local config_file="${MEMORIES_BACKENDS_FILE:-}"
-
-  # Resolution: explicit env → project → global → env var fallback
-  if [ -z "$config_file" ]; then
-    if [ -f "${CWD:-}/.memories/backends.yaml" ] 2>/dev/null; then
-      config_file="$CWD/.memories/backends.yaml"
-    elif [ -f "$HOME/.config/memories/backends.yaml" ]; then
-      config_file="$HOME/.config/memories/backends.yaml"
-    fi
-  fi
+  local config_file=""
+  config_file=$(_resolve_backends_file "${CWD:-}" 2>/dev/null) || config_file=""
 
   if [ -n "$config_file" ] && [ -f "$config_file" ]; then
     # Parse YAML → JSON.  Try Node.js + js-yaml first (best fidelity),

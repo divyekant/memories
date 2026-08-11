@@ -1689,6 +1689,131 @@ def test_memory_hooks_unconfigured_creates_no_log_file(tmp_path: Path) -> None:
     )
 
 
+def test_memory_hooks_gate_and_loader_agree_on_project_subdirectory(tmp_path: Path) -> None:
+    """REGRESSION (PR #85 review, P1): the gate resolved CLAUDE_PROJECT_DIR
+    while _load_backends resolved only the payload's cwd. Launched from (or
+    moved into) a project SUBDIRECTORY, the gate found the project-root
+    backends.yaml and activated the hook, but the loader missed that same
+    file (it only ever looked at cwd) and silently fell back to an empty
+    MEMORIES_URL — querying http://localhost:8900 instead of the configured
+    backend. That's worse than the no-op being fixed: the hook runs and
+    silently talks to the wrong place. Both must now resolve through the
+    same _resolve_backends_file, so every request goes to the configured
+    backend and none go to localhost."""
+    project_dir = tmp_path / "project"
+    nested_dir = project_dir / "nested"
+    nested_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  primary:\n"
+        "    url: https://configured.example\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": str(nested_dir), "prompt": "hello"}
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": "", "CLAUDE_PROJECT_DIR": str(project_dir)},
+    )
+
+    assert result.returncode == 0
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    assert len(search_calls) > 0, "the hook must actually run (gate must activate)"
+    urls = [c["url"] for c in search_calls]
+    assert all(url.startswith("https://configured.example") for url in urls), (
+        f"every /search request must go to the configured backend, got: {urls}"
+    )
+    assert not any("localhost:8900" in url for url in urls), (
+        f"no /search request may silently fall back to localhost, got: {urls}"
+    )
+
+
+def test_memory_hooks_explicit_backends_file_wins_over_project_root(tmp_path: Path) -> None:
+    """Precedence: MEMORIES_BACKENDS_FILE is an explicit override and must win
+    over a project-root .memories/backends.yaml, even when both exist."""
+    project_dir = tmp_path / "project"
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  root:\n"
+        "    url: https://project-root.example\n"
+        "    api_key: test-key\n"
+    )
+
+    explicit_file = tmp_path / "explicit-backends.yaml"
+    explicit_file.write_text(
+        "backends:\n"
+        "  explicit:\n"
+        "    url: https://explicit-override.example\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": str(project_dir), "prompt": "hello"}
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={
+            "MEMORIES_URL": "",
+            "CLAUDE_PROJECT_DIR": str(project_dir),
+            "MEMORIES_BACKENDS_FILE": str(explicit_file),
+        },
+    )
+
+    assert result.returncode == 0
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    assert len(search_calls) > 0
+    urls = [c["url"] for c in search_calls]
+    assert all(url.startswith("https://explicit-override.example") for url in urls), (
+        f"MEMORIES_BACKENDS_FILE must win over the project-root file, got: {urls}"
+    )
+    assert not any("project-root.example" in url for url in urls)
+
+
+def test_memory_hooks_cwd_only_backends_yaml_still_loads(tmp_path: Path) -> None:
+    """Backward compat: a project that only ever configured via a
+    cwd-relative .memories/backends.yaml (no CLAUDE_PROJECT_DIR, predating
+    that support) must keep loading it — the fix for the gate/loader mismatch
+    must not drop the existing cwd-based fallback.
+
+    No CLAUDE_PROJECT_DIR is set, so the gate has nothing but $PWD to check
+    (same documented residual limitation as the unconfigured case) — this
+    test forces activation via MEMORIES_ENABLED=true to isolate what it
+    actually verifies: _load_backends' cwd fallback still resolves once the
+    hook is running.
+    """
+    project_dir = tmp_path / "project"
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  cwd_only:\n"
+        "    url: https://cwd-only.example\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": str(project_dir), "prompt": "hello"}
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": "", "MEMORIES_ENABLED": "true"},
+    )
+
+    assert result.returncode == 0
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    assert len(search_calls) > 0
+    urls = [c["url"] for c in search_calls]
+    assert all(url.startswith("https://cwd-only.example") for url in urls), (
+        f"cwd-only backends.yaml must still load, got: {urls}"
+    )
+
+
 def test_memory_recall_401_shows_credential_warning_not_reachability(tmp_path: Path) -> None:
     """/health is unauthenticated and can't see a bad API key. The hook must detect
     the 401 from the /search calls it already makes and name the real problem,
