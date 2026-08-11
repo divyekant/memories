@@ -63,12 +63,44 @@ if [ -z "$body" ]; then body="null"; fi
 
 jq -nc --arg url "$url" --argjson body "$body" '{url: $url, body: $body}' >> "$FAKE_CURL_CALLS"
 
+# Rule matching, shared shape across the three lookups below:
+#   url_suffix      — optional, match-any when absent
+#   url_contains     — optional, match-any when absent. Lets a rule target a
+#                       specific HOST regardless of endpoint or prefix (e.g.
+#                       "this backend is down for every request it gets").
+#   source_prefix    — only enforced when the rule specifies the key at all;
+#                       absent means match any prefix (a GET has body=null,
+#                       so a per-host rule needs this to also match POSTs
+#                       with a real source_prefix).
+#   query_contains   — optional, match-any when absent.
+# fail: true on the winning rule simulates a connection failure — no output,
+# nonzero exit — for real per-host failure, not just a canned error body.
+fail_flag=$(jq -r --arg url "$url" --argjson body "$body" '
+  ([
+    .[]
+    | . as $rule
+    | select(($rule.url_suffix == null) or ($url | endswith($rule.url_suffix)))
+    | select(($rule.url_contains == null) or ($url | contains($rule.url_contains)))
+    | select(($rule | has("source_prefix") | not) or (($rule.source_prefix // "") == (($body.source_prefix // ""))))
+    | select(
+        ($rule.query_contains // null) == null
+        or (($body.query // "") | contains($rule.query_contains))
+      )
+    | ($rule.fail // false)
+  ][0]) // false
+' "$FAKE_CURL_RESPONSES")
+
+if [ "$fail_flag" = "true" ]; then
+  exit 7
+fi
+
 response_body=$(jq -c --arg url "$url" --argjson body "$body" '
   ([
     .[]
     | . as $rule
     | select(($rule.url_suffix == null) or ($url | endswith($rule.url_suffix)))
-    | select(($rule.source_prefix // "") == (($body.source_prefix // "")))
+    | select(($rule.url_contains == null) or ($url | contains($rule.url_contains)))
+    | select(($rule | has("source_prefix") | not) or (($rule.source_prefix // "") == (($body.source_prefix // ""))))
     | select(
         ($rule.query_contains // null) == null
         or (($body.query // "") | contains($rule.query_contains))
@@ -82,7 +114,8 @@ status_code=$(jq -r --arg url "$url" --argjson body "$body" '
     .[]
     | . as $rule
     | select(($rule.url_suffix == null) or ($url | endswith($rule.url_suffix)))
-    | select(($rule.source_prefix // "") == (($body.source_prefix // "")))
+    | select(($rule.url_contains == null) or ($url | contains($rule.url_contains)))
+    | select(($rule | has("source_prefix") | not) or (($rule.source_prefix // "") == (($body.source_prefix // ""))))
     | select(
         ($rule.query_contains // null) == null
         or (($body.query // "") | contains($rule.query_contains))
@@ -1792,6 +1825,108 @@ def test_memory_hooks_health_check_and_warnings_target_resolved_backend(tmp_path
     # Per the fake curl mock (always "succeeds" regardless of target), a
     # correctly-targeted probe must not trip the shared circuit breaker.
     assert not (home_dir / ".config" / "memories" / "backend-down").exists()
+
+
+def test_memory_hooks_partial_backend_failure_does_not_zero_out_healthy_routed_backend(
+    tmp_path: Path,
+) -> None:
+    """REGRESSION (PR #85 review, 4th pass — the bug CLASS, not another
+    symptom patch). Two backends: down_first (declared FIRST, on a dead
+    host) and reachable (declared second, alive), with
+    routing.search: [reachable] explicitly excluding down_first from search.
+
+    The always-succeeding fake curl mock used by every prior regression test
+    in this file COULD NOT have caught this: it never fails, so nothing ever
+    tripped the breaker in those tests regardless of which URL was probed.
+    This is why the mock was extended with per-host "fail" rules — the
+    reviewer's exact point.
+
+    Before this fix: _resolve_primary_backend_url took .[0] of
+    _load_backends' RAW declaration order (down_first — routing.search had
+    excluded it, but declaration order doesn't know that), _health_check
+    probed THAT, it failed, tripped the single shared breaker, and
+    _search_memories_multi's very own breaker-open check then skipped its
+    already-fault-tolerant fan-out entirely — reachable was NEVER contacted,
+    despite being alive and the only backend routing.search actually wanted.
+
+    After this fix: health considers the ROUTED set (_get_backends_for_op
+    "search"), which is just [reachable] here — down_first is not part of
+    it and must never be probed or searched at all."""
+    project_dir = tmp_path / "project"
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  down_first:\n"
+        "    url: https://down-first.example\n"
+        "    api_key: test-key\n"
+        "  reachable:\n"
+        "    url: https://reachable.example\n"
+        "    api_key: test-key\n"
+        "routing:\n"
+        "  search: [reachable]\n"
+    )
+
+    responses = [
+        # Every request to down-first.example — /health or /search, any
+        # prefix — is a connection failure. If the fix regresses and this
+        # host gets probed or searched at all, it fails loudly rather than
+        # quietly "succeeding" like the old mock would have.
+        {"url_contains": "down-first.example", "fail": True},
+        {
+            "url_contains": "reachable.example",
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/project",
+            "response": {
+                "results": [
+                    {
+                        "id": 1,
+                        "source": "claude-code/project",
+                        "text": "Reached the routed, healthy backend.",
+                        "similarity": 0.9,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    payload = {"cwd": str(project_dir), "prompt": "hello"}
+    result, calls, home_dir = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=responses,
+        extra_env={"MEMORIES_URL": "", "CLAUDE_PROJECT_DIR": str(project_dir)},
+    )
+
+    assert result.returncode == 0
+
+    down_calls = [c for c in calls if "down-first.example" in str(c["url"])]
+    reachable_calls = [c for c in calls if "reachable.example" in str(c["url"])]
+
+    assert down_calls == [], (
+        f"down_first is excluded by routing.search and must never be "
+        f"contacted at all (health or search), got: {down_calls}"
+    )
+    assert len(reachable_calls) > 0, "the routed, healthy backend must be contacted"
+    reachable_search_calls = [c for c in reachable_calls if str(c["url"]).endswith("/search")]
+    assert len(reachable_search_calls) > 0, "the routed backend must actually be searched"
+
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    # memory-recall.sh renders candidate pointers, not raw text (see other
+    # tests in this file) — the reachable backend's result (id=1) must be
+    # the one surfaced.
+    assert "candidate memory id=1" in ctx and "claude-code/project" in ctx, (
+        f"results from the healthy routed backend must be injected, got: {ctx}"
+    )
+    assert "down_first" not in ctx and "down-first.example" not in ctx, (
+        f"no warning may name a backend that was never in the routed search "
+        f"set, got: {ctx}"
+    )
+    assert not (home_dir / ".config" / "memories" / "backend-down").exists(), (
+        "a single non-routed dead backend must not trip the shared breaker"
+    )
 
 
 def test_memory_hooks_explicit_backends_file_wins_over_project_root(tmp_path: Path) -> None:

@@ -51,29 +51,26 @@ fi
 
 _log_info "Session start for project=$PROJECT cwd=$CWD"
 
-# Resolve the backend this session will actually talk to BEFORE probing
-# health or naming a host in any warning, so those always agree with what
-# /search actually hits. Every hook script (this one included, below)
-# unconditionally defaults MEMORIES_URL to localhost — probing or reporting
-# that default for a backends.yaml-only install produced a false "not
-# reachable" warning naming a backend the user never configured, and could
-# trip the shared circuit breaker on that bogus failure, silently skipping
-# the real (reachable) backend's searches too (PR #85 review).
-TARGET_URL=$(_resolve_primary_backend_url)
-
-# Health check — warn if service unreachable
+# Health check — probes the ROUTED search backend set (routing.search, or
+# every backend when there's no explicit routing — see _get_backends_for_op),
+# not just backend #1 in raw declaration order, and warns only when ALL of
+# them are unreachable. A single dead backend among several routed ones is
+# not the whole service being down (PR #85 review, third pass).
 HEALTH_WARNING=""
-if ! _health_check "$TARGET_URL"; then
-  _log_warn "Service unreachable at $TARGET_URL"
+if ! _health_check; then
+  _log_warn "Service unreachable: $MEMORIES_HEALTH_DOWN_NAMES"
   HEALTH_WARNING=$(cat <<HWEOF
 ## Memories Service Warning
 
-Memories service is not reachable at $TARGET_URL. Memory recall and extraction are unavailable this session. If this is a cloud session, add its host to the allowed domains for this environment; otherwise check that the service is running.
+Memories service is not reachable ($MEMORIES_HEALTH_DOWN_NAMES). Memory recall and extraction are unavailable this session. If this is a cloud session, add its host to the allowed domains for this environment; otherwise check that the service is running.
 HWEOF
 )
 fi
 
-# Backend version check — skip if service already unreachable
+# Backend version check — skip if service already unreachable. Uses the
+# routed primary backend (_resolve_primary_backend_url), not the bare
+# MEMORIES_URL default.
+TARGET_URL=$(_resolve_primary_backend_url)
 EXPECTED_VERSION_FILE="$(dirname "${BASH_SOURCE[0]}")/../assets/BACKEND_VERSION"
 if [ -z "$HEALTH_WARNING" ] && [ -f "$EXPECTED_VERSION_FILE" ]; then
   EXPECTED_VERSION=$(cat "$EXPECTED_VERSION_FILE" | tr -d '[:space:]')

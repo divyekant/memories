@@ -330,28 +330,71 @@ _breaker_reset() {
   return 0
 }
 
-# Health check — returns 0 if service is reachable (breaker-aware).
+# Health check — returns 0 if the ROUTED search backend set has at least
+# one reachable member (breaker-aware).
 #
-# Takes an optional URL to probe. Callers that know which backend a session
-# will actually talk to (see _resolve_primary_backend_url below) MUST pass
-# it, rather than let this default to $MEMORIES_URL: every hook script
-# unconditionally defaults MEMORIES_URL to http://localhost:8900 near its
-# top, even for a backends.yaml-only install where that value is never
-# actually used for search. Probing the unused default meant a correctly
-# configured multi-backend install could see a false "not reachable"
-# warning naming a host it never configured, AND trip the shared circuit
-# breaker on that bogus failure — silently skipping the real (reachable)
-# backend's searches too, since the breaker doesn't distinguish which
-# backend failed (PR #85 review). Falls back to $MEMORIES_URL when no
-# argument is given, so any caller that hasn't been updated keeps its
-# original (single-backend) behavior unchanged.
+# This is the third pass at this bug (PR #85 review). Round one probed the
+# bare MEMORIES_URL default instead of any resolved backend. Round two fixed
+# that by probing _resolve_primary_backend_url()'s pick — but that took
+# .[0] of _load_backends' RAW, declaration-order array, not the backend set
+# routing.search actually uses (see _get_backends_for_op). So a backend
+# routing.search had EXCLUDED could still be probed, and its failure tripped
+# the single shared circuit breaker — which then made _search_memories_multi
+# skip its own (already per-backend-fault-tolerant) fan-out entirely,
+# silently zeroing out every search even though the real routed backend was
+# healthy and never contacted.
+#
+# The fix is structural, not another target swap: probe every backend
+# routing.search would actually use, and only call the set "down" when ALL
+# of them fail to answer — a single dead backend among several routed ones
+# is not the whole service being down. This preserves what the breaker is
+# actually for (short-circuit a TRUE full outage so every hook this session
+# doesn't re-pay a full curl timeout) instead of tripping it on a backend
+# nobody was even going to use. Probes sequentially, stopping at the first
+# reachable backend (cheap in the common healthy case; the routed set is
+# normally small) rather than the full parallel fan-out
+# _search_memories_multi uses for real searches — this is a liveness ping,
+# not search work, and doesn't need that machinery.
+#
+# Sets MEMORIES_HEALTH_DOWN_NAMES (comma-joined "name (url)") to every
+# routed backend that failed to respond. Meaningful only when this function
+# returns 1 — build any "unreachable" warning from THIS, never from
+# $MEMORIES_URL or a single guessed backend, so it always names backends
+# actually in play.
 _health_check() {
-  local url="${1:-${MEMORIES_URL:-http://localhost:8900}}"
   if _breaker_open; then
     MEMORIES_BACKEND_DOWN=1
     return 1
   fi
-  if curl -sf --max-time 2 "$url/health" >/dev/null 2>&1; then
+
+  local backends
+  backends=$(_get_backends_for_op "search" 2>/dev/null) || backends="[]"
+  local backend_count
+  backend_count=$(printf '%s' "$backends" | jq 'length' 2>/dev/null) || backend_count=0
+
+  MEMORIES_HEALTH_DOWN_NAMES=""
+  if [ "${backend_count:-0}" -eq 0 ]; then
+    MEMORIES_HEALTH_DOWN_NAMES="no backend resolved for search routing"
+    _breaker_trip
+    MEMORIES_BACKEND_DOWN=1
+    return 1
+  fi
+
+  local backend url name reachable=1
+  while read -r backend; do
+    url=$(printf '%s' "$backend" | jq -r '.url')
+    name=$(printf '%s' "$backend" | jq -r '.name')
+    if curl -sf --max-time 2 "$url/health" >/dev/null 2>&1; then
+      reachable=0
+      break
+    fi
+    if [ -n "$MEMORIES_HEALTH_DOWN_NAMES" ]; then
+      MEMORIES_HEALTH_DOWN_NAMES="$MEMORIES_HEALTH_DOWN_NAMES, "
+    fi
+    MEMORIES_HEALTH_DOWN_NAMES="${MEMORIES_HEALTH_DOWN_NAMES}${name} (${url})"
+  done < <(printf '%s' "$backends" | jq -c '.[]')
+
+  if [ "$reachable" -eq 0 ]; then
     _breaker_reset
     return 0
   fi
@@ -564,21 +607,21 @@ try {
   fi
 }
 
-# The URL _load_backends will actually use for search — the single source
-# of truth for "what backend is this session really talking to". Anything
-# that health-checks a backend or names a host in a user-facing warning
-# should call this rather than reading $MEMORIES_URL directly, so it can
-# never disagree with what /search actually hits (see the note on
-# _health_check above for why that mismatch was a real, user-visible bug).
-# Reads $CWD from the caller's environment the same way _load_backends
-# itself does — call this only after the hook has parsed stdin and set
-# $CWD (never at gate time, before stdin is read; the activation gate only
-# needs to know a backend exists, not which one, so it doesn't need this).
-# Populates the same _load_backends cache, so the real search calls that
-# follow reuse this resolution rather than re-parsing the YAML.
+# A single representative URL for secondary, non-gating purposes (the
+# backend-version check curl, naming a host in the 401 credential warning) —
+# NOT for health-gating; use _health_check for that, which correctly
+# considers the whole routed set rather than one representative pick.
+#
+# Takes .[0] of the ROUTED search set (_get_backends_for_op "search"), not
+# _load_backends' raw declaration order: an earlier version of this function
+# used the raw order, which is what let a backend routing.search had
+# excluded get treated as "the" backend for warnings and version checks
+# (PR #85 review). Reads $CWD from the caller's environment the same way
+# _load_backends itself does — call this only after the hook has parsed
+# stdin and set $CWD.
 _resolve_primary_backend_url() {
   local backends url
-  backends=$(_load_backends 2>/dev/null) || backends="[]"
+  backends=$(_get_backends_for_op "search" 2>/dev/null) || backends="[]"
   url=$(printf '%s' "$backends" | jq -r '.[0].url // empty' 2>/dev/null) || url=""
   if [ -n "$url" ]; then
     printf '%s' "$url"
