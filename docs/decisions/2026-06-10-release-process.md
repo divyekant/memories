@@ -19,7 +19,7 @@ Stop cutting a release per work item. The flow is now:
 
 ## Mechanics of a promotion
 
-- Bump every version string (the eight, current as of v5.10.0: `pyproject.toml`,
+- Bump every version string (the eight, current as of v5.11.0: `pyproject.toml`,
   `mcp-server/package.json` + lockfile, `uv.lock`,
   `mcp-server/assets/backend/BACKEND_VERSION`, `app.py` (FastAPI + /health),
   `tests/test_api_contract_compat.py`, `plugins/memories/.codex-plugin/plugin.json`,
@@ -35,8 +35,15 @@ Stop cutting a release per work item. The flow is now:
   for two releases because earlier sweeps only checked json/toml/py/md.
 - Retitle CHANGELOG `[Unreleased]` to the version + date.
 - Full suite green → `chore: release vX.Y.Z` on develop → `--no-ff` merge to
-  `main` → tag → push → GitHub release → deploy (compose build + up) → sync
-  the installed plugin cache if hook/skill files changed.
+  `main` → tag → push → GitHub release → deploy (compose build + up) → bump the
+  marketplace pin and refresh the installed plugin (both below).
+- Push the tag explicitly (`git push origin vX.Y.Z`). `--follow-tags` skips
+  lightweight tags, and `gh release create` refuses to run until the tag is on
+  the remote.
+- A client-only release (hooks, skills, CLI — no `app.py` or backend change
+  beyond its version string) needs no deploy. Skipping it leaves the running
+  backend reporting the previous version, which is cosmetic; redeploying a
+  live backend is not, so do not do it for a change that cannot affect it.
 - **Bump the marketplace pin.** `dk-marketplace`'s `memories` entry pins its
   `git-subdir` source to an immutable `sha`, so the plugin does NOT track
   `main` — a release is invisible to plugin consumers until that SHA is
@@ -44,6 +51,33 @@ Stop cutting a release per work item. The flow is now:
   session transcripts and carry the backend credential, so a fresh clone must
   never execute upstream code that changed after review. Get the commit with
   `git rev-list -n1 vX.Y.Z`.
+- **Then refresh the installed plugin — the pin bump alone does nothing to it.**
+  An already-installed plugin keeps running from its own cache directory until
+  explicitly updated, so bumping the pin makes the release available without
+  delivering it. Verified the hard way during v5.11.0: the marketplace
+  advertised 5.10.0 while `~/.claude/plugins/installed_plugins.json` still
+  recorded `memories@dk-marketplace` at 5.9.0 (`gitCommitSha` = v5.9.0's merge
+  commit), and the hooks actually firing were a release behind — with the very
+  bug the newer version fixed. Both commands are non-interactive:
+
+  ```bash
+  claude plugin marketplace update dk-marketplace
+  claude plugin update memories@dk-marketplace
+  ```
+
+  Then **restart Claude Code** (the update prints "Restart to apply changes").
+  Confirm by checking that `installed_plugins.json`'s `gitCommitSha` equals the
+  release commit — not just that `version` moved, which can advance while the
+  files on disk do not.
+- **Old cache directories linger and can still execute.** `claude plugin update`
+  adds a new versioned directory rather than replacing the old one, and stale
+  ones stay marked `.in_use`. A v5.4.0 directory from four months earlier was
+  still running hooks during v5.11.0 and emitting a bogus "Backend Update
+  Available — latest is v5.7.0" banner, sourced from an `assets/BACKEND_VERSION`
+  that no current version even ships (see the dangling-path note in
+  `memory-recall.sh`). After restarting, prune the directories under
+  `~/.claude/plugins/cache/dk-marketplace/memories/` that are not the current
+  version.
 - Anything user-behavior-changing ships behind an eval gate where one exists
   (active-search eval for hook behavior, tier-1 recall A/B for retrieval).
 
