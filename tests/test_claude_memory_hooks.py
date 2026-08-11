@@ -1732,6 +1732,68 @@ def test_memory_hooks_gate_and_loader_agree_on_project_subdirectory(tmp_path: Pa
     )
 
 
+def test_memory_hooks_health_check_and_warnings_target_resolved_backend(tmp_path: Path) -> None:
+    """REGRESSION (PR #85 review, follow-up P1): fixing the gate/loader
+    mismatch above wasn't sufficient by itself. _health_check still probed
+    the bare MEMORIES_URL default (localhost:8900) instead of the resolved
+    backend, so a backends.yaml-only install got a false "not reachable"
+    warning naming a backend it never configured — and could trip the
+    shared circuit breaker on that bogus failure, silently skipping the
+    real (reachable) backend's searches too. This is an end-to-end style
+    check: it asserts on the resolved TARGET (every recorded URL, and the
+    session-start warning text), not just "some curl happened" — the prior
+    regression test would not have caught this, since the hook DID run and
+    DID hit the right backend for /search once the loader fix landed; only
+    the separate /health probe (and any text naming a host) still pointed
+    at localhost."""
+    project_dir = tmp_path / "project"
+    nested_dir = project_dir / "nested"
+    nested_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  primary:\n"
+        "    url: https://configured.example\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": str(nested_dir), "prompt": "hello"}
+    result, calls, home_dir = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": "", "CLAUDE_PROJECT_DIR": str(project_dir)},
+    )
+
+    assert result.returncode == 0
+
+    health_calls = [c for c in calls if str(c["url"]).endswith("/health")]
+    assert len(health_calls) > 0, "expected at least one /health probe"
+    health_urls = [c["url"] for c in health_calls]
+    assert all(url.startswith("https://configured.example") for url in health_urls), (
+        f"the health probe must target the resolved backend, not the localhost "
+        f"default, got: {health_urls}"
+    )
+    assert not any("localhost:8900" in url for url in health_urls), (
+        f"the health probe must never silently fall back to localhost, got: {health_urls}"
+    )
+
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    assert len(search_calls) > 0
+    assert all(c["url"].startswith("https://configured.example") for c in search_calls)
+
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "localhost:8900" not in ctx, (
+        f"no session-start warning may name a backend the user never configured, got: {ctx}"
+    )
+
+    # Per the fake curl mock (always "succeeds" regardless of target), a
+    # correctly-targeted probe must not trip the shared circuit breaker.
+    assert not (home_dir / ".config" / "memories" / "backend-down").exists()
+
+
 def test_memory_hooks_explicit_backends_file_wins_over_project_root(tmp_path: Path) -> None:
     """Precedence: MEMORIES_BACKENDS_FILE is an explicit override and must win
     over a project-root .memories/backends.yaml, even when both exist."""

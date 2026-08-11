@@ -17,6 +17,7 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
+  _resolve_primary_backend_url() { printf '%s' "${MEMORIES_URL:-http://localhost:8900}"; }
   _default_source_prefixes() { echo 'claude-code/{project},codex/{project},learning/{project},wip/{project}'; }
 fi
 
@@ -50,14 +51,24 @@ fi
 
 _log_info "Session start for project=$PROJECT cwd=$CWD"
 
+# Resolve the backend this session will actually talk to BEFORE probing
+# health or naming a host in any warning, so those always agree with what
+# /search actually hits. Every hook script (this one included, below)
+# unconditionally defaults MEMORIES_URL to localhost — probing or reporting
+# that default for a backends.yaml-only install produced a false "not
+# reachable" warning naming a backend the user never configured, and could
+# trip the shared circuit breaker on that bogus failure, silently skipping
+# the real (reachable) backend's searches too (PR #85 review).
+TARGET_URL=$(_resolve_primary_backend_url)
+
 # Health check — warn if service unreachable
 HEALTH_WARNING=""
-if ! _health_check; then
-  _log_warn "Service unreachable at $MEMORIES_URL"
+if ! _health_check "$TARGET_URL"; then
+  _log_warn "Service unreachable at $TARGET_URL"
   HEALTH_WARNING=$(cat <<HWEOF
 ## Memories Service Warning
 
-Memories service is not reachable at $MEMORIES_URL. Memory recall and extraction are unavailable this session. If this is a cloud session, add its host to the allowed domains for this environment; otherwise check that the service is running.
+Memories service is not reachable at $TARGET_URL. Memory recall and extraction are unavailable this session. If this is a cloud session, add its host to the allowed domains for this environment; otherwise check that the service is running.
 HWEOF
 )
 fi
@@ -66,7 +77,7 @@ fi
 EXPECTED_VERSION_FILE="$(dirname "${BASH_SOURCE[0]}")/../assets/BACKEND_VERSION"
 if [ -z "$HEALTH_WARNING" ] && [ -f "$EXPECTED_VERSION_FILE" ]; then
   EXPECTED_VERSION=$(cat "$EXPECTED_VERSION_FILE" | tr -d '[:space:]')
-  RUNNING_VERSION=$(curl -sf --max-time 2 "$MEMORIES_URL/health" 2>/dev/null | jq -r '.version // empty') || RUNNING_VERSION=""
+  RUNNING_VERSION=$(curl -sf --max-time 2 "$TARGET_URL/health" 2>/dev/null | jq -r '.version // empty') || RUNNING_VERSION=""
   if [ -n "$RUNNING_VERSION" ] && [ -n "$EXPECTED_VERSION" ] && [ "$RUNNING_VERSION" != "$EXPECTED_VERSION" ]; then
     _log_warn "Backend version mismatch: running=$RUNNING_VERSION expected=$EXPECTED_VERSION"
     VERSION_WARNING=$(printf '## Memories Backend Update Available\n\nRunning v%s, latest is v%s. Run `/memories:setup` to update, or: `cd ~/.config/memories && docker compose pull && docker compose up -d`' "$RUNNING_VERSION" "$EXPECTED_VERSION")
@@ -270,11 +281,11 @@ fi
 # forever, with no warning. Detected from the /search 401s tallied above.
 CREDENTIAL_WARNING=""
 if [ "$AUTH_FAILED" = "true" ]; then
-  _log_warn "Backend rejected the API key (401) at $MEMORIES_URL"
+  _log_warn "Backend rejected the API key (401) at $TARGET_URL"
   CREDENTIAL_WARNING=$(cat <<CWEOF
 ## Memories Credential Warning
 
-Memories reached $MEMORIES_URL but it rejected the API key. Set MEMORIES_API_KEY (memory recall and extraction are disabled this session).
+Memories reached $TARGET_URL but it rejected the API key. Set MEMORIES_API_KEY (memory recall and extraction are disabled this session).
 CWEOF
 )
 fi

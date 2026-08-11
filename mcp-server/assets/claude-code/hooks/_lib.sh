@@ -330,9 +330,23 @@ _breaker_reset() {
   return 0
 }
 
-# Health check — returns 0 if service is reachable (breaker-aware)
+# Health check — returns 0 if service is reachable (breaker-aware).
+#
+# Takes an optional URL to probe. Callers that know which backend a session
+# will actually talk to (see _resolve_primary_backend_url below) MUST pass
+# it, rather than let this default to $MEMORIES_URL: every hook script
+# unconditionally defaults MEMORIES_URL to http://localhost:8900 near its
+# top, even for a backends.yaml-only install where that value is never
+# actually used for search. Probing the unused default meant a correctly
+# configured multi-backend install could see a false "not reachable"
+# warning naming a host it never configured, AND trip the shared circuit
+# breaker on that bogus failure — silently skipping the real (reachable)
+# backend's searches too, since the breaker doesn't distinguish which
+# backend failed (PR #85 review). Falls back to $MEMORIES_URL when no
+# argument is given, so any caller that hasn't been updated keeps its
+# original (single-backend) behavior unchanged.
 _health_check() {
-  local url="${MEMORIES_URL:-http://localhost:8900}"
+  local url="${1:-${MEMORIES_URL:-http://localhost:8900}}"
   if _breaker_open; then
     MEMORIES_BACKEND_DOWN=1
     return 1
@@ -547,6 +561,29 @@ try {
     _BACKENDS_CACHE=$(jq -nc --arg url "$url" --arg key "$key" \
       '{backends: [{name: "default", url: $url, api_key: $key, scenario: ""}], routing: {}}')
     echo "$_BACKENDS_CACHE" | jq -c '.backends'
+  fi
+}
+
+# The URL _load_backends will actually use for search — the single source
+# of truth for "what backend is this session really talking to". Anything
+# that health-checks a backend or names a host in a user-facing warning
+# should call this rather than reading $MEMORIES_URL directly, so it can
+# never disagree with what /search actually hits (see the note on
+# _health_check above for why that mismatch was a real, user-visible bug).
+# Reads $CWD from the caller's environment the same way _load_backends
+# itself does — call this only after the hook has parsed stdin and set
+# $CWD (never at gate time, before stdin is read; the activation gate only
+# needs to know a backend exists, not which one, so it doesn't need this).
+# Populates the same _load_backends cache, so the real search calls that
+# follow reuse this resolution rather than re-parsing the YAML.
+_resolve_primary_backend_url() {
+  local backends url
+  backends=$(_load_backends 2>/dev/null) || backends="[]"
+  url=$(printf '%s' "$backends" | jq -r '.[0].url // empty' 2>/dev/null) || url=""
+  if [ -n "$url" ]; then
+    printf '%s' "$url"
+  else
+    printf '%s' "${MEMORIES_URL:-http://localhost:8900}"
   fi
 }
 

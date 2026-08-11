@@ -16,6 +16,7 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _health_check() { return 0; }
+  _resolve_primary_backend_url() { printf '%s' "${MEMORIES_URL:-http://localhost:8900}"; }
   _default_source_prefixes() { echo 'claude-code/{project},codex/{project},learning/{project},wip/{project}'; }
 fi
 
@@ -43,9 +44,14 @@ if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   exit 0
 fi
 
-# Quick health check — don't block subagent spawn if service is down
-if ! _health_check; then
-  _log_warn "Service unreachable, skipping subagent recall"
+# Quick health check — don't block subagent spawn if service is down. Probe
+# the backend _load_backends will actually use (see _resolve_primary_backend_url
+# in _lib.sh), not the bare MEMORIES_URL default, so a backends.yaml-only
+# install doesn't get a false "unreachable" skip against localhost while the
+# real, reachable backend goes unchecked (PR #85 review).
+TARGET_URL=$(_resolve_primary_backend_url)
+if ! _health_check "$TARGET_URL"; then
+  _log_warn "Service unreachable at $TARGET_URL, skipping subagent recall"
   exit 0
 fi
 
