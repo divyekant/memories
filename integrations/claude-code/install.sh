@@ -21,7 +21,28 @@ CODEX_HOOKS_SRC="$REPO_ROOT/integrations/codex/hooks"
 OPENCODE_SKILL_SRC="$REPO_ROOT/plugin/skills/memories/SKILL.md"
 OPENCODE_PLUGIN_SRC="$REPO_ROOT/integrations/opencode/plugin/memories.js"
 
-READONLY_MCP_TOOLS='["mcp__memories__memory_search","mcp__memories__memory_list","mcp__memories__memory_count","mcp__memories__memory_stats","mcp__memories__memory_is_novel","mcp__memories__memory_is_useful","mcp__memories__memory_conflicts"]'
+# Builds the read-only MCP tool allow-rule JSON array for a given MCP
+# server name. Mirrors readonlyMcpTools() in mcp-server/cli/lib/hooks.mjs
+# (kept in sync by hand — this installer is a separate, deprecated code
+# path). Deliberately the explicit 7 tools, not `mcp__<server>__*`: Claude
+# Code allow rules only glob-match after a literal server segment, and a
+# wildcard-everything rule would also pre-approve destructive tools like
+# memory_delete, defeating the point of a read-only allowlist. Built
+# without jq so it stays safe to call before the jq-availability check
+# below (e.g. under --dry-run, which exits before that check runs).
+readonly_mcp_tools_json() {
+  local server="${1:-memories}"
+  local tools=(memory_search memory_list memory_count memory_stats memory_is_novel memory_is_useful memory_conflicts)
+  local json="[" first=true
+  for t in "${tools[@]}"; do
+    if [ "$first" = true ]; then first=false; else json+=","; fi
+    json+="\"mcp__${server}__${t}\""
+  done
+  json+="]"
+  printf '%s' "$json"
+}
+
+READONLY_MCP_TOOLS="$(readonly_mcp_tools_json memories)"
 
 CODEX_NOTIFY_MARKER="Memories Codex notify"
 CODEX_MCP_MARKER="Memories Codex MCP"

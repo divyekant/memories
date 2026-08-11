@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readJson, writeJson, mergeHookSettings, addPermissions, registerMcp } from '../cli/lib/json-file.mjs';
+import { readJson, writeJson, mergeHookSettings, addPermissions, removePermissions, registerMcp } from '../cli/lib/json-file.mjs';
 
 test('readJson returns fallback for missing file', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mem-'));
@@ -76,4 +76,37 @@ test('registerMcp adds npx entry once, skips when present', () => {
   const second = registerMcp({ mcpServers: { memories: { command: 'node' } } }, { url: 'x', apiKey: '' });
   assert.equal(second.skipped, true);
   assert.equal(second.settings.mcpServers.memories.command, 'node'); // untouched
+});
+
+const owns = (...rules) => { const set = new Set(rules); return (rule) => set.has(rule); };
+
+test('removePermissions drops matched rules and keeps the rest', () => {
+  const s = removePermissions(
+    { model: 'opus', permissions: { allow: ['Bash(ls)', 'mcp__memories__memory_search'], deny: ['Bash(rm)'] } },
+    owns('mcp__memories__memory_search'),
+  );
+  assert.deepEqual(s.permissions.allow, ['Bash(ls)']);
+  assert.deepEqual(s.permissions.deny, ['Bash(rm)']); // untouched
+  assert.equal(s.model, 'opus');
+});
+
+test('removePermissions prunes empty containers instead of leaving {} / []', () => {
+  const only = owns('mcp__memories__memory_search');
+  const s = removePermissions({ permissions: { allow: ['mcp__memories__memory_search'] } }, only);
+  assert.equal('permissions' in s, false);
+  const kept = removePermissions(
+    { permissions: { allow: ['mcp__memories__memory_search'], deny: ['x'] } },
+    only,
+  );
+  assert.equal('allow' in kept.permissions, false);
+  assert.deepEqual(kept.permissions.deny, ['x']);
+});
+
+test('removePermissions is a no-op when nothing matches or allow is absent', () => {
+  const none = owns('mcp__memories__memory_search');
+  const untouched = { permissions: { allow: ['Bash(ls)'] } };
+  assert.equal(removePermissions(untouched, none), untouched); // same reference
+  const noAllow = { permissions: { deny: ['x'] } };
+  assert.equal(removePermissions(noAllow, none), noAllow);
+  assert.equal(removePermissions({}, none).permissions, undefined);
 });

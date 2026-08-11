@@ -316,7 +316,7 @@ if [ "$PLAYBOOK_MODE" = "minimal" ]; then
   jq -n --arg down "${MEMORIES_BACKEND_DOWN:-0}" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
-	  additionalContext: (if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first (load it with ToolSearch(\"select:mcp__memories__memory_search\") if needed)." end)
+	  additionalContext: (if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first (load it with ToolSearch(\"+memory_search\") if needed)." end)
 	}
 }'
   exit 0
@@ -334,7 +334,7 @@ if [ "$PLAYBOOK_MODE" = "memories" ]; then
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
-	    "Memories from prior sessions matched this prompt (keyword retrieval; may be incomplete). Consider them; if this task turns out to depend on prior decisions or project history, verify with memory_search (load it with ToolSearch(\"select:mcp__memories__memory_search\") if needed) before relying on assumptions.\n\n## Retrieved Memories\n" + $memories +
+	    "Memories from prior sessions matched this prompt (keyword retrieval; may be incomplete). Consider them; if this task turns out to depend on prior decisions or project history, verify with memory_search (load it with ToolSearch(\"+memory_search\") if needed) before relying on assumptions.\n\n## Retrieved Memories\n" + $memories +
 	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
 	  )
 	}
@@ -349,7 +349,7 @@ if [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ]; then
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
-	    "IMPORTANT: The following memories from prior sessions are relevant to this prompt. These represent prior decisions and context that MUST be considered before responding. Do not contradict stored decisions without explicitly acknowledging the change.\n\nActive search requirement: hook-injected memories are keyword-matched starting points, not a substitute for active search.\n\nMANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, deferred work, conventions, or continuation of prior work, load the tool if needed with ToolSearch(\"select:mcp__memories__memory_search\"), then MUST call memory_search before answering. Do not answer from injected memories alone. Do not use memory_get as a substitute for memory_search. Use exact source prefixes shown below before broad family prefixes or unscoped search.\n\n## Retrieved Memories\n" + $memories +
+	    "IMPORTANT: The following memories from prior sessions are relevant to this prompt. These represent prior decisions and context that MUST be considered before responding. Do not contradict stored decisions without explicitly acknowledging the change.\n\nActive search requirement: hook-injected memories are keyword-matched starting points, not a substitute for active search.\n\nMANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, deferred work, conventions, or continuation of prior work, load the tool if needed with ToolSearch(\"+memory_search\"), then MUST call memory_search before answering. Do not answer from injected memories alone. Do not use memory_get as a substitute for memory_search. Use exact source prefixes shown below before broad family prefixes or unscoped search.\n\n## Retrieved Memories\n" + $memories +
 	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
 	  )
 	}
@@ -362,7 +362,7 @@ else
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
-	    "IMPORTANT: This prompt references prior work, but hook keyword retrieval returned no candidate memories. Keyword retrieval is incomplete — stored decisions may still exist.\n\nActive search requirement: hook retrieval is a keyword-matched starting point, not a substitute for active search.\n\nMANDATORY FIRST ACTION: load the tool if needed with ToolSearch(\"select:mcp__memories__memory_search\"), then MUST call memory_search before answering. Do not answer from assumptions about prior work alone. Do not use memory_get as a substitute for memory_search. Use exact project-scoped source prefixes" +
+	    "IMPORTANT: This prompt references prior work, but hook keyword retrieval returned no candidate memories. Keyword retrieval is incomplete — stored decisions may still exist.\n\nActive search requirement: hook retrieval is a keyword-matched starting point, not a substitute for active search.\n\nMANDATORY FIRST ACTION: load the tool if needed with ToolSearch(\"+memory_search\"), then MUST call memory_search before answering. Do not answer from assumptions about prior work alone. Do not use memory_get as a substitute for memory_search. Use exact project-scoped source prefixes" +
 	    (if ($prefixes | length) > 0 then " (" + $prefixes + ")" else "" end) +
 	    " before broad family prefixes or unscoped search." +
 	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -629,7 +630,7 @@ FULL_MANDATE_PREAMBLE = (
     "not a substitute for active search.\n\n"
     "MANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, "
     "deferred work, conventions, or continuation of prior work, load the tool if needed with "
-    'ToolSearch("select:mcp__memories__memory_search"), then MUST call memory_search before '
+    'ToolSearch("+memory_search"), then MUST call memory_search before '
     "answering. Do not answer from injected memories alone. Do not use memory_get as a "
     "substitute for memory_search. Use exact source prefixes shown below before broad family "
     "prefixes or unscoped search.\n\n## Retrieved Memories\n"
@@ -2814,4 +2815,131 @@ def test_codex_hooks_config_observes_exec_envelopes() -> None:
     hooks = json.loads((CODEX_HOOKS_DIR / "hooks.json").read_text(encoding="utf-8"))
     matcher = hooks["hooks"]["PostToolUse"][0]["matcher"]
     assert "exec" in matcher
-    assert "mcp__memories__" in matcher
+    # Server-name-agnostic: matches the local server AND any custom-named
+    # connector or UUID-named connector, not just the literal "memories".
+    assert re.search(matcher, "mcp__memories__memory_search")
+    assert re.search(matcher, "mcp__Remote_Memories__memory_search")
+    assert re.search(matcher, "mcp__843a7d55-4d6a-4efb-b73e-90428866e135__memory_search")
+    assert re.search(matcher, "exec")
+
+
+def test_hooks_json_posttooluse_matcher_is_server_name_agnostic() -> None:
+    """PostToolUse matcher must key off the memory_* TOOL name, not a hardcoded
+    server segment — a claude.ai connector can register under any name the
+    user picks, or a UUID when surfaced into local Claude Code."""
+    hooks = json.loads((HOOKS_DIR / "hooks.json").read_text(encoding="utf-8"))
+    post_tool_use = hooks["hooks"]["PostToolUse"]
+    memory_observe_entry = next(
+        entry for entry in post_tool_use if "memory-observe.sh" in entry["hooks"][0]["command"]
+    )
+    matcher = memory_observe_entry["matcher"]
+
+    for shape in (
+        "mcp__memories__memory_search",
+        "mcp__Remote_Memories__memory_search",
+        "mcp__843a7d55-4d6a-4efb-b73e-90428866e135__memory_search",
+    ):
+        assert re.search(matcher, shape), f"matcher {matcher!r} should match {shape!r}"
+
+    for unrelated in ("Read", "Write", "Bash", "mcp__slack__send_message"):
+        assert not re.search(matcher, unrelated), f"matcher {matcher!r} should not match {unrelated!r}"
+
+
+def test_memory_query_injected_context_uses_name_agnostic_toolsearch(tmp_path: Path) -> None:
+    """The injected hint must resolve regardless of what the memory MCP server
+    is named — 'select:mcp__memories__memory_search' is unresolvable the
+    moment the server isn't literally named 'memories'."""
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "Weren't we going to migrate the embedder to the new model?",
+    }
+
+    result, _, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "select:mcp__memories__" not in ctx
+    assert 'ToolSearch("+memory_search")' in ctx
+
+
+def test_memory_recall_injected_context_uses_name_agnostic_toolsearch(tmp_path: Path) -> None:
+    payload = {"cwd": "/Users/example/memories"}
+    result, _, _ = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "select:mcp__memories__" not in ctx
+    assert 'ToolSearch("+memory_search")' in ctx
+
+
+def test_codex_memory_observe_nested_exec_matches_non_memories_server_names(tmp_path: Path) -> None:
+    """The exec-envelope grep must not be hardcoded to the 'memories' server
+    segment. A UUID-named connector contains hyphens, which JS parses as
+    subtraction inside a dotted identifier, so real calls to those servers can
+    only ever appear in bracket form — the parser must read that form."""
+    metrics_log = tmp_path / "active-search.jsonl"
+    payload = {
+        "session_id": "codex-nested-exec-uuid",
+        "cwd": "/Users/example/memories",
+        "tool_name": "exec",
+        "tool_input": {
+            "input": (
+                'const a = await tools["mcp__843a7d55-4d6a-4efb-b73e-90428866e135__memory_search"]('
+                '{query:"release", source_prefix:"codex/memories"});\n'
+                'text(JSON.stringify({a}));'
+            )
+        },
+    }
+
+    result, _, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-observe.sh",
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    events = [json.loads(line) for line in metrics_log.read_text(encoding="utf-8").splitlines()]
+    assert [event["tool_name"] for event in events] == [
+        "mcp__843a7d55-4d6a-4efb-b73e-90428866e135__memory_search"
+    ]
+    assert events[0]["source_prefix"] == "codex/memories"
+
+
+def test_codex_memory_observe_nested_exec_reads_every_bracket_spelling(tmp_path: Path) -> None:
+    """Bracket property access is valid JS with either quote style and with
+    padding inside the brackets. All three spellings must be recognized, and a
+    bare tool name that is not a property access must not be counted."""
+    metrics_log = tmp_path / "active-search.jsonl"
+    payload = {
+        "session_id": "codex-nested-exec-brackets",
+        "cwd": "/Users/example/memories",
+        "tool_name": "exec",
+        "tool_input": {
+            "input": (
+                'const a = await tools["mcp__Remote_Memories__memory_search"]({query:"a"});\n'
+                "const b = await tools['mcp__843a-bbb__memory_get']({id:1});\n"
+                'const c = await tools[ "mcp__843a-ccc__memory_add" ]({text:"x"});\n'
+                'const d = await tools.mcp__memories__memory_count({});\n'
+                'console.log("mcp__not_a_call__memory_delete");\n'
+            )
+        },
+    }
+
+    result, _, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-observe.sh",
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    events = [json.loads(line) for line in metrics_log.read_text(encoding="utf-8").splitlines()]
+    assert sorted(event["tool_name"] for event in events) == [
+        "mcp__843a-bbb__memory_get",
+        "mcp__843a-ccc__memory_add",
+        "mcp__Remote_Memories__memory_search",
+        "mcp__memories__memory_count",
+    ]

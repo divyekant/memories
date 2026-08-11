@@ -235,7 +235,7 @@ For self-contained prompts that do not depend on prior/project context
 calling memory_search.
 
 ACTIVE SEARCH ACTION for applicable prompts: Load the memory search tool if
-needed with ToolSearch("select:mcp__memories__memory_search"), then call
+needed with ToolSearch("+memory_search"), then call
 memory_search before answering.
 
 You MUST call memory_search when the user's message contains:

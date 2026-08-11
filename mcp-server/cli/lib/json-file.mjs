@@ -37,6 +37,22 @@ export function addPermissions(settings, tools) {
   return { ...settings, permissions: { ...(settings.permissions ?? {}), allow } };
 }
 
+// Drops allow-rules matching `predicate`, leaving every other rule in place.
+// Empty containers are deleted rather than left as `{}`/`[]`, matching how
+// uninstall already prunes `mcpServers` and `hooks`.
+export function removePermissions(settings, predicate) {
+  const current = settings.permissions?.allow;
+  if (!Array.isArray(current)) return settings;
+  const allow = current.filter((rule) => !predicate(rule));
+  if (allow.length === current.length) return settings;
+  const permissions = { ...settings.permissions };
+  if (allow.length) permissions.allow = allow;
+  else delete permissions.allow;
+  const out = { ...settings, permissions };
+  if (Object.keys(permissions).length === 0) delete out.permissions;
+  return out;
+}
+
 export function registerMcp(settings, { url, apiKey, extraEnv = {} }) {
   if (settings.mcpServers?.memories) return { settings, skipped: true };
   return {

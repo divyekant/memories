@@ -41,7 +41,7 @@
       }]
     }],
     "PostToolUse": [{
-      "matcher": "mcp__memories__",
+      "matcher": "mcp__.*__memory_",
       "hooks": [{
         "type": "command",
         "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-observe.sh",

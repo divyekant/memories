@@ -28,12 +28,12 @@ const FLAG_TARGETS = {
   '--generic': 'generic',
 };
 
-const VALID_FLAGS = ['--claude', '--codex', '--cursor', '--generic', '--dry-run', '--yes', '--url', '--api-key', '-h', '--help'];
+const VALID_FLAGS = ['--claude', '--codex', '--cursor', '--generic', '--dry-run', '--yes', '--url', '--api-key', '--mcp-name', '-h', '--help'];
 
 const HELP_TEXT = `memories — installer/manager CLI for the Memories MCP plugin
 
 Usage:
-  memories init [--claude] [--codex] [--cursor] [--generic] [--url <u>] [--api-key <k>] [--dry-run] [--yes]
+  memories init [--claude] [--codex] [--cursor] [--generic] [--url <u>] [--api-key <k>] [--mcp-name <name>]... [--dry-run] [--yes]
   memories update [same flags as init]
   memories doctor [--claude] [--codex] [--cursor] [--generic]
   memories uninstall [--claude] [--codex] [--cursor] [--generic]
@@ -43,6 +43,13 @@ Flags:
   --claude, --codex, --cursor, --generic   Restrict to these targets (default: auto-detect)
   --url <u>                                Backend URL (default: $MEMORIES_URL or http://localhost:8900)
   --api-key <k>                            Backend API key (default: $MEMORIES_API_KEY or none)
+  --mcp-name <name>                        Additional MCP server name to pre-approve read-only tools
+                                            for (claude-code/cursor only). Repeatable. Use when your
+                                            memory MCP server is registered under a name other than
+                                            "memories" — a claude.ai connector, or a manual rename.
+                                            There is no wildcard for the server segment, so names not
+                                            known at install time (e.g. a UUID-named connector) still
+                                            need this flag or a manual permissions.allow entry.
   --dry-run                                Print the plan and exit before any writes
   --yes                                    Non-interactive: accept all defaults, skip prompts
   -h, --help                                Show this help`;
@@ -54,7 +61,7 @@ export function parseArgs(argv) {
     command = args.shift();
   }
 
-  const result = { command, targets: [], dryRun: false, yes: false, url: undefined, apiKey: undefined };
+  const result = { command, targets: [], dryRun: false, yes: false, url: undefined, apiKey: undefined, mcpNames: [] };
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -72,6 +79,10 @@ export function parseArgs(argv) {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --api-key');
       result.apiKey = args[++i];
+    } else if (a === '--mcp-name') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --mcp-name');
+      result.mcpNames.push(args[++i]);
     } else if (a === '-h' || a === '--help') {
       result.command = 'help';
     } else {
@@ -176,6 +187,9 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
   const apiKey = parsed.apiKey ?? process.env.MEMORIES_API_KEY ?? (parsed.yes ? '' : await ctx.askImpl('Memories API key (blank for none)', { def: '' }));
   ctx.url = url;
   ctx.apiKey = apiKey;
+  // Default 'memories' plus any --mcp-name overrides, deduped — consumed by
+  // the claude-code/cursor adapters when writing the read-only allowlist.
+  ctx.mcpNames = [...new Set(['memories', ...parsed.mcpNames])];
 
   const health = await checkHealth(url, { fetchImpl: ctx.fetchImpl });
   if (!health.ok) {

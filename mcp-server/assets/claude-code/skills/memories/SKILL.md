@@ -264,7 +264,7 @@ These hooks provide seamless memory recall and extraction without manual interve
 | `memory-commit.sh` | SessionEnd | Final extraction pass (context: `session_end`, ~8K chars) |
 | `memory-rehydrate.sh` | PostCompact | Re-injects memories using the compact summary as a targeted search query |
 | `memory-subagent-capture.sh` | SubagentStop | Captures architectural decisions from subagents |
-| `memory-observe.sh` | PostToolUse (mcp__memories__) | Logs when memory MCP tools are called (observability) |
+| `memory-observe.sh` | PostToolUse (`mcp__.*__memory_` — matches any MCP server name, not just the local `memories` server) | Logs when memory MCP tools are called (observability) |
 | `memory-guard.sh` | PreToolUse | Blocks direct writes to MEMORY.md (managed by sync) |
 | `memory-config-guard.sh` | ConfigChange | Warns if memory hooks are removed from settings |
 
@@ -283,7 +283,7 @@ The extraction `context` parameter controls aggressiveness:
 | `memory-recall.sh` | SessionStart | Loads project memory pointers and emits recall guidance for the session |
 | `memory-query.sh` | UserPromptSubmit | Searches for memories relevant to the current prompt using transcript context |
 | `memory-extract.sh` | Stop | Extracts facts from a larger transcript sample (~8K chars, 500 tail lines, 10 message pairs) to compensate for missing `PreCompact` / `SessionEnd` hooks |
-| `memory-observe.sh` | PostToolUse (`mcp__memories__`) | Logs when memory MCP tools are called (observability) |
+| `memory-observe.sh` | PostToolUse (`mcp__.*__memory_\|exec`) | Logs when memory MCP tools are called (observability) |
 | `memory-guard.sh` | PreToolUse (`Write\|Edit`) | Blocks direct writes to `MEMORY.md` if attempted |
 
 Codex stores those hooks in `~/.codex/hooks.json`, uses `~/.codex/settings.json` for tool permissions, and relies on `~/.codex/config.toml` for MCP registration plus developer instructions that bias `memory_search` usage.

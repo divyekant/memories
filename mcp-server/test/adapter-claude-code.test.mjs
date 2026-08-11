@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, access, mkdir, symlink, lstat } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, access, mkdir, symlink, lstat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as adapter from '../cli/adapters/claude-code.mjs';
 import { readJson, writeJson } from '../cli/lib/json-file.mjs';
+import { readRecordedPermissions } from '../cli/lib/install-state.mjs';
 
 const assetsDir = join(dirname(fileURLToPath(import.meta.url)), '../assets');
 const exists = (p) => access(p).then(() => true, () => false);
@@ -31,6 +32,29 @@ test('install wires hooks, settings, skills, CLAUDE.md, env', async () => {
   const env = await readFile(join(ctx.home, '.config/memories/env'), 'utf8');
   assert.ok(env.includes('MEMORIES_URL="http://localhost:8900"'));
   assert.ok(env.includes('MEMORIES_API_KEY="test-key"'));
+});
+
+test('install with ctx.mcpNames pre-approves read-only tools for every named server, deduped', async () => {
+  const ctx = await freshCtx();
+  ctx.mcpNames = ['memories', 'Remote_Memories', 'memories']; // duplicate on purpose
+  await adapter.install(ctx);
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  const allow = settings.permissions.allow;
+  assert.ok(allow.includes('mcp__memories__memory_search'));
+  assert.ok(allow.includes('mcp__Remote_Memories__memory_search'));
+  assert.ok(allow.includes('mcp__Remote_Memories__memory_conflicts'));
+  // 7 default + 7 for Remote_Memories, no duplicates from the repeated name
+  assert.equal(allow.filter((t) => t.startsWith('mcp__memories__') || t.startsWith('mcp__Remote_Memories__')).length, 14);
+  assert.equal(new Set(allow).size, allow.length);
+});
+
+test('install without ctx.mcpNames falls back to the default "memories" server only', async () => {
+  const ctx = await freshCtx();
+  await adapter.install(ctx);
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  const allow = settings.permissions.allow;
+  assert.equal(allow.length, 7);
+  assert.ok(allow.every((t) => t.startsWith('mcp__memories__')));
 });
 
 test('install is idempotent — second run changes nothing', async () => {
@@ -110,4 +134,107 @@ test('install copies skill content even when the asset files are symlinks', asyn
   const st = await lstat(join(ctx.home, '.claude/skills/memories/SKILL.md'));
   assert.equal(st.isSymbolicLink(), false);
   assert.ok((await readFile(join(ctx.home, '.claude/skills/memories/SKILL.md'), 'utf8')).length > 0);
+});
+
+test('uninstall clears read-only rules for every server name a past init wrote', async () => {
+  const ctx = await freshCtx();
+  await writeJson(join(ctx.home, '.claude/settings.json'), {
+    permissions: { allow: ['Bash(ls)', 'mcp__memories__memory_delete'], deny: ['Bash(rm -rf /)'] },
+  });
+  // A past `init --mcp-name Remote_Memories` — uninstall is given no such flag.
+  await adapter.install({ ...ctx, mcpNames: ['memories', 'Remote_Memories'] });
+
+  const afterInstall = await readJson(join(ctx.home, '.claude/settings.json'));
+  assert.ok(afterInstall.permissions.allow.includes('mcp__Remote_Memories__memory_search'));
+
+  await adapter.uninstall(ctx);
+
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  const allow = settings.permissions?.allow ?? [];
+  assert.deepEqual(
+    allow.filter((r) => r.startsWith('mcp__')),
+    ['mcp__memories__memory_delete'], // pre-existing user rule, not ours to remove
+  );
+  assert.ok(allow.includes('Bash(ls)'));
+  assert.deepEqual(settings.permissions.deny, ['Bash(rm -rf /)']);
+});
+
+test('uninstall preserves an unrelated memory product\'s read-only rule', async () => {
+  const ctx = await freshCtx();
+  // Same tool suffix, different server — indistinguishable by shape, so only
+  // recorded provenance can tell them apart.
+  await writeJson(join(ctx.home, '.claude/settings.json'), {
+    permissions: { allow: ['mcp__other_memory_product__memory_search'] },
+  });
+  await adapter.install(ctx);
+  await adapter.uninstall(ctx);
+
+  const allow = (await readJson(join(ctx.home, '.claude/settings.json'))).permissions?.allow ?? [];
+  assert.deepEqual(allow, ['mcp__other_memory_product__memory_search']);
+});
+
+test('uninstall on a machine this installer never touched removes nothing', async () => {
+  const ctx = await freshCtx();
+  const foreign = {
+    permissions: { allow: [
+      'mcp__other_memory_product__memory_search',
+      'mcp__memories__memory_search', // our own default name, but WE did not write it
+      'Bash(ls)',
+    ] },
+  };
+  await writeJson(join(ctx.home, '.claude/settings.json'), foreign);
+
+  await adapter.uninstall(ctx); // no install ever ran
+
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  assert.deepEqual(settings.permissions.allow, foreign.permissions.allow);
+});
+
+test('uninstall still clears rules from an install predating the manifest', async () => {
+  const ctx = await freshCtx();
+  await adapter.install(ctx);
+  // Simulate the older layout: artifacts on disk, no recorded provenance.
+  await rm(join(ctx.home, '.config/memories/install-state.json'), { force: true });
+
+  await adapter.uninstall(ctx);
+
+  const allow = (await readJson(join(ctx.home, '.claude/settings.json'))).permissions?.allow ?? [];
+  assert.deepEqual(allow.filter((r) => r.startsWith('mcp__')), []);
+});
+
+test('a rule the user already had is not removed even under the default name', async () => {
+  const ctx = await freshCtx();
+  await writeJson(join(ctx.home, '.claude/settings.json'), {
+    permissions: { allow: ['mcp__memories__memory_search'] },
+  });
+  await adapter.install(ctx); // records the other 6, not this one
+  await adapter.uninstall(ctx);
+
+  const allow = (await readJson(join(ctx.home, '.claude/settings.json'))).permissions?.allow ?? [];
+  assert.deepEqual(allow, ['mcp__memories__memory_search']);
+});
+
+test('a failed uninstall keeps its record so a retry still clears custom --mcp-name rules', async () => {
+  const ctx = await freshCtx();
+  await adapter.install({ ...ctx, mcpNames: ['memories', 'Remote_Memories'] });
+  const statePath = join(ctx.home, '.config/memories/install-state.json');
+  assert.equal((await readRecordedPermissions(statePath, 'claude-code')).length, 14);
+
+  // Malformed settings.json makes uninstall throw before it can remove
+  // anything from permissions.allow.
+  await writeFile(join(ctx.home, '.claude/settings.json'), '{ not json');
+  await assert.rejects(() => adapter.uninstall(ctx));
+
+  // Provenance must survive: hooks/skills are gone, so a retry could no
+  // longer infer that the Remote_Memories rules were ours.
+  assert.equal((await readRecordedPermissions(statePath, 'claude-code')).length, 14);
+
+  await writeJson(join(ctx.home, '.claude/settings.json'), {
+    permissions: { allow: ['mcp__Remote_Memories__memory_search', 'mcp__memories__memory_search', 'Bash(ls)'] },
+  });
+  await adapter.uninstall(ctx);
+
+  const allow = (await readJson(join(ctx.home, '.claude/settings.json'))).permissions?.allow ?? [];
+  assert.deepEqual(allow, ['Bash(ls)']);
+  assert.equal(await readRecordedPermissions(statePath, 'claude-code'), null);
 });
