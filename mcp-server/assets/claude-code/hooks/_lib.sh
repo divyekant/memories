@@ -180,9 +180,37 @@ _memories_disabled() {
   esac
 }
 
+# Decide whether hooks should run at all, evaluated in this precedence:
+#   1. MEMORIES_DISABLED truthy         -> inactive (handled by caller, see below)
+#   2. MEMORIES_ENABLED explicitly set  -> obey it (truthy/falsy)
+#   3. MEMORIES_ENABLED unset           -> auto-detect: active iff MEMORIES_URL is set
+# This lets a repo commit .claude/settings.json enabling the plugin (for cloud
+# sessions) without forcing every clone-without-credentials to see warnings or
+# pay curl timeouts: unconfigured is a true, silent no-op by default.
+_memories_active() {
+  if _memories_disabled; then
+    return 1
+  fi
+  if [ -n "${MEMORIES_ENABLED+x}" ]; then
+    case "${MEMORIES_ENABLED}" in
+      1|true|TRUE|yes|YES|on|ON) return 0 ;;
+      0|false|FALSE|no|NO|off|OFF) return 1 ;;
+    esac
+  fi
+  [ -n "${MEMORIES_URL:-}" ]
+}
+
 _exit_if_disabled() {
   if _memories_disabled; then
     _log_info "Hook disabled by MEMORIES_DISABLED"
+    exit 0
+  fi
+  if ! _memories_active; then
+    if [ -n "${MEMORIES_ENABLED+x}" ]; then
+      _log_info "Hook disabled by MEMORIES_ENABLED=${MEMORIES_ENABLED}"
+    else
+      _log_info "Hook inactive: MEMORIES_URL not set (unconfigured clone); set MEMORIES_URL or MEMORIES_ENABLED=true to opt in"
+    fi
     exit 0
   fi
 }
@@ -538,13 +566,38 @@ _search_memories_multi() {
     local url key
     url=$(echo "$backends" | jq -r '.[0].url')
     key=$(echo "$backends" | jq -r '.[0].api_key')
-    local out
-    if out=$(curl -sf --max-time 4 -X POST "$url/search" \
+    # No -f here: /search is authenticated (unlike /health), and a wrong/missing
+    # MEMORIES_API_KEY silently returns nothing forever unless we can tell a 401
+    # (credential problem, backend reachable) apart from a connection failure
+    # (backend unreachable). -w appends the status code after the body so we can
+    # branch on it without a second round-trip.
+    local raw curl_rc status out
+    raw=$(curl -s --max-time 4 -w '\n%{http_code}' -X POST "$url/search" \
       -H "Content-Type: application/json" \
       -H "X-API-Key: $key" \
-      -d "$body" 2>/dev/null); then
-      _breaker_reset
-      printf '%s' "$out"
+      -d "$body" 2>/dev/null)
+    curl_rc=$?
+    status="${raw##*$'\n'}"
+    out="${raw%$'\n'*}"
+    if [ $curl_rc -eq 0 ] && [ -n "$raw" ] && [ "$status" != "$raw" ]; then
+      case "$status" in
+        2??)
+          _breaker_reset
+          printf '%s' "$out"
+          ;;
+        401)
+          # Backend is reachable — this is a credential problem, not downtime.
+          # Keep the breaker closed so the session doesn't misreport "unreachable".
+          _breaker_reset
+          MEMORIES_AUTH_FAILED=1
+          echo '{"results":[],"count":0,"auth_failed":true}'
+          ;;
+        *)
+          _breaker_trip
+          MEMORIES_BACKEND_DOWN=1
+          echo '{"results":[],"count":0}'
+          ;;
+      esac
     else
       _breaker_trip
       MEMORIES_BACKEND_DOWN=1

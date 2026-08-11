@@ -783,7 +783,15 @@ Values are copied into the VM **once at session start**, so edits only affect se
 
 A blocked domain does not return a tidy 403 — it fails at the proxy's connect stage with no readable error, so a hook that "does nothing" is the symptom. Debug by logging `curl -v` output or `$?` from the hook rather than hunting for an error body. Changing the allowlist also invalidates the environment's cached snapshot, so its setup script re-runs on the next session.
 
-**Contributors without a backend** aren't hard-blocked: the hooks fail their health check and a circuit breaker suppresses further calls for 60s at a time. Expect a service-unreachable notice at session start and an occasional short pause when the breaker retries. To opt out, run `claude plugin disable memories@dk-marketplace` or set `"enabledPlugins": {"memories@dk-marketplace": false}` in your own gitignored `.claude/settings.local.json` — local settings take precedence over project ones.
+**Contributors without a backend get a true no-op, not noise.** Hooks gate themselves before making any network call: if `MEMORIES_URL` is unset and `MEMORIES_ENABLED` was never set either, the hook exits silently — no service-unreachable notice, no curl stalls. That's what makes it safe to commit `.claude/settings.json` project-wide; a clone without credentials just does nothing. The precedence is:
+
+1. `MEMORIES_DISABLED` truthy always wins — hard off, regardless of anything else.
+2. `MEMORIES_ENABLED` set explicitly — `true`/`1`/`yes`/`on` forces hooks to run even with no `MEMORIES_URL` (falling back to `http://localhost:8900`); `false`/`0`/`no`/`off` forces them off even with a configured URL.
+3. `MEMORIES_ENABLED` unset — auto-detect from `MEMORIES_URL`: set means run, unset/empty means silent no-op.
+
+Set `MEMORIES_ENABLED=false` in your own gitignored `.claude/settings.local.json` (or `~/.config/memories/env`) if you want to opt out explicitly instead of relying on auto-detect, or `claude plugin disable memories@dk-marketplace` to disable the plugin outright.
+
+**A wrong or missing API key is not silent.** `/health` is unauthenticated, so it cannot tell a bad `MEMORIES_API_KEY` apart from a healthy backend — without this check, recall would just keep returning nothing, forever, with no warning. The session-start hook now detects a `401` from the `/search` calls it already makes (no extra round-trip) and surfaces a distinct warning naming `MEMORIES_API_KEY`, instead of the generic "check that the service is running" message reserved for actually-unreachable backends.
 
 ---
 

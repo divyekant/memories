@@ -30,6 +30,8 @@ set -euo pipefail
 url=""
 body=""
 pending_data=0
+pending_write=0
+write_out=""
 
 for arg in "$@"; do
   if [ "$pending_data" -eq 1 ]; then
@@ -37,10 +39,18 @@ for arg in "$@"; do
     pending_data=0
     continue
   fi
+  if [ "$pending_write" -eq 1 ]; then
+    write_out="$arg"
+    pending_write=0
+    continue
+  fi
 
   case "$arg" in
     -d|--data|--data-raw|--data-binary)
       pending_data=1
+      ;;
+    -w|--write-out)
+      pending_write=1
       ;;
     http://*|https://*)
       url="$arg"
@@ -53,7 +63,7 @@ if [ -z "$body" ]; then body="null"; fi
 
 jq -nc --arg url "$url" --argjson body "$body" '{url: $url, body: $body}' >> "$FAKE_CURL_CALLS"
 
-jq -c --arg url "$url" --argjson body "$body" '
+response_body=$(jq -c --arg url "$url" --argjson body "$body" '
   ([
     .[]
     | . as $rule
@@ -65,7 +75,30 @@ jq -c --arg url "$url" --argjson body "$body" '
       )
     | $rule.response
   ][0]) // {"results": [], "count": 0}
-' "$FAKE_CURL_RESPONSES"
+' "$FAKE_CURL_RESPONSES")
+
+status_code=$(jq -r --arg url "$url" --argjson body "$body" '
+  ([
+    .[]
+    | . as $rule
+    | select(($rule.url_suffix == null) or ($url | endswith($rule.url_suffix)))
+    | select(($rule.source_prefix // "") == (($body.source_prefix // "")))
+    | select(
+        ($rule.query_contains // null) == null
+        or (($body.query // "") | contains($rule.query_contains))
+      )
+    | ($rule.status // 200)
+  ][0]) // 200
+' "$FAKE_CURL_RESPONSES")
+
+printf '%s' "$response_body"
+# Mimic curl's -w/--write-out: only append the status line when the caller
+# actually asked for %{http_code}, same as real curl would.
+case "$write_out" in
+  *'%{http_code}'*)
+    printf '\\n%s' "$status_code"
+    ;;
+esac
 """
     )
     script.chmod(0o755)
@@ -1481,6 +1514,118 @@ def test_codex_memory_hooks_honor_disabled_flag(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert calls == []
     assert result.stdout.strip() == ""
+
+
+def test_memory_hooks_unconfigured_url_is_silent_noop(tmp_path: Path) -> None:
+    """A repo that ships .claude/settings.json but no MEMORIES_URL must be a true
+    no-op for contributors who never opted in: exit 0, no stdout, no curl call."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": ""},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""
+
+
+def test_memory_hooks_enabled_false_silences_configured_url(tmp_path: Path) -> None:
+    """MEMORIES_ENABLED=false wins over a configured MEMORIES_URL — explicit opt-out."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ENABLED": "false"},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""
+
+
+def test_memory_hooks_enabled_true_runs_without_url(tmp_path: Path) -> None:
+    """MEMORIES_ENABLED=true forces the hook to run even with no MEMORIES_URL set —
+    explicit opt-in, falls back to the localhost default and calls out."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ENABLED": "true", "MEMORIES_URL": ""},
+    )
+
+    assert result.returncode == 0
+    assert len(calls) > 0
+
+
+def test_memory_hooks_disabled_wins_over_enabled_true(tmp_path: Path) -> None:
+    """MEMORIES_DISABLED=1 still wins even when fully configured and MEMORIES_ENABLED=true."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_DISABLED": "1", "MEMORIES_ENABLED": "true"},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""
+
+
+def test_memory_recall_401_shows_credential_warning_not_reachability(tmp_path: Path) -> None:
+    """/health is unauthenticated and can't see a bad API key. The hook must detect
+    the 401 from the /search calls it already makes and name the real problem,
+    instead of silently returning nothing or blaming service reachability."""
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "learning/memories",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "wip/memories",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        },
+    ]
+
+    payload = {"cwd": "/Users/example/memories"}
+    result, calls, _ = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "rejected the API key" in ctx
+    assert "MEMORIES_API_KEY" in ctx
+    assert "Check that the service is running" not in ctx
+    assert len(calls) > 0
 
 
 def test_memory_query_logs_candidate_ids_for_non_active_prompts(tmp_path: Path) -> None:

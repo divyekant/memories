@@ -57,7 +57,7 @@ if ! _health_check; then
   HEALTH_WARNING=$(cat <<HWEOF
 ## Memories Service Warning
 
-Memories service is not reachable at $MEMORIES_URL. Memory recall and extraction are unavailable this session. Check that the service is running.
+Memories service is not reachable at $MEMORIES_URL. Memory recall and extraction are unavailable this session. If this is a cloud session, add its host to the allowed domains for this environment; otherwise check that the service is running.
 HWEOF
 )
 fi
@@ -80,6 +80,21 @@ fi
 
 search_memories() {
   _search_memories_multi "$@"
+}
+
+# /health is unauthenticated and can't see a bad API key, so credential
+# failures are detected from the /search calls this hook already makes
+# (_search_memories_multi tags a 401 response with auth_failed:true). Search
+# responses are consumed via command substitution (a subshell), so a plain
+# variable set inside search_memories_multi can't propagate back here — check
+# the JSON itself instead.
+AUTH_FAILED="false"
+_note_auth_status() {
+  local resp="$1"
+  local flag
+  flag=$(printf '%s' "$resp" | jq -r '.auth_failed // false' 2>/dev/null) || flag="false"
+  [ "$flag" = "true" ] && AUTH_FAILED="true"
+  return 0
 }
 
 query_for_prefix() {
@@ -116,6 +131,7 @@ for raw_prefix in "${prefix_templates[@]}"; do
   esac
 
   response=$(search_memories "$query" "$prefix" "$limit" "$MEMORIES_RECALL_SCOPED_THRESHOLD")
+  _note_auth_status "$response"
   if [ -n "$response" ]; then
     RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
   fi
@@ -136,6 +152,7 @@ RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$RECALL_
 
 if [ "$RESULTS_JSON" = "[]" ]; then
   FALLBACK_RESPONSE=$(search_memories "project $PROJECT conventions decisions patterns" "" 6 "$MEMORIES_RECALL_FALLBACK_THRESHOLD")
+  _note_auth_status "$FALLBACK_RESPONSE"
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
 fi
 
@@ -152,6 +169,7 @@ _log_info "Recalled $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null |
 # Dedicated deferred-work surfacing
 WIP_QUERY="deferred incomplete blocked todo revisit wip"
 WIP_RESULTS=$(search_memories "$WIP_QUERY" "wip/$PROJECT" 5 0.3)
+_note_auth_status "$WIP_RESULTS"
 WIP_COUNT=$(echo "$WIP_RESULTS" | jq -r '.count // 0')
 DEFERRED_SECTION=""
 if [ "$WIP_COUNT" -gt 0 ] && [ "$WIP_COUNT" != "null" ]; then
@@ -247,12 +265,27 @@ if [ -n "$MEMORY_RESULTS" ] && [ "$MEMORY_RESULTS" != "null" ]; then
   } > "$MEMORY_FILE"
 fi
 
+# Credential diagnostic: /health is unauthenticated, so a wrong/missing
+# MEMORIES_API_KEY would otherwise fail silently — recall returns nothing,
+# forever, with no warning. Detected from the /search 401s tallied above.
+CREDENTIAL_WARNING=""
+if [ "$AUTH_FAILED" = "true" ]; then
+  _log_warn "Backend rejected the API key (401) at $MEMORIES_URL"
+  CREDENTIAL_WARNING=$(cat <<CWEOF
+## Memories Credential Warning
+
+Memories reached $MEMORIES_URL but it rejected the API key. Set MEMORIES_API_KEY (memory recall and extraction are disabled this session).
+CWEOF
+)
+fi
+
 # --- Output context for Claude Code ---
-jq -n --arg memories "$CONTEXT_RESULTS" --arg playbook "$PLAYBOOK" --arg health_warning "$HEALTH_WARNING" --arg deferred "$DEFERRED_SECTION" '{
+jq -n --arg memories "$CONTEXT_RESULTS" --arg playbook "$PLAYBOOK" --arg health_warning "$HEALTH_WARNING" --arg credential_warning "$CREDENTIAL_WARNING" --arg deferred "$DEFERRED_SECTION" '{
   hookSpecificOutput: {
     hookEventName: "SessionStart",
     additionalContext: (
       (if ($health_warning | length) > 0 then $health_warning + "\n\n" else "" end) +
+      (if ($credential_warning | length) > 0 then $credential_warning + "\n\n" else "" end) +
       (if ($memories | length) > 0 then "## Relevant Memories\n\n" + $memories + "\n\n" else "" end) +
       (if ($deferred | length) > 0 then $deferred + "\n" else "" end) +
       $playbook
