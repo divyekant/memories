@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.11.0] - 2026-08-11
 
 ### Fixed
 - **Post-compaction rehydration aborted whenever it merged a second batch.** `memory-rehydrate.sh` ranked merged results with `sort_by(-.similarity // -.rrf_score)`, but jq negates `.similarity` before considering the alternative, so a hybrid-search result — which carries `rrf_score` and no `similarity` — raised `null (null) cannot be negated` and the hook exited non-zero with no context injected. It only triggered from the second source prefix onward, which is why it looked intermittent; the existing test supplied a single batch with `similarity` present and never exercised the merge.

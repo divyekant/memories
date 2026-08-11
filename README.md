@@ -4,7 +4,7 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **OpenCode**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v5.10.0):**
+**Key capabilities (v5.11.0):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
 - **Write doctrine** — corrections supersede instead of being dropped: a colliding write replaces the similar memory and archives the old version with a supersedes link (`on_duplicate: supersede|skip|add`); agents update facts via `memory_update`
 - **Secret redaction** — credential-shaped content (API keys, JWTs, tokens, URL credentials) is redacted before any extraction LLM call or storage, with a context guard that spares placeholders and localhost DSNs
