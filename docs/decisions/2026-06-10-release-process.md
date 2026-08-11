@@ -21,7 +21,9 @@ Stop cutting a release per work item. The flow is now:
 
 - Bump every version string (the eight, current as of v5.11.0: `pyproject.toml`,
   `mcp-server/package.json` + lockfile, `uv.lock`,
-  `mcp-server/assets/backend/BACKEND_VERSION`, `app.py` (FastAPI + /health),
+  `mcp-server/assets/backend/BACKEND_VERSION` (**skip on a client-only release
+  that is not deploying — see the client-only note below**),
+  `app.py` (FastAPI + /health),
   `tests/test_api_contract_compat.py`, `plugins/memories/.codex-plugin/plugin.json`,
   `mcp-server/assets/claude-code/.claude-plugin/plugin.json` (Claude Code plugin
   manifest — `dk-marketplace/sync.sh` reads its version into `marketplace.json`,
@@ -51,10 +53,29 @@ Stop cutting a release per work item. The flow is now:
   commit. During v5.11.0 `gh` did refuse — but only because the tag existed
   locally and not on the remote, which it treats as ambiguous; that refusal is
   a side effect of one particular state, not a guarantee to rely on.
-- A client-only release (hooks, skills, CLI — no `app.py` or backend change
-  beyond its version string) needs no deploy. Skipping it leaves the running
-  backend reporting the previous version, which is cosmetic; redeploying a
-  live backend is not, so do not do it for a change that cannot affect it.
+- **A client-only release (hooks, skills, CLI — no backend change) needs no
+  deploy, and must therefore NOT bump `mcp-server/assets/backend/BACKEND_VERSION`.**
+  That file describes the deployed backend; bumping it without deploying makes
+  it describe something that does not exist. The cost is not cosmetic:
+  `runDoctor` (`mcp-server/cli/index.mjs`) compares the marker against
+  `/health` and, on any difference, prints `(mismatch — consider \`memories
+  update\`)`. `memories update` routes to `runInitOrUpdate`, which rewires
+  clients and only offers to provision a backend when the health check *fails* —
+  so against a healthy older backend the recommendation cannot do anything. The
+  result is a permanent warning pointing at a command that will never clear it.
+  Leave the marker at the deployed version and let the next backend-affecting
+  release move both together.
+
+  Known exception in flight: v5.11.0 bumped the marker to 5.11.0 while
+  deliberately skipping the deploy (client-only fixes), so `doctor` reports a
+  mismatch against a 5.10.0 backend until the next deploy. Do not "fix" this by
+  redeploying a live backend for a change that cannot affect it.
+
+  The comparison itself is a bare `!==` in both `runDoctor` and
+  `memory-recall.sh`'s update banner, so it also fires when the deployed
+  backend is *newer* than the package — which is how a stale plugin cache
+  produced "Running v5.10.0, latest is v5.7.0". Worth making direction-aware;
+  tracked separately from this doc change.
 - **Bump the marketplace pin.** `dk-marketplace`'s `memories` entry pins its
   `git-subdir` source to an immutable `sha`, so the plugin does NOT track
   `main` — a release is invisible to plugin consumers until that SHA is
