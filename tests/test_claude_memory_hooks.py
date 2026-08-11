@@ -2914,6 +2914,48 @@ def test_memory_recall_injected_context_uses_name_agnostic_toolsearch(tmp_path: 
     assert 'ToolSearch("+memory_search")' in ctx
 
 
+def _lib_eval(expr: str) -> subprocess.CompletedProcess:
+    """Source the Claude hook lib and evaluate a shell expression against it."""
+    lib = HOOKS_DIR / "_lib.sh"
+    return subprocess.run(
+        ["bash", "-c", f'MEMORIES_HOOK_NAME=test; . "{lib}" >/dev/null 2>&1; {expr}'],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_breaker_trip_decision_distinguishes_starvation_from_a_hanging_backend() -> None:
+    """A curl timeout (exit 28) is evidence about the backend only if the
+    backend got substantially the time we meant to give it.
+
+    Measured against a real backend, /search takes 1.2-2.1s while the
+    minimum-call floor is 0.3s, so a SessionStart recall's tail calls are
+    issued with budgets that cannot succeed; tripping on those marks a healthy
+    backend down and the next session reports "not reachable" without probing.
+
+    But "starved" must mean materially less, not merely less: health and
+    version probes run before search, so overhead trims a 4s cap to ~3.9s. A
+    backend that hangs through 3.9 of 4 seconds IS unhealthy, and failing to
+    trip there makes every later session re-pay the full timeout.
+    """
+    cap = 4
+
+    # Got most of the intended cap and still timed out -> real evidence.
+    for budget in ("4", "3.9", "3.0"):  # 3.0 is the 0.75 boundary, inclusive
+        r = _lib_eval(f'_should_trip_breaker 28 {budget} {cap} && echo TRIP || echo NOTRIP')
+        assert r.stdout.strip() == "TRIP", f"budget={budget}: {r.stderr}"
+
+    # Materially starved -> our deadline, not their downtime.
+    for budget in ("2.9", "1.0", "0.54"):
+        r = _lib_eval(f'_should_trip_breaker 28 {budget} {cap} && echo TRIP || echo NOTRIP')
+        assert r.stdout.strip() == "NOTRIP", f"budget={budget}: {r.stderr}"
+
+    # Non-timeout failures say something real regardless of budget.
+    for rc in (7, 22, 52):
+        r = _lib_eval(f'_should_trip_breaker {rc} 0.54 {cap} && echo TRIP || echo NOTRIP')
+        assert r.stdout.strip() == "TRIP", f"rc={rc}: {r.stderr}"
+
+
 def test_codex_memory_observe_nested_exec_matches_non_memories_server_names(tmp_path: Path) -> None:
     """The exec-envelope grep must not be hardcoded to the 'memories' server
     segment. A UUID-named connector contains hyphens, which JS parses as

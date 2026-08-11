@@ -19,7 +19,7 @@ Stop cutting a release per work item. The flow is now:
 
 ## Mechanics of a promotion
 
-- Bump every version string (the eight, current as of v5.10.0: `pyproject.toml`,
+- Bump every version string (the eight, current as of v5.11.0: `pyproject.toml`,
   `mcp-server/package.json` + lockfile, `uv.lock`,
   `mcp-server/assets/backend/BACKEND_VERSION`, `app.py` (FastAPI + /health),
   `tests/test_api_contract_compat.py`, `plugins/memories/.codex-plugin/plugin.json`,
@@ -33,10 +33,60 @@ Stop cutting a release per work item. The flow is now:
   Grep the old version project-wide before committing, and include `*.mjs`/`*.js`
   in that grep: a hardcoded `version:` in `mcp-server/lib-tools.mjs` was missed
   for two releases because earlier sweeps only checked json/toml/py/md.
+  The backend-facing subset (`BACKEND_VERSION`, both `app.py` strings, the
+  health-contract assertion) is exempt on a client-only release — see the
+  client-only note below; those four move together or not at all.
 - Retitle CHANGELOG `[Unreleased]` to the version + date.
 - Full suite green → `chore: release vX.Y.Z` on develop → `--no-ff` merge to
-  `main` → tag → push → GitHub release → deploy (compose build + up) → sync
-  the installed plugin cache if hook/skill files changed.
+  `main` → tag → push → GitHub release → deploy (compose build + up) → bump the
+  marketplace pin and refresh the installed plugin (both below).
+- Push the tag explicitly (`git push origin vX.Y.Z`) — `--follow-tags` skips
+  lightweight tags — and create the release with `--verify-tag`:
+
+  ```bash
+  git push origin vX.Y.Z
+  gh release create vX.Y.Z --verify-tag --title ... --notes ...
+  ```
+
+  `--verify-tag` is what enforces the invariant. Without it, `gh release
+  create` creates any missing tag from the latest state of the default branch,
+  so a forgotten or failed push publishes a release pointing at the wrong
+  commit. During v5.11.0 `gh` did refuse — but only because the tag existed
+  locally and not on the remote, which it treats as ambiguous; that refusal is
+  a side effect of one particular state, not a guarantee to rely on.
+- **A client-only release (hooks, skills, CLI — no backend change) needs no
+  deploy, and must freeze every backend-facing version source together:**
+  `mcp-server/assets/backend/BACKEND_VERSION`, **both** version strings in
+  `app.py` (the FastAPI arg and the `/health` body), and the assertion in
+  `tests/test_api_contract_compat.py`. Freezing only the marker is worse than
+  freezing nothing: the marker would then claim the old version while a backend
+  built from that same tag reports the new one, so anyone running it gets the
+  mismatch immediately. A `pytest` guard
+  (`test_backend_version_marker_matches_health_version`) now enforces the pair,
+  so a half-applied bump fails CI rather than shipping. `pyproject.toml` and
+  `uv.lock` are Python package metadata that nothing compares against the
+  marker, so they track the release version as usual.
+
+  Why the marker matters at all — the cost is not cosmetic:
+  `runDoctor` (`mcp-server/cli/index.mjs`) compares the marker against
+  `/health` and, on any difference, prints `(mismatch — consider \`memories
+  update\`)`. `memories update` routes to `runInitOrUpdate`, which rewires
+  clients and only offers to provision a backend when the health check *fails* —
+  so against a healthy older backend the recommendation cannot do anything. The
+  result is a permanent warning pointing at a command that will never clear it.
+  Leave all four backend-facing sources at the deployed version and let the next
+  backend-affecting release move them together.
+
+  Known exception in flight: v5.11.0 bumped the marker to 5.11.0 while
+  deliberately skipping the deploy (client-only fixes), so `doctor` reports a
+  mismatch against a 5.10.0 backend until the next deploy. Do not "fix" this by
+  redeploying a live backend for a change that cannot affect it.
+
+  The comparison itself is a bare `!==` in both `runDoctor` and
+  `memory-recall.sh`'s update banner, so it also fires when the deployed
+  backend is *newer* than the package — which is how a stale plugin cache
+  produced "Running v5.10.0, latest is v5.7.0". Worth making direction-aware;
+  tracked separately from this doc change.
 - **Bump the marketplace pin.** `dk-marketplace`'s `memories` entry pins its
   `git-subdir` source to an immutable `sha`, so the plugin does NOT track
   `main` — a release is invisible to plugin consumers until that SHA is
@@ -44,6 +94,58 @@ Stop cutting a release per work item. The flow is now:
   session transcripts and carry the backend credential, so a fresh clone must
   never execute upstream code that changed after review. Get the commit with
   `git rev-list -n1 vX.Y.Z`.
+- **Then refresh the installed plugin — the pin bump alone does nothing to it.**
+  An already-installed plugin keeps running from its own cache directory until
+  explicitly updated, so bumping the pin makes the release available without
+  delivering it. Verified the hard way during v5.11.0: the marketplace
+  advertised 5.10.0 while `~/.claude/plugins/installed_plugins.json` still
+  recorded `memories@dk-marketplace` at 5.9.0 (`gitCommitSha` = v5.9.0's merge
+  commit), and the hooks actually firing were a release behind — with the very
+  bug the newer version fixed. Both commands are non-interactive:
+
+  ```bash
+  claude plugin marketplace update dk-marketplace
+  claude plugin update memories@dk-marketplace
+  ```
+
+  Then **restart Claude Code** (the update prints "Restart to apply changes").
+  Confirm by checking that `installed_plugins.json`'s `gitCommitSha` equals the
+  release commit — not just that `version` moved, which can advance while the
+  files on disk do not.
+- **Old cache directories linger and can still execute — do not blind-prune
+  them.** `claude plugin update` adds a new versioned directory rather than
+  replacing the old one, and long-lived sessions keep running from whichever
+  path they started with. During v5.11.0 a v5.4.0 directory from four months
+  earlier was still executing hooks and emitting a bogus "Backend Update
+  Available — latest is v5.7.0" banner, sourced from an
+  `assets/BACKEND_VERSION` that no current version even ships (see the
+  dangling-path note in `memory-recall.sh`).
+
+  `.in_use` is **a directory of per-process lease records**, not a stale
+  boolean left behind by `update`: each entry is a PID whose contents look like
+  `{"pid":11409,"procStart":"..."}`. Testing `[ -e .in_use ]` therefore says
+  nothing about whether anything is actually using the directory — an empty
+  lease directory persists after every session that held it exits. Count live
+  leases instead, and note that restarting one session does not release
+  another's:
+
+  ```bash
+  for d in ~/.claude/plugins/cache/dk-marketplace/memories/*/; do
+    live=0
+    for pid in $(ls "$d.in_use" 2>/dev/null); do
+      kill -0 "$pid" 2>/dev/null && live=$((live+1))
+    done
+    echo "$(basename "$d"): $live live lease(s)"
+  done
+  ```
+
+  (`ls` rather than a glob: under zsh's default `nomatch`, an empty
+  `.in_use/*` aborts the loop instead of yielding zero iterations.)
+
+  Delete a non-current directory only once it reports zero live leases. At the
+  time of the v5.11.0 release the v5.4.0 directory held seven live leases, all
+  with `--plugin-dir` pointing into it, so removing it would have pulled hook
+  and skill files out from under seven running sessions.
 - Anything user-behavior-changing ships behind an eval gate where one exists
   (active-search eval for hook behavior, tier-1 recall A/B for retrieval).
 

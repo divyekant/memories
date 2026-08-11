@@ -1,5 +1,14 @@
 # Changelog
 
+## [5.12.0] - 2026-08-11
+
+### Added
+- **Version-consistency guard.** `test_backend_version_sources_agree` asserts that all four backend-facing version sources match: `mcp-server/assets/backend/BACKEND_VERSION`, the version `/health` reports, `FastAPI(version=)`, and the OpenAPI `info.version` it serves. `memories doctor` compares the first two and recommends `memories update` on any difference — a command that only rewires clients and cannot update a running backend — so a checkout where they disagree produces a permanent, unactionable warning; the FastAPI metadata is public API surface that nothing else asserted. Each source is verified to fail the guard on its own, so a bump applied to any subset fails CI instead of shipping.
+
+### Fixed
+- **A healthy backend was reported unreachable at session start.** `_search_memories_multi` and the single-backend search treated *any* failed call as backend downtime, including a curl timeout on a budget the hook itself had shrunk. A SessionStart recall makes ~5-6 sequential searches against a 5s deadline while a real `/search` takes 1.2-2.1s, so the tail calls were issued with budgets that could not succeed (the minimum-call floor is 0.3s) and each one tripped the circuit breaker. `_health_check` then skips probing any backend whose breaker is already open, so the *next* session reported "Memories service is not reachable" without issuing a single probe — against a backend answering `/health` in ~100ms. A timeout now leaves breaker state untouched only when the budget was *materially* short — below `MEMORIES_BREAKER_FAIR_BUDGET_RATIO` (default 0.75) of the requested cap — matching the invariant `_health_check` already applied to its own probe. Health and version probes run before search, so ordinary overhead trims a 4s cap to ~3.9s; treating every sub-cap budget as inconclusive would leave a genuinely hanging backend un-tripped and re-paying its full timeout every session. Connection failures, TLS errors, and HTTP errors still trip regardless of budget.
+
+
 ## [5.11.0] - 2026-08-11
 
 ### Fixed
