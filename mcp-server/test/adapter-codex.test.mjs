@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as adapter from '../cli/adapters/codex.mjs';
-import { readJson } from '../cli/lib/json-file.mjs';
+import { readJson, writeJson } from '../cli/lib/json-file.mjs';
 
 const assetsDir = join(dirname(fileURLToPath(import.meta.url)), '../assets');
 const exists = (p) => access(p).then(() => true, () => false);
@@ -81,4 +81,64 @@ test('uninstall removes blocks and hooks but keeps foreign toml', async () => {
   const toml = await readFile(join(ctx.home, '.codex/config.toml'), 'utf8');
   assert.ok(toml.includes('model = "gpt-5.5"'));
   assert.ok(!toml.includes('Memories Codex'));
+});
+
+test('uninstall clears the read-only allowlist it wrote', async () => {
+  const ctx = await freshCtx();
+  await adapter.install(ctx);
+  const afterInstall = await readJson(join(ctx.home, '.codex/settings.json'));
+  assert.ok(afterInstall.permissions.allow.includes('mcp__memories__memory_search'));
+
+  await adapter.uninstall(ctx);
+  const settings = await readJson(join(ctx.home, '.codex/settings.json'));
+  assert.equal(settings.permissions, undefined);
+});
+
+test('uninstall preserves an unrelated memory product rule and an unmanaged machine', async () => {
+  const foreignAllow = ['mcp__other_memory_product__memory_search', 'mcp__memories__memory_search'];
+
+  // (a) never installed here — nothing may be removed
+  const fresh = await freshCtx();
+  await mkdir(join(fresh.home, '.codex'), { recursive: true });
+  await writeJson(join(fresh.home, '.codex/settings.json'), { permissions: { allow: [...foreignAllow] } });
+  await adapter.uninstall(fresh);
+  assert.deepEqual(
+    (await readJson(join(fresh.home, '.codex/settings.json'))).permissions.allow,
+    foreignAllow,
+  );
+
+  // (b) installed here — only rules we introduced go
+  const ctx = await freshCtx();
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  await writeJson(join(ctx.home, '.codex/settings.json'), { permissions: { allow: [...foreignAllow] } });
+  await adapter.install(ctx);
+  await adapter.uninstall(ctx);
+  assert.deepEqual(
+    (await readJson(join(ctx.home, '.codex/settings.json'))).permissions.allow,
+    foreignAllow, // both survive: one is a foreign server, one the user already had
+  );
+});
+
+test('a failed uninstall keeps its ownership record so a retry still cleans up', async () => {
+  const ctx = await freshCtx();
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  await adapter.install(ctx);
+  const statePath = join(ctx.home, '.config/memories/install-state.json');
+  assert.equal((await readJson(statePath)).permissions.codex.length, 7);
+
+  // Make uninstall throw partway through, after the point where provenance
+  // used to be consumed.
+  await writeFile(join(ctx.home, '.codex/hooks.json'), '{ not json');
+  await assert.rejects(() => adapter.uninstall(ctx));
+
+  // The record must survive the failure — the on-disk artifacts it would
+  // otherwise be inferred from are already gone.
+  assert.deepEqual((await readJson(statePath)).permissions.codex.length, 7);
+
+  await writeFile(join(ctx.home, '.codex/hooks.json'), '{}');
+  await adapter.uninstall(ctx);
+
+  assert.equal((await readJson(join(ctx.home, '.codex/settings.json'))).permissions, undefined);
+  // Cleared only now that cleanup succeeded.
+  assert.equal((await readJson(statePath)).permissions, undefined);
 });

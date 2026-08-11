@@ -315,7 +315,7 @@ chmod +x ~/.codex/hooks/memory/*.sh
       }]
     }],
     "PostToolUse": [{
-      "matcher": "mcp__memories__|exec",
+      "matcher": "mcp__.*__memory_|exec",
       "hooks": [{
         "type": "command",
         "command": "/Users/you/.codex/hooks/memory/memory-observe.sh",

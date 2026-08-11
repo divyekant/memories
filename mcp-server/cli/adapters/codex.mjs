@@ -1,7 +1,8 @@
 import { chmod, copyFile, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readJson, writeJson, addPermissions, mergeHookSettings } from '../lib/json-file.mjs';
+import { readJson, writeJson, addPermissions, removePermissions, mergeHookSettings } from '../lib/json-file.mjs';
 import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS } from '../lib/hooks.mjs';
+import { installStatePath, recordPermissions, readRecordedPermissions, clearRecordedPermissions } from '../lib/install-state.mjs';
 import { appendMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../lib/toml.mjs';
 
 const MARKER_NOTIFY = 'Memories Codex notify';
@@ -42,8 +43,13 @@ export async function install(ctx) {
   await writeJson(p.hooksJson, mergeHookSettings(existingHooks, rendered));
 
   let settings = await readJson(p.settings);
+  // Record only rules we actually introduce — a rule the user already had is
+  // theirs, and uninstall must leave it behind.
+  const alreadyPresent = new Set(settings.permissions?.allow ?? []);
+  const addedRules = READONLY_MCP_TOOLS.filter((rule) => !alreadyPresent.has(rule));
   settings = addPermissions(settings, READONLY_MCP_TOOLS);
   await writeJson(p.settings, settings);
+  await recordPermissions(installStatePath(ctx.home), 'codex', addedRules);
 
   await mkdir(join(ctx.home, '.codex'), { recursive: true });
   let toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
@@ -70,6 +76,9 @@ MEMORIES_CLIENT = "codex"`;
 
 export async function uninstall(ctx) {
   const p = paths(ctx);
+  // Captured before the removal below erases the evidence.
+  const wasInstalled = await exists(p.hooksDest);
+  const recordedRules = await readRecordedPermissions(installStatePath(ctx.home), 'codex');
   await rm(p.hooksDest, { recursive: true, force: true });
 
   if (await exists(p.hooksJson)) {
@@ -85,6 +94,13 @@ export async function uninstall(ctx) {
     await writeJson(p.hooksJson, hooksJson);
   }
 
+  if (await exists(p.settings)) {
+    // Only rules this install recorded; see the claude-code adapter for why
+    // shape-matching is unsafe here.
+    const owned = new Set(recordedRules ?? (wasInstalled ? READONLY_MCP_TOOLS : []));
+    await writeJson(p.settings, removePermissions(await readJson(p.settings), (rule) => owned.has(rule)));
+  }
+
   if (await exists(p.config)) {
     let toml = await readFile(p.config, 'utf8');
     toml = removeMarkedBlock(toml, MARKER_NOTIFY);
@@ -93,6 +109,9 @@ export async function uninstall(ctx) {
     await writeFile(p.config, toml);
   }
 
+  // Last: a throw anywhere above must leave the record intact so a retry can
+  // still identify what we own.
+  await clearRecordedPermissions(installStatePath(ctx.home), 'codex');
   ctx.log('Codex integration removed');
 }
 

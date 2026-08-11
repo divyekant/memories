@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, stat, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS } from '../cli/lib/hooks.mjs';
+import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS, readonlyMcpTools } from '../cli/lib/hooks.mjs';
 
 const ASSETS = join(dirname(fileURLToPath(import.meta.url)), '../assets/claude-code/hooks');
 
@@ -40,4 +40,32 @@ test('copyHookScripts copies scripts + support files and sets exec bit', async (
 test('READONLY_MCP_TOOLS matches install.sh allowlist', () => {
   assert.equal(READONLY_MCP_TOOLS.length, 7);
   assert.ok(READONLY_MCP_TOOLS.includes('mcp__memories__memory_search'));
+});
+
+test('readonlyMcpTools() default matches READONLY_MCP_TOOLS byte-for-byte', () => {
+  assert.deepEqual(readonlyMcpTools(), READONLY_MCP_TOOLS);
+  assert.deepEqual(readonlyMcpTools('memories'), READONLY_MCP_TOOLS);
+});
+
+test('readonlyMcpTools(serverName) substitutes the server segment only', () => {
+  const tools = readonlyMcpTools('Remote_Memories');
+  assert.equal(tools.length, 7);
+  assert.deepEqual(tools, [
+    'mcp__Remote_Memories__memory_search',
+    'mcp__Remote_Memories__memory_list',
+    'mcp__Remote_Memories__memory_count',
+    'mcp__Remote_Memories__memory_stats',
+    'mcp__Remote_Memories__memory_is_novel',
+    'mcp__Remote_Memories__memory_is_useful',
+    'mcp__Remote_Memories__memory_conflicts',
+  ]);
+});
+
+test('readonlyMcpTools() never emits a wildcard server segment or a destructive tool', () => {
+  for (const t of readonlyMcpTools('anything')) {
+    assert.ok(!t.includes('*'), t);
+    assert.ok(!t.includes('memory_delete'), t);
+    assert.ok(!t.includes('memory_update'), t);
+    assert.ok(!t.includes('memory_add'), t);
+  }
 });
