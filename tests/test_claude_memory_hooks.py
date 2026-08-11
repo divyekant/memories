@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import http.server
 import json
 import os
 import shutil
+import socket
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 
@@ -1926,6 +1930,190 @@ def test_memory_hooks_partial_backend_failure_does_not_zero_out_healthy_routed_b
     )
     assert not (home_dir / ".config" / "memories" / "backend-down").exists(), (
         "a single non-routed dead backend must not trip the shared breaker"
+    )
+
+
+def test_memory_hooks_preexisting_open_breaker_does_not_crash(tmp_path: Path) -> None:
+    """REGRESSION (PR #85 review, P1-A — CRASH, reviewer reproduced). A
+    previous hook invocation already tripped the (single-backend, "default"
+    name) breaker file. _health_check's early return on an already-open
+    breaker never set MEMORIES_HEALTH_DOWN_NAMES, and memory-recall.sh
+    interpolates it immediately after `_health_check` returns 1 — under
+    `set -u`. So the FAST path — the common case once a backend is actually
+    down — crashed: exit 1, "unbound variable", zero hook output. Worse than
+    the bug it replaced. This is the case no prior test covered: every other
+    regression test in this file starts from a CLEAN breaker state."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    # _run_hook creates HOME at tmp_path/"home" with mkdir(exist_ok=True) —
+    # pre-seed the breaker file into that same path before invoking it, to
+    # simulate "a previous hook invocation already opened the breaker."
+    home_dir = tmp_path / "home"
+    breaker_dir = home_dir / ".config" / "memories"
+    breaker_dir.mkdir(parents=True, exist_ok=True)
+    (breaker_dir / "backend-down").write_text(str(int(time.time())))
+
+    result, calls, _ = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0, (
+        f"must not crash when the breaker is already open on entry; "
+        f"stderr: {result.stderr!r}"
+    )
+    assert "unbound variable" not in result.stderr, result.stderr
+    # Must still produce a well-formed hook response, not empty/broken
+    # output from a mid-script crash.
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "not reachable" in ctx or "Memory Playbook" in ctx
+    # The already-open breaker must mean no curl calls were attempted for
+    # that (fast-skipped) backend.
+    assert calls == []
+
+
+def test_memory_hooks_slow_backend_stays_within_session_start_budget(tmp_path: Path) -> None:
+    """REGRESSION (PR #85 review, P1-B — BUDGET, reviewer reproduced). The
+    blind spot in every prior partial-failure test (including the one right
+    above this) was that they only ever simulated INSTANT failures (a
+    closed port -> immediate ECONNREFUSED). A backend that accepts the TCP
+    connection and never responds is a completely different cost shape: the
+    only thing that would catch it is measuring real wall-clock time against
+    a real hanging socket, which is what this test does (no fake-curl mock
+    — real system curl, real sockets).
+
+    Two backends, no explicit routing (both are in the routed search set,
+    matching the reviewer's exact repro): one real local HTTP server that
+    answers instantly, one real TCP listener that accepts and never writes
+    a byte back. memory-recall.sh makes ~5-6 sequential
+    _search_memories_multi calls per session (one per source prefix, plus a
+    fallback, plus a dedicated WIP search); hooks.json gives this hook a 5s
+    budget. Before the per-backend breaker fix, each of those calls would
+    re-discover the hang via its own fresh --max-time timeout, in serial —
+    trivially blowing the budget even though the healthy backend answered
+    every single time."""
+    # A real backend that answers immediately.
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def _reply(self, body: dict[str, object]) -> None:
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:  # noqa: N802 (http.server API)
+            self._reply({"status": "ok"})
+
+        def do_POST(self) -> None:  # noqa: N802 (http.server API)
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            self._reply(
+                {
+                    "results": [
+                        {
+                            "id": 7,
+                            "source": "claude-code/project",
+                            "text": "Reached the healthy backend despite the hang.",
+                            "similarity": 0.85,
+                        }
+                    ],
+                    "count": 1,
+                }
+            )
+
+        def log_message(self, *_args: object) -> None:  # silence
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    reachable_port = server.server_address[1]
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    # A real listener that accepts the connection and never responds.
+    hang_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    hang_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    hang_sock.bind(("127.0.0.1", 0))
+    hang_sock.listen(20)
+    hang_port = hang_sock.getsockname()[1]
+    stop_event = threading.Event()
+    dangling_conns: list[socket.socket] = []
+
+    def _accept_and_hang() -> None:
+        hang_sock.settimeout(0.2)
+        while not stop_event.is_set():
+            try:
+                conn, _addr = hang_sock.accept()
+                dangling_conns.append(conn)  # never read, never write, never close
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+    hang_thread = threading.Thread(target=_accept_and_hang, daemon=True)
+    hang_thread.start()
+
+    try:
+        project_dir = tmp_path / "project"
+        (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+        (project_dir / ".memories" / "backends.yaml").write_text(
+            "backends:\n"
+            f"  hangs:\n"
+            f"    url: http://127.0.0.1:{hang_port}\n"
+            f"    api_key: test-key\n"
+            f"  reachable:\n"
+            f"    url: http://127.0.0.1:{reachable_port}\n"
+            f"    api_key: test-key\n"
+        )
+
+        home_dir = tmp_path / "home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "HOME": str(home_dir),
+                "MEMORIES_URL": "",
+                "MEMORIES_API_KEY": "test-key",
+                "MEMORIES_ENV_FILE": str(tmp_path / "missing-env"),
+                "CLAUDE_PROJECT_DIR": str(project_dir),
+            }
+        )
+
+        payload = {"cwd": str(project_dir), "prompt": "hello"}
+
+        start = time.monotonic()
+        result = subprocess.run(
+            [str(RECALL_SCRIPT)],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=20,  # pytest-level safety net; the real assertion is below
+        )
+        elapsed = time.monotonic() - start
+    finally:
+        stop_event.set()
+        hang_thread.join(timeout=2)
+        server.shutdown()
+        server_thread.join(timeout=2)
+        for c in dangling_conns:
+            try:
+                c.close()
+            except OSError:
+                pass
+        hang_sock.close()
+
+    print(f"\n[timing] slow-backend hook run took {elapsed:.3f}s (budget 5.0s)")
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert elapsed < 5.0, (
+        f"SessionStart's hooks.json budget is 5s; a hanging backend must not "
+        f"blow it — took {elapsed:.2f}s. stderr: {result.stderr}"
+    )
+
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=7" in ctx and "claude-code/project" in ctx, (
+        f"results from the healthy backend must still be injected despite "
+        f"the hang, got: {ctx}"
     )
 
 

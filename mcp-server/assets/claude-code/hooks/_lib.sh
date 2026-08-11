@@ -301,18 +301,47 @@ _resolve_env_reference() {
 
 
 # -- Backend circuit breaker --------------------------------------------------
-# When the backend is down or slow, every hook on every prompt pays full curl
-# timeouts (~8s measured across a prompt's hook fan-out). After a failure the
-# breaker file makes subsequent hook invocations skip backend calls instantly
-# until the cooldown elapses (then one half-open retry).
+# When a backend is down or slow, every hook on every call pays a full curl
+# timeout. After a failure the breaker file makes subsequent calls skip that
+# backend instantly until the cooldown elapses (then one half-open retry).
+#
+# PER-BACKEND, not global (PR #85 review, 5th pass — settled, not a
+# follow-up). A single shared breaker meant one dead backend, once tripped,
+# blocked EVERY subsequent call to EVERY backend for the rest of the
+# cooldown — including healthy ones. Worse, with a routed multi-backend set
+# and no per-backend memory, a single SLOW (not instantly-failing) backend
+# got re-tried by every one of the ~5-6 sequential searches a SessionStart
+# recall makes, each paying its own timeout — blowing the hook's 5s budget
+# even though a healthy backend was reachable the whole time (reviewer
+# repro: a listener that accepts and never responds).
+#
+# Every function takes an optional backend NAME (from backends.yaml, or the
+# literal string "default" that _load_backends' single-URL fallback uses
+# when there's no config file) and defaults to "default" when omitted, which
+# resolves to the exact same file every prior single-backend caller already
+# used — a true single-backend install, or any caller not yet passing a
+# name, is byte-for-byte unchanged.
 _MEMORIES_BREAKER_FILE="${MEMORIES_BREAKER_FILE:-$HOME/.config/memories/backend-down}"
 _MEMORIES_BREAKER_COOLDOWN="${MEMORIES_BREAKER_COOLDOWN:-60}"
 
+_breaker_file_for() {
+  local name="${1:-default}"
+  local safe
+  safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_-' '_')
+  if [ -z "$safe" ] || [ "$safe" = "default" ]; then
+    printf '%s' "$_MEMORIES_BREAKER_FILE"
+  else
+    printf '%s.%s' "$_MEMORIES_BREAKER_FILE" "$safe"
+  fi
+}
+
 _breaker_open() {
-  [ -f "$_MEMORIES_BREAKER_FILE" ] || return 1
+  local file
+  file=$(_breaker_file_for "${1:-default}")
+  [ -f "$file" ] || return 1
   local ts now age
-  ts=$(cat "$_MEMORIES_BREAKER_FILE" 2>/dev/null)
-  case "$ts" in ''|*[!0-9]*) rm -f "$_MEMORIES_BREAKER_FILE" 2>/dev/null; return 1 ;; esac
+  ts=$(cat "$file" 2>/dev/null)
+  case "$ts" in ''|*[!0-9]*) rm -f "$file" 2>/dev/null; return 1 ;; esac
   now=$(date +%s)
   age=$((now - ts))
   [ "$age" -lt "$_MEMORIES_BREAKER_COOLDOWN" ] && return 0
@@ -320,85 +349,120 @@ _breaker_open() {
 }
 
 _breaker_trip() {
-  mkdir -p "$(dirname "$_MEMORIES_BREAKER_FILE")" 2>/dev/null
-  date +%s > "$_MEMORIES_BREAKER_FILE" 2>/dev/null
-  _log_warn "Memories backend unreachable — circuit open for ${_MEMORIES_BREAKER_COOLDOWN}s (hooks skip backend calls)" 2>/dev/null || true
+  local name="${1:-default}"
+  local file
+  file=$(_breaker_file_for "$name")
+  mkdir -p "$(dirname "$file")" 2>/dev/null
+  date +%s > "$file" 2>/dev/null
+  _log_warn "Memories backend '$name' unreachable — circuit open for ${_MEMORIES_BREAKER_COOLDOWN}s" 2>/dev/null || true
 }
 
 _breaker_reset() {
-  rm -f "$_MEMORIES_BREAKER_FILE" 2>/dev/null
+  local file
+  file=$(_breaker_file_for "${1:-default}")
+  rm -f "$file" 2>/dev/null
   return 0
 }
 
 # Health check — returns 0 if the ROUTED search backend set has at least
-# one reachable member (breaker-aware).
+# one reachable member. Establishes PER-BACKEND breaker state (see above)
+# up front so the search fan-out that follows can skip known-bad backends
+# outright, rather than re-discovering them one slow timeout at a time.
 #
-# This is the third pass at this bug (PR #85 review). Round one probed the
-# bare MEMORIES_URL default instead of any resolved backend. Round two fixed
-# that by probing _resolve_primary_backend_url()'s pick — but that took
-# .[0] of _load_backends' RAW, declaration-order array, not the backend set
-# routing.search actually uses (see _get_backends_for_op). So a backend
-# routing.search had EXCLUDED could still be probed, and its failure tripped
-# the single shared circuit breaker — which then made _search_memories_multi
-# skip its own (already per-backend-fault-tolerant) fan-out entirely,
-# silently zeroing out every search even though the real routed backend was
-# healthy and never contacted.
+# Fifth pass at this bug (PR #85 review):
+#   1. probed the bare MEMORIES_URL default instead of any resolved backend.
+#   2. fixed the target, but picked _load_backends' raw .[0] (declaration
+#      order) instead of the ROUTED set, so an excluded backend could still
+#      be probed and trip a single SHARED breaker that blocked everything.
+#   3. fixed to consider the whole routed set (any-reachable = healthy) —
+#      correct for the "one dead backend" case, but the shared breaker's
+#      early-return path never set MEMORIES_HEALTH_DOWN_NAMES, so a
+#      previously-tripped session crashed here under `set -u` (P1-A) — and
+#      returning "healthy" the moment ONE backend answered left any
+#      SLOW-but-not-yet-failed backend un-probed and un-marked, so
+#      _search_memories_multi's fan-out re-discovered it, via a full
+#      timeout, on every one of the ~5-6 sequential recall searches a
+#      SessionStart makes — blowing the hook's 5s budget even though a
+#      healthy backend was reachable the whole time (P1-B).
+# This pass: probe every routed backend whose OWN breaker isn't already
+# open, IN PARALLEL (bounded by one --max-time, not one per backend), and
+# record each one's outcome in ITS OWN breaker via _breaker_trip/_reset —
+# so by the time this returns, every backend the search fan-out is about to
+# try again already has accurate, individual state to skip by.
 #
-# The fix is structural, not another target swap: probe every backend
-# routing.search would actually use, and only call the set "down" when ALL
-# of them fail to answer — a single dead backend among several routed ones
-# is not the whole service being down. This preserves what the breaker is
-# actually for (short-circuit a TRUE full outage so every hook this session
-# doesn't re-pay a full curl timeout) instead of tripping it on a backend
-# nobody was even going to use. Probes sequentially, stopping at the first
-# reachable backend (cheap in the common healthy case; the routed set is
-# normally small) rather than the full parallel fan-out
-# _search_memories_multi uses for real searches — this is a liveness ping,
-# not search work, and doesn't need that machinery.
-#
-# Sets MEMORIES_HEALTH_DOWN_NAMES (comma-joined "name (url)") to every
-# routed backend that failed to respond. Meaningful only when this function
-# returns 1 — build any "unreachable" warning from THIS, never from
-# $MEMORIES_URL or a single guessed backend, so it always names backends
-# actually in play.
+# Publishes on EVERY return path, no exceptions (this is what P1-A missed
+# — only the named variable was audited, not the contract as a whole):
+#   MEMORIES_HEALTH_DOWN_NAMES — comma-joined "name (url)" for every routed
+#                                backend currently considered down (fresh
+#                                failure or already-open breaker). Always a
+#                                defined string (possibly empty on success),
+#                                never left unset — callers run under `set
+#                                -u` and read it immediately after a
+#                                non-zero return.
+#   MEMORIES_BACKEND_DOWN      — "1" when no routed backend answered, unset
+#                                on success (existing convention elsewhere
+#                                in this file: read via ${VAR:-0}).
 _health_check() {
-  if _breaker_open; then
-    MEMORIES_BACKEND_DOWN=1
-    return 1
-  fi
+  MEMORIES_HEALTH_DOWN_NAMES=""
 
   local backends
   backends=$(_get_backends_for_op "search" 2>/dev/null) || backends="[]"
   local backend_count
   backend_count=$(printf '%s' "$backends" | jq 'length' 2>/dev/null) || backend_count=0
 
-  MEMORIES_HEALTH_DOWN_NAMES=""
   if [ "${backend_count:-0}" -eq 0 ]; then
     MEMORIES_HEALTH_DOWN_NAMES="no backend resolved for search routing"
-    _breaker_trip
     MEMORIES_BACKEND_DOWN=1
     return 1
   fi
 
-  local backend url name reachable=1
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  local backend url name safe
   while read -r backend; do
     url=$(printf '%s' "$backend" | jq -r '.url')
     name=$(printf '%s' "$backend" | jq -r '.name')
-    if curl -sf --max-time 2 "$url/health" >/dev/null 2>&1; then
-      reachable=0
-      break
-    fi
-    if [ -n "$MEMORIES_HEALTH_DOWN_NAMES" ]; then
-      MEMORIES_HEALTH_DOWN_NAMES="$MEMORIES_HEALTH_DOWN_NAMES, "
-    fi
-    MEMORIES_HEALTH_DOWN_NAMES="${MEMORIES_HEALTH_DOWN_NAMES}${name} (${url})"
-  done < <(printf '%s' "$backends" | jq -c '.[]')
+    safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_' '_')
 
-  if [ "$reachable" -eq 0 ]; then
-    _breaker_reset
+    if _breaker_open "$name"; then
+      # Already known down from a recent trip — don't re-pay the timeout,
+      # just count it among the down set.
+      printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${safe}"
+      continue
+    fi
+
+    (
+      if curl -sf --max-time 2 "$url/health" >/dev/null 2>&1; then
+        _breaker_reset "$name"
+        : > "$tmpdir/up_${safe}"
+      else
+        _breaker_trip "$name"
+        printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${safe}"
+      fi
+    ) &
+  done < <(printf '%s' "$backends" | jq -c '.[]')
+  wait
+
+  local up_count=0
+  local f
+  for f in "$tmpdir"/up_*; do
+    [ -e "$f" ] || continue
+    up_count=$((up_count + 1))
+  done
+  for f in "$tmpdir"/down_*; do
+    [ -e "$f" ] || continue
+    if [ -n "$MEMORIES_HEALTH_DOWN_NAMES" ]; then
+      MEMORIES_HEALTH_DOWN_NAMES="$MEMORIES_HEALTH_DOWN_NAMES, $(cat "$f")"
+    else
+      MEMORIES_HEALTH_DOWN_NAMES="$(cat "$f")"
+    fi
+  done
+  rm -rf "$tmpdir"
+
+  if [ "$up_count" -gt 0 ]; then
+    MEMORIES_BACKEND_DOWN=0
     return 0
   fi
-  _breaker_trip
   MEMORIES_BACKEND_DOWN=1
   return 1
 }
@@ -692,12 +756,6 @@ _search_memories_multi() {
   local limit="${3:-5}"
   local threshold="${4:-0.4}"
 
-  if _breaker_open; then
-    MEMORIES_BACKEND_DOWN=1
-    echo '{"results":[],"count":0}'
-    return
-  fi
-
   local backends
   backends=$(_get_backends_for_op "search")
   local count
@@ -713,10 +771,21 @@ _search_memories_multi() {
   fi
 
   if [ "$count" -le 1 ]; then
-    # Single backend — direct call (backward compat, no overhead)
-    local url key
+    # Single backend — direct call (backward compat, no overhead). Breaker
+    # keyed by THIS backend's own name (see _breaker_file_for): "default"
+    # for a plain MEMORIES_URL install (same file as always), or the
+    # backend's real name when routing.search collapsed to exactly one.
+    local url key name
     url=$(echo "$backends" | jq -r '.[0].url')
     key=$(echo "$backends" | jq -r '.[0].api_key')
+    name=$(echo "$backends" | jq -r '.[0].name // "default"')
+
+    if _breaker_open "$name"; then
+      MEMORIES_BACKEND_DOWN=1
+      echo '{"results":[],"count":0}'
+      return
+    fi
+
     # No -f here: /search is authenticated (unlike /health), and a wrong/missing
     # MEMORIES_API_KEY silently returns nothing forever unless we can tell a 401
     # (credential problem, backend reachable) apart from a connection failure
@@ -733,54 +802,80 @@ _search_memories_multi() {
     if [ $curl_rc -eq 0 ] && [ -n "$raw" ] && [ "$status" != "$raw" ]; then
       case "$status" in
         2??)
-          _breaker_reset
+          _breaker_reset "$name"
           printf '%s' "$out"
           ;;
         401)
           # Backend is reachable — this is a credential problem, not downtime.
           # Keep the breaker closed so the session doesn't misreport "unreachable".
-          _breaker_reset
+          _breaker_reset "$name"
           MEMORIES_AUTH_FAILED=1
           echo '{"results":[],"count":0,"auth_failed":true}'
           ;;
         *)
-          _breaker_trip
+          _breaker_trip "$name"
           MEMORIES_BACKEND_DOWN=1
           echo '{"results":[],"count":0}'
           ;;
       esac
     else
-      _breaker_trip
+      _breaker_trip "$name"
       MEMORIES_BACKEND_DOWN=1
       echo '{"results":[],"count":0}'
     fi
     return
   fi
 
-  # Multi-backend: parallel fan-out with background subshells
-  # Use process substitution (< <(...)) so the while loop runs in the current
-  # shell and `wait` can actually collect the background jobs.
+  # Multi-backend: parallel fan-out with background subshells, PER-BACKEND
+  # breaker-aware in both directions (PR #85 review, 5th pass):
+  #   - a backend whose OWN breaker is already open is skipped outright —
+  #     no curl call at all — instead of being re-tried (and re-paying a
+  #     full --max-time) on every one of the several sequential recall
+  #     searches a single SessionStart makes.
+  #   - each backend's OWN outcome here trips/resets ITS OWN breaker, so a
+  #     backend that fails (or hangs, once its --max-time is hit) on THIS
+  #     call is already known-bad for the NEXT call, not re-discovered from
+  #     scratch every time.
+  # Use process substitution (< <(...)) so the while loop runs in the
+  # current shell and `wait` can actually collect the background jobs.
   local tmpdir
   tmpdir=$(mktemp -d)
-  local i=0
+  local attempted=0
   while read -r backend; do
-    local url key name
+    local url key name safe
     url=$(echo "$backend" | jq -r '.url')
     key=$(echo "$backend" | jq -r '.api_key')
     name=$(echo "$backend" | jq -r '.name')
+    safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_' '_')
+
+    if _breaker_open "$name"; then
+      continue
+    fi
+    attempted=1
     (
       result=$(curl -sf --max-time 4 -X POST "$url/search" \
         -H "Content-Type: application/json" \
         -H "X-API-Key: $key" \
         -d "$body" 2>/dev/null)
       if [ -n "$result" ]; then
+        _breaker_reset "$name"
         # Tag results with _backend
-        echo "$result" | jq -c --arg b "$name" '.results[] | . + {_backend: $b}' > "$tmpdir/result_${name}.jsonl"
+        echo "$result" | jq -c --arg b "$name" '.results[] | . + {_backend: $b}' > "$tmpdir/result_${safe}.jsonl"
+      else
+        _breaker_trip "$name"
       fi
     ) &
-    i=$((i + 1))
   done < <(echo "$backends" | jq -c '.[]')
   wait
+
+  if [ "$attempted" -eq 0 ]; then
+    # Every routed backend's breaker was already open — nothing to try,
+    # nothing to wait on.
+    rm -rf "$tmpdir"
+    MEMORIES_BACKEND_DOWN=1
+    echo '{"results":[],"count":0}'
+    return
+  fi
 
   # Merge results: sort by score, dedup keeping highest-scoring duplicate,
   # then re-sort to guarantee global score ordering after dedup.
