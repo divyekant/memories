@@ -75,9 +75,20 @@ class TestBreakerWiring:
         bin_dir.mkdir(exist_ok=True)
         marker = tmp_path / "curl-invoked"
         curl = bin_dir / "curl"
+        # Mimic real curl's -w/--write-out: append "\n200" after the body when
+        # the caller asked for %{http_code}, same as _search_memories_multi's
+        # single-backend path relies on to tell a 401 (credential problem) apart
+        # from a connection failure without a second round-trip.
+        success_script = (
+            f"printf '%s' '{body}'\n"
+            "for arg in \"$@\"; do\n"
+            '  case "$arg" in *"%{http_code}"*) printf "\\n200";; esac\n'
+            "done\n"
+            "exit 0\n"
+        )
         curl.write_text(
             f"#!/bin/bash\necho invoked >> {marker}\n"
-            + (f"printf '%s' '{body}'\nexit 0\n" if exit_code == 0 else f"exit {exit_code}\n")
+            + (success_script if exit_code == 0 else f"exit {exit_code}\n")
         )
         curl.chmod(0o755)
         return bin_dir, marker

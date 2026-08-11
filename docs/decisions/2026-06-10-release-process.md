@@ -37,6 +37,13 @@ Stop cutting a release per work item. The flow is now:
 - Full suite green → `chore: release vX.Y.Z` on develop → `--no-ff` merge to
   `main` → tag → push → GitHub release → deploy (compose build + up) → sync
   the installed plugin cache if hook/skill files changed.
+- **Bump the marketplace pin.** `dk-marketplace`'s `memories` entry pins its
+  `git-subdir` source to an immutable `sha`, so the plugin does NOT track
+  `main` — a release is invisible to plugin consumers until that SHA is
+  updated to the new tag's commit and pushed. Deliberate: those hooks read
+  session transcripts and carry the backend credential, so a fresh clone must
+  never execute upstream code that changed after review. Get the commit with
+  `git rev-list -n1 vX.Y.Z`.
 - Anything user-behavior-changing ships behind an eval gate where one exists
   (active-search eval for hook behavior, tier-1 recall A/B for retrieval).
 
