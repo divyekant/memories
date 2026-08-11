@@ -300,6 +300,105 @@ _resolve_env_reference() {
 }
 
 
+# -- Hook-wide deadline -------------------------------------------------------
+# Per-call --max-time tuning cannot bound a hook's TOTAL time by construction,
+# and two independent measurements prove it (PR #85 review, round 7):
+#   - A single HEALTHY REMOTE backend (~0.7s RTT) across the ~5 sequential
+#     recall searches memory-recall.sh makes per session already consumes
+#     ~3.7s of a 5s budget with nothing even failing. Sum of per-call caps
+#     across N sequential calls has no ceiling tied to the hook's own budget.
+#   - A backend whose /health responds promptly but whose /search hangs: the
+#     per-backend breaker (7c3d5d8) can't help on the FIRST occurrence,
+#     because nothing yet knows THAT backend is bad on THAT endpoint — the
+#     first search fan-out still pays a full, flat --max-time against it.
+#     Measured 5.65s against a 5s budget even with a healthy local peer.
+#
+# The fix: one END-TO-END deadline, computed once at hook start, consulted
+# before every outbound call. Every call's --max-time is capped to whatever
+# is actually left, and once there isn't enough left to justify a call, it
+# is skipped rather than attempted — partial context delivered on time
+# beats complete context discarded when hooks.json kills the whole process
+# at its own timeout (which happens with NO chance to flush partial output).
+#
+# Only hooks that call _hook_deadline_init opt in. _hook_remaining_s returns
+# a large sentinel ("uncapped") when no deadline was initialized this
+# invocation, so every OTHER caller of _health_check/_search_memories_multi
+# (memory-query.sh, memory-extract.sh, etc. — not wired into this yet) is
+# completely unaffected; only memory-recall.sh (SessionStart) and
+# memory-subagent-recall.sh (SubagentStart) call _hook_deadline_init.
+_MEMORIES_HOOK_BUDGET_MS_DEFAULT=5000   # hooks.json: SessionStart/SubagentStart timeout, ms
+_MEMORIES_HOOK_BUDGET_MARGIN_MS=500     # reserved for JSON assembly, MEMORY.md sync, and stdout
+                                         # after the last call returns — hooks.json kills the
+                                         # whole process at its timeout with no chance to flush,
+                                         # so this has to cover the tail, not just network time.
+_MEMORIES_HOOK_CALL_RESERVE_S="0.15"    # shell/curl-fork overhead reserved off each call's cap
+_MEMORIES_HOOK_MIN_CALL_S="0.3"         # below this much remaining, skip the call entirely
+
+# Wall-clock "now" with sub-second precision, portable across macOS (BSD
+# date, no %N) and Linux without adding a new hard dependency: jq is already
+# required everywhere in these hooks, and jq's `now` builtin uses the C
+# library's own clock, not a shell-out to `date`. Falls back to whole-second
+# `date +%s` only if jq itself is somehow unavailable (defensive; jq missing
+# is already fatal to virtually everything else these hooks do).
+_hook_now_s() {
+  jq -n 'now' 2>/dev/null || date +%s
+}
+
+# Call once, as early as possible after a hook confirms it's active (right
+# after _exit_if_disabled), before any backend call.
+_hook_deadline_init() {
+  local start
+  start=$(_hook_now_s)
+  local budget_ms="${MEMORIES_HOOK_BUDGET_MS:-$_MEMORIES_HOOK_BUDGET_MS_DEFAULT}"
+  _MEMORIES_HOOK_DEADLINE_S=$(jq -n --argjson start "$start" --argjson budget_ms "$budget_ms" --argjson margin_ms "$_MEMORIES_HOOK_BUDGET_MARGIN_MS" \
+    '$start + (($budget_ms - $margin_ms) / 1000)' 2>/dev/null) || _MEMORIES_HOOK_DEADLINE_S=""
+}
+
+# Seconds remaining before the deadline (may be negative). Prints a large
+# sentinel — "uncapped" — when no deadline was initialized this invocation.
+_hook_remaining_s() {
+  if [ -z "${_MEMORIES_HOOK_DEADLINE_S:-}" ]; then
+    printf '999999'
+    return 0
+  fi
+  local now
+  now=$(_hook_now_s)
+  jq -n --argjson deadline "$_MEMORIES_HOOK_DEADLINE_S" --argjson now "$now" '$deadline - $now' 2>/dev/null || printf '999999'
+}
+
+# True ("true") when there isn't enough deadline left to justify issuing
+# another backend call this hook run. Callers (the prefix-search loop, the
+# fallback search, the WIP search, ...) should stop issuing further calls,
+# log what got skipped, and go with whatever context they already have.
+_hook_deadline_exhausted() {
+  local remaining
+  remaining=$(_hook_remaining_s)
+  jq -n --argjson remaining "$remaining" --argjson min "$_MEMORIES_HOOK_MIN_CALL_S" '$remaining < $min' 2>/dev/null || printf 'false'
+}
+
+# Prints the --max-time value to use for a single backend call given its
+# EXISTING per-call cap ($1) — the smaller of that cap and whatever's left
+# on the deadline (minus a small reserve for shell/curl-fork overhead).
+# Prints nothing and returns 1 if there isn't enough left to justify issuing
+# the call at all; callers MUST check this and skip the call rather than
+# pass a near-zero or negative --max-time to curl.
+_hook_call_budget() {
+  local existing_cap="$1"
+  local remaining
+  remaining=$(_hook_remaining_s)
+  local budget
+  budget=$(jq -n --argjson cap "$existing_cap" --argjson remaining "$remaining" --argjson reserve "$_MEMORIES_HOOK_CALL_RESERVE_S" \
+    '[$cap, ($remaining - $reserve)] | min' 2>/dev/null) || budget="$existing_cap"
+  local ok
+  ok=$(jq -n --argjson budget "$budget" --argjson min "$_MEMORIES_HOOK_MIN_CALL_S" '$budget >= $min' 2>/dev/null) || ok="false"
+  if [ "$ok" != "true" ]; then
+    return 1
+  fi
+  printf '%s' "$budget"
+  return 0
+}
+
+
 # -- Backend circuit breaker --------------------------------------------------
 # When a backend is down or slow, every hook on every call pays a full curl
 # timeout. After a failure the breaker file makes subsequent calls skip that
@@ -416,6 +515,20 @@ _health_check() {
     return 1
   fi
 
+  # Deadline-aware: cap the probe's --max-time to whatever's actually left
+  # (uncapped/2s when no deadline was initialized — see _hook_call_budget).
+  # If there isn't enough left to even probe, don't try — every routed
+  # backend is unknown/unreachable for THIS invocation. Breaker state is
+  # left untouched, so a later invocation with a fresh deadline still gets
+  # a fair re-check rather than being penalized for our own budget, not the
+  # backend's.
+  local probe_budget
+  if ! probe_budget=$(_hook_call_budget 2); then
+    MEMORIES_HEALTH_DOWN_NAMES="hook budget exhausted before any health probe"
+    MEMORIES_BACKEND_DOWN=1
+    return 1
+  fi
+
   local tmpdir
   tmpdir=$(mktemp -d)
   local backend url name safe
@@ -432,7 +545,7 @@ _health_check() {
     fi
 
     (
-      if curl -sf --max-time 2 "$url/health" >/dev/null 2>&1; then
+      if curl -sf --max-time "$probe_budget" "$url/health" >/dev/null 2>&1; then
         _breaker_reset "$name"
         : > "$tmpdir/up_${safe}"
       else
@@ -786,13 +899,24 @@ _search_memories_multi() {
       return
     fi
 
+    # Deadline-aware --max-time (uncapped/4s when no deadline was
+    # initialized). Not enough budget left to justify the call at all ⇒
+    # skip it — this is NOT evidence the backend is bad, so its breaker is
+    # left untouched (only OUR budget ran out, not the backend).
+    local call_budget
+    if ! call_budget=$(_hook_call_budget 4); then
+      MEMORIES_BACKEND_DOWN=1
+      echo '{"results":[],"count":0}'
+      return
+    fi
+
     # No -f here: /search is authenticated (unlike /health), and a wrong/missing
     # MEMORIES_API_KEY silently returns nothing forever unless we can tell a 401
     # (credential problem, backend reachable) apart from a connection failure
     # (backend unreachable). -w appends the status code after the body so we can
     # branch on it without a second round-trip.
     local raw curl_rc status out
-    raw=$(curl -s --max-time 4 -w '\n%{http_code}' -X POST "$url/search" \
+    raw=$(curl -s --max-time "$call_budget" -w '\n%{http_code}' -X POST "$url/search" \
       -H "Content-Type: application/json" \
       -H "X-API-Key: $key" \
       -d "$body" 2>/dev/null)
@@ -838,6 +962,19 @@ _search_memories_multi() {
   #     scratch every time.
   # Use process substitution (< <(...)) so the while loop runs in the
   # current shell and `wait` can actually collect the background jobs.
+  #
+  # Deadline-aware: one --max-time is computed ONCE for the whole fan-out
+  # (all backends start at roughly the same wall-clock moment, so a single
+  # shared budget is both simpler and more accurate than recomputing it
+  # per-backend). Not enough left to justify attempting the routed set at
+  # all ⇒ skip the whole round rather than issue near-zero-timeout calls.
+  local call_budget
+  if ! call_budget=$(_hook_call_budget 4); then
+    MEMORIES_BACKEND_DOWN=1
+    echo '{"results":[],"count":0}'
+    return
+  fi
+
   local tmpdir
   tmpdir=$(mktemp -d)
   local attempted=0
@@ -853,7 +990,7 @@ _search_memories_multi() {
     fi
     attempted=1
     (
-      result=$(curl -sf --max-time 4 -X POST "$url/search" \
+      result=$(curl -sf --max-time "$call_budget" -X POST "$url/search" \
         -H "Content-Type: application/json" \
         -H "X-API-Key: $key" \
         -d "$body" 2>/dev/null)

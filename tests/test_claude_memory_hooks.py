@@ -2117,6 +2117,308 @@ def test_memory_hooks_slow_backend_stays_within_session_start_budget(tmp_path: P
     )
 
 
+def test_memory_hooks_health_ok_search_hangs_stays_within_budget(tmp_path: Path) -> None:
+    """(a) REGRESSION (PR #85 review, round 7 — reviewer's new P1). The
+    per-backend breaker (7c3d5d8) cannot help on the FIRST occurrence of a
+    backend whose /health responds promptly but whose /search hangs:
+    nothing yet knows THAT backend is bad on THAT endpoint, so the first
+    search fan-out still pays a full, flat --max-time against it before the
+    breaker can trip. Reviewer measured 5.65s against a 5s budget even with
+    a healthy local peer. The round-6 slow-backend test (right above this
+    one) missed this specific shape because its hanging listener stalled
+    /health too, letting the 2s health probe open the breaker before any
+    search was ever attempted — this test isolates the health-OK/search-
+    hang split specifically, real sockets, real curl, no mock."""
+
+    class _HangOnSearchHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 (http.server API)
+            data = b'{"status": "ok"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self) -> None:  # noqa: N802 (http.server API)
+            # Read the request, then never respond — the client's own
+            # --max-time is the only thing that will ever end this.
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            time.sleep(30)
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    class _HealthyHandler(http.server.BaseHTTPRequestHandler):
+        def _reply(self, body: dict[str, object]) -> None:
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:  # noqa: N802
+            self._reply({"status": "ok"})
+
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            self._reply(
+                {
+                    "results": [
+                        {
+                            "id": 55,
+                            "source": "claude-code/project",
+                            "text": "Reached the healthy backend despite the search-hang split.",
+                            "similarity": 0.85,
+                        }
+                    ],
+                    "count": 1,
+                }
+            )
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    hang_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _HangOnSearchHandler)
+    hang_server.daemon_threads = True
+    hang_port = hang_server.server_address[1]
+    hang_thread = threading.Thread(target=hang_server.serve_forever, daemon=True)
+    hang_thread.start()
+
+    healthy_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _HealthyHandler)
+    healthy_server.daemon_threads = True
+    healthy_port = healthy_server.server_address[1]
+    healthy_thread = threading.Thread(target=healthy_server.serve_forever, daemon=True)
+    healthy_thread.start()
+
+    try:
+        project_dir = tmp_path / "project"
+        (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+        (project_dir / ".memories" / "backends.yaml").write_text(
+            "backends:\n"
+            f"  hangs_on_search:\n"
+            f"    url: http://127.0.0.1:{hang_port}\n"
+            f"    api_key: test-key\n"
+            f"  reachable:\n"
+            f"    url: http://127.0.0.1:{healthy_port}\n"
+            f"    api_key: test-key\n"
+        )
+
+        home_dir = tmp_path / "home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "HOME": str(home_dir),
+                "MEMORIES_URL": "",
+                "MEMORIES_API_KEY": "test-key",
+                "MEMORIES_ENV_FILE": str(tmp_path / "missing-env"),
+                "CLAUDE_PROJECT_DIR": str(project_dir),
+            }
+        )
+
+        payload = {"cwd": str(project_dir), "prompt": "hello"}
+
+        start = time.monotonic()
+        result = subprocess.run(
+            [str(RECALL_SCRIPT)],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=20,  # pytest-level safety net; the real assertion is below
+        )
+        elapsed = time.monotonic() - start
+    finally:
+        healthy_server.shutdown()
+        healthy_thread.join(timeout=2)
+        hang_server.shutdown()
+        hang_thread.join(timeout=2)
+
+    print(f"\n[timing] health-OK/search-hang split hook run took {elapsed:.3f}s (budget 5.0s)")
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert elapsed < 5.0, (
+        f"SessionStart's hooks.json budget is 5s; a health-OK/search-hang "
+        f"backend must not blow it — took {elapsed:.2f}s. stderr: {result.stderr}"
+    )
+
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=55" in ctx and "claude-code/project" in ctx, (
+        f"results from the healthy backend must still be injected despite "
+        f"the search-hang split, got: {ctx}"
+    )
+
+
+def test_memory_hooks_all_backends_hang_stays_within_budget(tmp_path: Path) -> None:
+    """(b) Everything hangs: BOTH routed backends accept the TCP connection
+    and never respond at all (not even /health) — no healthy backend in the
+    mix. The hook must still return within budget with an honest "nothing
+    found" result, never a crash or a process hard-killed past hooks.json's
+    own timeout with no output at all."""
+    listeners: list[socket.socket] = []
+    dangling_conns: list[socket.socket] = []
+    stop_event = threading.Event()
+    accept_threads: list[threading.Thread] = []
+    ports: list[int] = []
+
+    def _accept_and_hang(sock: socket.socket) -> None:
+        sock.settimeout(0.2)
+        while not stop_event.is_set():
+            try:
+                conn, _addr = sock.accept()
+                dangling_conns.append(conn)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+    for _ in range(2):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0))
+        s.listen(20)
+        listeners.append(s)
+        ports.append(s.getsockname()[1])
+        t = threading.Thread(target=_accept_and_hang, args=(s,), daemon=True)
+        t.start()
+        accept_threads.append(t)
+
+    try:
+        project_dir = tmp_path / "project"
+        (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+        (project_dir / ".memories" / "backends.yaml").write_text(
+            "backends:\n"
+            f"  hangs_a:\n"
+            f"    url: http://127.0.0.1:{ports[0]}\n"
+            f"    api_key: test-key\n"
+            f"  hangs_b:\n"
+            f"    url: http://127.0.0.1:{ports[1]}\n"
+            f"    api_key: test-key\n"
+        )
+
+        home_dir = tmp_path / "home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "HOME": str(home_dir),
+                "MEMORIES_URL": "",
+                "MEMORIES_API_KEY": "test-key",
+                "MEMORIES_ENV_FILE": str(tmp_path / "missing-env"),
+                "CLAUDE_PROJECT_DIR": str(project_dir),
+            }
+        )
+
+        payload = {"cwd": str(project_dir), "prompt": "hello"}
+
+        start = time.monotonic()
+        result = subprocess.run(
+            [str(RECALL_SCRIPT)],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=20,
+        )
+        elapsed = time.monotonic() - start
+    finally:
+        stop_event.set()
+        for t in accept_threads:
+            t.join(timeout=2)
+        for c in dangling_conns:
+            try:
+                c.close()
+            except OSError:
+                pass
+        for s in listeners:
+            s.close()
+
+    print(f"\n[timing] all-backends-hang hook run took {elapsed:.3f}s (budget 5.0s)")
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert elapsed < 5.0, (
+        f"SessionStart's hooks.json budget is 5s; a fully-hung routed set "
+        f"must still return within it — took {elapsed:.2f}s. stderr: {result.stderr}"
+    )
+    output = json.loads(result.stdout)  # must still be well-formed JSON
+    assert "hookSpecificOutput" in output
+
+
+def test_memory_hooks_healthy_only_baseline_unchanged(tmp_path: Path) -> None:
+    """(c) Baseline: nothing fails, nothing hangs. The deadline machinery
+    must not truncate or otherwise change behavior in the common case —
+    every scoped prefix is still searched (no early break), and the hook
+    completes fast (mocked harness, no real network)."""
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 1,
+                        "source": "claude-code/memories",
+                        "text": "Baseline result.",
+                        "similarity": 0.9,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+    payload = {"cwd": "/Users/example/memories"}
+
+    start = time.monotonic()
+    result, calls, _ = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 5.0, f"the healthy baseline must be fast, took {elapsed:.2f}s"
+
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=1" in ctx
+    assert "budget exhausted" not in ctx.lower()
+
+    # All 4 default scoped prefixes, plus the dedicated WIP search, must
+    # have actually been attempted — no truncation in the unhindered case.
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    prefixes = [c["body"].get("source_prefix", "") for c in search_calls if c["body"] is not None]
+    assert "claude-code/memories" in prefixes
+    assert "codex/memories" in prefixes
+    assert "learning/memories" in prefixes
+    assert prefixes.count("wip/memories") >= 1
+
+
+def test_memory_hooks_tiny_budget_exhausted_from_start_exits_cleanly(tmp_path: Path) -> None:
+    """(d) Budget-exhaustion path: MEMORIES_HOOK_BUDGET_MS forced absurdly
+    small (the deadline is already in the past before the first call). The
+    hook must still exit 0 with valid, well-formed JSON — never a crash,
+    never empty/malformed output — even though every backend call this run
+    gets skipped by the deadline."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_HOOK_BUDGET_MS": "1"},
+    )
+
+    assert result.returncode == 0, f"stderr: {result.stderr!r}"
+    output = json.loads(result.stdout)  # must parse — never malformed/empty
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "Memory Playbook" in ctx
+    assert "budget exhausted" in ctx.lower() or "not reachable" in ctx.lower()
+    # Every backend call this run should have been skipped by the deadline.
+    assert calls == []
+
+
 def test_memory_hooks_explicit_backends_file_wins_over_project_root(tmp_path: Path) -> None:
     """Precedence: MEMORIES_BACKENDS_FILE is an explicit override and must win
     over a project-root .memories/backends.yaml, even when both exist."""
