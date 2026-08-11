@@ -1,5 +1,23 @@
 # Changelog
 
+## [5.10.0] - 2026-08-11
+
+### Added
+- **Cloud-session support** — `.claude/settings.json` is now committed (with a `.gitignore` negation) so Claude Code cloud sessions, which start from a fresh clone and cannot see gitignored files, get the hook layer rather than connector tools only. README gains a "Cloud coding sessions" section covering the tools-vs-hooks split, the required environment variables, and the network allowlist step that otherwise fails silently.
+- **`MEMORIES_ENABLED`** — explicit opt-in/opt-out for the hooks, alongside the existing `MEMORIES_DISABLED` kill switch.
+- **`MEMORIES_HOOK_BUDGET_MS`** (default 5000, matching the `hooks.json` SessionStart timeout) — the budget for the new end-to-end deadline.
+
+### Changed
+- **Hooks are silent by default when unconfigured.** With no `MEMORIES_URL` (and no `backends.yaml`), hooks now exit before any network call, file write, or warning — a repo can ship the plugin setting without imposing warnings, latency, or a log file on contributors who never opted in. Precedence: `MEMORIES_DISABLED` > `MEMORIES_ENABLED` > auto-detect on configuration presence.
+- **One resolver for backend configuration.** The activation gate, backend loader, health check, and every warning now resolve through the same `_resolve_backends_file` (precedence: `MEMORIES_BACKENDS_FILE` > `$CLAUDE_PROJECT_DIR/.memories/backends.yaml` > `$CWD/.memories/backends.yaml` > `~/.config/memories/backends.yaml`), so they can no longer disagree about which backend is in play.
+- **Per-backend circuit breaker.** Breaker state is tracked per backend instead of globally, and health is derived from the routed search set rather than declaration order, so one unhealthy backend no longer suppresses searches against healthy ones.
+- **End-to-end hook deadline.** SessionStart/SubagentStart recall now derives every request timeout from the remaining budget and stops issuing searches when it is exhausted, emitting whatever context it gathered. Partial context delivered on time replaces complete context discarded at the timeout.
+
+### Fixed
+- **Silent credential failure.** `/health` is unauthenticated, so a correct `MEMORIES_URL` with a missing or wrong `MEMORIES_API_KEY` previously passed the health check and then returned nothing forever. A 401 on the authenticated search is now reported as a credential problem, and the unreachable case names the cloud allowlist as a likely cause.
+- **Crash after a backend went down.** `_health_check`'s breaker-open early return left a variable unset that callers interpolate under `set -u`, so every subsequent hook invocation exited 1 with "unbound variable" and produced no output.
+- Claude Code plugin manifest (`.claude-plugin/plugin.json`) added — the plugin previously could not describe itself to a marketplace or to `claude --plugin-dir`.
+
 ## [5.9.0] - 2026-08-10
 
 ### Added

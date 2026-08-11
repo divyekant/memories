@@ -180,11 +180,69 @@ _memories_disabled() {
   esac
 }
 
+# Any of the supported backend-config sources counts as "configured": a
+# single-backend MEMORIES_URL, or a backends.yaml resolved by
+# _resolve_backends_file (defined below, in the Multi-Backend Config
+# section) — the SAME function _load_backends uses to actually load the
+# file. Sharing one resolver is deliberate: an earlier version of this gate
+# checked CLAUDE_PROJECT_DIR directly while _load_backends checked only the
+# payload's cwd, so a repo with `.memories/backends.yaml` at the project
+# root but a session cwd in a subdirectory would activate the hook here and
+# then have _load_backends fail to find that same file, silently falling
+# back to querying http://localhost:8900 — worse than the no-op this gate is
+# for. Routing both checks through one function makes that impossible.
+#
+# This early check runs BEFORE stdin is read, so it calls
+# _resolve_backends_file with no cwd argument (payload cwd isn't known yet);
+# see that function's docstring for what that omits and why it's safe.
+_memories_has_backend_config() {
+  [ -n "${MEMORIES_URL:-}" ] && return 0
+  _resolve_backends_file >/dev/null
+}
+
+# Decide whether hooks should run at all, evaluated in this precedence:
+#   1. MEMORIES_DISABLED truthy         -> inactive (handled by caller, see below)
+#   2. MEMORIES_ENABLED explicitly set  -> obey it (truthy/falsy)
+#   3. MEMORIES_ENABLED unset           -> auto-detect: active iff any
+#      supported backend-config source is present (see
+#      _memories_has_backend_config)
+# This lets a repo commit .claude/settings.json enabling the plugin (for cloud
+# sessions) without forcing every clone-without-credentials to see warnings or
+# pay curl timeouts: unconfigured is a true, silent no-op by default.
+_memories_active() {
+  if _memories_disabled; then
+    return 1
+  fi
+  if [ -n "${MEMORIES_ENABLED+x}" ]; then
+    case "${MEMORIES_ENABLED}" in
+      1|true|TRUE|yes|YES|on|ON) return 0 ;;
+      0|false|FALSE|no|NO|off|OFF) return 1 ;;
+    esac
+  fi
+  _memories_has_backend_config
+}
+
 _exit_if_disabled() {
   if _memories_disabled; then
     _log_info "Hook disabled by MEMORIES_DISABLED"
     exit 0
   fi
+  if _memories_active; then
+    return 0
+  fi
+  if [ -n "${MEMORIES_ENABLED+x}" ]; then
+    # Explicit MEMORIES_ENABLED=false (or an unrecognized value with no
+    # backend config either) — the user deliberately set something, so a log
+    # line is informative and welcome.
+    _log_info "Hook disabled by MEMORIES_ENABLED=${MEMORIES_ENABLED}"
+    exit 0
+  fi
+  # Auto-detected inactive: no MEMORIES_ENABLED override and no backend
+  # config found — a contributor who never opted in. Do NOT call _log_info
+  # here: it would create ~/.config/memories/hook.log (and the directory) on
+  # every session/prompt/tool event for someone who never configured
+  # anything, which is exactly the noise this gate exists to prevent.
+  exit 0
 }
 
 # Rotate log if over 1000 lines (called from SessionStart only)
@@ -242,19 +300,147 @@ _resolve_env_reference() {
 }
 
 
+# -- Hook-wide deadline -------------------------------------------------------
+# Per-call --max-time tuning cannot bound a hook's TOTAL time by construction,
+# and two independent measurements prove it (PR #85 review, round 7):
+#   - A single HEALTHY REMOTE backend (~0.7s RTT) across the ~5 sequential
+#     recall searches memory-recall.sh makes per session already consumes
+#     ~3.7s of a 5s budget with nothing even failing. Sum of per-call caps
+#     across N sequential calls has no ceiling tied to the hook's own budget.
+#   - A backend whose /health responds promptly but whose /search hangs: the
+#     per-backend breaker (7c3d5d8) can't help on the FIRST occurrence,
+#     because nothing yet knows THAT backend is bad on THAT endpoint — the
+#     first search fan-out still pays a full, flat --max-time against it.
+#     Measured 5.65s against a 5s budget even with a healthy local peer.
+#
+# The fix: one END-TO-END deadline, computed once at hook start, consulted
+# before every outbound call. Every call's --max-time is capped to whatever
+# is actually left, and once there isn't enough left to justify a call, it
+# is skipped rather than attempted — partial context delivered on time
+# beats complete context discarded when hooks.json kills the whole process
+# at its own timeout (which happens with NO chance to flush partial output).
+#
+# Only hooks that call _hook_deadline_init opt in. _hook_remaining_s returns
+# a large sentinel ("uncapped") when no deadline was initialized this
+# invocation, so every OTHER caller of _health_check/_search_memories_multi
+# (memory-query.sh, memory-extract.sh, etc. — not wired into this yet) is
+# completely unaffected; only memory-recall.sh (SessionStart) and
+# memory-subagent-recall.sh (SubagentStart) call _hook_deadline_init.
+_MEMORIES_HOOK_BUDGET_MS_DEFAULT=5000   # hooks.json: SessionStart/SubagentStart timeout, ms
+_MEMORIES_HOOK_BUDGET_MARGIN_MS=500     # reserved for JSON assembly, MEMORY.md sync, and stdout
+                                         # after the last call returns — hooks.json kills the
+                                         # whole process at its timeout with no chance to flush,
+                                         # so this has to cover the tail, not just network time.
+_MEMORIES_HOOK_CALL_RESERVE_S="0.15"    # shell/curl-fork overhead reserved off each call's cap
+_MEMORIES_HOOK_MIN_CALL_S="0.3"         # below this much remaining, skip the call entirely
+
+# Wall-clock "now" with sub-second precision, portable across macOS (BSD
+# date, no %N) and Linux without adding a new hard dependency: jq is already
+# required everywhere in these hooks, and jq's `now` builtin uses the C
+# library's own clock, not a shell-out to `date`. Falls back to whole-second
+# `date +%s` only if jq itself is somehow unavailable (defensive; jq missing
+# is already fatal to virtually everything else these hooks do).
+_hook_now_s() {
+  jq -n 'now' 2>/dev/null || date +%s
+}
+
+# Call once, as early as possible after a hook confirms it's active (right
+# after _exit_if_disabled), before any backend call.
+_hook_deadline_init() {
+  local start
+  start=$(_hook_now_s)
+  local budget_ms="${MEMORIES_HOOK_BUDGET_MS:-$_MEMORIES_HOOK_BUDGET_MS_DEFAULT}"
+  _MEMORIES_HOOK_DEADLINE_S=$(jq -n --argjson start "$start" --argjson budget_ms "$budget_ms" --argjson margin_ms "$_MEMORIES_HOOK_BUDGET_MARGIN_MS" \
+    '$start + (($budget_ms - $margin_ms) / 1000)' 2>/dev/null) || _MEMORIES_HOOK_DEADLINE_S=""
+}
+
+# Seconds remaining before the deadline (may be negative). Prints a large
+# sentinel — "uncapped" — when no deadline was initialized this invocation.
+_hook_remaining_s() {
+  if [ -z "${_MEMORIES_HOOK_DEADLINE_S:-}" ]; then
+    printf '999999'
+    return 0
+  fi
+  local now
+  now=$(_hook_now_s)
+  jq -n --argjson deadline "$_MEMORIES_HOOK_DEADLINE_S" --argjson now "$now" '$deadline - $now' 2>/dev/null || printf '999999'
+}
+
+# True ("true") when there isn't enough deadline left to justify issuing
+# another backend call this hook run. Callers (the prefix-search loop, the
+# fallback search, the WIP search, ...) should stop issuing further calls,
+# log what got skipped, and go with whatever context they already have.
+_hook_deadline_exhausted() {
+  local remaining
+  remaining=$(_hook_remaining_s)
+  jq -n --argjson remaining "$remaining" --argjson min "$_MEMORIES_HOOK_MIN_CALL_S" '$remaining < $min' 2>/dev/null || printf 'false'
+}
+
+# Prints the --max-time value to use for a single backend call given its
+# EXISTING per-call cap ($1) — the smaller of that cap and whatever's left
+# on the deadline (minus a small reserve for shell/curl-fork overhead).
+# Prints nothing and returns 1 if there isn't enough left to justify issuing
+# the call at all; callers MUST check this and skip the call rather than
+# pass a near-zero or negative --max-time to curl.
+_hook_call_budget() {
+  local existing_cap="$1"
+  local remaining
+  remaining=$(_hook_remaining_s)
+  local budget
+  budget=$(jq -n --argjson cap "$existing_cap" --argjson remaining "$remaining" --argjson reserve "$_MEMORIES_HOOK_CALL_RESERVE_S" \
+    '[$cap, ($remaining - $reserve)] | min' 2>/dev/null) || budget="$existing_cap"
+  local ok
+  ok=$(jq -n --argjson budget "$budget" --argjson min "$_MEMORIES_HOOK_MIN_CALL_S" '$budget >= $min' 2>/dev/null) || ok="false"
+  if [ "$ok" != "true" ]; then
+    return 1
+  fi
+  printf '%s' "$budget"
+  return 0
+}
+
+
 # -- Backend circuit breaker --------------------------------------------------
-# When the backend is down or slow, every hook on every prompt pays full curl
-# timeouts (~8s measured across a prompt's hook fan-out). After a failure the
-# breaker file makes subsequent hook invocations skip backend calls instantly
-# until the cooldown elapses (then one half-open retry).
+# When a backend is down or slow, every hook on every call pays a full curl
+# timeout. After a failure the breaker file makes subsequent calls skip that
+# backend instantly until the cooldown elapses (then one half-open retry).
+#
+# PER-BACKEND, not global (PR #85 review, 5th pass — settled, not a
+# follow-up). A single shared breaker meant one dead backend, once tripped,
+# blocked EVERY subsequent call to EVERY backend for the rest of the
+# cooldown — including healthy ones. Worse, with a routed multi-backend set
+# and no per-backend memory, a single SLOW (not instantly-failing) backend
+# got re-tried by every one of the ~5-6 sequential searches a SessionStart
+# recall makes, each paying its own timeout — blowing the hook's 5s budget
+# even though a healthy backend was reachable the whole time (reviewer
+# repro: a listener that accepts and never responds).
+#
+# Every function takes an optional backend NAME (from backends.yaml, or the
+# literal string "default" that _load_backends' single-URL fallback uses
+# when there's no config file) and defaults to "default" when omitted, which
+# resolves to the exact same file every prior single-backend caller already
+# used — a true single-backend install, or any caller not yet passing a
+# name, is byte-for-byte unchanged.
 _MEMORIES_BREAKER_FILE="${MEMORIES_BREAKER_FILE:-$HOME/.config/memories/backend-down}"
 _MEMORIES_BREAKER_COOLDOWN="${MEMORIES_BREAKER_COOLDOWN:-60}"
 
+_breaker_file_for() {
+  local name="${1:-default}"
+  local safe
+  safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_-' '_')
+  if [ -z "$safe" ] || [ "$safe" = "default" ]; then
+    printf '%s' "$_MEMORIES_BREAKER_FILE"
+  else
+    printf '%s.%s' "$_MEMORIES_BREAKER_FILE" "$safe"
+  fi
+}
+
 _breaker_open() {
-  [ -f "$_MEMORIES_BREAKER_FILE" ] || return 1
+  local file
+  file=$(_breaker_file_for "${1:-default}")
+  [ -f "$file" ] || return 1
   local ts now age
-  ts=$(cat "$_MEMORIES_BREAKER_FILE" 2>/dev/null)
-  case "$ts" in ''|*[!0-9]*) rm -f "$_MEMORIES_BREAKER_FILE" 2>/dev/null; return 1 ;; esac
+  ts=$(cat "$file" 2>/dev/null)
+  case "$ts" in ''|*[!0-9]*) rm -f "$file" 2>/dev/null; return 1 ;; esac
   now=$(date +%s)
   age=$((now - ts))
   [ "$age" -lt "$_MEMORIES_BREAKER_COOLDOWN" ] && return 0
@@ -262,28 +448,134 @@ _breaker_open() {
 }
 
 _breaker_trip() {
-  mkdir -p "$(dirname "$_MEMORIES_BREAKER_FILE")" 2>/dev/null
-  date +%s > "$_MEMORIES_BREAKER_FILE" 2>/dev/null
-  _log_warn "Memories backend unreachable — circuit open for ${_MEMORIES_BREAKER_COOLDOWN}s (hooks skip backend calls)" 2>/dev/null || true
+  local name="${1:-default}"
+  local file
+  file=$(_breaker_file_for "$name")
+  mkdir -p "$(dirname "$file")" 2>/dev/null
+  date +%s > "$file" 2>/dev/null
+  _log_warn "Memories backend '$name' unreachable — circuit open for ${_MEMORIES_BREAKER_COOLDOWN}s" 2>/dev/null || true
 }
 
 _breaker_reset() {
-  rm -f "$_MEMORIES_BREAKER_FILE" 2>/dev/null
+  local file
+  file=$(_breaker_file_for "${1:-default}")
+  rm -f "$file" 2>/dev/null
   return 0
 }
 
-# Health check — returns 0 if service is reachable (breaker-aware)
+# Health check — returns 0 if the ROUTED search backend set has at least
+# one reachable member. Establishes PER-BACKEND breaker state (see above)
+# up front so the search fan-out that follows can skip known-bad backends
+# outright, rather than re-discovering them one slow timeout at a time.
+#
+# Fifth pass at this bug (PR #85 review):
+#   1. probed the bare MEMORIES_URL default instead of any resolved backend.
+#   2. fixed the target, but picked _load_backends' raw .[0] (declaration
+#      order) instead of the ROUTED set, so an excluded backend could still
+#      be probed and trip a single SHARED breaker that blocked everything.
+#   3. fixed to consider the whole routed set (any-reachable = healthy) —
+#      correct for the "one dead backend" case, but the shared breaker's
+#      early-return path never set MEMORIES_HEALTH_DOWN_NAMES, so a
+#      previously-tripped session crashed here under `set -u` (P1-A) — and
+#      returning "healthy" the moment ONE backend answered left any
+#      SLOW-but-not-yet-failed backend un-probed and un-marked, so
+#      _search_memories_multi's fan-out re-discovered it, via a full
+#      timeout, on every one of the ~5-6 sequential recall searches a
+#      SessionStart makes — blowing the hook's 5s budget even though a
+#      healthy backend was reachable the whole time (P1-B).
+# This pass: probe every routed backend whose OWN breaker isn't already
+# open, IN PARALLEL (bounded by one --max-time, not one per backend), and
+# record each one's outcome in ITS OWN breaker via _breaker_trip/_reset —
+# so by the time this returns, every backend the search fan-out is about to
+# try again already has accurate, individual state to skip by.
+#
+# Publishes on EVERY return path, no exceptions (this is what P1-A missed
+# — only the named variable was audited, not the contract as a whole):
+#   MEMORIES_HEALTH_DOWN_NAMES — comma-joined "name (url)" for every routed
+#                                backend currently considered down (fresh
+#                                failure or already-open breaker). Always a
+#                                defined string (possibly empty on success),
+#                                never left unset — callers run under `set
+#                                -u` and read it immediately after a
+#                                non-zero return.
+#   MEMORIES_BACKEND_DOWN      — "1" when no routed backend answered, unset
+#                                on success (existing convention elsewhere
+#                                in this file: read via ${VAR:-0}).
 _health_check() {
-  local url="${MEMORIES_URL:-http://localhost:8900}"
-  if _breaker_open; then
+  MEMORIES_HEALTH_DOWN_NAMES=""
+
+  local backends
+  backends=$(_get_backends_for_op "search" 2>/dev/null) || backends="[]"
+  local backend_count
+  backend_count=$(printf '%s' "$backends" | jq 'length' 2>/dev/null) || backend_count=0
+
+  if [ "${backend_count:-0}" -eq 0 ]; then
+    MEMORIES_HEALTH_DOWN_NAMES="no backend resolved for search routing"
     MEMORIES_BACKEND_DOWN=1
     return 1
   fi
-  if curl -sf --max-time 2 "$url/health" >/dev/null 2>&1; then
-    _breaker_reset
+
+  # Deadline-aware: cap the probe's --max-time to whatever's actually left
+  # (uncapped/2s when no deadline was initialized — see _hook_call_budget).
+  # If there isn't enough left to even probe, don't try — every routed
+  # backend is unknown/unreachable for THIS invocation. Breaker state is
+  # left untouched, so a later invocation with a fresh deadline still gets
+  # a fair re-check rather than being penalized for our own budget, not the
+  # backend's.
+  local probe_budget
+  if ! probe_budget=$(_hook_call_budget 2); then
+    MEMORIES_HEALTH_DOWN_NAMES="hook budget exhausted before any health probe"
+    MEMORIES_BACKEND_DOWN=1
+    return 1
+  fi
+
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  local backend url name safe
+  while read -r backend; do
+    url=$(printf '%s' "$backend" | jq -r '.url')
+    name=$(printf '%s' "$backend" | jq -r '.name')
+    safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_' '_')
+
+    if _breaker_open "$name"; then
+      # Already known down from a recent trip — don't re-pay the timeout,
+      # just count it among the down set.
+      printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${safe}"
+      continue
+    fi
+
+    (
+      if curl -sf --max-time "$probe_budget" "$url/health" >/dev/null 2>&1; then
+        _breaker_reset "$name"
+        : > "$tmpdir/up_${safe}"
+      else
+        _breaker_trip "$name"
+        printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${safe}"
+      fi
+    ) &
+  done < <(printf '%s' "$backends" | jq -c '.[]')
+  wait
+
+  local up_count=0
+  local f
+  for f in "$tmpdir"/up_*; do
+    [ -e "$f" ] || continue
+    up_count=$((up_count + 1))
+  done
+  for f in "$tmpdir"/down_*; do
+    [ -e "$f" ] || continue
+    if [ -n "$MEMORIES_HEALTH_DOWN_NAMES" ]; then
+      MEMORIES_HEALTH_DOWN_NAMES="$MEMORIES_HEALTH_DOWN_NAMES, $(cat "$f")"
+    else
+      MEMORIES_HEALTH_DOWN_NAMES="$(cat "$f")"
+    fi
+  done
+  rm -rf "$tmpdir"
+
+  if [ "$up_count" -gt 0 ]; then
+    MEMORIES_BACKEND_DOWN=0
     return 0
   fi
-  _breaker_trip
   MEMORIES_BACKEND_DOWN=1
   return 1
 }
@@ -382,6 +674,55 @@ _parse_backends_yaml() {
   jq -nc --argjson b "$backends_json" --argjson r "$routing_json" '{backends: $b, routing: $r}'
 }
 
+# Single source of truth for "which backends.yaml file, if any, applies" —
+# shared by _memories_has_backend_config (the activation gate, called before
+# the hook has read stdin) and _load_backends (called after, once the hook
+# knows the payload's .cwd). Precedence:
+#   1. $MEMORIES_BACKENDS_FILE            — explicit override, if it exists
+#   2. $CLAUDE_PROJECT_DIR/.memories/backends.yaml  — stable project root
+#      (falls back to $PWD if CLAUDE_PROJECT_DIR is unset: this plugin is
+#      agent-agnostic, and non-Claude-Code callers won't have that variable;
+#      $PWD doesn't change mid-script, so this is consistent across every
+#      call in a single hook invocation, gate included)
+#   3. <cwd arg>/.memories/backends.yaml  — the hook's actual working
+#      directory, from the payload's .cwd. Kept as a fallback so an existing
+#      cwd-only setup (no root-level file, no CLAUDE_PROJECT_DIR match)
+#      still loads — backward compat, do not drop.
+#   4. $HOME/.config/memories/backends.yaml — global fallback
+#
+# `cwd` is optional and only step 3 uses it: the activation gate runs before
+# the hook parses stdin, so it has no payload cwd yet and simply omits that
+# step (calls this with no argument). Residual limitation: a backends.yaml
+# that exists ONLY at a cwd that differs from both CLAUDE_PROJECT_DIR and
+# $PWD (e.g. a subdirectory session with no project-root config) is invisible
+# to the gate — same class of limitation already documented on
+# _memories_has_backend_config — and needs MEMORIES_ENABLED=true to force
+# activation; but once running, _load_backends (which DOES pass cwd) still
+# finds it, since it goes through this same function.
+#
+# Prints the resolved path and returns 0, or prints nothing and returns 1.
+_resolve_backends_file() {
+  local cwd="${1:-}"
+  if [ -n "${MEMORIES_BACKENDS_FILE:-}" ] && [ -f "${MEMORIES_BACKENDS_FILE}" ]; then
+    printf '%s' "${MEMORIES_BACKENDS_FILE}"
+    return 0
+  fi
+  local project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
+  if [ -n "$project_dir" ] && [ -f "$project_dir/.memories/backends.yaml" ]; then
+    printf '%s' "$project_dir/.memories/backends.yaml"
+    return 0
+  fi
+  if [ -n "$cwd" ] && [ -f "$cwd/.memories/backends.yaml" ]; then
+    printf '%s' "$cwd/.memories/backends.yaml"
+    return 0
+  fi
+  if [ -f "$HOME/.config/memories/backends.yaml" ]; then
+    printf '%s' "$HOME/.config/memories/backends.yaml"
+    return 0
+  fi
+  return 1
+}
+
 _load_backends() {
   # Return cached if already loaded
   if [ -n "$_BACKENDS_CACHE" ]; then
@@ -389,16 +730,8 @@ _load_backends() {
     return 0
   fi
 
-  local config_file="${MEMORIES_BACKENDS_FILE:-}"
-
-  # Resolution: explicit env → project → global → env var fallback
-  if [ -z "$config_file" ]; then
-    if [ -f "${CWD:-}/.memories/backends.yaml" ] 2>/dev/null; then
-      config_file="$CWD/.memories/backends.yaml"
-    elif [ -f "$HOME/.config/memories/backends.yaml" ]; then
-      config_file="$HOME/.config/memories/backends.yaml"
-    fi
-  fi
+  local config_file=""
+  config_file=$(_resolve_backends_file "${CWD:-}" 2>/dev/null) || config_file=""
 
   if [ -n "$config_file" ] && [ -f "$config_file" ]; then
     # Parse YAML → JSON.  Try Node.js + js-yaml first (best fidelity),
@@ -448,6 +781,29 @@ try {
     _BACKENDS_CACHE=$(jq -nc --arg url "$url" --arg key "$key" \
       '{backends: [{name: "default", url: $url, api_key: $key, scenario: ""}], routing: {}}')
     echo "$_BACKENDS_CACHE" | jq -c '.backends'
+  fi
+}
+
+# A single representative URL for secondary, non-gating purposes (the
+# backend-version check curl, naming a host in the 401 credential warning) —
+# NOT for health-gating; use _health_check for that, which correctly
+# considers the whole routed set rather than one representative pick.
+#
+# Takes .[0] of the ROUTED search set (_get_backends_for_op "search"), not
+# _load_backends' raw declaration order: an earlier version of this function
+# used the raw order, which is what let a backend routing.search had
+# excluded get treated as "the" backend for warnings and version checks
+# (PR #85 review). Reads $CWD from the caller's environment the same way
+# _load_backends itself does — call this only after the hook has parsed
+# stdin and set $CWD.
+_resolve_primary_backend_url() {
+  local backends url
+  backends=$(_get_backends_for_op "search" 2>/dev/null) || backends="[]"
+  url=$(printf '%s' "$backends" | jq -r '.[0].url // empty' 2>/dev/null) || url=""
+  if [ -n "$url" ]; then
+    printf '%s' "$url"
+  else
+    printf '%s' "${MEMORIES_URL:-http://localhost:8900}"
   fi
 }
 
@@ -513,12 +869,6 @@ _search_memories_multi() {
   local limit="${3:-5}"
   local threshold="${4:-0.4}"
 
-  if _breaker_open; then
-    MEMORIES_BACKEND_DOWN=1
-    echo '{"results":[],"count":0}'
-    return
-  fi
-
   local backends
   backends=$(_get_backends_for_op "search")
   local count
@@ -534,49 +884,135 @@ _search_memories_multi() {
   fi
 
   if [ "$count" -le 1 ]; then
-    # Single backend — direct call (backward compat, no overhead)
-    local url key
+    # Single backend — direct call (backward compat, no overhead). Breaker
+    # keyed by THIS backend's own name (see _breaker_file_for): "default"
+    # for a plain MEMORIES_URL install (same file as always), or the
+    # backend's real name when routing.search collapsed to exactly one.
+    local url key name
     url=$(echo "$backends" | jq -r '.[0].url')
     key=$(echo "$backends" | jq -r '.[0].api_key')
-    local out
-    if out=$(curl -sf --max-time 4 -X POST "$url/search" \
+    name=$(echo "$backends" | jq -r '.[0].name // "default"')
+
+    if _breaker_open "$name"; then
+      MEMORIES_BACKEND_DOWN=1
+      echo '{"results":[],"count":0}'
+      return
+    fi
+
+    # Deadline-aware --max-time (uncapped/4s when no deadline was
+    # initialized). Not enough budget left to justify the call at all ⇒
+    # skip it — this is NOT evidence the backend is bad, so its breaker is
+    # left untouched (only OUR budget ran out, not the backend).
+    local call_budget
+    if ! call_budget=$(_hook_call_budget 4); then
+      MEMORIES_BACKEND_DOWN=1
+      echo '{"results":[],"count":0}'
+      return
+    fi
+
+    # No -f here: /search is authenticated (unlike /health), and a wrong/missing
+    # MEMORIES_API_KEY silently returns nothing forever unless we can tell a 401
+    # (credential problem, backend reachable) apart from a connection failure
+    # (backend unreachable). -w appends the status code after the body so we can
+    # branch on it without a second round-trip.
+    local raw curl_rc status out
+    raw=$(curl -s --max-time "$call_budget" -w '\n%{http_code}' -X POST "$url/search" \
       -H "Content-Type: application/json" \
       -H "X-API-Key: $key" \
-      -d "$body" 2>/dev/null); then
-      _breaker_reset
-      printf '%s' "$out"
+      -d "$body" 2>/dev/null)
+    curl_rc=$?
+    status="${raw##*$'\n'}"
+    out="${raw%$'\n'*}"
+    if [ $curl_rc -eq 0 ] && [ -n "$raw" ] && [ "$status" != "$raw" ]; then
+      case "$status" in
+        2??)
+          _breaker_reset "$name"
+          printf '%s' "$out"
+          ;;
+        401)
+          # Backend is reachable — this is a credential problem, not downtime.
+          # Keep the breaker closed so the session doesn't misreport "unreachable".
+          _breaker_reset "$name"
+          MEMORIES_AUTH_FAILED=1
+          echo '{"results":[],"count":0,"auth_failed":true}'
+          ;;
+        *)
+          _breaker_trip "$name"
+          MEMORIES_BACKEND_DOWN=1
+          echo '{"results":[],"count":0}'
+          ;;
+      esac
     else
-      _breaker_trip
+      _breaker_trip "$name"
       MEMORIES_BACKEND_DOWN=1
       echo '{"results":[],"count":0}'
     fi
     return
   fi
 
-  # Multi-backend: parallel fan-out with background subshells
-  # Use process substitution (< <(...)) so the while loop runs in the current
-  # shell and `wait` can actually collect the background jobs.
+  # Multi-backend: parallel fan-out with background subshells, PER-BACKEND
+  # breaker-aware in both directions (PR #85 review, 5th pass):
+  #   - a backend whose OWN breaker is already open is skipped outright —
+  #     no curl call at all — instead of being re-tried (and re-paying a
+  #     full --max-time) on every one of the several sequential recall
+  #     searches a single SessionStart makes.
+  #   - each backend's OWN outcome here trips/resets ITS OWN breaker, so a
+  #     backend that fails (or hangs, once its --max-time is hit) on THIS
+  #     call is already known-bad for the NEXT call, not re-discovered from
+  #     scratch every time.
+  # Use process substitution (< <(...)) so the while loop runs in the
+  # current shell and `wait` can actually collect the background jobs.
+  #
+  # Deadline-aware: one --max-time is computed ONCE for the whole fan-out
+  # (all backends start at roughly the same wall-clock moment, so a single
+  # shared budget is both simpler and more accurate than recomputing it
+  # per-backend). Not enough left to justify attempting the routed set at
+  # all ⇒ skip the whole round rather than issue near-zero-timeout calls.
+  local call_budget
+  if ! call_budget=$(_hook_call_budget 4); then
+    MEMORIES_BACKEND_DOWN=1
+    echo '{"results":[],"count":0}'
+    return
+  fi
+
   local tmpdir
   tmpdir=$(mktemp -d)
-  local i=0
+  local attempted=0
   while read -r backend; do
-    local url key name
+    local url key name safe
     url=$(echo "$backend" | jq -r '.url')
     key=$(echo "$backend" | jq -r '.api_key')
     name=$(echo "$backend" | jq -r '.name')
+    safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_' '_')
+
+    if _breaker_open "$name"; then
+      continue
+    fi
+    attempted=1
     (
-      result=$(curl -sf --max-time 4 -X POST "$url/search" \
+      result=$(curl -sf --max-time "$call_budget" -X POST "$url/search" \
         -H "Content-Type: application/json" \
         -H "X-API-Key: $key" \
         -d "$body" 2>/dev/null)
       if [ -n "$result" ]; then
+        _breaker_reset "$name"
         # Tag results with _backend
-        echo "$result" | jq -c --arg b "$name" '.results[] | . + {_backend: $b}' > "$tmpdir/result_${name}.jsonl"
+        echo "$result" | jq -c --arg b "$name" '.results[] | . + {_backend: $b}' > "$tmpdir/result_${safe}.jsonl"
+      else
+        _breaker_trip "$name"
       fi
     ) &
-    i=$((i + 1))
   done < <(echo "$backends" | jq -c '.[]')
   wait
+
+  if [ "$attempted" -eq 0 ]; then
+    # Every routed backend's breaker was already open — nothing to try,
+    # nothing to wait on.
+    rm -rf "$tmpdir"
+    MEMORIES_BACKEND_DOWN=1
+    echo '{"results":[],"count":0}'
+    return
+  fi
 
   # Merge results: sort by score, dedup keeping highest-scoring duplicate,
   # then re-sort to guarantee global score ordering after dedup.

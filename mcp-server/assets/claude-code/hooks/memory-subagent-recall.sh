@@ -17,9 +17,17 @@ else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _health_check() { return 0; }
   _default_source_prefixes() { echo 'claude-code/{project},codex/{project},learning/{project},wip/{project}'; }
+  _hook_deadline_init() { :; }
+  _hook_deadline_exhausted() { printf 'false'; }
 fi
 
 _exit_if_disabled 2>/dev/null || true
+
+# End-to-end deadline for every backend call this hook makes — see
+# _hook_deadline_init in _lib.sh (SubagentStart shares SessionStart's 5s
+# hooks.json budget and the same "sequential searches can sum past it"
+# problem, PR #85 review round 7). Init before any backend call.
+_hook_deadline_init
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
@@ -43,9 +51,12 @@ if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   exit 0
 fi
 
-# Quick health check — don't block subagent spawn if service is down
+# Quick health check — don't block subagent spawn if service is down.
+# Probes the ROUTED search backend set, not backend #1 in raw declaration
+# order, and only skips when ALL of them are unreachable (PR #85 review,
+# third pass — see _health_check in _lib.sh).
 if ! _health_check; then
-  _log_warn "Service unreachable, skipping subagent recall"
+  _log_warn "Service unreachable: $MEMORIES_HEALTH_DOWN_NAMES, skipping subagent recall"
   exit 0
 fi
 
@@ -81,6 +92,14 @@ for raw_prefix in "${prefix_templates[@]}"; do
   raw_prefix=$(echo "$raw_prefix" | xargs)
   [ -z "$raw_prefix" ] && continue
 
+  # End-to-end deadline (see memory-recall.sh / _hook_deadline_init in
+  # _lib.sh): stop issuing further searches once the budget's gone rather
+  # than risk hooks.json killing the whole process before it can respond.
+  if [ "$(_hook_deadline_exhausted)" = "true" ]; then
+    _log_warn "Hook budget exhausted — skipping remaining subagent-recall prefix searches"
+    break
+  fi
+
   prefix=$(printf '%s' "$raw_prefix" | sed "s/{project}/$PROJECT/g")
   query=$(query_for_agent_type "$AGENT_TYPE")
   limit=3
@@ -105,9 +124,13 @@ RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$MEMORIE
 
 # Fallback to unscoped search if nothing found
 if [ "$RESULTS_JSON" = "[]" ]; then
-  FALLBACK_QUERY=$(query_for_agent_type "$AGENT_TYPE")
-  FALLBACK_RESPONSE=$(search_memories "$FALLBACK_QUERY" "" 5 0.55)
-  RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
+  if [ "$(_hook_deadline_exhausted)" = "true" ]; then
+    _log_warn "Hook budget exhausted — skipping the unscoped fallback search"
+  else
+    FALLBACK_QUERY=$(query_for_agent_type "$AGENT_TYPE")
+    FALLBACK_RESPONSE=$(search_memories "$FALLBACK_QUERY" "" 5 0.55)
+    RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
+  fi
 fi
 
 RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import http.server
 import json
 import os
 import shutil
+import socket
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 
@@ -30,6 +34,8 @@ set -euo pipefail
 url=""
 body=""
 pending_data=0
+pending_write=0
+write_out=""
 
 for arg in "$@"; do
   if [ "$pending_data" -eq 1 ]; then
@@ -37,10 +43,18 @@ for arg in "$@"; do
     pending_data=0
     continue
   fi
+  if [ "$pending_write" -eq 1 ]; then
+    write_out="$arg"
+    pending_write=0
+    continue
+  fi
 
   case "$arg" in
     -d|--data|--data-raw|--data-binary)
       pending_data=1
+      ;;
+    -w|--write-out)
+      pending_write=1
       ;;
     http://*|https://*)
       url="$arg"
@@ -53,19 +67,75 @@ if [ -z "$body" ]; then body="null"; fi
 
 jq -nc --arg url "$url" --argjson body "$body" '{url: $url, body: $body}' >> "$FAKE_CURL_CALLS"
 
-jq -c --arg url "$url" --argjson body "$body" '
+# Rule matching, shared shape across the three lookups below:
+#   url_suffix      — optional, match-any when absent
+#   url_contains     — optional, match-any when absent. Lets a rule target a
+#                       specific HOST regardless of endpoint or prefix (e.g.
+#                       "this backend is down for every request it gets").
+#   source_prefix    — only enforced when the rule specifies the key at all;
+#                       absent means match any prefix (a GET has body=null,
+#                       so a per-host rule needs this to also match POSTs
+#                       with a real source_prefix).
+#   query_contains   — optional, match-any when absent.
+# fail: true on the winning rule simulates a connection failure — no output,
+# nonzero exit — for real per-host failure, not just a canned error body.
+fail_flag=$(jq -r --arg url "$url" --argjson body "$body" '
   ([
     .[]
     | . as $rule
     | select(($rule.url_suffix == null) or ($url | endswith($rule.url_suffix)))
-    | select(($rule.source_prefix // "") == (($body.source_prefix // "")))
+    | select(($rule.url_contains == null) or ($url | contains($rule.url_contains)))
+    | select(($rule | has("source_prefix") | not) or (($rule.source_prefix // "") == (($body.source_prefix // ""))))
+    | select(
+        ($rule.query_contains // null) == null
+        or (($body.query // "") | contains($rule.query_contains))
+      )
+    | ($rule.fail // false)
+  ][0]) // false
+' "$FAKE_CURL_RESPONSES")
+
+if [ "$fail_flag" = "true" ]; then
+  exit 7
+fi
+
+response_body=$(jq -c --arg url "$url" --argjson body "$body" '
+  ([
+    .[]
+    | . as $rule
+    | select(($rule.url_suffix == null) or ($url | endswith($rule.url_suffix)))
+    | select(($rule.url_contains == null) or ($url | contains($rule.url_contains)))
+    | select(($rule | has("source_prefix") | not) or (($rule.source_prefix // "") == (($body.source_prefix // ""))))
     | select(
         ($rule.query_contains // null) == null
         or (($body.query // "") | contains($rule.query_contains))
       )
     | $rule.response
   ][0]) // {"results": [], "count": 0}
-' "$FAKE_CURL_RESPONSES"
+' "$FAKE_CURL_RESPONSES")
+
+status_code=$(jq -r --arg url "$url" --argjson body "$body" '
+  ([
+    .[]
+    | . as $rule
+    | select(($rule.url_suffix == null) or ($url | endswith($rule.url_suffix)))
+    | select(($rule.url_contains == null) or ($url | contains($rule.url_contains)))
+    | select(($rule | has("source_prefix") | not) or (($rule.source_prefix // "") == (($body.source_prefix // ""))))
+    | select(
+        ($rule.query_contains // null) == null
+        or (($body.query // "") | contains($rule.query_contains))
+      )
+    | ($rule.status // 200)
+  ][0]) // 200
+' "$FAKE_CURL_RESPONSES")
+
+printf '%s' "$response_body"
+# Mimic curl's -w/--write-out: only append the status line when the caller
+# actually asked for %{http_code}, same as real curl would.
+case "$write_out" in
+  *'%{http_code}'*)
+    printf '\\n%s' "$status_code"
+    ;;
+esac
 """
     )
     script.chmod(0o755)
@@ -1481,6 +1551,997 @@ def test_codex_memory_hooks_honor_disabled_flag(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert calls == []
     assert result.stdout.strip() == ""
+
+
+def test_memory_hooks_unconfigured_url_is_silent_noop(tmp_path: Path) -> None:
+    """A repo that ships .claude/settings.json but no MEMORIES_URL must be a true
+    no-op for contributors who never opted in: exit 0, no stdout, no curl call."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": ""},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""
+
+
+def test_memory_hooks_enabled_false_silences_configured_url(tmp_path: Path) -> None:
+    """MEMORIES_ENABLED=false wins over a configured MEMORIES_URL — explicit opt-out."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ENABLED": "false"},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""
+
+
+def test_memory_hooks_enabled_true_runs_without_url(tmp_path: Path) -> None:
+    """MEMORIES_ENABLED=true forces the hook to run even with no MEMORIES_URL set —
+    explicit opt-in, falls back to the localhost default and calls out."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ENABLED": "true", "MEMORIES_URL": ""},
+    )
+
+    assert result.returncode == 0
+    assert len(calls) > 0
+
+
+def test_memory_hooks_disabled_wins_over_enabled_true(tmp_path: Path) -> None:
+    """MEMORIES_DISABLED=1 still wins even when fully configured and MEMORIES_ENABLED=true."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_DISABLED": "1", "MEMORIES_ENABLED": "true"},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert result.stdout.strip() == ""
+
+
+def test_memory_hooks_backends_file_only_runs_without_url(tmp_path: Path) -> None:
+    """REGRESSION: multi-backend installs configure via MEMORIES_BACKENDS_FILE
+    instead of MEMORIES_URL. The activation gate must treat that as configured
+    and run the hook, not silently no-op it."""
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  primary:\n"
+        "    url: http://127.0.0.1:9999\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": "", "MEMORIES_BACKENDS_FILE": str(backends_file)},
+    )
+
+    assert result.returncode == 0
+    assert len(calls) > 0, "MEMORIES_BACKENDS_FILE-only install must run, not no-op"
+
+
+def test_memory_hooks_global_backends_yaml_only_runs_without_url(tmp_path: Path) -> None:
+    """REGRESSION: same as above but via the default global config location
+    (~/.config/memories/backends.yaml), with no MEMORIES_BACKENDS_FILE set."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    # _run_hook creates HOME before invoking the script; write the global
+    # config there ourselves since extra_env can't create files.
+    home_dir = tmp_path / "home"
+    (home_dir / ".config" / "memories").mkdir(parents=True, exist_ok=True)
+    (home_dir / ".config" / "memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  primary:\n"
+        "    url: http://127.0.0.1:9999\n"
+        "    api_key: test-key\n"
+    )
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": ""},
+    )
+
+    assert result.returncode == 0
+    assert len(calls) > 0, "global backends.yaml-only install must run, not no-op"
+
+
+def test_memory_hooks_project_backends_yaml_only_runs_without_url(tmp_path: Path) -> None:
+    """REGRESSION: same as above but via the per-project .memories/backends.yaml,
+    discovered through CLAUDE_PROJECT_DIR (the variable Claude Code exports to
+    every hook process at spawn time, before the hook has parsed its stdin
+    payload's .cwd field)."""
+    project_dir = tmp_path / "project"
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  primary:\n"
+        "    url: http://127.0.0.1:9999\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": str(project_dir), "prompt": "hello"}
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": "", "CLAUDE_PROJECT_DIR": str(project_dir)},
+    )
+
+    assert result.returncode == 0
+    assert len(calls) > 0, "per-project backends.yaml-only install must run, not no-op"
+
+
+def test_memory_hooks_unconfigured_creates_no_log_file(tmp_path: Path) -> None:
+    """The auto-detected-inactive path (no MEMORIES_ENABLED, no backend config)
+    must be a genuine no-op: no ~/.config/memories/hook.log, not even the
+    directory, must be created. Logging here would grow hook.log forever for
+    someone who never opted in, since it fires on every session/prompt/tool
+    event and the file is never rotated (rotation only runs on the configured
+    path, past the exit)."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, home_dir = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": ""},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert not (home_dir / ".config" / "memories").exists(), (
+        "auto-detected-inactive hooks must not create ~/.config/memories at all"
+    )
+
+
+def test_memory_hooks_gate_and_loader_agree_on_project_subdirectory(tmp_path: Path) -> None:
+    """REGRESSION (PR #85 review, P1): the gate resolved CLAUDE_PROJECT_DIR
+    while _load_backends resolved only the payload's cwd. Launched from (or
+    moved into) a project SUBDIRECTORY, the gate found the project-root
+    backends.yaml and activated the hook, but the loader missed that same
+    file (it only ever looked at cwd) and silently fell back to an empty
+    MEMORIES_URL — querying http://localhost:8900 instead of the configured
+    backend. That's worse than the no-op being fixed: the hook runs and
+    silently talks to the wrong place. Both must now resolve through the
+    same _resolve_backends_file, so every request goes to the configured
+    backend and none go to localhost."""
+    project_dir = tmp_path / "project"
+    nested_dir = project_dir / "nested"
+    nested_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  primary:\n"
+        "    url: https://configured.example\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": str(nested_dir), "prompt": "hello"}
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": "", "CLAUDE_PROJECT_DIR": str(project_dir)},
+    )
+
+    assert result.returncode == 0
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    assert len(search_calls) > 0, "the hook must actually run (gate must activate)"
+    urls = [c["url"] for c in search_calls]
+    assert all(url.startswith("https://configured.example") for url in urls), (
+        f"every /search request must go to the configured backend, got: {urls}"
+    )
+    assert not any("localhost:8900" in url for url in urls), (
+        f"no /search request may silently fall back to localhost, got: {urls}"
+    )
+
+
+def test_memory_hooks_health_check_and_warnings_target_resolved_backend(tmp_path: Path) -> None:
+    """REGRESSION (PR #85 review, follow-up P1): fixing the gate/loader
+    mismatch above wasn't sufficient by itself. _health_check still probed
+    the bare MEMORIES_URL default (localhost:8900) instead of the resolved
+    backend, so a backends.yaml-only install got a false "not reachable"
+    warning naming a backend it never configured — and could trip the
+    shared circuit breaker on that bogus failure, silently skipping the
+    real (reachable) backend's searches too. This is an end-to-end style
+    check: it asserts on the resolved TARGET (every recorded URL, and the
+    session-start warning text), not just "some curl happened" — the prior
+    regression test would not have caught this, since the hook DID run and
+    DID hit the right backend for /search once the loader fix landed; only
+    the separate /health probe (and any text naming a host) still pointed
+    at localhost."""
+    project_dir = tmp_path / "project"
+    nested_dir = project_dir / "nested"
+    nested_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  primary:\n"
+        "    url: https://configured.example\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": str(nested_dir), "prompt": "hello"}
+    result, calls, home_dir = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": "", "CLAUDE_PROJECT_DIR": str(project_dir)},
+    )
+
+    assert result.returncode == 0
+
+    health_calls = [c for c in calls if str(c["url"]).endswith("/health")]
+    assert len(health_calls) > 0, "expected at least one /health probe"
+    health_urls = [c["url"] for c in health_calls]
+    assert all(url.startswith("https://configured.example") for url in health_urls), (
+        f"the health probe must target the resolved backend, not the localhost "
+        f"default, got: {health_urls}"
+    )
+    assert not any("localhost:8900" in url for url in health_urls), (
+        f"the health probe must never silently fall back to localhost, got: {health_urls}"
+    )
+
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    assert len(search_calls) > 0
+    assert all(c["url"].startswith("https://configured.example") for c in search_calls)
+
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "localhost:8900" not in ctx, (
+        f"no session-start warning may name a backend the user never configured, got: {ctx}"
+    )
+
+    # Per the fake curl mock (always "succeeds" regardless of target), a
+    # correctly-targeted probe must not trip the shared circuit breaker.
+    assert not (home_dir / ".config" / "memories" / "backend-down").exists()
+
+
+def test_memory_hooks_partial_backend_failure_does_not_zero_out_healthy_routed_backend(
+    tmp_path: Path,
+) -> None:
+    """REGRESSION (PR #85 review, 4th pass — the bug CLASS, not another
+    symptom patch). Two backends: down_first (declared FIRST, on a dead
+    host) and reachable (declared second, alive), with
+    routing.search: [reachable] explicitly excluding down_first from search.
+
+    The always-succeeding fake curl mock used by every prior regression test
+    in this file COULD NOT have caught this: it never fails, so nothing ever
+    tripped the breaker in those tests regardless of which URL was probed.
+    This is why the mock was extended with per-host "fail" rules — the
+    reviewer's exact point.
+
+    Before this fix: _resolve_primary_backend_url took .[0] of
+    _load_backends' RAW declaration order (down_first — routing.search had
+    excluded it, but declaration order doesn't know that), _health_check
+    probed THAT, it failed, tripped the single shared breaker, and
+    _search_memories_multi's very own breaker-open check then skipped its
+    already-fault-tolerant fan-out entirely — reachable was NEVER contacted,
+    despite being alive and the only backend routing.search actually wanted.
+
+    After this fix: health considers the ROUTED set (_get_backends_for_op
+    "search"), which is just [reachable] here — down_first is not part of
+    it and must never be probed or searched at all."""
+    project_dir = tmp_path / "project"
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  down_first:\n"
+        "    url: https://down-first.example\n"
+        "    api_key: test-key\n"
+        "  reachable:\n"
+        "    url: https://reachable.example\n"
+        "    api_key: test-key\n"
+        "routing:\n"
+        "  search: [reachable]\n"
+    )
+
+    responses = [
+        # Every request to down-first.example — /health or /search, any
+        # prefix — is a connection failure. If the fix regresses and this
+        # host gets probed or searched at all, it fails loudly rather than
+        # quietly "succeeding" like the old mock would have.
+        {"url_contains": "down-first.example", "fail": True},
+        {
+            "url_contains": "reachable.example",
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/project",
+            "response": {
+                "results": [
+                    {
+                        "id": 1,
+                        "source": "claude-code/project",
+                        "text": "Reached the routed, healthy backend.",
+                        "similarity": 0.9,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    payload = {"cwd": str(project_dir), "prompt": "hello"}
+    result, calls, home_dir = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=responses,
+        extra_env={"MEMORIES_URL": "", "CLAUDE_PROJECT_DIR": str(project_dir)},
+    )
+
+    assert result.returncode == 0
+
+    down_calls = [c for c in calls if "down-first.example" in str(c["url"])]
+    reachable_calls = [c for c in calls if "reachable.example" in str(c["url"])]
+
+    assert down_calls == [], (
+        f"down_first is excluded by routing.search and must never be "
+        f"contacted at all (health or search), got: {down_calls}"
+    )
+    assert len(reachable_calls) > 0, "the routed, healthy backend must be contacted"
+    reachable_search_calls = [c for c in reachable_calls if str(c["url"]).endswith("/search")]
+    assert len(reachable_search_calls) > 0, "the routed backend must actually be searched"
+
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    # memory-recall.sh renders candidate pointers, not raw text (see other
+    # tests in this file) — the reachable backend's result (id=1) must be
+    # the one surfaced.
+    assert "candidate memory id=1" in ctx and "claude-code/project" in ctx, (
+        f"results from the healthy routed backend must be injected, got: {ctx}"
+    )
+    assert "down_first" not in ctx and "down-first.example" not in ctx, (
+        f"no warning may name a backend that was never in the routed search "
+        f"set, got: {ctx}"
+    )
+    assert not (home_dir / ".config" / "memories" / "backend-down").exists(), (
+        "a single non-routed dead backend must not trip the shared breaker"
+    )
+
+
+def test_memory_hooks_preexisting_open_breaker_does_not_crash(tmp_path: Path) -> None:
+    """REGRESSION (PR #85 review, P1-A — CRASH, reviewer reproduced). A
+    previous hook invocation already tripped the (single-backend, "default"
+    name) breaker file. _health_check's early return on an already-open
+    breaker never set MEMORIES_HEALTH_DOWN_NAMES, and memory-recall.sh
+    interpolates it immediately after `_health_check` returns 1 — under
+    `set -u`. So the FAST path — the common case once a backend is actually
+    down — crashed: exit 1, "unbound variable", zero hook output. Worse than
+    the bug it replaced. This is the case no prior test covered: every other
+    regression test in this file starts from a CLEAN breaker state."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    # _run_hook creates HOME at tmp_path/"home" with mkdir(exist_ok=True) —
+    # pre-seed the breaker file into that same path before invoking it, to
+    # simulate "a previous hook invocation already opened the breaker."
+    home_dir = tmp_path / "home"
+    breaker_dir = home_dir / ".config" / "memories"
+    breaker_dir.mkdir(parents=True, exist_ok=True)
+    (breaker_dir / "backend-down").write_text(str(int(time.time())))
+
+    result, calls, _ = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0, (
+        f"must not crash when the breaker is already open on entry; "
+        f"stderr: {result.stderr!r}"
+    )
+    assert "unbound variable" not in result.stderr, result.stderr
+    # Must still produce a well-formed hook response, not empty/broken
+    # output from a mid-script crash.
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "not reachable" in ctx or "Memory Playbook" in ctx
+    # The already-open breaker must mean no curl calls were attempted for
+    # that (fast-skipped) backend.
+    assert calls == []
+
+
+def test_memory_hooks_slow_backend_stays_within_session_start_budget(tmp_path: Path) -> None:
+    """REGRESSION (PR #85 review, P1-B — BUDGET, reviewer reproduced). The
+    blind spot in every prior partial-failure test (including the one right
+    above this) was that they only ever simulated INSTANT failures (a
+    closed port -> immediate ECONNREFUSED). A backend that accepts the TCP
+    connection and never responds is a completely different cost shape: the
+    only thing that would catch it is measuring real wall-clock time against
+    a real hanging socket, which is what this test does (no fake-curl mock
+    — real system curl, real sockets).
+
+    Two backends, no explicit routing (both are in the routed search set,
+    matching the reviewer's exact repro): one real local HTTP server that
+    answers instantly, one real TCP listener that accepts and never writes
+    a byte back. memory-recall.sh makes ~5-6 sequential
+    _search_memories_multi calls per session (one per source prefix, plus a
+    fallback, plus a dedicated WIP search); hooks.json gives this hook a 5s
+    budget. Before the per-backend breaker fix, each of those calls would
+    re-discover the hang via its own fresh --max-time timeout, in serial —
+    trivially blowing the budget even though the healthy backend answered
+    every single time."""
+    # A real backend that answers immediately.
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def _reply(self, body: dict[str, object]) -> None:
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:  # noqa: N802 (http.server API)
+            self._reply({"status": "ok"})
+
+        def do_POST(self) -> None:  # noqa: N802 (http.server API)
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            self._reply(
+                {
+                    "results": [
+                        {
+                            "id": 7,
+                            "source": "claude-code/project",
+                            "text": "Reached the healthy backend despite the hang.",
+                            "similarity": 0.85,
+                        }
+                    ],
+                    "count": 1,
+                }
+            )
+
+        def log_message(self, *_args: object) -> None:  # silence
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    reachable_port = server.server_address[1]
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    # A real listener that accepts the connection and never responds.
+    hang_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    hang_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    hang_sock.bind(("127.0.0.1", 0))
+    hang_sock.listen(20)
+    hang_port = hang_sock.getsockname()[1]
+    stop_event = threading.Event()
+    dangling_conns: list[socket.socket] = []
+
+    def _accept_and_hang() -> None:
+        hang_sock.settimeout(0.2)
+        while not stop_event.is_set():
+            try:
+                conn, _addr = hang_sock.accept()
+                dangling_conns.append(conn)  # never read, never write, never close
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+    hang_thread = threading.Thread(target=_accept_and_hang, daemon=True)
+    hang_thread.start()
+
+    try:
+        project_dir = tmp_path / "project"
+        (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+        (project_dir / ".memories" / "backends.yaml").write_text(
+            "backends:\n"
+            f"  hangs:\n"
+            f"    url: http://127.0.0.1:{hang_port}\n"
+            f"    api_key: test-key\n"
+            f"  reachable:\n"
+            f"    url: http://127.0.0.1:{reachable_port}\n"
+            f"    api_key: test-key\n"
+        )
+
+        home_dir = tmp_path / "home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "HOME": str(home_dir),
+                "MEMORIES_URL": "",
+                "MEMORIES_API_KEY": "test-key",
+                "MEMORIES_ENV_FILE": str(tmp_path / "missing-env"),
+                "CLAUDE_PROJECT_DIR": str(project_dir),
+            }
+        )
+
+        payload = {"cwd": str(project_dir), "prompt": "hello"}
+
+        start = time.monotonic()
+        result = subprocess.run(
+            [str(RECALL_SCRIPT)],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=20,  # pytest-level safety net; the real assertion is below
+        )
+        elapsed = time.monotonic() - start
+    finally:
+        stop_event.set()
+        hang_thread.join(timeout=2)
+        server.shutdown()
+        server_thread.join(timeout=2)
+        for c in dangling_conns:
+            try:
+                c.close()
+            except OSError:
+                pass
+        hang_sock.close()
+
+    print(f"\n[timing] slow-backend hook run took {elapsed:.3f}s (budget 5.0s)")
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert elapsed < 5.0, (
+        f"SessionStart's hooks.json budget is 5s; a hanging backend must not "
+        f"blow it — took {elapsed:.2f}s. stderr: {result.stderr}"
+    )
+
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=7" in ctx and "claude-code/project" in ctx, (
+        f"results from the healthy backend must still be injected despite "
+        f"the hang, got: {ctx}"
+    )
+
+
+def test_memory_hooks_health_ok_search_hangs_stays_within_budget(tmp_path: Path) -> None:
+    """(a) REGRESSION (PR #85 review, round 7 — reviewer's new P1). The
+    per-backend breaker (7c3d5d8) cannot help on the FIRST occurrence of a
+    backend whose /health responds promptly but whose /search hangs:
+    nothing yet knows THAT backend is bad on THAT endpoint, so the first
+    search fan-out still pays a full, flat --max-time against it before the
+    breaker can trip. Reviewer measured 5.65s against a 5s budget even with
+    a healthy local peer. The round-6 slow-backend test (right above this
+    one) missed this specific shape because its hanging listener stalled
+    /health too, letting the 2s health probe open the breaker before any
+    search was ever attempted — this test isolates the health-OK/search-
+    hang split specifically, real sockets, real curl, no mock."""
+
+    class _HangOnSearchHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 (http.server API)
+            data = b'{"status": "ok"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self) -> None:  # noqa: N802 (http.server API)
+            # Read the request, then never respond — the client's own
+            # --max-time is the only thing that will ever end this.
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            time.sleep(30)
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    class _HealthyHandler(http.server.BaseHTTPRequestHandler):
+        def _reply(self, body: dict[str, object]) -> None:
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:  # noqa: N802
+            self._reply({"status": "ok"})
+
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            self._reply(
+                {
+                    "results": [
+                        {
+                            "id": 55,
+                            "source": "claude-code/project",
+                            "text": "Reached the healthy backend despite the search-hang split.",
+                            "similarity": 0.85,
+                        }
+                    ],
+                    "count": 1,
+                }
+            )
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    hang_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _HangOnSearchHandler)
+    hang_server.daemon_threads = True
+    hang_port = hang_server.server_address[1]
+    hang_thread = threading.Thread(target=hang_server.serve_forever, daemon=True)
+    hang_thread.start()
+
+    healthy_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _HealthyHandler)
+    healthy_server.daemon_threads = True
+    healthy_port = healthy_server.server_address[1]
+    healthy_thread = threading.Thread(target=healthy_server.serve_forever, daemon=True)
+    healthy_thread.start()
+
+    try:
+        project_dir = tmp_path / "project"
+        (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+        (project_dir / ".memories" / "backends.yaml").write_text(
+            "backends:\n"
+            f"  hangs_on_search:\n"
+            f"    url: http://127.0.0.1:{hang_port}\n"
+            f"    api_key: test-key\n"
+            f"  reachable:\n"
+            f"    url: http://127.0.0.1:{healthy_port}\n"
+            f"    api_key: test-key\n"
+        )
+
+        home_dir = tmp_path / "home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "HOME": str(home_dir),
+                "MEMORIES_URL": "",
+                "MEMORIES_API_KEY": "test-key",
+                "MEMORIES_ENV_FILE": str(tmp_path / "missing-env"),
+                "CLAUDE_PROJECT_DIR": str(project_dir),
+            }
+        )
+
+        payload = {"cwd": str(project_dir), "prompt": "hello"}
+
+        start = time.monotonic()
+        result = subprocess.run(
+            [str(RECALL_SCRIPT)],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=20,  # pytest-level safety net; the real assertion is below
+        )
+        elapsed = time.monotonic() - start
+    finally:
+        healthy_server.shutdown()
+        healthy_thread.join(timeout=2)
+        hang_server.shutdown()
+        hang_thread.join(timeout=2)
+
+    print(f"\n[timing] health-OK/search-hang split hook run took {elapsed:.3f}s (budget 5.0s)")
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert elapsed < 5.0, (
+        f"SessionStart's hooks.json budget is 5s; a health-OK/search-hang "
+        f"backend must not blow it — took {elapsed:.2f}s. stderr: {result.stderr}"
+    )
+
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=55" in ctx and "claude-code/project" in ctx, (
+        f"results from the healthy backend must still be injected despite "
+        f"the search-hang split, got: {ctx}"
+    )
+
+
+def test_memory_hooks_all_backends_hang_stays_within_budget(tmp_path: Path) -> None:
+    """(b) Everything hangs: BOTH routed backends accept the TCP connection
+    and never respond at all (not even /health) — no healthy backend in the
+    mix. The hook must still return within budget with an honest "nothing
+    found" result, never a crash or a process hard-killed past hooks.json's
+    own timeout with no output at all."""
+    listeners: list[socket.socket] = []
+    dangling_conns: list[socket.socket] = []
+    stop_event = threading.Event()
+    accept_threads: list[threading.Thread] = []
+    ports: list[int] = []
+
+    def _accept_and_hang(sock: socket.socket) -> None:
+        sock.settimeout(0.2)
+        while not stop_event.is_set():
+            try:
+                conn, _addr = sock.accept()
+                dangling_conns.append(conn)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+    for _ in range(2):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0))
+        s.listen(20)
+        listeners.append(s)
+        ports.append(s.getsockname()[1])
+        t = threading.Thread(target=_accept_and_hang, args=(s,), daemon=True)
+        t.start()
+        accept_threads.append(t)
+
+    try:
+        project_dir = tmp_path / "project"
+        (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+        (project_dir / ".memories" / "backends.yaml").write_text(
+            "backends:\n"
+            f"  hangs_a:\n"
+            f"    url: http://127.0.0.1:{ports[0]}\n"
+            f"    api_key: test-key\n"
+            f"  hangs_b:\n"
+            f"    url: http://127.0.0.1:{ports[1]}\n"
+            f"    api_key: test-key\n"
+        )
+
+        home_dir = tmp_path / "home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "HOME": str(home_dir),
+                "MEMORIES_URL": "",
+                "MEMORIES_API_KEY": "test-key",
+                "MEMORIES_ENV_FILE": str(tmp_path / "missing-env"),
+                "CLAUDE_PROJECT_DIR": str(project_dir),
+            }
+        )
+
+        payload = {"cwd": str(project_dir), "prompt": "hello"}
+
+        start = time.monotonic()
+        result = subprocess.run(
+            [str(RECALL_SCRIPT)],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=20,
+        )
+        elapsed = time.monotonic() - start
+    finally:
+        stop_event.set()
+        for t in accept_threads:
+            t.join(timeout=2)
+        for c in dangling_conns:
+            try:
+                c.close()
+            except OSError:
+                pass
+        for s in listeners:
+            s.close()
+
+    print(f"\n[timing] all-backends-hang hook run took {elapsed:.3f}s (budget 5.0s)")
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert elapsed < 5.0, (
+        f"SessionStart's hooks.json budget is 5s; a fully-hung routed set "
+        f"must still return within it — took {elapsed:.2f}s. stderr: {result.stderr}"
+    )
+    output = json.loads(result.stdout)  # must still be well-formed JSON
+    assert "hookSpecificOutput" in output
+
+
+def test_memory_hooks_healthy_only_baseline_unchanged(tmp_path: Path) -> None:
+    """(c) Baseline: nothing fails, nothing hangs. The deadline machinery
+    must not truncate or otherwise change behavior in the common case —
+    every scoped prefix is still searched (no early break), and the hook
+    completes fast (mocked harness, no real network)."""
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 1,
+                        "source": "claude-code/memories",
+                        "text": "Baseline result.",
+                        "similarity": 0.9,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+    payload = {"cwd": "/Users/example/memories"}
+
+    start = time.monotonic()
+    result, calls, _ = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 5.0, f"the healthy baseline must be fast, took {elapsed:.2f}s"
+
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=1" in ctx
+    assert "budget exhausted" not in ctx.lower()
+
+    # All 4 default scoped prefixes, plus the dedicated WIP search, must
+    # have actually been attempted — no truncation in the unhindered case.
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    prefixes = [c["body"].get("source_prefix", "") for c in search_calls if c["body"] is not None]
+    assert "claude-code/memories" in prefixes
+    assert "codex/memories" in prefixes
+    assert "learning/memories" in prefixes
+    assert prefixes.count("wip/memories") >= 1
+
+
+def test_memory_hooks_tiny_budget_exhausted_from_start_exits_cleanly(tmp_path: Path) -> None:
+    """(d) Budget-exhaustion path: MEMORIES_HOOK_BUDGET_MS forced absurdly
+    small (the deadline is already in the past before the first call). The
+    hook must still exit 0 with valid, well-formed JSON — never a crash,
+    never empty/malformed output — even though every backend call this run
+    gets skipped by the deadline."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_HOOK_BUDGET_MS": "1"},
+    )
+
+    assert result.returncode == 0, f"stderr: {result.stderr!r}"
+    output = json.loads(result.stdout)  # must parse — never malformed/empty
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "Memory Playbook" in ctx
+    assert "budget exhausted" in ctx.lower() or "not reachable" in ctx.lower()
+    # Every backend call this run should have been skipped by the deadline.
+    assert calls == []
+
+
+def test_memory_hooks_explicit_backends_file_wins_over_project_root(tmp_path: Path) -> None:
+    """Precedence: MEMORIES_BACKENDS_FILE is an explicit override and must win
+    over a project-root .memories/backends.yaml, even when both exist."""
+    project_dir = tmp_path / "project"
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  root:\n"
+        "    url: https://project-root.example\n"
+        "    api_key: test-key\n"
+    )
+
+    explicit_file = tmp_path / "explicit-backends.yaml"
+    explicit_file.write_text(
+        "backends:\n"
+        "  explicit:\n"
+        "    url: https://explicit-override.example\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": str(project_dir), "prompt": "hello"}
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={
+            "MEMORIES_URL": "",
+            "CLAUDE_PROJECT_DIR": str(project_dir),
+            "MEMORIES_BACKENDS_FILE": str(explicit_file),
+        },
+    )
+
+    assert result.returncode == 0
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    assert len(search_calls) > 0
+    urls = [c["url"] for c in search_calls]
+    assert all(url.startswith("https://explicit-override.example") for url in urls), (
+        f"MEMORIES_BACKENDS_FILE must win over the project-root file, got: {urls}"
+    )
+    assert not any("project-root.example" in url for url in urls)
+
+
+def test_memory_hooks_cwd_only_backends_yaml_still_loads(tmp_path: Path) -> None:
+    """Backward compat: a project that only ever configured via a
+    cwd-relative .memories/backends.yaml (no CLAUDE_PROJECT_DIR, predating
+    that support) must keep loading it — the fix for the gate/loader mismatch
+    must not drop the existing cwd-based fallback.
+
+    No CLAUDE_PROJECT_DIR is set, so the gate has nothing but $PWD to check
+    (same documented residual limitation as the unconfigured case) — this
+    test forces activation via MEMORIES_ENABLED=true to isolate what it
+    actually verifies: _load_backends' cwd fallback still resolves once the
+    hook is running.
+    """
+    project_dir = tmp_path / "project"
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  cwd_only:\n"
+        "    url: https://cwd-only.example\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": str(project_dir), "prompt": "hello"}
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": "", "MEMORIES_ENABLED": "true"},
+    )
+
+    assert result.returncode == 0
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    assert len(search_calls) > 0
+    urls = [c["url"] for c in search_calls]
+    assert all(url.startswith("https://cwd-only.example") for url in urls), (
+        f"cwd-only backends.yaml must still load, got: {urls}"
+    )
+
+
+def test_memory_recall_401_shows_credential_warning_not_reachability(tmp_path: Path) -> None:
+    """/health is unauthenticated and can't see a bad API key. The hook must detect
+    the 401 from the /search calls it already makes and name the real problem,
+    instead of silently returning nothing or blaming service reachability."""
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "claude-code/memories",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "learning/memories",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "wip/memories",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        },
+    ]
+
+    payload = {"cwd": "/Users/example/memories"}
+    result, calls, _ = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    ctx = output["hookSpecificOutput"]["additionalContext"]
+    assert "rejected the API key" in ctx
+    assert "MEMORIES_API_KEY" in ctx
+    assert "Check that the service is running" not in ctx
+    assert len(calls) > 0
 
 
 def test_memory_query_logs_candidate_ids_for_non_active_prompts(tmp_path: Path) -> None:

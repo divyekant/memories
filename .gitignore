@@ -71,3 +71,8 @@ data-eval.bak*/
 
 # Claude Code workspace (worktrees, local settings)
 .claude/
+# ...except project settings, which are the only channel that reaches a cloud
+# session (it starts from a fresh clone and cannot see anything gitignored).
+!.claude/
+.claude/*
+!.claude/settings.json

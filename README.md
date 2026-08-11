@@ -4,7 +4,7 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **OpenCode**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v5.9.0):**
+**Key capabilities (v5.10.0):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
 - **Write doctrine** — corrections supersede instead of being dropped: a colliding write replaces the similar memory and archives the old version with a supersedes link (`on_duplicate: supersede|skip|add`); agents update facts via `memory_update`
 - **Secret redaction** — credential-shaped content (API keys, JWTs, tokens, URL credentials) is redacted before any extraction LLM call or storage, with a context guard that spares placeholders and localhost DSNs
@@ -745,6 +745,53 @@ docker compose --profile remote-mcp up -d
 **`REMOTE_MCP_TRUST_PROXY`** — the per-IP rate limiter buckets on `req.ip`, which by default is the raw TCP socket address. In the docker/tunnel topology above, every request arrives from the same container-bridge hop (e.g. Caddy or the tunnel sidecar), so without this setting every real client collapses into one shared bucket. `docker-compose.yml` defaults it to `uniquelocal` — an Express trust-proxy preset that trusts `X-Forwarded-For` only from private/link-local/unique-local ranges (RFC 1918 and friends), which is exactly the bridge network a container's proxy hop lives on — so `req.ip` becomes the real client IP again. Set `REMOTE_MCP_TRUST_PROXY=off` to disable and bucket on the raw socket address instead (e.g. if you're running the server bare, with no proxy in front of it) — `false` and an empty value are also accepted as the same "disabled" sentinel. Never set it to `true` (trusts every hop in the chain) on an internet-facing deployment — that lets any client spoof `X-Forwarded-For` to pick its own rate-limit bucket.
 
 See `mcp-server/remote/server.mjs` for the full env contract (`REMOTE_MCP_AUTH=none` disables auth for local testing — never expose that mode publicly) and the commented-out `remote-mcp` block in `mcp-server/assets/backend/docker-compose.standalone.yml` for the standalone-deployment equivalent.
+
+### Cloud coding sessions (claude.ai/code)
+
+A cloud session runs in a fresh VM built from a git clone of your repository. Nothing from your local `~/.claude` is present — not your user-level `CLAUDE.md`, skills, hooks, `enabledPlugins`, or `~/.claude.json` MCP servers. That splits Memories into two halves:
+
+| | Cloud session | What it takes |
+|---|---|---|
+| **Tools** (`memory_search`, `memory_add`, …) | Works with no setup | The claude.ai connector above travels with your account, and its traffic is proxied by Anthropic rather than the session's network |
+| **Hooks** (automatic recall + extraction) | Only if the repo opts in | The three steps below — miss any one and it fails silently |
+
+If you only need Claude to be *able* to reach your memories, the connector alone is enough; stop here. The rest buys you automatic per-prompt recall and end-of-session extraction.
+
+**1. Commit the plugin enablement.** Project settings are the only channel that reaches a cloud session, so `.claude/settings.json` must be committed (this repo ships one):
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "dk-marketplace": { "source": { "source": "github", "repo": "divyekant/dk-marketplace" } }
+  },
+  "enabledPlugins": { "memories@dk-marketplace": true }
+}
+```
+
+If your `.gitignore` excludes `.claude/`, add a negation for this one file — see this repo's `.gitignore` for the pattern.
+
+**2. Set the environment variables.** On claude.ai/code, click the cloud icon showing the environment's name in the row above the message box, then **Add cloud environment** (or the gear icon on an existing one). The dialog holds environment variables in `.env` format:
+
+```bash
+MEMORIES_URL=https://memory.yourdomain.com
+MEMORIES_API_KEY=...
+```
+
+Values are copied into the VM **once at session start**, so edits only affect sessions you start afterwards. Note that cloud environment variables are **not a secrets vault** — anyone with access to the environment can read them in plaintext. Weigh that before putting a backend key there; the connector route keeps credentials out of the VM entirely.
+
+**3. Allow the backend's domain.** This is the step that silently breaks everything if skipped. Hook `curl`s are ordinary session traffic and are subject to the environment's network policy — unlike connector traffic, which is exempt. The default **Trusted** level is a closed list (package registries, GitHub, the major clouds) and will **not** include your backend. In the same dialog, set **Network access → Custom**, add your host to **Allowed domains** (one bare domain per line; a leading `*.` matches subdomains), and tick *"Also include default list of common package managers"* so package installs keep working.
+
+A blocked domain does not return a tidy 403 — it fails at the proxy's connect stage with no readable error, so a hook that "does nothing" is the symptom. Debug by logging `curl -v` output or `$?` from the hook rather than hunting for an error body. Changing the allowlist also invalidates the environment's cached snapshot, so its setup script re-runs on the next session.
+
+**Contributors without a backend get a true no-op, not noise.** Hooks gate themselves before making any network call: if no backend is configured and `MEMORIES_ENABLED` was never set either, the hook exits silently — no service-unreachable notice, no curl stalls, no `hook.log` even created. That's what makes it safe to commit `.claude/settings.json` project-wide; a clone without credentials just does nothing. The precedence is:
+
+1. `MEMORIES_DISABLED` truthy always wins — hard off, regardless of anything else.
+2. `MEMORIES_ENABLED` set explicitly — `true`/`1`/`yes`/`on` forces hooks to run even with nothing else configured (falling back to `http://localhost:8900`); `false`/`0`/`no`/`off` forces them off even with a backend configured.
+3. `MEMORIES_ENABLED` unset — auto-detect: active if *any* supported backend source is present (`MEMORIES_URL`, `MEMORIES_BACKENDS_FILE`, `~/.config/memories/backends.yaml`, or a per-project `.memories/backends.yaml`), silent no-op otherwise. Multi-backend installs configure via those files instead of `MEMORIES_URL`, so this gate must recognize all of them, not just the single-backend env var.
+
+Set `MEMORIES_ENABLED=false` in your own gitignored `.claude/settings.local.json` (or `~/.config/memories/env`) if you want to opt out explicitly instead of relying on auto-detect, or `claude plugin disable --scope local memories@dk-marketplace` to disable the plugin outright — pass `--scope local` explicitly, because a user-scoped disable cannot override the `true` this repo commits at project scope.
+
+**A wrong or missing API key is not silent.** `/health` is unauthenticated, so it cannot tell a bad `MEMORIES_API_KEY` apart from a healthy backend — without this check, recall would just keep returning nothing, forever, with no warning. The session-start hook now detects a `401` from the `/search` calls it already makes (no extra round-trip) and surfaces a distinct warning naming `MEMORIES_API_KEY`, instead of the generic "check that the service is running" message reserved for actually-unreachable backends.
 
 ---
 
