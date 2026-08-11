@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Cloud sessions ran no hooks at all.** A committed `.claude/settings.json` declaring `extraKnownMarketplaces` and `enabledPlugins` is not sufficient: the cloud container performs no marketplace fetch and no plugin install, so none of the plugin's 11 hook events register. Confirmed in a real container — `installed_plugins.json` was `{"plugins":{}}`, `~/.claude/plugins/marketplaces/` did not exist, and `hook.log` was never created. Not a network problem, and the hook scripts themselves work there. The repo now wires the same hooks directly at `${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/`, which needs no fetch and no bootstrap cooperation. Note this also inverts an earlier assumption: in cloud the MCP path works and the hook path did not, rather than the reverse.
+
+### Added
+- **`scripts/render_project_hooks.py`** generates the repo's hook wiring from the plugin's `hooks.json`, with `--check` for CI. Hand-copying 11 events would fork them from the plugin and drift silently the next time a hook is added or a timeout changes — disabling a hook in cloud while local sessions, which run the installed plugin, stay green. Two guards enforce it: the rendered block must match `hooks.json`, and every wired command must resolve inside the checkout and be executable.
+
 ## [5.12.0] - 2026-08-11
 
 ### Added

@@ -9,12 +9,14 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
 
-HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "claude-code" / "hooks"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+HOOKS_DIR = REPO_ROOT / "integrations" / "claude-code" / "hooks"
 CODEX_HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "codex" / "hooks"
 QUERY_SCRIPT = HOOKS_DIR / "memory-query.sh"
 RECALL_SCRIPT = HOOKS_DIR / "memory-recall.sh"
@@ -3027,3 +3029,47 @@ def test_codex_memory_observe_nested_exec_reads_every_bracket_spelling(tmp_path:
         "mcp__Remote_Memories__memory_search",
         "mcp__memories__memory_count",
     ]
+
+
+def test_repo_settings_hooks_match_the_plugin_hooks_json() -> None:
+    """The repo wires the hooks itself for cloud sessions, which never install
+    the plugin — but that wiring is generated, not hand-maintained.
+
+    A cloud container starts from a fresh clone and performs no marketplace
+    fetch and no plugin install, even with `extraKnownMarketplaces` and
+    `enabledPlugins` committed, so none of the plugin's hook events register.
+    `.claude/settings.json` therefore points at the in-repo hook scripts via
+    $CLAUDE_PROJECT_DIR. Hand-copying 11 events would fork them from
+    hooks.json and drift the next time one is added or a timeout changes —
+    silently disabling a hook in cloud while local sessions, which run the
+    installed plugin, stay fine. This asserts the two agree.
+    """
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "render_project_hooks.py"), "--check"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_repo_settings_hook_commands_exist_and_are_executable() -> None:
+    """Every wired command must resolve inside the checkout and be runnable.
+
+    A path that resolves on a developer's machine but not in a fresh clone is
+    exactly the failure this wiring exists to avoid — a committed symlink to an
+    absolute path is what broke plugin distribution in cloud before.
+    """
+    settings = json.loads((REPO_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    commands = [
+        hook["command"]
+        for entries in settings["hooks"].values()
+        for entry in entries
+        for hook in entry.get("hooks", [])
+    ]
+    assert commands, "no hook commands wired"
+
+    for command in commands:
+        assert command.startswith("${CLAUDE_PROJECT_DIR}/"), command
+        path = REPO_ROOT / command.replace("${CLAUDE_PROJECT_DIR}/", "")
+        assert path.is_file(), f"missing: {command}"
+        assert os.access(path, os.X_OK), f"not executable: {command}"
