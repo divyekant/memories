@@ -33,6 +33,29 @@ test('install wires hooks, settings, skills, CLAUDE.md, env', async () => {
   assert.ok(env.includes('MEMORIES_API_KEY="test-key"'));
 });
 
+test('install with ctx.mcpNames pre-approves read-only tools for every named server, deduped', async () => {
+  const ctx = await freshCtx();
+  ctx.mcpNames = ['memories', 'Remote_Memories', 'memories']; // duplicate on purpose
+  await adapter.install(ctx);
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  const allow = settings.permissions.allow;
+  assert.ok(allow.includes('mcp__memories__memory_search'));
+  assert.ok(allow.includes('mcp__Remote_Memories__memory_search'));
+  assert.ok(allow.includes('mcp__Remote_Memories__memory_conflicts'));
+  // 7 default + 7 for Remote_Memories, no duplicates from the repeated name
+  assert.equal(allow.filter((t) => t.startsWith('mcp__memories__') || t.startsWith('mcp__Remote_Memories__')).length, 14);
+  assert.equal(new Set(allow).size, allow.length);
+});
+
+test('install without ctx.mcpNames falls back to the default "memories" server only', async () => {
+  const ctx = await freshCtx();
+  await adapter.install(ctx);
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  const allow = settings.permissions.allow;
+  assert.equal(allow.length, 7);
+  assert.ok(allow.every((t) => t.startsWith('mcp__memories__')));
+});
+
 test('install is idempotent — second run changes nothing', async () => {
   const ctx = await freshCtx();
   await adapter.install(ctx);

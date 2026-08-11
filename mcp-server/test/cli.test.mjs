@@ -29,6 +29,20 @@ test('parseArgs throws on trailing --api-key with no value', () => {
   assert.throws(() => parseArgs(['init', '--api-key']), /--api-key/);
 });
 
+test('parseArgs collects repeatable --mcp-name into mcpNames', () => {
+  assert.deepEqual(parseArgs(['init']).mcpNames, []);
+  assert.deepEqual(parseArgs(['init', '--mcp-name', 'Remote_Memories']).mcpNames, ['Remote_Memories']);
+  assert.deepEqual(
+    parseArgs(['init', '--mcp-name', 'Remote_Memories', '--mcp-name', '843a7d55-4d6a-4efb-b73e-90428866e135']).mcpNames,
+    ['Remote_Memories', '843a7d55-4d6a-4efb-b73e-90428866e135'],
+  );
+});
+
+test('parseArgs throws on trailing --mcp-name with no value', () => {
+  assert.throws(() => parseArgs(['init', '--mcp-name']), /--mcp-name/);
+  assert.throws(() => parseArgs(['init', '--mcp-name', '--yes']), /--mcp-name/);
+});
+
 test('init --yes wires detected agents end-to-end (healthy backend)', async () => {
   const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
   await mkdir(join(home, '.claude'), { recursive: true });
@@ -39,6 +53,32 @@ test('init --yes wires detected agents end-to-end (healthy backend)', async () =
   });
   const settings = await readJson(join(home, '.claude/settings.json'));
   assert.equal(settings.mcpServers.memories.command, 'npx');
+});
+
+test('init --yes --mcp-name pre-approves read-only tools for the extra server too', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await mkdir(join(home, '.claude'), { recursive: true });
+  await run(['init', '--yes', '--claude', '--mcp-name', 'Remote_Memories'], {
+    home, log: () => {},
+    fetchImpl: async () => new Response(JSON.stringify({ total_memories: 0 }), { status: 200 }),
+  });
+  const settings = await readJson(join(home, '.claude/settings.json'));
+  const allow = settings.permissions.allow;
+  assert.ok(allow.includes('mcp__memories__memory_search'), 'default server still pre-approved');
+  assert.ok(allow.includes('mcp__Remote_Memories__memory_search'), 'named server pre-approved');
+  assert.equal(new Set(allow).size, allow.length, 'no duplicate rules');
+});
+
+test('init --yes without --mcp-name only pre-approves the default server (unchanged default path)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await mkdir(join(home, '.claude'), { recursive: true });
+  await run(['init', '--yes', '--claude'], {
+    home, log: () => {},
+    fetchImpl: async () => new Response(JSON.stringify({ total_memories: 0 }), { status: 200 }),
+  });
+  const settings = await readJson(join(home, '.claude/settings.json'));
+  assert.equal(settings.permissions.allow.length, 7);
+  assert.ok(settings.permissions.allow.every((t) => t.startsWith('mcp__memories__')));
 });
 
 test('init --dry-run writes nothing', async () => {

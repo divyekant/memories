@@ -1,7 +1,7 @@
 import { cp, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readJson, writeJson, mergeHookSettings, addPermissions, registerMcp } from '../lib/json-file.mjs';
-import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS } from '../lib/hooks.mjs';
+import { renderHooksJson, copyHookScripts, readonlyMcpTools } from '../lib/hooks.mjs';
 import { appendMarkedBlock, removeMarkedBlock } from '../lib/toml.mjs';
 import { ensureEnvVar } from '../lib/env-file.mjs';
 
@@ -26,7 +26,10 @@ export async function install(ctx) {
   const hooksConfig = JSON.parse(await readFile(join(p.hooksSrc, 'hooks.json'), 'utf8'));
   let settings = await readJson(p.settings);
   settings = mergeHookSettings(settings, renderHooksJson(hooksConfig, p.hooksDest));
-  settings = addPermissions(settings, READONLY_MCP_TOOLS);
+  // Default 'memories' plus any --mcp-name overrides, deduped by
+  // readonlyMcpTools() per name and again by addPermissions' Set.
+  const mcpNames = ctx.mcpNames?.length ? ctx.mcpNames : ['memories'];
+  settings = addPermissions(settings, mcpNames.flatMap(readonlyMcpTools));
   const { settings: withMcp, skipped } = registerMcp(settings, { url: ctx.url, apiKey: ctx.apiKey });
   await writeJson(p.settings, withMcp);
   if (skipped) ctx.log('MCP entry "memories" already present — left untouched');
