@@ -41,9 +41,15 @@ if [ "$TOOL" = "exec" ]; then
     else ""
     end
   ' 2>/dev/null || true)
+  # Nested calls reach the tool either as a dotted property
+  # (tools.mcp__memories__memory_search) or a bracketed one
+  # (tools["mcp__<uuid>__memory_search"]). A UUID-named connector contains
+  # hyphens, which JS parses as subtraction in a dotted identifier, so real
+  # calls to those servers only ever appear in bracket form.
+  _NESTED_TOOL_RE=$'tools(\\.|\\[[[:space:]]*[\'"])mcp__[A-Za-z0-9_-]+__memory_[A-Za-z0-9_]+'
   NESTED_TOOLS=$(printf '%s' "$EXEC_INPUT" \
-    | { grep -oE 'tools\.mcp__[A-Za-z0-9_-]+__memory_[A-Za-z0-9_]+' || true; } \
-    | sed 's/^tools\.//' \
+    | { grep -oE "$_NESTED_TOOL_RE" || true; } \
+    | sed -E 's/^.*(mcp__[A-Za-z0-9_-]+__memory_[A-Za-z0-9_]+)$/\1/' \
     | sort -u)
   [ -n "$NESTED_TOOLS" ] || exit 0
   SOURCE_PREFIXES_JSON=$(printf '%s' "$EXEC_INPUT" \

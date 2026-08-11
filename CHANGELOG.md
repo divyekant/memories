@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **`init --mcp-name <name>`** — writes the read-only permission allowlist for a differently-named MCP server in addition to `memories`. Claude Code's `permissions.allow` only accepts a tool glob after a literal, glob-free server segment (`mcp__*__memory_search` is skipped with a warning and auto-approves nothing), so an installer cannot pre-approve tools on a server whose name it does not know. The allowlist stays enumerated per tool rather than collapsing to `mcp__<server>__*`, which would also pre-approve `memory_delete`.
+
+### Fixed
+- **Hooks no longer assume the MCP server is called `memories`.** The `PostToolUse` matchers keyed off a hardcoded `mcp__memories__` prefix, so a claude.ai connector — which registers under a UUID (`mcp__843a7d55-…__memory_search`) — produced no telemetry and no post-call behavior. Matchers now key off the tool name (`mcp__.*__memory_`), which is stable across server names.
+- **Nested `exec` calls to a UUID-named connector are now observed.** The Codex `exec`-envelope parser only recognized dotted property access (`tools.mcp__…__memory_search`). A UUID server name contains hyphens, which JS parses as subtraction inside a dotted identifier, so real calls to those servers can only appear as `tools["mcp__…__memory_search"]` — the exact form the parser missed. It now reads both quote styles and padded brackets.
+
 ## [5.10.0] - 2026-08-11
 
 ### Added

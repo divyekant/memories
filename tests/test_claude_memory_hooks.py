@@ -2874,8 +2874,9 @@ def test_memory_recall_injected_context_uses_name_agnostic_toolsearch(tmp_path: 
 
 def test_codex_memory_observe_nested_exec_matches_non_memories_server_names(tmp_path: Path) -> None:
     """The exec-envelope grep must not be hardcoded to the 'memories' server
-    segment — a UUID-named connector contains hyphens, so the character class
-    must allow them."""
+    segment. A UUID-named connector contains hyphens, which JS parses as
+    subtraction inside a dotted identifier, so real calls to those servers can
+    only ever appear in bracket form — the parser must read that form."""
     metrics_log = tmp_path / "active-search.jsonl"
     payload = {
         "session_id": "codex-nested-exec-uuid",
@@ -2883,7 +2884,7 @@ def test_codex_memory_observe_nested_exec_matches_non_memories_server_names(tmp_
         "tool_name": "exec",
         "tool_input": {
             "input": (
-                'const a = await tools.mcp__843a7d55-4d6a-4efb-b73e-90428866e135__memory_search('
+                'const a = await tools["mcp__843a7d55-4d6a-4efb-b73e-90428866e135__memory_search"]('
                 '{query:"release", source_prefix:"codex/memories"});\n'
                 'text(JSON.stringify({a}));'
             )
@@ -2902,4 +2903,43 @@ def test_codex_memory_observe_nested_exec_matches_non_memories_server_names(tmp_
     events = [json.loads(line) for line in metrics_log.read_text(encoding="utf-8").splitlines()]
     assert [event["tool_name"] for event in events] == [
         "mcp__843a7d55-4d6a-4efb-b73e-90428866e135__memory_search"
+    ]
+    assert events[0]["source_prefix"] == "codex/memories"
+
+
+def test_codex_memory_observe_nested_exec_reads_every_bracket_spelling(tmp_path: Path) -> None:
+    """Bracket property access is valid JS with either quote style and with
+    padding inside the brackets. All three spellings must be recognized, and a
+    bare tool name that is not a property access must not be counted."""
+    metrics_log = tmp_path / "active-search.jsonl"
+    payload = {
+        "session_id": "codex-nested-exec-brackets",
+        "cwd": "/Users/example/memories",
+        "tool_name": "exec",
+        "tool_input": {
+            "input": (
+                'const a = await tools["mcp__Remote_Memories__memory_search"]({query:"a"});\n'
+                "const b = await tools['mcp__843a-bbb__memory_get']({id:1});\n"
+                'const c = await tools[ "mcp__843a-ccc__memory_add" ]({text:"x"});\n'
+                'const d = await tools.mcp__memories__memory_count({});\n'
+                'console.log("mcp__not_a_call__memory_delete");\n'
+            )
+        },
+    }
+
+    result, _, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-observe.sh",
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_ACTIVE_SEARCH_LOG": str(metrics_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    events = [json.loads(line) for line in metrics_log.read_text(encoding="utf-8").splitlines()]
+    assert sorted(event["tool_name"] for event in events) == [
+        "mcp__843a-bbb__memory_get",
+        "mcp__843a-ccc__memory_add",
+        "mcp__Remote_Memories__memory_search",
+        "mcp__memories__memory_count",
     ]
