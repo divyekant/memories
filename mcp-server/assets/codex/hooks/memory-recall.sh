@@ -22,7 +22,9 @@ else
   _hook_call_budget() { printf '%s' "$1"; }
 fi
 
-_exit_if_disabled 2>/dev/null || true
+INPUT=$(cat)
+CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // .workspace_roots[0] // empty')
+_exit_if_disabled "$CWD" 2>/dev/null || true
 
 # Bound the full SessionStart hook, not just individual curl calls.
 _hook_deadline_init
@@ -42,8 +44,6 @@ MEMORIES_RECALL_FALLBACK_THRESHOLD="${MEMORIES_RECALL_FALLBACK_THRESHOLD:-0.55}"
 # Configurable recall limit (Task 1.2)
 RECALL_LIMIT="${MEMORIES_RECALL_LIMIT:-8}"
 
-INPUT=$(cat)
-CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // empty')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
 MEMORIES_USAGE_CLIENT=$(_memory_client_prefix 2>/dev/null || echo "codex")
 MEMORIES_USAGE_SESSION_ID="$SESSION_ID"
@@ -256,13 +256,21 @@ EOF
 CREDENTIAL_WARNING=""
 if [ "$AUTH_FAILED" = "true" ]; then
   AUTH_BACKEND_LABELS=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'map("\(.name) (\(.url))") | join(", ")')
-  AUTH_DEFAULT_ONLY=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'length > 0 and all(.[]; (.name // "") == "default")')
+  AUTH_DEFAULT_ENV_ONLY=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'length > 0 and all(.[]; ((.name // "") == "default") and ((.env_backed // false) == true))')
+  AUTH_KEY_ENV_REFS=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r '[.[] | select((.env_backed // false) != true and (.api_key_env // "") != "") | .api_key_env] | unique | join(", ")')
   _log_warn "Backend(s) rejected the API key (401): $AUTH_BACKEND_LABELS"
-  if [ "$AUTH_DEFAULT_ONLY" = "true" ]; then
+  if [ "$AUTH_DEFAULT_ENV_ONLY" = "true" ]; then
     CREDENTIAL_WARNING=$(cat <<CWEOF
 ## Memories Credential Warning
 
 Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Set MEMORIES_API_KEY; memory recall/search is unavailable for this backend.
+CWEOF
+    )
+  elif [ -n "$AUTH_KEY_ENV_REFS" ] && [ "$CANDIDATE_COUNT" -gt 0 ]; then
+    CREDENTIAL_WARNING=$(cat <<CWEOF
+## Memories Credential Warning
+
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key or referenced environment variable(s) $AUTH_KEY_ENV_REFS for those backends; healthy routed backends still returned candidates this session.
 CWEOF
     )
   elif [ "$CANDIDATE_COUNT" -gt 0 ]; then
@@ -270,6 +278,13 @@ CWEOF
 ## Memories Credential Warning
 
 Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key for those backends or its referenced environment variable; healthy routed backends still returned candidates this session.
+CWEOF
+    )
+  elif [ -n "$AUTH_KEY_ENV_REFS" ]; then
+    CREDENTIAL_WARNING=$(cat <<CWEOF
+## Memories Credential Warning
+
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key or referenced environment variable(s) $AUTH_KEY_ENV_REFS for those backends.
 CWEOF
     )
   else

@@ -25,7 +25,9 @@ else
   _playbook_injection_mode() { if [ "${2:-0}" -ge 1 ] 2>/dev/null; then printf 'full'; else printf 'minimal'; fi; }
 fi
 
-_exit_if_disabled 2>/dev/null || true
+INPUT=$(cat)
+CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // .workspace_roots[0] // .workspaceRoots[0] // empty')
+_exit_if_disabled "$CWD" 2>/dev/null || true
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
@@ -38,9 +40,7 @@ MEMORIES_QUERY_FALLBACK_K="${MEMORIES_QUERY_FALLBACK_K:-5}"
 MEMORIES_QUERY_SCOPED_THRESHOLD="${MEMORIES_QUERY_SCOPED_THRESHOLD:-0.35}"
 MEMORIES_QUERY_FALLBACK_THRESHOLD="${MEMORIES_QUERY_FALLBACK_THRESHOLD:-0.55}"
 
-INPUT=$(cat)
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
-CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // .workspaceRoots[0] // empty')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
 MEMORIES_USAGE_CLIENT=$(_memory_client_prefix 2>/dev/null || echo "codex")
 MEMORIES_USAGE_SESSION_ID="$SESSION_ID"
@@ -304,9 +304,12 @@ fi
 CREDENTIAL_WARNING=""
 if [ "$AUTH_FAILED" = "true" ]; then
   AUTH_BACKEND_LABELS=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'map("\(.name) (\(.url))") | join(", ")')
-  AUTH_DEFAULT_ONLY=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'length > 0 and all(.[]; (.name // "") == "default")')
-  if [ "$AUTH_DEFAULT_ONLY" = "true" ]; then
+  AUTH_DEFAULT_ENV_ONLY=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'length > 0 and all(.[]; ((.name // "") == "default") and ((.env_backed // false) == true))')
+  AUTH_KEY_ENV_REFS=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r '[.[] | select((.env_backed // false) != true and (.api_key_env // "") != "") | .api_key_env] | unique | join(", ")')
+  if [ "$AUTH_DEFAULT_ENV_ONLY" = "true" ]; then
     CREDENTIAL_WARNING="Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Set MEMORIES_API_KEY for this backend."
+  elif [ -n "$AUTH_KEY_ENV_REFS" ]; then
+    CREDENTIAL_WARNING="Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key or referenced environment variable(s) $AUTH_KEY_ENV_REFS for those backends."
   else
     CREDENTIAL_WARNING="Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key for those backends or its referenced environment variable."
   fi

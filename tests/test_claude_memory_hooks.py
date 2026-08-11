@@ -1609,6 +1609,96 @@ def test_codex_memory_hooks_unconfigured_url_is_silent_noop(tmp_path: Path) -> N
     assert result.stdout.strip() == ""
 
 
+def test_codex_memory_recall_payload_cwd_backend_config_activates_without_project_env(tmp_path: Path) -> None:
+    project_dir = tmp_path / "payload-recall"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  payload_recall:\n"
+        "    url: https://payload-recall.example\n"
+        "    api_key: test-key\n"
+    )
+    responses = [
+        {
+            "url_contains": "payload-recall.example",
+            "url_suffix": "/search",
+            "response": {
+                "results": [
+                    {
+                        "id": 940,
+                        "source": "codex/payload-recall",
+                        "text": "Payload-local recall configuration activates the hook.",
+                        "similarity": 0.95,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "source": "startup"},
+        responses=responses,
+        extra_env={
+            "MEMORIES_URL": "",
+            "CODEX_PROJECT_DIR": "",
+            "CLAUDE_PROJECT_DIR": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    assert search_calls
+    assert all("payload-recall.example" in str(c["url"]) for c in search_calls)
+
+
+def test_codex_memory_query_payload_cwd_backend_config_activates_without_project_env(tmp_path: Path) -> None:
+    project_dir = tmp_path / "payload-query"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  payload_query:\n"
+        "    url: https://payload-query.example\n"
+        "    api_key: test-key\n"
+    )
+    responses = [
+        {
+            "url_contains": "payload-query.example",
+            "url_suffix": "/search",
+            "response": {
+                "results": [
+                    {
+                        "id": 941,
+                        "source": "codex/payload-query",
+                        "text": "Payload-local query configuration activates the hook.",
+                        "similarity": 0.94,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-query.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "prompt": "hello"},
+        responses=responses,
+        extra_env={
+            "MEMORIES_URL": "",
+            "CODEX_PROJECT_DIR": "",
+            "CLAUDE_PROJECT_DIR": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    search_calls = [c for c in calls if str(c["url"]).endswith("/search")]
+    assert search_calls
+    assert all("payload-query.example" in str(c["url"]) for c in search_calls)
+
+
 def test_codex_memory_hooks_enabled_false_wins_over_url(tmp_path: Path) -> None:
     result, calls, _ = _run_hook(
         CODEX_HOOKS_DIR / "memory-recall.sh",
@@ -2040,6 +2130,88 @@ def test_codex_memory_query_named_backend_401_guidance_uses_backend_config(tmp_p
     assert "named_auth" in ctx
     assert "https://named-auth.example" in ctx
     assert "configured" in ctx.lower() or "environment variable" in ctx.lower()
+    assert "MEMORIES_API_KEY" not in ctx
+
+
+def test_codex_memory_recall_configured_default_401_guidance_uses_custom_env(tmp_path: Path) -> None:
+    project_dir = tmp_path / "configured-default-recall"
+    project_dir.mkdir()
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  default:\n"
+        "    url: https://configured-default-recall.example\n"
+        "    api_key: ${CUSTOM_DEFAULT_KEY}\n"
+    )
+    responses = [
+        {
+            "url_contains": "configured-default-recall.example",
+            "url_suffix": "/search",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        }
+    ]
+
+    result, _, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "source": "startup"},
+        responses=responses,
+        extra_env={
+            "MEMORIES_URL": "",
+            "MEMORIES_BACKENDS_FILE": str(backends_file),
+            "CUSTOM_DEFAULT_KEY": "rejected-key",
+            "MEMORIES_API_KEY": "fallback-key-must-not-be-recommended",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "default" in ctx
+    assert "https://configured-default-recall.example" in ctx
+    assert "configured api_key" in ctx
+    assert "CUSTOM_DEFAULT_KEY" in ctx or "environment variable" in ctx.lower()
+    assert "MEMORIES_API_KEY" not in ctx
+
+
+def test_codex_memory_query_configured_default_401_guidance_uses_custom_env(tmp_path: Path) -> None:
+    project_dir = tmp_path / "configured-default-query"
+    project_dir.mkdir()
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  default:\n"
+        "    url: https://configured-default-query.example\n"
+        "    api_key: ${CUSTOM_DEFAULT_KEY}\n"
+    )
+    responses = [
+        {
+            "url_contains": "configured-default-query.example",
+            "url_suffix": "/search",
+            "status": 401,
+            "response": {"results": [], "count": 0},
+        }
+    ]
+
+    result, _, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-query.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "prompt": "hello"},
+        responses=responses,
+        extra_env={
+            "MEMORIES_URL": "",
+            "MEMORIES_BACKENDS_FILE": str(backends_file),
+            "CUSTOM_DEFAULT_KEY": "rejected-key",
+            "MEMORIES_API_KEY": "fallback-key-must-not-be-recommended",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "default" in ctx
+    assert "https://configured-default-query.example" in ctx
+    assert "configured api_key" in ctx
+    assert "CUSTOM_DEFAULT_KEY" in ctx or "environment variable" in ctx.lower()
     assert "MEMORIES_API_KEY" not in ctx
 
 

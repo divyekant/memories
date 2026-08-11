@@ -43,10 +43,9 @@ diagnostics, and the missing fair-timeout decision helper.
 
 - Codex-specific source-prefix ordering, request `source` payload, usage
   headers, session metadata, and hook JSON output were retained.
-- Activation resolves explicit/project/global backend files before stdin is
-  available. A file that exists only at a payload cwd different from both
-  `$PWD` and `CODEX_PROJECT_DIR` still requires `MEMORIES_ENABLED=true` to
-  force activation; once active, the loader resolves that cwd file.
+- Activation resolves explicit/project/global backend files and now accepts the
+  payload cwd before the hook gate runs, while preserving explicit
+  `MEMORIES_DISABLED`/`MEMORIES_ENABLED` precedence and silent no-op behavior.
 
 ## Follow-up diagnostics correction
 
@@ -76,3 +75,21 @@ diagnostics, and the missing fair-timeout decision helper.
 - Resulting follow-up commit: this report is included in the commit carrying
   `fix(codex): isolate backend breaker and auth guidance` (inspect `git log -1`
   for its hash).
+
+## Follow-up payload-local activation and credential provenance correction
+
+- Follow-up base: `1b36d5846de28e8f68b8de6f109698a70e726bd3`.
+- RED command: `uv run pytest -q tests/test_claude_memory_hooks.py -k 'codex and (payload_cwd or configured_default)'`.
+- RED result: `4 failed, 83 deselected` (payload-cwd-only configs were gated
+  before stdin parsing, and configured `default` backends were misidentified
+  as the env-backed fallback for 401 guidance).
+- GREEN selector: `4 passed, 83 deselected`.
+- GREEN broader suite: `uv run pytest -q tests/test_claude_memory_hooks.py -k 'codex or memory_hooks'` -> `87 passed in 59.93s`.
+- GREEN full suite: `uv run pytest -q tests/test_claude_memory_hooks.py tests/test_codex_notify_hook.py` -> `93 passed in 62.02s`.
+- `bash -n` on all three Codex hook scripts and `git diff --check`: passed.
+- Resulting follow-up commit: this report is included in the commit carrying
+  `fix(codex): honor payload-local backend configuration` (inspect `git log -1`
+  for its hash).
+- Configured backend objects retain `env_backed: false` and referenced key
+  variable names; only the synthesized `MEMORIES_URL` fallback carries
+  `env_backed: true` and `MEMORIES_API_KEY` guidance.

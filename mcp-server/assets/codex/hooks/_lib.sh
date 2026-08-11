@@ -181,14 +181,17 @@ _memories_disabled() {
 }
 
 # A hook is active only when explicitly enabled or when a backend is actually
-# configured. This gate runs before stdin is parsed, so the resolver checks
-# explicit, project, and global config sources that are available at startup.
+# configured. The optional cwd lets callers pass a payload workspace before
+# loading the backend file; explicit/project/global precedence remains in the
+# resolver itself.
 _memories_has_backend_config() {
+  local cwd="${1:-}"
   [ -n "${MEMORIES_URL:-}" ] && return 0
-  _resolve_backends_file >/dev/null
+  _resolve_backends_file "$cwd" >/dev/null
 }
 
 _memories_active() {
+  local cwd="${1:-}"
   if _memories_disabled; then
     return 1
   fi
@@ -198,15 +201,16 @@ _memories_active() {
       0|false|FALSE|no|NO|off|OFF) return 1 ;;
     esac
   fi
-  _memories_has_backend_config
+  _memories_has_backend_config "$cwd"
 }
 
 _exit_if_disabled() {
+  local cwd="${1:-}"
   if _memories_disabled; then
     _log_info "Hook disabled by MEMORIES_DISABLED"
     exit 0
   fi
-  if _memories_active; then
+  if _memories_active "$cwd"; then
     return 0
   fi
   if [ -n "${MEMORIES_ENABLED+x}" ]; then
@@ -471,12 +475,14 @@ _parse_backends_yaml() {
   _flush_backend() {
     if [ -n "$current_name" ] && [ -n "$url" ]; then
       # Resolve ${VAR} references without bash 4 indirect expansion.
-      local resolved_key resolved_url
+      local resolved_key resolved_url key_env
       resolved_key="$(_resolve_env_reference "$api_key")"
       resolved_url="$(_resolve_env_reference "$url")"
+      key_env=$(printf '%s' "$api_key" | sed -n 's/.*${\([A-Za-z_][A-Za-z0-9_]*\)}.*/\1/p')
       backends_json=$(printf '%s' "$backends_json" | jq -c --arg n "$current_name" \
         --arg u "$resolved_url" --arg k "$resolved_key" --arg s "$scenario" \
-        '. + [{name: $n, url: $u, api_key: $k, scenario: $s}]')
+        --arg ke "$key_env" --argjson eb false \
+        '. + [{name: $n, url: $u, api_key: $k, api_key_env: $ke, env_backed: $eb, scenario: $s}]')
     fi
     url="" api_key="" scenario="" current_name=""
   }
@@ -608,7 +614,8 @@ try {
   const data = yaml.load(fs.readFileSync('${config_file}', 'utf8'));
   const interp = (v) => { const m = (v||'').match(/\\\$\{(\w+)\}/); return m ? (process.env[m[1]] || v) : v; };
   const backends = Object.entries(data.backends || {}).map(([name, cfg]) => {
-    return { name, url: interp(cfg.url || ''), api_key: interp(cfg.api_key || ''), scenario: cfg.scenario || '' };
+    const keyRef = String(cfg.api_key || '').match(/\\\$\{([A-Za-z_][A-Za-z0-9_]*)\}/);
+    return { name, url: interp(cfg.url || ''), api_key: interp(cfg.api_key || ''), api_key_env: keyRef ? keyRef[1] : '', env_backed: false, scenario: cfg.scenario || '' };
   });
   console.log(JSON.stringify({ backends, routing: data.routing || {} }));
 } catch(e) {
@@ -630,7 +637,7 @@ try {
     local url="${MEMORIES_URL:-http://localhost:8900}"
     local key="${MEMORIES_API_KEY:-}"
     _BACKENDS_CACHE=$(jq -nc --arg url "$url" --arg key "$key" \
-      '{backends: [{name: "default", url: $url, api_key: $key, scenario: ""}], routing: {}}')
+      '{backends: [{name: "default", url: $url, api_key: $key, api_key_env: "MEMORIES_API_KEY", env_backed: true, scenario: ""}], routing: {}}')
     echo "$_BACKENDS_CACHE" | jq -c '.backends'
   fi
 }
@@ -736,10 +743,12 @@ _search_memories_multi() {
     # Single backend — direct call (backward compat, no overhead). Breaker
     # state is keyed by this backend's name; the env-only fallback remains
     # "default" and therefore keeps the historical breaker filename.
-    local url key name
+    local url key name api_key_env env_backed
     url=$(echo "$backends" | jq -r '.[0].url')
     key=$(echo "$backends" | jq -r '.[0].api_key')
     name=$(echo "$backends" | jq -r '.[0].name // "default"')
+    api_key_env=$(echo "$backends" | jq -r '.[0].api_key_env // empty')
+    env_backed=$(echo "$backends" | jq -r '.[0].env_backed // false')
 
     if _breaker_open "$name"; then
       MEMORIES_BACKEND_DOWN=1
@@ -776,8 +785,8 @@ _search_memories_multi() {
         401)
           _breaker_reset "$name"
           MEMORIES_AUTH_FAILED=1
-          jq -nc --arg name "$name" --arg url "$url" \
-            '{results: [], count: 0, auth_failed: true, auth_failed_backends: [{name: $name, url: $url}]}'
+          jq -nc --arg name "$name" --arg url "$url" --arg api_key_env "$api_key_env" --argjson env_backed "$env_backed" \
+            '{results: [], count: 0, auth_failed: true, auth_failed_backends: [{name: $name, url: $url, api_key_env: $api_key_env, env_backed: $env_backed}]}'
           ;;
         *)
           _breaker_trip "$name"
@@ -810,10 +819,12 @@ _search_memories_multi() {
   local backend_idx=0
   while read -r backend; do
     backend_idx=$((backend_idx + 1))
-    local url key name output_id
+    local url key name api_key_env env_backed output_id
     url=$(echo "$backend" | jq -r '.url')
     key=$(echo "$backend" | jq -r '.api_key')
     name=$(echo "$backend" | jq -r '.name')
+    api_key_env=$(echo "$backend" | jq -r '.api_key_env // empty')
+    env_backed=$(echo "$backend" | jq -r '.env_backed // false')
     output_id="$backend_idx"
     if _breaker_open "$name"; then
       continue
@@ -838,8 +849,8 @@ _search_memories_multi() {
             ;;
           401)
             _breaker_reset "$name"
-            jq -nc --arg name "$name" --arg url "$url" \
-              '{name: $name, url: $url}' > "$tmpdir/auth_failed_${output_id}.json"
+            jq -nc --arg name "$name" --arg url "$url" --arg api_key_env "$api_key_env" --argjson env_backed "$env_backed" \
+              '{name: $name, url: $url, api_key_env: $api_key_env, env_backed: $env_backed}' > "$tmpdir/auth_failed_${output_id}.json"
             ;;
           *)
             _breaker_trip "$name"
