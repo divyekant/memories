@@ -37,17 +37,48 @@ SETTINGS = REPO / ".claude" / "settings.json"
 # the `plugin/` symlink — one less indirection, and a committed symlink is what
 # broke cloud plugin distribution before.
 PLUGIN_ROOT = "${CLAUDE_PLUGIN_ROOT}"
-PROJECT_ROOT = "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code"
+HOOKS_DIR_TPL = "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks"
+
+# Every command is routed through repo-hook.sh, which stands down when the
+# plugin is installed. Claude Code runs ALL matching hooks, so an ungated repo
+# wiring would double-fire alongside the plugin locally: recall injected twice,
+# telemetry double-counted, and two concurrent Stop/SubagentStop extractions
+# racing to write the same memories (the hooks have no invocation locking).
+LAUNCHER = "repo-hook.sh"
+
+# ConfigChange is deliberately NOT wired. memory-config-guard.sh runs without
+# CLAUDE_PLUGIN_ROOT here, takes its legacy path, and checks only
+# ~/.claude/settings.json for the hook names — which under repo wiring live in
+# the PROJECT settings, so it would emit a false "hooks may be missing"
+# warning telling the user to rerun the installer.
+EXCLUDED_EVENTS = ("ConfigChange",)
 
 
 def render_hooks() -> dict:
     """The hooks block `.claude/settings.json` should carry, from hooks.json."""
     source = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
-    rendered = json.loads(json.dumps(source["hooks"]).replace(PLUGIN_ROOT, PROJECT_ROOT))
+    rendered: dict = {}
+    for event, entries in source["hooks"].items():
+        if event in EXCLUDED_EVENTS:
+            continue
+        new_entries = []
+        for entry in entries:
+            new_hooks = []
+            for hook in entry.get("hooks", []):
+                script = hook["command"].rsplit("/", 1)[-1]
+                # Quote the path: a checkout under e.g. "/Users/a/My Projects"
+                # would otherwise word-split and every hook would fail with
+                # command-not-found.
+                new_hooks.append({
+                    **hook,
+                    "command": f'"{HOOKS_DIR_TPL}/{LAUNCHER}" {script}',
+                })
+            new_entries.append({**entry, "hooks": new_hooks})
+        rendered[event] = new_entries
     for entries in rendered.values():
         for entry in entries:
             for hook in entry.get("hooks", []):
-                assert PLUGIN_ROOT not in hook.get("command", ""), hook
+                assert PLUGIN_ROOT not in hook["command"], hook
     return rendered
 
 

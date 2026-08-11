@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-recall.sh",
+            "command": "\"${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/repo-hook.sh\" memory-recall.sh",
             "timeout": 5
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-query.sh",
+            "command": "\"${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/repo-hook.sh\" memory-query.sh",
             "timeout": 10
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-extract.sh",
+            "command": "\"${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/repo-hook.sh\" memory-extract.sh",
             "timeout": 30
           }
         ]
@@ -53,7 +53,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-flush.sh",
+            "command": "\"${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/repo-hook.sh\" memory-flush.sh",
             "timeout": 30
           }
         ]
@@ -65,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-rehydrate.sh",
+            "command": "\"${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/repo-hook.sh\" memory-rehydrate.sh",
             "timeout": 5
           }
         ]
@@ -77,7 +77,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-observe.sh",
+            "command": "\"${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/repo-hook.sh\" memory-observe.sh",
             "timeout": 1
           }
         ]
@@ -87,7 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-tool-observe.sh",
+            "command": "\"${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/repo-hook.sh\" memory-tool-observe.sh",
             "timeout": 1
           }
         ]
@@ -99,7 +99,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-guard.sh",
+            "command": "\"${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/repo-hook.sh\" memory-guard.sh",
             "timeout": 1
           }
         ]
@@ -111,7 +111,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-subagent-recall.sh",
+            "command": "\"${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/repo-hook.sh\" memory-subagent-recall.sh",
             "timeout": 5
           }
         ]
@@ -123,20 +123,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-subagent-capture.sh",
+            "command": "\"${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/repo-hook.sh\" memory-subagent-capture.sh",
             "timeout": 30
-          }
-        ]
-      }
-    ],
-    "ConfigChange": [
-      {
-        "matcher": "user_settings",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-config-guard.sh",
-            "timeout": 2
           }
         ]
       }
@@ -147,7 +135,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/memory-commit.sh",
+            "command": "\"${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/repo-hook.sh\" memory-commit.sh",
             "timeout": 30
           }
         ]

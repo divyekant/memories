@@ -6,6 +6,7 @@ import http.server
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -3053,11 +3054,11 @@ def test_repo_settings_hooks_match_the_plugin_hooks_json() -> None:
 
 
 def test_repo_settings_hook_commands_exist_and_are_executable() -> None:
-    """Every wired command must resolve inside the checkout and be runnable.
-
-    A path that resolves on a developer's machine but not in a fresh clone is
-    exactly the failure this wiring exists to avoid — a committed symlink to an
-    absolute path is what broke plugin distribution in cloud before.
+    """Every wired command must resolve inside the checkout and be runnable,
+    and must be QUOTED: a checkout under a path with whitespace would otherwise
+    word-split and every hook would fail with command-not-found. Parsing with
+    shlex is what makes the quoting observable — comparing the raw literal to a
+    Path cannot detect it.
     """
     settings = json.loads((REPO_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
     commands = [
@@ -3069,7 +3070,63 @@ def test_repo_settings_hook_commands_exist_and_are_executable() -> None:
     assert commands, "no hook commands wired"
 
     for command in commands:
-        assert command.startswith("${CLAUDE_PROJECT_DIR}/"), command
-        path = REPO_ROOT / command.replace("${CLAUDE_PROJECT_DIR}/", "")
-        assert path.is_file(), f"missing: {command}"
-        assert os.access(path, os.X_OK), f"not executable: {command}"
+        assert command.startswith('"${CLAUDE_PROJECT_DIR}/'), f"unquoted path: {command}"
+        argv = shlex.split(command)
+        assert len(argv) == 2, f"expected launcher + hook name: {command}"
+        launcher, hook_name = argv
+        path = REPO_ROOT / launcher.replace("${CLAUDE_PROJECT_DIR}/", "")
+        assert path.is_file() and os.access(path, os.X_OK), f"bad launcher: {launcher}"
+        target = path.parent / hook_name
+        assert target.is_file() and os.access(target, os.X_OK), f"bad hook: {hook_name}"
+
+
+def test_repo_hooks_stand_down_when_the_plugin_is_installed(tmp_path: Path) -> None:
+    """Claude Code runs ALL matching hooks. Locally the plugin is installed and
+    already registers these, so an ungated repo wiring fires everything twice:
+    recall injected twice, telemetry double-counted, and two concurrent
+    Stop/SubagentStop extractions racing to write the same memories. The hook
+    scripts have no invocation-level locking, so the launcher must gate.
+    """
+    launcher = REPO_ROOT / "mcp-server" / "assets" / "claude-code" / "hooks" / "repo-hook.sh"
+    payload = json.dumps({"cwd": str(REPO_ROOT), "session_id": "gate"})
+
+    config = tmp_path / "claude"
+    (config / "plugins").mkdir(parents=True)
+    (config / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {"memories@dk-marketplace": [{"scope": "user"}]}}),
+        encoding="utf-8",
+    )
+
+    installed = subprocess.run(
+        ["bash", str(launcher), "memory-recall.sh"],
+        input=payload, capture_output=True, text=True,
+        env={**os.environ, "CLAUDE_CONFIG_DIR": str(config), "MEMORIES_ENABLED": "1"},
+    )
+    assert installed.returncode == 0, installed.stderr
+    assert installed.stdout.strip() == "", "stood down but still produced output"
+
+    # Same launcher, no plugin manifest -> it must actually run the hook.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    absent = subprocess.run(
+        ["bash", str(launcher), "memory-recall.sh"],
+        input=payload, capture_output=True, text=True,
+        env={**os.environ, "CLAUDE_CONFIG_DIR": str(empty), "MEMORIES_ENABLED": "1",
+             "MEMORIES_URL": "http://127.0.0.1:1", "MEMORIES_API_KEY": "x"},
+    )
+    assert absent.returncode == 0, absent.stderr
+    assert "hookSpecificOutput" in absent.stdout, "gate blocked the hook when no plugin present"
+
+
+def test_repo_wiring_omits_the_config_guard() -> None:
+    """memory-config-guard.sh runs without CLAUDE_PLUGIN_ROOT under repo wiring,
+    takes its legacy path, and checks only ~/.claude/settings.json for the hook
+    names — which now live in the PROJECT settings. Wiring it would emit a false
+    "hooks may be missing" warning telling the user to rerun the installer.
+    """
+    settings = json.loads((REPO_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert "ConfigChange" not in settings["hooks"]
+    plugin_hooks = json.loads(
+        (REPO_ROOT / "mcp-server" / "assets" / "claude-code" / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )["hooks"]
+    assert "ConfigChange" in plugin_hooks, "exclusion is only meaningful while the plugin wires it"
