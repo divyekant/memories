@@ -463,6 +463,31 @@ _breaker_reset() {
   return 0
 }
 
+# Should a failed call be recorded against the backend? Returns 0 to trip.
+#
+# A curl timeout (exit 28) is only evidence about the backend if the backend
+# got the time we meant to give it. `_hook_call_budget` shrinks each call's
+# --max-time as the hook's deadline is consumed, so a SessionStart recall's
+# later calls run with budgets far below what a real request needs (measured:
+# /search takes 1.2-2.1s against a live backend, while the minimum-call floor
+# is 0.3s). Tripping on those blames the backend for our own deadline, and
+# because _health_check skips probing any backend whose breaker is already
+# open, the NEXT session reports "not reachable" without a single probe — a
+# healthy backend, reported down, for the whole cooldown.
+#
+# _health_check deliberately leaves breaker state untouched when the budget
+# is too small to probe fairly; this is the same invariant for the search
+# path, which previously lacked it. Any non-timeout failure (connection
+# refused, TLS, HTTP error) is real evidence and still trips.
+_should_trip_breaker() {
+  local rc="$1" budget="$2" cap="$3"
+  [ "$rc" = "28" ] || return 0
+  local starved
+  starved=$(jq -n --argjson b "$budget" --argjson c "$cap" '$b < $c' 2>/dev/null) || starved="false"
+  [ "$starved" = "true" ] && return 1
+  return 0
+}
+
 # Health check — returns 0 if the ROUTED search backend set has at least
 # one reachable member. Establishes PER-BACKEND breaker state (see above)
 # up front so the search fan-out that follows can skip known-bad backends
@@ -943,7 +968,11 @@ _search_memories_multi() {
           ;;
       esac
     else
-      _breaker_trip "$name"
+      # Only record this against the backend if the failure was its fault and
+      # not our shrinking deadline — see _should_trip_breaker.
+      if _should_trip_breaker "$curl_rc" "$call_budget" 4; then
+        _breaker_trip "$name"
+      fi
       MEMORIES_BACKEND_DOWN=1
       echo '{"results":[],"count":0}'
     fi
@@ -994,11 +1023,12 @@ _search_memories_multi() {
         -H "Content-Type: application/json" \
         -H "X-API-Key: $key" \
         -d "$body" 2>/dev/null)
+      search_rc=$?
       if [ -n "$result" ]; then
         _breaker_reset "$name"
         # Tag results with _backend
         echo "$result" | jq -c --arg b "$name" '.results[] | . + {_backend: $b}' > "$tmpdir/result_${safe}.jsonl"
-      else
+      elif _should_trip_breaker "$search_rc" "$call_budget" 4; then
         _breaker_trip "$name"
       fi
     ) &

@@ -2914,6 +2914,40 @@ def test_memory_recall_injected_context_uses_name_agnostic_toolsearch(tmp_path: 
     assert 'ToolSearch("+memory_search")' in ctx
 
 
+def _lib_eval(expr: str) -> subprocess.CompletedProcess:
+    """Source the Claude hook lib and evaluate a shell expression against it."""
+    lib = HOOKS_DIR / "_lib.sh"
+    return subprocess.run(
+        ["bash", "-c", f'MEMORIES_HOOK_NAME=test; . "{lib}" >/dev/null 2>&1; {expr}'],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_breaker_not_tripped_when_our_own_budget_starved_the_call() -> None:
+    """A curl timeout (exit 28) on a budget we shrank below the requested cap
+    says nothing about backend health — it is our deadline, not their downtime.
+
+    Measured against a real backend, /search takes 1.2-2.1s while the
+    minimum-call floor is 0.3s, so a SessionStart recall's tail calls are
+    issued with budgets that cannot succeed. Tripping on those marks a healthy
+    backend down for the breaker cooldown, and the NEXT session's health check
+    then reports 'not reachable' without ever probing.
+    """
+    # Timed out on a starved budget (1.0s granted of a 4s cap) -> must not trip.
+    starved = _lib_eval('_should_trip_breaker 28 1.0 4 && echo TRIP || echo NOTRIP')
+    assert starved.stdout.strip() == "NOTRIP", starved.stderr
+
+    # Timed out with the full cap -> genuinely slow/unreachable, must trip.
+    full = _lib_eval('_should_trip_breaker 28 4 4 && echo TRIP || echo NOTRIP')
+    assert full.stdout.strip() == "TRIP", full.stderr
+
+    # Non-timeout failures say something real regardless of budget.
+    for rc in (7, 22, 52):
+        other = _lib_eval(f'_should_trip_breaker {rc} 1.0 4 && echo TRIP || echo NOTRIP')
+        assert other.stdout.strip() == "TRIP", f"rc={rc}: {other.stderr}"
+
+
 def test_codex_memory_observe_nested_exec_matches_non_memories_server_names(tmp_path: Path) -> None:
     """The exec-envelope grep must not be hardcoded to the 'memories' server
     segment. A UUID-named connector contains hyphens, which JS parses as
