@@ -1,6 +1,6 @@
 {
   "name": "memories-mcp",
-  "version": "5.9.0",
+  "version": "5.10.0",
   "description": "Memories — agent-agnostic memory for AI coding agents. MCP server + installer CLI.",
   "license": "MIT",
   "keywords": [

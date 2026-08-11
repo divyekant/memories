@@ -19,7 +19,7 @@ Stop cutting a release per work item. The flow is now:
 
 ## Mechanics of a promotion
 
-- Bump every version string (the eight, current as of v5.9.0: `pyproject.toml`,
+- Bump every version string (the eight, current as of v5.10.0: `pyproject.toml`,
   `mcp-server/package.json` + lockfile, `uv.lock`,
   `mcp-server/assets/backend/BACKEND_VERSION`, `app.py` (FastAPI + /health),
   `tests/test_api_contract_compat.py`, `plugins/memories/.codex-plugin/plugin.json`,
