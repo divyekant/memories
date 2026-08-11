@@ -180,10 +180,43 @@ _memories_disabled() {
   esac
 }
 
+# Any of the supported backend-config sources counts as "configured": a
+# single-backend MEMORIES_URL, an explicit MEMORIES_BACKENDS_FILE, the global
+# backends.yaml, or the per-project .memories/backends.yaml (see
+# _load_backends below for the authoritative, full-fidelity version of this
+# resolution order, which runs later once the hook has parsed its stdin
+# payload and knows the real project cwd).
+#
+# This early check runs BEFORE stdin is read, so it can't use the payload's
+# `.cwd` field yet. Claude Code exports CLAUDE_PROJECT_DIR to every hook
+# process at spawn time specifically for this (verified against
+# https://code.claude.com/docs/en/hooks.md: "hooks run in the current
+# directory" — $PWD is NOT guaranteed to be the project root, but
+# CLAUDE_PROJECT_DIR is documented and exported regardless of how the script
+# was launched) — so that's checked first, with $PWD as a best-effort
+# fallback for non-Claude-Code callers (this plugin is agent-agnostic) that
+# don't set it.
+#
+# Residual limitation: a caller that (a) doesn't export CLAUDE_PROJECT_DIR
+# and (b) isn't running with $PWD == the project root — e.g. a wrapper that
+# cd's elsewhere before invoking the hook — will not detect a project-only
+# backends.yaml and will silently no-op. Set MEMORIES_ENABLED=true to force
+# activation in that case.
+_memories_has_backend_config() {
+  [ -n "${MEMORIES_URL:-}" ] && return 0
+  [ -n "${MEMORIES_BACKENDS_FILE:-}" ] && [ -f "${MEMORIES_BACKENDS_FILE}" ] && return 0
+  [ -f "$HOME/.config/memories/backends.yaml" ] && return 0
+  local project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
+  [ -n "$project_dir" ] && [ -f "$project_dir/.memories/backends.yaml" ] && return 0
+  return 1
+}
+
 # Decide whether hooks should run at all, evaluated in this precedence:
 #   1. MEMORIES_DISABLED truthy         -> inactive (handled by caller, see below)
 #   2. MEMORIES_ENABLED explicitly set  -> obey it (truthy/falsy)
-#   3. MEMORIES_ENABLED unset           -> auto-detect: active iff MEMORIES_URL is set
+#   3. MEMORIES_ENABLED unset           -> auto-detect: active iff any
+#      supported backend-config source is present (see
+#      _memories_has_backend_config)
 # This lets a repo commit .claude/settings.json enabling the plugin (for cloud
 # sessions) without forcing every clone-without-credentials to see warnings or
 # pay curl timeouts: unconfigured is a true, silent no-op by default.
@@ -197,7 +230,7 @@ _memories_active() {
       0|false|FALSE|no|NO|off|OFF) return 1 ;;
     esac
   fi
-  [ -n "${MEMORIES_URL:-}" ]
+  _memories_has_backend_config
 }
 
 _exit_if_disabled() {
@@ -205,14 +238,22 @@ _exit_if_disabled() {
     _log_info "Hook disabled by MEMORIES_DISABLED"
     exit 0
   fi
-  if ! _memories_active; then
-    if [ -n "${MEMORIES_ENABLED+x}" ]; then
-      _log_info "Hook disabled by MEMORIES_ENABLED=${MEMORIES_ENABLED}"
-    else
-      _log_info "Hook inactive: MEMORIES_URL not set (unconfigured clone); set MEMORIES_URL or MEMORIES_ENABLED=true to opt in"
-    fi
+  if _memories_active; then
+    return 0
+  fi
+  if [ -n "${MEMORIES_ENABLED+x}" ]; then
+    # Explicit MEMORIES_ENABLED=false (or an unrecognized value with no
+    # backend config either) — the user deliberately set something, so a log
+    # line is informative and welcome.
+    _log_info "Hook disabled by MEMORIES_ENABLED=${MEMORIES_ENABLED}"
     exit 0
   fi
+  # Auto-detected inactive: no MEMORIES_ENABLED override and no backend
+  # config found — a contributor who never opted in. Do NOT call _log_info
+  # here: it would create ~/.config/memories/hook.log (and the directory) on
+  # every session/prompt/tool event for someone who never configured
+  # anything, which is exactly the noise this gate exists to prevent.
+  exit 0
 }
 
 # Rotate log if over 1000 lines (called from SessionStart only)

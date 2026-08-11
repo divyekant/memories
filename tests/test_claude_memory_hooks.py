@@ -1585,6 +1585,110 @@ def test_memory_hooks_disabled_wins_over_enabled_true(tmp_path: Path) -> None:
     assert result.stdout.strip() == ""
 
 
+def test_memory_hooks_backends_file_only_runs_without_url(tmp_path: Path) -> None:
+    """REGRESSION: multi-backend installs configure via MEMORIES_BACKENDS_FILE
+    instead of MEMORIES_URL. The activation gate must treat that as configured
+    and run the hook, not silently no-op it."""
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  primary:\n"
+        "    url: http://127.0.0.1:9999\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": "", "MEMORIES_BACKENDS_FILE": str(backends_file)},
+    )
+
+    assert result.returncode == 0
+    assert len(calls) > 0, "MEMORIES_BACKENDS_FILE-only install must run, not no-op"
+
+
+def test_memory_hooks_global_backends_yaml_only_runs_without_url(tmp_path: Path) -> None:
+    """REGRESSION: same as above but via the default global config location
+    (~/.config/memories/backends.yaml), with no MEMORIES_BACKENDS_FILE set."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    # _run_hook creates HOME before invoking the script; write the global
+    # config there ourselves since extra_env can't create files.
+    home_dir = tmp_path / "home"
+    (home_dir / ".config" / "memories").mkdir(parents=True, exist_ok=True)
+    (home_dir / ".config" / "memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  primary:\n"
+        "    url: http://127.0.0.1:9999\n"
+        "    api_key: test-key\n"
+    )
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": ""},
+    )
+
+    assert result.returncode == 0
+    assert len(calls) > 0, "global backends.yaml-only install must run, not no-op"
+
+
+def test_memory_hooks_project_backends_yaml_only_runs_without_url(tmp_path: Path) -> None:
+    """REGRESSION: same as above but via the per-project .memories/backends.yaml,
+    discovered through CLAUDE_PROJECT_DIR (the variable Claude Code exports to
+    every hook process at spawn time, before the hook has parsed its stdin
+    payload's .cwd field)."""
+    project_dir = tmp_path / "project"
+    (project_dir / ".memories").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".memories" / "backends.yaml").write_text(
+        "backends:\n"
+        "  primary:\n"
+        "    url: http://127.0.0.1:9999\n"
+        "    api_key: test-key\n"
+    )
+
+    payload = {"cwd": str(project_dir), "prompt": "hello"}
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": "", "CLAUDE_PROJECT_DIR": str(project_dir)},
+    )
+
+    assert result.returncode == 0
+    assert len(calls) > 0, "per-project backends.yaml-only install must run, not no-op"
+
+
+def test_memory_hooks_unconfigured_creates_no_log_file(tmp_path: Path) -> None:
+    """The auto-detected-inactive path (no MEMORIES_ENABLED, no backend config)
+    must be a genuine no-op: no ~/.config/memories/hook.log, not even the
+    directory, must be created. Logging here would grow hook.log forever for
+    someone who never opted in, since it fires on every session/prompt/tool
+    event and the file is never rotated (rotation only runs on the configured
+    path, past the exit)."""
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+
+    result, calls, home_dir = _run_hook(
+        RECALL_SCRIPT,
+        tmp_path,
+        payload,
+        responses=[],
+        extra_env={"MEMORIES_URL": ""},
+    )
+
+    assert result.returncode == 0
+    assert calls == []
+    assert not (home_dir / ".config" / "memories").exists(), (
+        "auto-detected-inactive hooks must not create ~/.config/memories at all"
+    )
+
+
 def test_memory_recall_401_shows_credential_warning_not_reachability(tmp_path: Path) -> None:
     """/health is unauthenticated and can't see a bad API key. The hook must detect
     the 401 from the /search calls it already makes and name the real problem,

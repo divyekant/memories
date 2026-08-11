@@ -783,13 +783,13 @@ Values are copied into the VM **once at session start**, so edits only affect se
 
 A blocked domain does not return a tidy 403 — it fails at the proxy's connect stage with no readable error, so a hook that "does nothing" is the symptom. Debug by logging `curl -v` output or `$?` from the hook rather than hunting for an error body. Changing the allowlist also invalidates the environment's cached snapshot, so its setup script re-runs on the next session.
 
-**Contributors without a backend get a true no-op, not noise.** Hooks gate themselves before making any network call: if `MEMORIES_URL` is unset and `MEMORIES_ENABLED` was never set either, the hook exits silently — no service-unreachable notice, no curl stalls. That's what makes it safe to commit `.claude/settings.json` project-wide; a clone without credentials just does nothing. The precedence is:
+**Contributors without a backend get a true no-op, not noise.** Hooks gate themselves before making any network call: if no backend is configured and `MEMORIES_ENABLED` was never set either, the hook exits silently — no service-unreachable notice, no curl stalls, no `hook.log` even created. That's what makes it safe to commit `.claude/settings.json` project-wide; a clone without credentials just does nothing. The precedence is:
 
 1. `MEMORIES_DISABLED` truthy always wins — hard off, regardless of anything else.
-2. `MEMORIES_ENABLED` set explicitly — `true`/`1`/`yes`/`on` forces hooks to run even with no `MEMORIES_URL` (falling back to `http://localhost:8900`); `false`/`0`/`no`/`off` forces them off even with a configured URL.
-3. `MEMORIES_ENABLED` unset — auto-detect from `MEMORIES_URL`: set means run, unset/empty means silent no-op.
+2. `MEMORIES_ENABLED` set explicitly — `true`/`1`/`yes`/`on` forces hooks to run even with nothing else configured (falling back to `http://localhost:8900`); `false`/`0`/`no`/`off` forces them off even with a backend configured.
+3. `MEMORIES_ENABLED` unset — auto-detect: active if *any* supported backend source is present (`MEMORIES_URL`, `MEMORIES_BACKENDS_FILE`, `~/.config/memories/backends.yaml`, or a per-project `.memories/backends.yaml`), silent no-op otherwise. Multi-backend installs configure via those files instead of `MEMORIES_URL`, so this gate must recognize all of them, not just the single-backend env var.
 
-Set `MEMORIES_ENABLED=false` in your own gitignored `.claude/settings.local.json` (or `~/.config/memories/env`) if you want to opt out explicitly instead of relying on auto-detect, or `claude plugin disable memories@dk-marketplace` to disable the plugin outright.
+Set `MEMORIES_ENABLED=false` in your own gitignored `.claude/settings.local.json` (or `~/.config/memories/env`) if you want to opt out explicitly instead of relying on auto-detect, or `claude plugin disable --scope local memories@dk-marketplace` to disable the plugin outright — plain `claude plugin disable` defaults to `--scope user`, which cannot override the `true` this repo commits at project scope.
 
 **A wrong or missing API key is not silent.** `/health` is unauthenticated, so it cannot tell a bad `MEMORIES_API_KEY` apart from a healthy backend — without this check, recall would just keep returning nothing, forever, with no warning. The session-start hook now detects a `401` from the `/search` calls it already makes (no extra round-trip) and surfaces a distinct warning naming `MEMORIES_API_KEY`, instead of the generic "check that the service is running" message reserved for actually-unreachable backends.
 
