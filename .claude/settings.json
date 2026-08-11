@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "dk-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "divyekant/dk-marketplace"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "memories@dk-marketplace": true
+  }
+}

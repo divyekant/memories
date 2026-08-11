@@ -746,6 +746,45 @@ docker compose --profile remote-mcp up -d
 
 See `mcp-server/remote/server.mjs` for the full env contract (`REMOTE_MCP_AUTH=none` disables auth for local testing — never expose that mode publicly) and the commented-out `remote-mcp` block in `mcp-server/assets/backend/docker-compose.standalone.yml` for the standalone-deployment equivalent.
 
+### Cloud coding sessions (claude.ai/code)
+
+A cloud session runs in a fresh VM built from a git clone of your repository. Nothing from your local `~/.claude` is present — not your user-level `CLAUDE.md`, skills, hooks, `enabledPlugins`, or `~/.claude.json` MCP servers. That splits Memories into two halves:
+
+| | Cloud session | What it takes |
+|---|---|---|
+| **Tools** (`memory_search`, `memory_add`, …) | Works with no setup | The claude.ai connector above travels with your account, and its traffic is proxied by Anthropic rather than the session's network |
+| **Hooks** (automatic recall + extraction) | Only if the repo opts in | The three steps below — miss any one and it fails silently |
+
+If you only need Claude to be *able* to reach your memories, the connector alone is enough; stop here. The rest buys you automatic per-prompt recall and end-of-session extraction.
+
+**1. Commit the plugin enablement.** Project settings are the only channel that reaches a cloud session, so `.claude/settings.json` must be committed (this repo ships one):
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "dk-marketplace": { "source": { "source": "github", "repo": "divyekant/dk-marketplace" } }
+  },
+  "enabledPlugins": { "memories@dk-marketplace": true }
+}
+```
+
+If your `.gitignore` excludes `.claude/`, add a negation for this one file — see this repo's `.gitignore` for the pattern.
+
+**2. Set the environment variables.** On claude.ai/code, click the cloud icon showing the environment's name in the row above the message box, then **Add cloud environment** (or the gear icon on an existing one). The dialog holds environment variables in `.env` format:
+
+```bash
+MEMORIES_URL=https://memory.yourdomain.com
+MEMORIES_API_KEY=...
+```
+
+Values are copied into the VM **once at session start**, so edits only affect sessions you start afterwards. Note that cloud environment variables are **not a secrets vault** — anyone with access to the environment can read them in plaintext. Weigh that before putting a backend key there; the connector route keeps credentials out of the VM entirely.
+
+**3. Allow the backend's domain.** This is the step that silently breaks everything if skipped. Hook `curl`s are ordinary session traffic and are subject to the environment's network policy — unlike connector traffic, which is exempt. The default **Trusted** level is a closed list (package registries, GitHub, the major clouds) and will **not** include your backend. In the same dialog, set **Network access → Custom**, add your host to **Allowed domains** (one bare domain per line; a leading `*.` matches subdomains), and tick *"Also include default list of common package managers"* so package installs keep working.
+
+A blocked domain does not return a tidy 403 — it fails at the proxy's connect stage with no readable error, so a hook that "does nothing" is the symptom. Debug by logging `curl -v` output or `$?` from the hook rather than hunting for an error body. Changing the allowlist also invalidates the environment's cached snapshot, so its setup script re-runs on the next session.
+
+**Contributors without a backend** aren't hard-blocked: the hooks fail their health check and a circuit breaker suppresses further calls for 60s at a time. Expect a service-unreachable notice at session start and an occasional short pause when the breaker retries. To opt out, run `claude plugin disable memories@dk-marketplace` or set `"enabledPlugins": {"memories@dk-marketplace": false}` in your own gitignored `.claude/settings.local.json` — local settings take precedence over project ones.
+
 ---
 
 ## Multi-Backend Routing (Optional)
