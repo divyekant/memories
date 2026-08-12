@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, mkdir, access } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, readdir, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -268,6 +268,59 @@ test('install fails closed on an incomplete owned MCP block before cleanup', asy
   assert.equal(await readFile(join(ctx.home, '.codex/config.toml'), 'utf8'), beforeConfig);
   assert.deepEqual(await readJson(settingsPath), beforeSettings);
   assert.deepEqual(await readJson(statePath), beforeState);
+});
+
+test('uninstall fails closed on malformed owned markers before any cleanup', async () => {
+  const malformedBlocks = [
+    '# BEGIN Memories Codex developer instructions\ndev = true\nforeign_after = 1\n',
+    '# END Memories Codex developer instructions\nforeign_between = 2\n# BEGIN Memories Codex developer instructions\ndev = true\nforeign_after = 3\n',
+    '# BEGIN Memories Codex developer instructions\none = true\n# END Memories Codex developer instructions\nforeign_between = 4\n# BEGIN Memories Codex developer instructions\ntwo = true\n# END Memories Codex developer instructions\nforeign_after = 5\n',
+  ];
+
+  for (const malformedBlock of malformedBlocks) {
+    const ctx = await freshCtx();
+    const codexDir = join(ctx.home, '.codex');
+    const hooksDir = join(codexDir, 'hooks/memory');
+    const configPath = join(codexDir, 'config.toml');
+    const settingsPath = join(codexDir, 'settings.json');
+    const hooksJsonPath = join(codexDir, 'hooks.json');
+    const statePath = join(ctx.home, '.config/memories/install-state.json');
+    await mkdir(hooksDir, { recursive: true });
+    await writeFile(join(hooksDir, 'foreign-hook.sh'), '#!/bin/sh\nexit 0\n');
+    await writeJson(hooksJsonPath, { hooks: { Foreign: [{ hooks: [{ type: 'command', command: '/foreign/hook.sh' }] }] } });
+    const validPrefix = appendMarkedBlock(
+      appendMarkedBlock('foreign_before = 1\n', 'Memories Codex notify', 'notify = true'),
+      'Memories Codex MCP',
+      '[mcp_servers.memories]\ncommand = "npx"',
+    );
+    await writeFile(configPath, `${validPrefix}${malformedBlock}`);
+    const recordedRules = ['mcp__memories__memory_search'];
+    await writeJson(settingsPath, { permissions: { allow: recordedRules } });
+    await writeJson(statePath, { permissions: { codex: recordedRules } });
+
+    const beforeConfig = await readFile(configPath, 'utf8');
+    const beforeSettings = await readFile(settingsPath, 'utf8');
+    const beforeState = await readFile(statePath, 'utf8');
+    const beforeHooksJson = await readFile(hooksJsonPath, 'utf8');
+    const beforeHook = await readFile(join(hooksDir, 'foreign-hook.sh'), 'utf8');
+    const beforeHookNames = await readdir(hooksDir);
+
+    await assert.rejects(
+      () => adapter.uninstall(ctx),
+      (error) => {
+        assert.equal(error.code, 'ERR_TOML_MARKED_BLOCK');
+        return true;
+      },
+    );
+
+    assert.equal(await readFile(configPath, 'utf8'), beforeConfig);
+    assert.equal(await readFile(settingsPath, 'utf8'), beforeSettings);
+    assert.equal(await readFile(statePath, 'utf8'), beforeState);
+    assert.equal(await readFile(hooksJsonPath, 'utf8'), beforeHooksJson);
+    assert.equal(await readFile(join(hooksDir, 'foreign-hook.sh'), 'utf8'), beforeHook);
+    assert.deepEqual(await readdir(hooksDir), beforeHookNames);
+    assert.equal(await exists(hooksDir), true);
+  }
 });
 
 test('uninstall removes blocks and hooks but keeps foreign toml', async () => {

@@ -6,30 +6,38 @@ export function appendMarkedBlock(text, marker, body) {
   return `${text}\n${start}\n${body}\n# END ${marker}\n`;
 }
 
-// Replace only a complete block emitted by appendMarkedBlock. Lines outside
-// the exact begin/end markers are carried through unchanged, so unmanaged TOML
-// (including its whitespace and ordering) is not reformatted during updates.
-export function upsertMarkedBlock(text, marker, body) {
+function markedBlockError(marker, reason) {
+  const error = new Error(`Invalid marked block "${marker}": ${reason}`);
+  error.name = 'TomlMarkedBlockError';
+  error.code = 'ERR_TOML_MARKED_BLOCK';
+  return error;
+}
+
+function validateMarkedBlock(text, marker) {
   const start = `# BEGIN ${marker}`;
   const end = `# END ${marker}`;
   const lines = text.split('\n');
   const starts = lines.flatMap((line, index) => line === start ? [index] : []);
   const ends = lines.flatMap((line, index) => line === end ? [index] : []);
-  if (starts.length === 0 && ends.length === 0) return appendMarkedBlock(text, marker, body);
+  if (starts.length === 0 && ends.length === 0) return null;
   if (starts.length !== 1 || ends.length !== 1) {
-    const error = new Error(`Invalid marked block "${marker}": ambiguous ownership markers`);
-    error.name = 'TomlMarkedBlockError';
-    error.code = 'ERR_TOML_MARKED_BLOCK';
-    throw error;
+    throw markedBlockError(marker, 'ambiguous ownership markers');
   }
   const startIndex = starts[0];
   const endIndex = ends[0];
   if (endIndex < startIndex) {
-    const error = new Error(`Invalid marked block "${marker}": end marker precedes begin marker`);
-    error.name = 'TomlMarkedBlockError';
-    error.code = 'ERR_TOML_MARKED_BLOCK';
-    throw error;
+    throw markedBlockError(marker, 'end marker precedes begin marker');
   }
+  return { lines, startIndex, endIndex };
+}
+
+// Replace only a complete block emitted by appendMarkedBlock. Lines outside
+// the exact begin/end markers are carried through unchanged, so unmanaged TOML
+// (including its whitespace and ordering) is not reformatted during updates.
+export function upsertMarkedBlock(text, marker, body) {
+  const block = validateMarkedBlock(text, marker);
+  if (!block) return appendMarkedBlock(text, marker, body);
+  const { lines, startIndex, endIndex } = block;
   return [...lines.slice(0, startIndex + 1), body, ...lines.slice(endIndex)].join('\n');
 }
 
@@ -54,6 +62,15 @@ export function removeMarkedBlock(text, marker) {
     if (!skip) out.push(line);
   }
   return out.join('\n');
+}
+
+// Remove only a complete, uniquely owned block. Unlike removeMarkedBlock,
+// this fails closed when either ownership marker is present but malformed.
+export function removeMarkedBlockStrict(text, marker) {
+  const block = validateMarkedBlock(text, marker);
+  if (!block) return text;
+  const { lines, startIndex, endIndex } = block;
+  return [...lines.slice(0, startIndex), ...lines.slice(endIndex + 1)].join('\n');
 }
 
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

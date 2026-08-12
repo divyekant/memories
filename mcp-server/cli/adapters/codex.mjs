@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { readJson, writeJson, removePermissions, mergeHookSettings } from '../lib/json-file.mjs';
 import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOL_NAMES } from '../lib/hooks.mjs';
 import { installStatePath, readRecordedPermissions, clearRecordedPermissions } from '../lib/install-state.mjs';
-import { upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, tomlEscape } from '../lib/toml.mjs';
+import { upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlockStrict, hasTomlSection, hasTomlKey, tomlEscape } from '../lib/toml.mjs';
 
 const MARKER_NOTIFY = 'Memories Codex notify';
 const MARKER_MCP = 'Memories Codex MCP';
@@ -192,6 +192,18 @@ export async function uninstall(ctx) {
   const p = paths(ctx);
   // Read before the removal below erases the evidence.
   const recordedRules = await readRecordedPermissions(installStatePath(ctx.home), 'codex');
+
+  // Validate and prepare every installer-owned TOML block before touching any
+  // other artifact. A malformed later marker must not partially remove earlier
+  // blocks, hooks, settings rules, or the ownership record.
+  let toml = null;
+  if (await exists(p.config)) {
+    toml = await readFile(p.config, 'utf8');
+    for (const marker of [MARKER_NOTIFY, MARKER_MCP, MARKER_DEV]) {
+      toml = removeMarkedBlockStrict(toml, marker);
+    }
+  }
+
   await rm(p.hooksDest, { recursive: true, force: true });
 
   if (await exists(p.hooksJson)) {
@@ -214,11 +226,7 @@ export async function uninstall(ctx) {
     await writeJson(p.settings, removePermissions(await readJson(p.settings), (rule) => owned.has(rule)));
   }
 
-  if (await exists(p.config)) {
-    let toml = await readFile(p.config, 'utf8');
-    toml = removeMarkedBlock(toml, MARKER_NOTIFY);
-    toml = removeMarkedBlock(toml, MARKER_MCP);
-    toml = removeMarkedBlock(toml, MARKER_DEV);
+  if (toml !== null) {
     await writeFile(p.config, toml);
   }
 

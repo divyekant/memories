@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendMarkedBlock, upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../cli/lib/toml.mjs';
+import { appendMarkedBlock, upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, removeMarkedBlockStrict, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../cli/lib/toml.mjs';
 
 test('appendMarkedBlock appends once, idempotent', () => {
   const once = appendMarkedBlock('a = 1\n', 'Memories Codex MCP', '[mcp_servers.memories]\ncommand = "npx"');
@@ -46,6 +46,28 @@ test('removeMarkedBlock strips block and markers, keeps rest', () => {
 
 test('removeMarkedBlock no-op when marker absent', () => {
   assert.equal(removeMarkedBlock('a = 1\n', 'Nope'), 'a = 1\n');
+});
+
+test('removeMarkedBlockStrict removes complete blocks and rejects malformed ownership markers', () => {
+  const complete = appendMarkedBlock('keep = 1\n', 'Owned', 'inner = 2');
+  const removed = removeMarkedBlockStrict(`${complete}tail = 3\n`, 'Owned');
+  assert.equal(removed, 'keep = 1\n\ntail = 3\n');
+  assert.equal(removeMarkedBlockStrict('a = 1\n', 'Nope'), 'a = 1\n');
+
+  for (const text of [
+    '# BEGIN Owned\nold = true\nforeign = 1\n',
+    'foreign = 1\n# END Owned\n# BEGIN Owned\n',
+    '# BEGIN Owned\none = true\n# END Owned\nforeign = 2\n# BEGIN Owned\ntwo = true\n# END Owned\n',
+  ]) {
+    assert.throws(
+      () => removeMarkedBlockStrict(text, 'Owned'),
+      (error) => {
+        assert.equal(error.code, 'ERR_TOML_MARKED_BLOCK');
+        assert.match(error.message, /invalid marked block/i);
+        return true;
+      },
+    );
+  }
 });
 
 test('ensureTomlStringKey inserts into existing section', () => {

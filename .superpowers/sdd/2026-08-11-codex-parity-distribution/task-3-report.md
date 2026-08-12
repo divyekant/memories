@@ -98,3 +98,33 @@ the shipped installer emits the accepted expanded lifecycle.
 
 Follow-up commit: this report is included in the commit carrying
 `fix(codex): keep feedback writes prompt-gated`.
+
+## Follow-up safety correction: strict uninstall markers
+
+The uninstall path now validates all three installer-owned TOML markers
+(`Memories Codex notify`, `Memories Codex MCP`, and `Memories Codex developer
+instructions`) before removing hooks, settings permissions, or provenance.
+Missing, reversed, and duplicate marker pairs raise
+`ERR_TOML_MARKED_BLOCK`; config, settings, hooks, and install-state remain
+untouched so a retry is safe. The same validation contract is shared by the
+strict removal and upsert paths.
+
+RED command:
+
+```text
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+RED result: the new strict-removal test could not import its missing helper,
+and the uninstall regression did not reject the malformed marker (`16 passed,
+2 failed`).
+
+GREEN verification:
+
+- TOML and Codex adapter tests: **31 passed, 0 failed**.
+- Affected adapter, CLI, hooks, and TOML suite: **75 passed, 0 failed**.
+- Full `node --test` from `mcp-server/`: **227 passed, 0 failed**.
+- `git diff --check`: passed.
+
+Follow-up commit: this report is included in the commit carrying
+`fix(codex): fail closed on malformed uninstall markers`.
