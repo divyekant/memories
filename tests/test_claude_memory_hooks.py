@@ -15,6 +15,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOKS_DIR = REPO_ROOT / "integrations" / "claude-code" / "hooks"
@@ -37,14 +39,21 @@ set -euo pipefail
 
 url=""
 body=""
+headers=()
 pending_data=0
 pending_write=0
+pending_header=0
 write_out=""
 
 for arg in "$@"; do
   if [ "$pending_data" -eq 1 ]; then
     body="$arg"
     pending_data=0
+    continue
+  fi
+  if [ "$pending_header" -eq 1 ]; then
+    headers+=("$arg")
+    pending_header=0
     continue
   fi
   if [ "$pending_write" -eq 1 ]; then
@@ -56,6 +65,9 @@ for arg in "$@"; do
   case "$arg" in
     -d|--data|--data-raw|--data-binary)
       pending_data=1
+      ;;
+    -H|--header)
+      pending_header=1
       ;;
     -w|--write-out)
       pending_write=1
@@ -69,7 +81,9 @@ done
 # GET requests have no body — use null for jq compatibility
 if [ -z "$body" ]; then body="null"; fi
 
-jq -nc --arg url "$url" --argjson body "$body" '{url: $url, body: $body}' >> "$FAKE_CURL_CALLS"
+headers_json=$(printf '%s\n' "${headers[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')
+jq -nc --arg url "$url" --argjson body "$body" --argjson headers "$headers_json" \
+  '{url: $url, body: $body, headers: $headers}' >> "$FAKE_CURL_CALLS"
 
 # Rule matching, shared shape across the three lookups below:
 #   url_suffix      — optional, match-any when absent
@@ -1648,6 +1662,162 @@ def test_codex_session_end_enqueues_once_without_polling_across_backends(tmp_pat
     assert extract_calls[0]["body"]["context"] == "session_end"
     assert all("status" not in str(call["url"]) for call in calls)
     assert all("poll" not in str(call["url"]) for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("hook_name", "payload", "responses", "expected_path", "expected_context"),
+    [
+        (
+            "memory-flush.sh",
+            {
+                "session_id": "codex-env-flush",
+                "transcript_path": "__TRANSCRIPT__",
+                "cwd": "/Users/example/memories",
+                "hook_event_name": "PreCompact",
+            },
+            [{"url_suffix": "/memory/extract", "response": {"job_id": "flush"}}],
+            "/memory/extract",
+            "pre_compact",
+        ),
+        (
+            "memory-rehydrate.sh",
+            {
+                "session_id": "codex-env-rehydrate",
+                "cwd": "/Users/example/memories",
+                "hook_event_name": "PostCompact",
+            },
+            [],
+            None,
+            None,
+        ),
+        (
+            "memory-subagent-recall.sh",
+            {
+                "session_id": "codex-env-subagent-start",
+                "cwd": "/Users/example/memories",
+                "hook_event_name": "SubagentStart",
+                "agent_id": "agent-env",
+                "agent_type": "explore",
+            },
+            [
+                {
+                    "url_suffix": "/search",
+                    "source_prefix": "codex/memories",
+                    "response": {
+                        "results": [
+                            {
+                                "id": 1201,
+                                "source": "codex/memories",
+                                "text": "Process environment wins for subagent recall.",
+                                "similarity": 0.9,
+                            }
+                        ],
+                        "count": 1,
+                    },
+                }
+            ],
+            "/search",
+            None,
+        ),
+        (
+            "memory-subagent-capture.sh",
+            {
+                "session_id": "codex-env-subagent-stop",
+                "agent_transcript_path": "__TRANSCRIPT__",
+                "cwd": "/Users/example/memories",
+                "hook_event_name": "SubagentStop",
+                "agent_type": "explore",
+                "last_assistant_message": "Process environment wins for capture.",
+            },
+            [{"url_suffix": "/memory/extract", "response": {"job_id": "capture"}}],
+            "/memory/extract",
+            "subagent_stop",
+        ),
+        (
+            "memory-commit.sh",
+            {
+                "session_id": "codex-env-commit",
+                "transcript_path": "__TRANSCRIPT__",
+                "cwd": "/Users/example/memories",
+                "hook_event_name": "SessionEnd",
+                "last_assistant_message": "Process environment wins for commit.",
+            },
+            [{"url_suffix": "/memory/extract", "response": {"job_id": "commit"}}],
+            "/memory/extract",
+            "session_end",
+        ),
+    ],
+)
+def test_codex_expanded_hooks_preserve_environment_over_env_file(
+    tmp_path: Path,
+    hook_name: str,
+    payload: dict[str, object],
+    responses: list[dict[str, object]],
+    expected_path: str | None,
+    expected_context: str | None,
+) -> None:
+    """Codex hook process exports win over stale installer env-file values.
+
+    The process values model cloud-provided configuration while the file values
+    model a prior local install.  Enabled precedence is deliberately tested at
+    the same time: every file says disabled, but every process says enabled.
+    """
+    env_file = tmp_path / "memories.env"
+    env_file.write_text(
+        "MEMORIES_ENABLED=0\n"
+        'MEMORIES_URL="http://127.0.0.1:9102"\n'
+        'MEMORIES_API_KEY="file-key"\n'
+        'MEMORIES_EXTRACT_SOURCE="file/{project}"\n'
+        'MEMORIES_SOURCE_PREFIXES="file/{project}"\n',
+        encoding="utf-8",
+    )
+
+    transcript = tmp_path / f"{hook_name}.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": "A sufficiently long process-environment regression message."},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    payload = {
+        key: (str(transcript) if value == "__TRANSCRIPT__" else value)
+        for key, value in payload.items()
+    }
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / hook_name,
+        tmp_path,
+        payload,
+        responses,
+        extra_env={
+            "MEMORIES_ENV_FILE": str(env_file),
+            "MEMORIES_ENABLED": "1",
+            "MEMORIES_URL": "http://127.0.0.1:9101",
+            "MEMORIES_API_KEY": "process-key",
+            "MEMORIES_EXTRACT_SOURCE": "codex/{project}",
+            "MEMORIES_SOURCE_PREFIXES": "codex/{project}",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    if expected_path is None:
+        assert json.loads(result.stdout) == {"suppressOutput": True}
+        assert calls == []
+        return
+
+    matching = [call for call in calls if str(call["url"]).endswith(expected_path)]
+    assert matching, f"expected {expected_path} call through process URL, got {calls}"
+    assert all(call["url"].startswith("http://127.0.0.1:9101") for call in matching)
+    assert all("X-API-Key: process-key" in call.get("headers", []) for call in matching)
+    if expected_context is not None:
+        assert matching[0]["body"]["context"] == expected_context
+        assert matching[0]["body"].get("source") == "codex/memories"
+    else:
+        assert matching[0]["body"].get("source_prefix") == "codex/memories"
 
 
 def test_memory_extract_drops_system_reminder_content_items(tmp_path: Path) -> None:

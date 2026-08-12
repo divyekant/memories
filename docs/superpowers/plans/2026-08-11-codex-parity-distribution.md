@@ -679,3 +679,56 @@ git add mcp-server/cli/index.mjs mcp-server/test/cli.test.mjs \
   tests/test_codex_plugin.py docs/superpowers/plans/2026-08-11-codex-parity-distribution.md
 git commit -m "fix(codex): close parity acceptance gaps"
 ```
+
+### Task 9: Preserve Process Environment Across Expanded Codex Hooks
+
+**Files:**
+- Modify: `mcp-server/assets/codex/hooks/memory-flush.sh`
+- Modify: `mcp-server/assets/codex/hooks/memory-rehydrate.sh`
+- Modify: `mcp-server/assets/codex/hooks/memory-subagent-recall.sh`
+- Modify: `mcp-server/assets/codex/hooks/memory-subagent-capture.sh`
+- Modify: `mcp-server/assets/codex/hooks/memory-commit.sh`
+- Modify: `tests/test_claude_memory_hooks.py`
+- Modify: `mcp-server/README.md`
+- Modify: `mcp-server/test/pack.test.mjs`
+- Create (forced-added): `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-9-report.md`
+
+**RED command:**
+
+```bash
+uv run pytest -q tests/test_claude_memory_hooks.py -k 'codex and expanded and environment'
+```
+
+The new regressions must fail on base `d369f8b` because each expanded hook currently
+allows conflicting `~/.config/memories/env` values to override process-exported
+`MEMORIES_*` values. They must behaviorally cover URL/enabled precedence for all
+five hooks, include API key/source precedence where practical, and verify that
+PostCompact returns schema-valid `{"suppressOutput":true}` when the process says
+enabled while the file says disabled. Package assertions must document local Codex
+setup, remote `--mcp-url` OAuth setup plus `codex mcp login`, `--no-persist-api-key`,
+and the >=0.146 ten-event versus older/unparseable five-event distinction.
+
+**Implementation and validation:**
+
+After recording RED, update only the five named scripts to use the existing
+environment-over-file loading semantics without changing lifecycle output contracts.
+Update the npm README truthfully and add packaging assertions. Run the focused tests,
+`bash -n` for all Codex scripts, `cd mcp-server && npm test`,
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q`,
+`uv run python scripts/render_project_hooks.py --check`, and `git diff --check`.
+Inspect status and diff; the worktree must be clean after the commit.
+
+**Exact staging and commit scope:**
+
+```bash
+git add docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
+  mcp-server/assets/codex/hooks/memory-flush.sh \
+  mcp-server/assets/codex/hooks/memory-rehydrate.sh \
+  mcp-server/assets/codex/hooks/memory-subagent-recall.sh \
+  mcp-server/assets/codex/hooks/memory-subagent-capture.sh \
+  mcp-server/assets/codex/hooks/memory-commit.sh \
+  tests/test_claude_memory_hooks.py mcp-server/README.md \
+  mcp-server/test/pack.test.mjs \
+  .superpowers/sdd/2026-08-11-codex-parity-distribution/task-9-report.md
+git commit -m "fix(codex): preserve environment across expanded hooks"
+```
