@@ -4,10 +4,10 @@ This is the fastest path to a working Memories setup with optional automatic ext
 
 ## 1) Start the service
 
-### Fastest path: `npx memories-mcp init`
+### Fastest path: published `memories-mcp` npm installer
 
 ```bash
-npx memories-mcp@latest init
+npx -y memories-mcp@latest init
 ```
 
 This single command:
@@ -18,7 +18,18 @@ This single command:
 
 Non-interactive: add `--yes` to accept all defaults and skip every prompt — including the Docker bootstrap offer, so with `--yes` an unreachable backend is logged and skipped rather than auto-provisioned; run the manual backend setup below first, or omit `--yes` to get the interactive offer. Add `--dry-run` to print the plan and write nothing. Windows has no bash, so hooks aren't supported there — `init` falls back to the generic target and prints an MCP snippet to configure by hand.
 
-> `memories-mcp` has not been published to npm yet as of this release — `npx memories-mcp@latest init` will work once the first publish ships. Until then, use the manual backend setup below plus `npm --prefix mcp-server install` and the generic MCP snippet in step 4, or the still-working (but deprecated) `install.sh` path.
+The package is published. Use `npx -y memories-mcp@latest init --codex` for
+portable Codex setup; it owns the local stdio MCP registration and hooks.
+For a direct remote OAuth endpoint, run:
+
+```bash
+npx -y memories-mcp@latest init --codex --mcp-url https://... --yes
+codex mcp login memories
+```
+
+The remote path is absolute HTTPS, skips REST health/bootstrap, and contains
+no backend API key. Do not paste credentials into chat or print them in setup
+output.
 
 ### Manual backend setup (repo checkout, advanced)
 
@@ -101,13 +112,15 @@ For guided LLM setup, use:
 
 ### Manual: `install.sh` (deprecated)
 
-`install.sh` still works this release but is superseded by `npx memories-mcp init` above; it will be removed in the next release. It additionally covers OpenCode and OpenClaw, which the npm package does not yet wire.
+`install.sh` still works this release but is superseded by the published npm
+installer above; it remains a deprecated compatibility path for OpenCode and
+OpenClaw. Codex setup should use the npm installer directly.
 
 Prerequisites for installer mode:
 - `jq` and `curl` installed
 - running Memories service (`/health` responds)
 
-If you plan to install Codex integration, install MCP server deps first:
+If you plan to install the legacy OpenCode integration, install MCP server deps first:
 
 ```bash
 cd mcp-server
@@ -119,13 +132,13 @@ cd ..
 ./integrations/claude-code/install.sh --auto
 ```
 
-This auto-detects and configures:
+This auto-detects and configures legacy targets:
 - Claude Code hooks (`~/.claude/settings.json`)
-- Codex hooks (`~/.codex/hooks.json`) + permissions (`~/.codex/settings.json`) + MCP/developer instructions (`~/.codex/config.toml`)
 - OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
 
 Cursor is supported via MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`) and is currently manual.
-If you're working inside this repository, you can also install the repo-local Codex plugin from `.agents/plugins/marketplace.json` and run `$memories:setup`, which bootstraps the same `./integrations/claude-code/install.sh --codex` flow from the checkout root.
+The optional repo-local Codex plugin provides the same portable npm setup
+guidance and does not require a checkout at runtime.
 
 Note for Codex: source defaults are `codex/{project},learning/{project},wip/{project}`
 for retrieval and `codex/{project}` for extraction. For scoped API keys, override them with
@@ -143,7 +156,9 @@ The installer offers an interactive multi-backend setup step, or see the [Multi-
 
 ## 5) Explore the hook system
 
-The installer wires the full automatic memory lifecycle for Claude Code / Cursor and a reduced native hook set for Codex.
+The npm installer wires the full automatic memory lifecycle for Claude Code /
+Cursor and a version-aware Codex profile. It owns hooks and MCP wiring; the
+optional plugin only guides setup.
 
 ### Claude Code / Cursor
 
@@ -162,15 +177,31 @@ The installer wires the full automatic memory lifecycle for Claude Code / Cursor
 
 ### Codex
 
-| Hook | Event | Purpose |
-|------|-------|---------|
-| `memory-recall.sh` | Session start | Load project memories + recall guidance |
-| `memory-query.sh` | Each prompt | Search memories with transcript context |
-| `memory-extract.sh` | Stop | Extract facts via beefier sampling that compensates for missing compaction/session-end hooks |
-| `memory-observe.sh` | Memory MCP tool use | Log Memories MCP tool invocations |
-| `memory-guard.sh` | File write | Block direct `MEMORY.md` writes |
+The installer checks `codex --version`: Codex `>= 0.146.0` gets ten events;
+older or unparseable versions get the five-event legacy profile.
 
-Codex stores those hooks in `~/.codex/hooks.json`, keeps tool permissions in `~/.codex/settings.json`, and registers the MCP server plus developer instructions in `~/.codex/config.toml`.
+| Profile | Events |
+|---------|--------|
+| Expanded | `SessionStart`, `UserPromptSubmit`, `Stop`, `PostToolUse`, `PreToolUse`, `PreCompact`, `PostCompact`, `SubagentStart`, `SubagentStop`, `SessionEnd` |
+| Legacy | `SessionStart`, `UserPromptSubmit`, `Stop`, `PostToolUse`, `PreToolUse` |
+
+`PostCompact` is silent and returns only `suppressOutput`; `SessionStart(source=compact)` is the recall surface. `SessionEnd` sends one first-routed extract POST with `curl --max-time 2`, does not poll, and has a manifest timeout exactly 3 seconds.
+
+Codex stores hooks in `~/.codex/hooks.json` and registers MCP plus developer
+instructions in `~/.codex/config.toml`. Six read-only tools are auto-approved;
+`memory_is_useful` is a feedback write and remains prompt-gated. External
+Memories is the durable, searchable cross-client authority, while native Codex
+Memories is an optional local derived cache. The installer never sets either.
+To avoid duplicate context, users may optionally add
+`memories.disable_on_external_context = true` under `[memories]`; this is only
+a recommendation.
+
+The v5.10-v5.12 reliability parity also applies to Codex: activation/config
+gates honor payload cwd and resolved backend files; routed reachability and
+per-backend breaker isolation are preserved; end-to-end deadlines return
+partial results; and 401 responses provide credential guidance. Materially
+short timeout budgets are treated as inconclusive rather than tripping a
+backend.
 
 All hooks are configurable via env vars in `~/.config/memories/env`. See `docs/deployment.md` for details.
 

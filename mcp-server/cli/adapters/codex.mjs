@@ -31,6 +31,27 @@ Source prefixes: replace {project} with the current working directory basename. 
 
 const exists = (p) => access(p).then(() => true, () => false);
 
+// Read only the exact root tables used by Codex's optional native memory
+// settings. This deliberately is not a general TOML parser: status must not
+// infer values from profile/managed/nested tables or from commented examples.
+function explicitRootBoolean(text, sectionName, keyName) {
+  let section = null;
+  let value;
+  for (const line of String(text ?? '').split('\n')) {
+    if (/^\s*\[/.test(line)) {
+      const sectionMatch = line.match(/^\s*\[([^\[\]]+)\]\s*(?:#.*)?$/);
+      // Any table header ends the previous section. Array-of-table headers
+      // and malformed/nested headers are deliberately not root assignments.
+      section = sectionMatch ? sectionMatch[1].trim() : null;
+      continue;
+    }
+    if (section !== sectionName) continue;
+    const assignment = line.match(new RegExp(`^\\s*${keyName}\\s*=\\s*(true|false)\\s*(?:#.*)?$`));
+    if (assignment) value = assignment[1] === 'true';
+  }
+  return value;
+}
+
 /**
  * Codex added the expanded lifecycle events in 0.146.0. Parse only the first
  * semantic version in the command output so distro suffixes and a leading
@@ -256,5 +277,16 @@ export async function status(ctx) {
   const toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
   const mcp = hasTomlSection(toml, 'mcp_servers.memories');
   const profile = await installedHookProfileAt(p.hooksJson, p.hooksDest);
-  return { installed: hooks && mcp, details: [`hooks: ${hooks}`, `mcp: ${mcp}`, `hook profile: ${profile}`] };
+  const nativeMemories = explicitRootBoolean(toml, 'features', 'memories');
+  const dedupe = explicitRootBoolean(toml, 'memories', 'disable_on_external_context');
+  return {
+    installed: hooks && mcp,
+    details: [
+      `hooks: ${hooks}`,
+      `mcp: ${mcp}`,
+      `hook profile: ${profile}`,
+      `native memories: ${nativeMemories === undefined ? 'not explicitly configured' : nativeMemories ? 'enabled' : 'disabled'}`,
+      `external-context dedupe: ${dedupe === undefined ? 'not explicitly configured' : dedupe ? 'enabled' : 'disabled'}`,
+    ],
+  };
 }

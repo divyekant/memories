@@ -192,6 +192,75 @@ test('status does not classify a foreign PreCompact hook as expanded', async () 
   assert.ok(status.details.some((detail) => detail.includes('hook profile: legacy')));
 });
 
+test('status reports only explicit root Codex native-memory settings', async () => {
+  const ctx = await freshCtx();
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  const configPath = join(ctx.home, '.codex/config.toml');
+  const config = `
+# [features] memories = false
+[profiles.team.features]
+memories = false
+
+[features] # exact root table
+memories = true # enabled for native local cache
+
+[managed.features]
+memories = false
+
+[profiles.team.memories]
+disable_on_external_context = true
+
+[memories] # exact root table
+disable_on_external_context = false # optional dedupe recommendation
+`;
+  await writeFile(configPath, config);
+  const before = await readFile(configPath, 'utf8');
+
+  const status = await adapter.status(ctx);
+
+  assert.ok(status.details.includes('native memories: enabled'));
+  assert.ok(status.details.includes('external-context dedupe: disabled'));
+  assert.equal(status.details.some((detail) => detail.includes('native memories: disabled')), false);
+  assert.equal(status.details.some((detail) => detail.includes('external-context dedupe: enabled')), false);
+  assert.equal(await readFile(configPath, 'utf8'), before);
+});
+
+test('status reports unset native settings without matching similarly named sections', async () => {
+  const ctx = await freshCtx();
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  await writeFile(join(ctx.home, '.codex/config.toml'), `
+[features.extra]
+memories = true
+[[features]]
+memories = true
+[memories.profile]
+disable_on_external_context = true
+[[memories]]
+disable_on_external_context = true
+`);
+
+  const status = await adapter.status(ctx);
+
+  assert.ok(status.details.includes('native memories: not explicitly configured'));
+  assert.ok(status.details.includes('external-context dedupe: not explicitly configured'));
+});
+
+test('status preserves explicit false values in the exact root tables', async () => {
+  const ctx = await freshCtx();
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  await writeFile(join(ctx.home, '.codex/config.toml'), `
+ [features]   # root table with whitespace
+ memories = false   # explicitly disabled
+ [memories]
+ disable_on_external_context = true # explicitly enabled
+`);
+
+  const status = await adapter.status(ctx);
+
+  assert.ok(status.details.includes('native memories: disabled'));
+  assert.ok(status.details.includes('external-context dedupe: enabled'));
+});
+
 test('install is idempotent on config.toml', async () => {
   const ctx = await freshCtx();
   await adapter.install(ctx);

@@ -1,7 +1,7 @@
 {
   "name": "memories",
   "version": "5.12.0",
-  "description": "Memories discipline and setup workflow for Codex in this repository.",
+  "description": "Memories discipline plus a portable Codex setup guide; the published npm installer owns hooks and MCP wiring.",
   "author": {
     "name": "Divyekant Gupta",
     "email": "divyekantg@gmail.com",
@@ -20,20 +20,19 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Memories",
-    "shortDescription": "Bootstrap and use Memories from Codex in this repo",
-    "longDescription": "Adds the Memories discipline skill plus a Codex-specific setup skill that bootstraps the existing hook and MCP integration from this repository checkout.",
+    "shortDescription": "Guide portable Memories setup for Codex",
+    "longDescription": "Adds the Memories discipline skill plus a thin Codex setup guide. The published memories-mcp npm installer owns hook and MCP wiring; no repository checkout or bundled server is required.",
     "developerName": "Divyekant Gupta",
     "category": "Productivity",
     "capabilities": [
-      "Interactive",
-      "Write"
+      "Interactive"
     ],
     "websiteURL": "https://github.com/divyekant/memories",
     "privacyPolicyURL": "https://github.com/divyekant/memories",
     "termsOfServiceURL": "https://github.com/divyekant/memories",
     "defaultPrompt": [
-      "Set up Memories for this repo in Codex",
-      "Use the Memories skill when a decision should be stored"
+      "Guide me through portable Memories setup in Codex",
+      "Use Memories when a decision should be stored"
     ],
     "brandColor": "#0F766E"
   }

@@ -272,6 +272,13 @@ Two ways to reach the same `memory_*` tools (`mcp-server/lib-tools.mjs`), built 
 
 Both call `buildServer()` and register the identical tool set, so the two transports never drift in capability. The remote entry point pins its backend explicitly (`skipFileConfig: true`) so a host-level `.memories/backends.yaml` can't silently redirect a deployed remote server to the wrong backend.
 
+For Codex, the published installer keeps these paths distinct: local setup
+uses `npx -y memories-mcp@latest init --codex` and registers a local stdio
+server whose backend is selected by `--url`/`MEMORIES_URL`; direct remote setup
+uses `npx -y memories-mcp@latest init --codex --mcp-url https://... --yes` and
+then `codex mcp login memories` for OAuth. The remote path does not copy a
+backend API key into Codex configuration.
+
 The remote front door adds a single-user OAuth 2.1 layer (`oauth.mjs`) in front of the tools: authorization-code + mandatory PKCE (S256), Dynamic Client Registration (rate-limited, with bounds on redirect-uri count and client-name length), refresh-token rotation, and an HMAC-signed bearer access token — no `client_credentials`, since there is exactly one user. `REMOTE_MCP_AUTH` must be exactly `oauth` or `none` (anything else refuses to start); `none` is for local testing only and logs a loud warning on every startup. In `oauth` mode, `REMOTE_MCP_ISSUER` must be set and must be `https:` unless the host is `localhost`/`127.0.0.1`, so the authorization code and bearer token are never sent over plaintext to a real host.
 
 Deployment is a profile-gated `remote-mcp` service in `docker-compose.yml`, sitting behind a reverse proxy/tunnel (Caddy, Cloudflare Tunnel) and the `memories` service — see the "Claude web (claude.ai) connector" section in the README for setup, including `REMOTE_MCP_TRUST_PROXY` for correct per-client rate-limit buckets behind that proxy hop.
@@ -362,7 +369,10 @@ Events are emitted non-blocking from the calling thread. The bus maintains a bou
 
 ## 10) Hook System
 
-The automatic memory layer uses 12 shell hooks across 10 Claude Code / Cursor lifecycle events, a reduced 5-hook Codex variant layered with MCP + developer instructions, and an OpenCode plugin + MCP lifecycle distinct from shell hooks:
+The automatic memory layer uses 12 shell hooks across 10 Claude Code / Cursor
+lifecycle events, a version-aware five- or ten-event Codex profile layered
+with MCP + developer instructions, and an OpenCode plugin + MCP lifecycle
+distinct from shell hooks:
 
 | Event | Hook | Purpose |
 |---|---|---|
@@ -371,7 +381,7 @@ The automatic memory layer uses 12 shell hooks across 10 Claude Code / Cursor li
 | `UserPromptSubmit` | `memory-query.sh` | Inject relevant memories into prompt context |
 | `Stop` | `memory-extract.sh` | Extract and store learnings from conversation |
 | `PreCompact` | `memory-flush.sh` | Flush pending memories before compaction |
-| `PostCompact` | `memory-rehydrate.sh` | Refresh MEMORY.md pointers after compaction |
+| `PostCompact` | `memory-rehydrate.sh` | Claude/Cursor rehydration; Codex's event is silent (`suppressOutput` only) |
 | `PostToolUse` | `memory-observe.sh` | Observability for memory MCP tool calls |
 | `PostToolUse` | `memory-tool-observe.sh` | Record write/edit/bash context for richer extraction |
 | `PreToolUse` | `memory-guard.sh` | Guard MEMORY.md from direct Write/Edit |
@@ -379,7 +389,27 @@ The automatic memory layer uses 12 shell hooks across 10 Claude Code / Cursor li
 | `ConfigChange` | `memory-config-guard.sh` | Watchdog for user settings changes |
 | `SessionEnd` | `memory-commit.sh` | Final extraction and cleanup |
 
-Codex installs `memory-recall.sh`, `memory-query.sh`, `memory-extract.sh`, `memory-observe.sh`, and `memory-guard.sh` via `~/.codex/hooks.json`; because Codex lacks `PreCompact` and `SessionEnd`, its `Stop` hook samples more transcript context.
+The published `memories-mcp` npm installer checks `codex --version` and owns
+Codex hook/MCP wiring. Codex `>= 0.146.0` receives all ten Codex events in the
+table above; older or unparseable clients receive only `SessionStart`,
+`UserPromptSubmit`, `Stop`, `PostToolUse`, and `PreToolUse`. `PostCompact` is a
+silent `suppressOutput`-only hook; `SessionStart(source=compact)` performs the
+recall after compaction. `SessionEnd` performs one first-routed extract POST
+with a `curl --max-time 2` cap, never polls, and is configured with a manifest
+timeout exactly 3 seconds.
+
+The installer auto-approves six read-only MCP tools. `memory_is_useful` is a
+persistent feedback write and remains prompt-gated. External Memories is the
+durable, searchable cross-client authority; native Codex Memories is an
+optional local derived cache. The installer never sets either. Users may
+optionally set `memories.disable_on_external_context = true` in the exact root
+`[memories]` table to avoid duplicate context; this is a recommendation only.
+
+The v5.10-v5.12 reliability parity applies to Codex hooks as well: activation
+and configuration gates honor payload cwd and resolved backend files,
+routed reachability keeps per-backend breaker isolation, end-to-end deadlines
+preserve partial results, and 401 responses provide credential guidance.
+Materially short timeout budgets are inconclusive rather than breaker trips.
 
 OpenCode does not use Claude Code or Codex shell hooks. The installer merges `mcp.memories` and the repo-local plugin path into `~/.config/opencode/opencode.json`; the MCP server runs as a local OpenCode server through `zsh -lc`, sourcing `~/.config/memories/env` before executing `mcp-server/index.js`. The plugin injects prompt-time recall context, searches exact project prefixes first (`opencode/{project}`, `claude-code/{project}`, `codex/{project}`, `learning/{project}`, `wip/{project}`), and logs active-search telemetry for memory tool calls with `client=opencode`. OpenCode-authored extracted memories should use `opencode/{project}` when extraction is added, but automatic extraction is not enabled by default until reliable OpenCode end-of-turn transcript access is proven.
 
