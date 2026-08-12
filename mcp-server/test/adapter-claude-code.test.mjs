@@ -239,3 +239,15 @@ test('a failed uninstall keeps its record so a retry still clears custom --mcp-n
   assert.deepEqual(allow, ['Bash(ls)']);
   assert.equal(await readRecordedPermissions(statePath, 'claude-code'), null);
 });
+
+test('install honours ctx.persistApiKey=false without disturbing anything else', async () => {
+  const ctx = await freshCtx();
+  await adapter.install({ ...ctx, persistApiKey: false });
+  const settings = await readJson(join(ctx.home, '.claude/settings.json'));
+  const env = settings.mcpServers.memories.env;
+  assert.equal('MEMORIES_API_KEY' in env, false);
+  assert.equal(env.MEMORIES_URL, ctx.url);
+  // The env FILE still carries it — that is what the hooks read.
+  const envFile = await readFile(join(ctx.home, '.config/memories/env'), 'utf8');
+  assert.ok(envFile.includes('MEMORIES_API_KEY'), 'hooks would lose the key entirely');
+});

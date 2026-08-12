@@ -4,7 +4,7 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **OpenCode**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v5.12.0):**
+**Key capabilities (v5.13.0):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
 - **Write doctrine** — corrections supersede instead of being dropped: a colliding write replaces the similar memory and archives the old version with a supersedes link (`on_duplicate: supersede|skip|add`); agents update facts via `memory_update`
 - **Secret redaction** — credential-shaped content (API keys, JWTs, tokens, URL credentials) is redacted before any extraction LLM call or storage, with a context guard that spares placeholders and localhost DSNs
@@ -767,25 +767,37 @@ See `mcp-server/remote/server.mjs` for the full env contract (`REMOTE_MCP_AUTH=n
 
 A cloud session runs in a fresh VM built from a git clone of your repository. Nothing from your local `~/.claude` is present — not your user-level `CLAUDE.md`, skills, hooks, `enabledPlugins`, or `~/.claude.json` MCP servers. That splits Memories into two halves:
 
-| | Cloud session | What it takes |
-|---|---|---|
-| **Tools** (`memory_search`, `memory_add`, …) | Works with no setup | The claude.ai connector above travels with your account, and its traffic is proxied by Anthropic rather than the session's network |
-| **Hooks** (automatic recall + extraction) | Only if the repo opts in | The three steps below — miss any one and it fails silently |
+Memories reaches an agent through three independent layers, and they do different jobs:
+
+| Layer | What it provides | Cloud session | What it takes |
+|---|---|---|---|
+| **Tools** (`memory_search`, `memory_add`, …) | The *capability* — the agent can reach memories when it decides to | Works with no setup | The claude.ai connector above travels with your account, and its traffic is proxied by Anthropic rather than the session's network |
+| **Hooks** (SessionStart recall, Stop extraction, …) | The *reflex* — recall and capture happen at lifecycle boundaries whether or not the agent thinks to ask | Only if the environment installs them | The three steps below — miss any one and it fails silently |
+| **`CLAUDE.md` rules** | The *policy* — when to search, how to phrase recalled context, when to store | Only if the environment installs them | Written by the same `init` command as the hooks |
+
+The layers are complementary, not redundant. Tools without hooks means memories are reachable but nothing recalls them automatically. Hooks without the rules means context gets injected but the agent may ignore it, paraphrase it as its own, or re-ask something already answered — the rules are what turn injected text into behaviour ("search before asking a clarifying question", "never say *memory confirms*", "preserve `until`/`unless` clauses verbatim"). Tools plus rules without hooks means the agent searches only when it remembers to.
+
+A cloud session gets the first for free and the other two only from the setup script below.
 
 If you only need Claude to be *able* to reach your memories, the connector alone is enough; stop here. The rest buys you automatic per-prompt recall and end-of-session extraction.
 
-**1. Commit the plugin enablement.** Project settings are the only channel that reaches a cloud session, so `.claude/settings.json` must be committed (this repo ships one):
+**1. Install the hooks from the environment's setup script.**
 
-```json
-{
-  "extraKnownMarketplaces": {
-    "dk-marketplace": { "source": { "source": "github", "repo": "divyekant/dk-marketplace" } }
-  },
-  "enabledPlugins": { "memories@dk-marketplace": true }
-}
+```bash
+npx -y memories-mcp init --claude --yes \
+  --url https://memory.yourdomain.com \
+  --mcp-name YourMcpServerName \
+  --no-persist-api-key
 ```
 
-If your `.gitignore` excludes `.claude/`, add a negation for this one file — see this repo's `.gitignore` for the pattern.
+Put that in the cloud environment's **Setup script** box (it runs before Claude Code launches). It writes the hooks to `~/.claude/hooks/memory/`, wires them into `~/.claude/settings.json`, and appends the behavioural rules to `~/.claude/CLAUDE.md`.
+
+> **Committing `enabledPlugins` does NOT work in cloud — do not try it.** A repo-committed `.claude/settings.json` declaring `extraKnownMarketplaces` and `enabledPlugins` looks like it should be enough, but the container performs no marketplace fetch and no plugin install, so none of the hook events register. Verified in a real container: `installed_plugins.json` was `{"plugins":{}}`, `~/.claude/plugins/marketplaces/` did not exist, and `hook.log` was never created. It is not a network problem — the marketplace clones fine from inside the VM. The setup script sidesteps the broken step rather than working around it.
+
+Two flags earn their place:
+
+- `--url` — the setup script runs *before* the environment variables exist, so the installer cannot read `MEMORIES_URL` and would otherwise persist its `http://localhost:8900` default into `~/.config/memories/env`. Hooks let a real environment variable win over that file, so it still works without the flag, but `memories doctor` and anything else reading the file would report the wrong backend. Pass the URL and the file stays honest. It is not a secret.
+- `--no-persist-api-key` — keeps `MEMORIES_API_KEY` out of the MCP entry in `settings.json`. The key comes from the environment instead, so it never lands in a config file. Do **not** pass `--api-key`: that would write the credential into both the setup script and `~/.config/memories/env`.
 
 **2. Set the environment variables.** On claude.ai/code, click the cloud icon showing the environment's name in the row above the message box, then **Add cloud environment** (or the gear icon on an existing one). The dialog holds environment variables in `.env` format:
 
@@ -1247,6 +1259,9 @@ Auto-detects Claude Code, Codex, and Cursor (or restrict with `--claude` / `--co
 For Codex local stdio setup use `npx -y memories-mcp@latest init --codex`.
 For direct remote OAuth use `npx -y memories-mcp@latest init --codex --mcp-url https://... --yes`, then run `codex mcp login memories`. The remote
 path accepts no backend API key and skips REST health/bootstrap.
+The package is published on npm (first release 2026-08-10), and the cloud setup
+script uses the same `npx memories-mcp@latest` entry point. OpenCode and OpenClaw
+remain on the legacy installer below.
 
 **Legacy: `install.sh` (deprecated, still works this release — removed next release)**
 

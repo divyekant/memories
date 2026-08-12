@@ -28,12 +28,12 @@ const FLAG_TARGETS = {
   '--generic': 'generic',
 };
 
-const VALID_FLAGS = ['--claude', '--codex', '--cursor', '--generic', '--dry-run', '--yes', '--url', '--mcp-url', '--api-key', '--mcp-name', '-h', '--help'];
+const VALID_FLAGS = ['--claude', '--codex', '--cursor', '--generic', '--dry-run', '--yes', '--url', '--mcp-url', '--api-key', '--mcp-name', '--no-persist-api-key', '-h', '--help'];
 
 const HELP_TEXT = `memories — installer/manager CLI for the Memories MCP plugin
 
 Usage:
-  memories init [--claude] [--codex] [--cursor] [--generic] [--url <u>] [--mcp-url <u>] [--api-key <k>] [--mcp-name <name>]... [--dry-run] [--yes]
+  memories init [--claude] [--codex] [--cursor] [--generic] [--url <u>] [--mcp-url <u>] [--api-key <k>] [--no-persist-api-key] [--mcp-name <name>]... [--dry-run] [--yes]
   memories update [same flags as init]
   memories doctor [--claude] [--codex] [--cursor] [--generic]
   memories uninstall [--claude] [--codex] [--cursor] [--generic]
@@ -51,6 +51,7 @@ Flags:
                                             There is no wildcard for the server segment, so names not
                                             known at install time (e.g. a UUID-named connector) still
                                             need this flag or a manual permissions.allow entry.
+  --no-persist-api-key                     Omit the API key from the MCP entry (it is read from $MEMORIES_API_KEY)
   --dry-run                                Print the plan and exit before any writes
   --yes                                    Non-interactive: accept all defaults, skip prompts
   -h, --help                                Show this help`;
@@ -62,7 +63,7 @@ export function parseArgs(argv) {
     command = args.shift();
   }
 
-  const result = { command, targets: [], dryRun: false, yes: false, url: undefined, mcpUrl: undefined, apiKey: undefined, mcpNames: [] };
+  const result = { command, targets: [], dryRun: false, yes: false, url: undefined, mcpUrl: undefined, apiKey: undefined, mcpNames: [], persistApiKey: true };
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -84,6 +85,8 @@ export function parseArgs(argv) {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --api-key');
       result.apiKey = args[++i];
+    } else if (a === '--no-persist-api-key') {
+      result.persistApiKey = false;
     } else if (a === '--mcp-name') {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --mcp-name');
@@ -250,6 +253,7 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
   // Default 'memories' plus any --mcp-name overrides, deduped — consumed by
   // the claude-code/cursor adapters when writing the read-only allowlist.
   ctx.mcpNames = [...new Set(['memories', ...parsed.mcpNames])];
+  ctx.persistApiKey = parsed.persistApiKey;
 
   if (parsed.mcpUrl !== undefined) {
     // A direct remote MCP URL is already the client-facing endpoint. It uses

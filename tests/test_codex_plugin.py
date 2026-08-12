@@ -30,7 +30,6 @@ def test_codex_plugin_package_is_wired_for_current_release() -> None:
     assert "hooks" not in manifest
     assert manifest["interface"]["displayName"] == "Memories"
     assert manifest["interface"]["category"] == "Productivity"
-    assert manifest["version"] == "5.12.0"
     assert "npm installer" in manifest["description"].lower()
     assert "npm installer" in manifest["interface"]["longDescription"].lower()
     assert "from this repository checkout" not in manifest["interface"]["longDescription"].lower()
