@@ -117,7 +117,9 @@ test('invalid remote MCP URLs fail atomically before prompts, logs, health, or s
     ['https://memory.example/mcp\u0000malicious', /control character/i],
     ['https:memory.example/mcp', /canonical HTTPS URL/i],
     ['https:///memory.example/mcp', /canonical HTTPS URL/i],
-    [String.raw`https:\memory.example\mcp`, /canonical HTTPS URL/i],
+    [String.raw`https:\memory.example\mcp`, /backslash/i],
+    [String.raw`https://memory.example/mcp?next=\admin`, /backslash/i],
+    ['https://memory.example/%zz', /percent-encoding/i],
     ['memory.example/mcp', /absolute HTTPS URL/i],
     ['http://memory.example/mcp', /HTTPS/i],
     ['https://user:pass@memory.example/mcp', /credentials/i],
@@ -158,7 +160,9 @@ test('validateRemoteMcpUrl accepts canonical HTTPS URLs with encoded paths and q
   assert.doesNotThrow(() => validateRemoteMcpUrl('https://memory.example/mcp?scope=read%2Fonly&next=%2Fv1%2Fsearch'));
   assert.throws(() => validateRemoteMcpUrl('https:memory.example/mcp'), /canonical HTTPS URL/i);
   assert.throws(() => validateRemoteMcpUrl('https:///memory.example/mcp'), /canonical HTTPS URL/i);
-  assert.throws(() => validateRemoteMcpUrl(String.raw`https:\memory.example\mcp`), /canonical HTTPS URL/i);
+  assert.throws(() => validateRemoteMcpUrl(String.raw`https:\memory.example\mcp`), /backslash/i);
+  assert.throws(() => validateRemoteMcpUrl(String.raw`https://memory.example/mcp?next=\admin`), /backslash/i);
+  assert.throws(() => validateRemoteMcpUrl('https://memory.example/%zz'), /percent-encoding/i);
 });
 
 test('remote MCP value validation precedes the injectable Windows restriction log', async () => {

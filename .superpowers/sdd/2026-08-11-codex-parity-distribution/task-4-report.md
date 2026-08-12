@@ -143,3 +143,45 @@ cd mcp-server && node --test
 Result: **235 passed, 0 failed**.
 
 `git diff --check`: passed.
+
+## Follow-up safety correction: reject ambiguous remote URL escapes
+
+The final URL-safety follow-up rejects raw backslashes anywhere in the supplied
+`--mcp-url` and rejects every percent sign that is not followed by exactly two
+ASCII hexadecimal digits. These literal checks run before `new URL(...)`, so
+WHATWG URL normalization cannot reinterpret an ambiguous backslash or preserve
+a malformed escape. Valid percent-encoded paths and query values remain
+accepted, while failures still occur before logs, prompts, setup calls, or
+filesystem/state mutation.
+
+RED command:
+
+```text
+node --test mcp-server/test/cli.test.mjs
+```
+
+RED result: **23 passed, 2 failed**. The new raw-backslash assertions failed
+because the pre-parse backslash guard was absent; the atomic matrix stopped at
+that first new case before reaching the malformed `%zz` case.
+
+GREEN verification:
+
+```text
+node --test mcp-server/test/cli.test.mjs
+```
+
+Result: **25 passed, 0 failed**.
+
+```text
+node --test mcp-server/test/cli.test.mjs mcp-server/test/adapter-codex.test.mjs mcp-server/test/remote-server.test.mjs
+```
+
+Result: **90 passed, 0 failed**.
+
+```text
+cd mcp-server && node --test
+```
+
+Result: **240 passed, 0 failed**.
+
+`git diff --check`: passed.

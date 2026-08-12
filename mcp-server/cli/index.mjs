@@ -121,6 +121,12 @@ export function validateRemoteMcpUrl(value) {
   if (/\s|[\u0000-\u001f\u007f-\u009f]/u.test(value)) {
     throw new Error('--mcp-url must not contain whitespace or control characters');
   }
+  if (value.includes('\\')) {
+    throw new Error('--mcp-url must not contain backslashes');
+  }
+  if (/%(?![0-9A-Fa-f]{2})/.test(value)) {
+    throw new Error('--mcp-url contains invalid percent-encoding');
+  }
 
   let remoteUrl;
   try {
