@@ -150,3 +150,33 @@ def test_rename_exact_match_no_slash(client):
     data = resp.json()
     assert data["updated"] == 1
     mock_engine.update_memory.assert_called_once_with(memory_id=3, source="moved")
+
+
+def test_managed_folder_rename_requests_current_editor_restamp(client):
+    tc, mock_engine = client
+    import app as app_module
+    from project_memory import TrustedAuthorship
+
+    mock_engine.metadata = [
+        {
+            "id": 9,
+            "text": "Alice's shared fact",
+            "source": "project/acme/knowledge",
+            "author": "alice",
+        }
+    ]
+    bob = TrustedAuthorship.principal("bob", "codex")
+    with patch.object(app_module, "_trusted_authorship", return_value=bob):
+        response = tc.post(
+            "/folders/rename",
+            json={"old_name": "project/acme", "new_name": "codex/acme"},
+            headers=HEADERS,
+        )
+
+    assert response.status_code == 200
+    mock_engine.update_memory.assert_called_once_with(
+        memory_id=9,
+        source="codex/acme/knowledge",
+        apply_trusted_authorship=True,
+        trusted_authorship=bob,
+    )

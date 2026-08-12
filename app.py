@@ -3002,6 +3002,8 @@ async def rename_folder(request_body: RenameFolderRequest, request: Request):
     for memory_id, new_source in targets:
         try:
             update_kwargs = {"memory_id": memory_id, "source": new_source}
+            if trusted_authorship is not None:
+                update_kwargs["apply_trusted_authorship"] = True
             memory.update_memory(
                 **_with_trusted_authorship(update_kwargs, trusted_authorship)
             )
