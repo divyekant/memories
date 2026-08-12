@@ -1200,7 +1200,7 @@ npx memories-mcp@latest init
 
 Auto-detects Claude Code, Codex, and Cursor (or restrict with `--claude` / `--codex` / `--cursor` / `--generic`); prompts for backend URL/API key (or `--url` / `--api-key`); checks backend health and, interactively, offers to bootstrap it with Docker (`~/.config/memories/docker-compose.yml`) if it's not reachable; wires hooks/skills/MCP config per target. `--yes` skips all prompts (including the bootstrap offer — an unreachable backend is logged and skipped, not auto-provisioned); `--dry-run` previews without writing. Companion commands: `memories doctor` (status + backend health + version check), `memories update` (re-wire after upgrading), `memories uninstall`. Windows has no bash, so `init` restricts to the generic target there. Other MCP clients: use the generic snippet from `memories init --generic`, or see [`GETTING_STARTED.md`](GETTING_STARTED.md#4-install-integrations-recommended).
 
-`memories-mcp` has not published its first npm release yet — `npx memories-mcp@latest` will resolve once it does. It does not (yet) cover OpenCode or OpenClaw; use `install.sh` below for those.
+`memories-mcp` is published on npm (first release 2026-08-10), so `npx memories-mcp@latest` resolves — this is the command the cloud setup script uses. It does not cover OpenCode or OpenClaw; use `install.sh` below for those.
 
 **Legacy: `install.sh` (deprecated, still works this release — removed next release)**
 
