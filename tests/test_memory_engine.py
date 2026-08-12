@@ -89,6 +89,7 @@ class TestAddAndSearch:
                     "author": "mallory",
                     "contributors": ["mallory"],
                     "origin_client": "  spoofed-client ",
+                    "source_memory_ids": [999],
                     "custom": "kept",
                 }
             ],
@@ -99,6 +100,7 @@ class TestAddAndSearch:
         assert meta["author"] == "alice"
         assert meta["origin_client"] == "codex"
         assert "contributors" not in meta
+        assert "source_memory_ids" not in meta
         assert meta["custom"] == "kept"
 
     def test_system_authorship_stamps_contributors_and_source_memory_ids(self, engine):

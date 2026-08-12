@@ -262,7 +262,12 @@ class TestKeyManagementAPI:
 
     def test_list_keys_with_admin(self, app_with_keys):
         client, _, key_store = app_with_keys
-        key_store.create_key(name="k1", role="read-only", prefixes=["a/*"])
+        created = key_store.create_key(
+            name="k1",
+            role="read-only",
+            prefixes=["a/*"],
+            principal_id="person-list",
+        )
         resp = client.get("/api/keys", headers={"X-API-Key": "admin-env-key"})
         assert resp.status_code == 200
         body = resp.json()
@@ -270,6 +275,8 @@ class TestKeyManagementAPI:
         # Ensure raw key is NOT in list response
         for k in body["keys"]:
             assert "key" not in k
+        listed = next(k for k in body["keys"] if k["id"] == created["id"])
+        assert listed["principal_id"] == "person-list"
 
     def test_list_keys_without_admin_returns_403(self, app_with_keys):
         client, _, key_store = app_with_keys
