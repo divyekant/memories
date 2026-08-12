@@ -1442,12 +1442,12 @@ class MemoryEngine:
             or bool(metadata_patch)
             or apply_trusted_authorship
         )
-        if touches_project and replaces_authored_content:
+        if apply_trusted_authorship or (touches_project and replaces_authored_content):
             if trusted_authorship is None:
                 raise ProjectMemoryPolicyError(
                     "project-namespace memories require trusted principal or system authorship"
                 )
-            if target_is_project:
+            if target_is_project and replaces_authored_content:
                 effective_text = text if text is not None else current.get("text", "")
                 _validate_project_write(effective_text, target_source, trusted_authorship)
         updated_fields: List[str] = []
@@ -1471,11 +1471,10 @@ class MemoryEngine:
 
                 if source_only:
                     meta["source"] = source
-                    if target_is_project:
-                        # A source transition into a project namespace must
-                        # carry current trusted authorship. Remove stale
-                        # server-owned fields first (e.g. a prior system
-                        # consolidation provenance).
+                    if apply_trusted_authorship or source_enters_project:
+                        # Source replacement follows the same authorship
+                        # contract as the general update path, including
+                        # moves out to an authorized legacy namespace.
                         for reserved in RESERVED_METADATA_FIELDS:
                             meta.pop(reserved, None)
                         meta.update(trusted_authorship.as_metadata())

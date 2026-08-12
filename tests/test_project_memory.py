@@ -212,6 +212,33 @@ def test_source_only_move_rejects_existing_credential_before_mutation(engine):
     assert "author" not in engine._get_meta_by_id(memory_id)
 
 
+def test_source_only_move_out_of_project_restamps_current_editor(engine):
+    memory_id = engine.add_memories(
+        ["Shared fact moving to an authorized legacy source"],
+        ["project/fplguru/knowledge"],
+        trusted_authorship=TrustedAuthorship.system(
+            contributors=["alice"],
+            source_memory_ids=[17],
+            origin_client="consolidator",
+        ),
+    )[0]
+
+    result = engine.update_memory(
+        memory_id,
+        source="codex/fplguru",
+        trusted_authorship=TrustedAuthorship.principal("bob", "codex"),
+        apply_trusted_authorship=True,
+    )
+
+    assert result["updated_fields"] == ["source"]
+    meta = engine._get_meta_by_id(memory_id)
+    assert meta["source"] == "codex/fplguru"
+    assert meta["author"] == "bob"
+    assert meta["origin_client"] == "codex"
+    assert "contributors" not in meta
+    assert "source_memory_ids" not in meta
+
+
 def test_upsert_replacement_applies_current_trusted_authorship(engine):
     created = engine.upsert_memory(
         text="first",
