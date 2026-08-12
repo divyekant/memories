@@ -517,6 +517,52 @@ test('project context treats env, missing, invalid, and unreachable principals a
   assert.equal(unreachable.reason, 'principal_unreachable');
 });
 
+test('project-aware tools retry an inactive principal resolution and cache recovery', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-retry-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  let principalCalls = 0;
+  const searchBodies = [];
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    if (requestUrl.endsWith('/api/keys/me')) {
+      principalCalls += 1;
+      if (principalCalls === 1) return new Response('unavailable', { status: 503 });
+      return new Response(JSON.stringify({
+        type: 'managed',
+        principal_id: 'alice',
+        prefixes: ['codex/shared-demo'],
+      }), { status: 200 });
+    }
+    const body = options.body ? JSON.parse(options.body) : {};
+    searchBodies.push(body);
+    return new Response(JSON.stringify({ results: [], count: 0 }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    await client.callTool({ name: 'memory_search', arguments: { query: 'first', k: 3 } });
+    await client.callTool({ name: 'memory_search', arguments: { query: 'second', k: 3 } });
+    await client.callTool({ name: 'memory_search', arguments: { query: 'third', k: 3 } });
+
+    assert.equal(principalCalls, 2);
+    assert.equal(Object.hasOwn(searchBodies[0], 'source_prefix'), false);
+    assert.deepEqual(
+      searchBodies.filter((body) => body.query === 'second').map((body) => body.source_prefix),
+      ['project/shared-demo', 'person/alice/shared-demo', 'codex/shared-demo'],
+    );
+    assert.deepEqual(
+      searchBodies.filter((body) => body.query === 'third').map((body) => body.source_prefix),
+      ['project/shared-demo', 'person/alice/shared-demo', 'codex/shared-demo'],
+    );
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('project context fails closed for missing, malformed, and non-object backend config', async () => {
   const fixtures = [
     { name: 'missing', source: null, reason: 'no_backends' },

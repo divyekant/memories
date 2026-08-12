@@ -1853,6 +1853,56 @@ def test_collaborative_query_searches_prefixes_concurrently(
     } == set(prefixes)
 
 
+def test_collaborative_rehydrate_searches_prefixes_concurrently(tmp_path: Path) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    prefixes = [
+        "project/shared-demo",
+        "person/alice/shared-demo",
+        "codex/shared-demo",
+        "claude-code/shared-demo",
+    ]
+    responses: list[dict[str, object]] = [
+        {
+            "url_suffix": "/api/keys/me",
+            "response": {
+                "type": "managed",
+                "principal_id": "alice",
+                "prefixes": prefixes[2:],
+            },
+        }
+    ]
+    responses.extend(
+        {
+            "url_suffix": "/search",
+            "source_prefix": prefix,
+            "delay_seconds": 1,
+            "response": {"results": [], "count": 0},
+        }
+        for prefix in prefixes
+    )
+
+    started = time.monotonic()
+    result, calls, _ = _run_hook(
+        REHYDRATE_SCRIPT,
+        tmp_path,
+        {"cwd": str(project_dir), "compact_summary": "shared project architecture"},
+        responses,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < 3.0, f"four independent rehydrate searches serialized: {elapsed:.2f}s"
+    assert {
+        call["body"].get("source_prefix", "")
+        for call in calls
+        if str(call["url"]).endswith("/search")
+    } == set(prefixes)
+
+
 @pytest.mark.parametrize(
     ("script", "payload"),
     [

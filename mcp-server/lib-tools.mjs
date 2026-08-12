@@ -719,7 +719,7 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
   // request.  Pass the already-loaded config object so project mode and normal
   // routing cannot resolve different worktree/main-repository backends.
   let projectContextPromise;
-  server.resolveProjectContext = () => {
+  server.resolveProjectContext = async () => {
     if (!projectContextPromise) {
       projectContextPromise = resolveProjectContext({
         cwd,
@@ -730,7 +730,17 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
         skipFileConfig,
       });
     }
-    return projectContextPromise;
+    const pending = projectContextPromise;
+    try {
+      const context = await pending;
+      if (!context.active && projectContextPromise === pending) {
+        projectContextPromise = undefined;
+      }
+      return context;
+    } catch (error) {
+      if (projectContextPromise === pending) projectContextPromise = undefined;
+      throw error;
+    }
   };
 
   // -- Tools -------------------------------------------------------------------

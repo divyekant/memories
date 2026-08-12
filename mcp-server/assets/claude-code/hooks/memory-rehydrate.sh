@@ -67,13 +67,36 @@ QUERY="${SUMMARY:0:500}"
 
 # Search with the compact summary as query
 RESULTS=""
+SEARCH_TMPDIR=$(mktemp -d 2>/dev/null || mktemp -d -t memories-rehydrate)
+SEARCH_JOBS=()
+SEARCH_INDEX=0
 for tpl in $(echo "$PREFIXES" | tr ',' ' '); do
   prefix="${tpl//\{project\}/$PROJECT}"
-  BATCH=$(_search_memories_multi "$QUERY" "$prefix" 3 0.35) || { _log_error "Search failed for prefix $prefix"; continue; }
-  if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
-    BATCH=$(printf '%s' "$BATCH" | _memories_filter_search_response_for_prefix "$prefix")
-  fi
+  outfile="$SEARCH_TMPDIR/result_${SEARCH_INDEX}.json"
+  SEARCH_INDEX=$((SEARCH_INDEX + 1))
+  (
+    BATCH=$(_search_memories_multi "$QUERY" "$prefix" 3 0.35) || {
+      _log_error "Search failed for prefix $prefix"
+      BATCH='{"results":[],"count":0}'
+    }
+    if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+      BATCH=$(printf '%s' "$BATCH" | _memories_filter_search_response_for_prefix "$prefix")
+    fi
+    printf '%s' "$BATCH" > "$outfile"
+  ) &
+  SEARCH_JOBS+=("$!")
+done
 
+if [ "${#SEARCH_JOBS[@]}" -gt 0 ]; then
+  for job in "${SEARCH_JOBS[@]}"; do
+    wait "$job" || true
+  done
+fi
+
+result_index=0
+while [ "$result_index" -lt "$SEARCH_INDEX" ]; do
+  result_file="$SEARCH_TMPDIR/result_${result_index}.json"
+  BATCH=$(cat "$result_file" 2>/dev/null || printf '{"results":[],"count":0}')
   BATCH_RESULTS=$(echo "$BATCH" | jq -r '.results // []')
   if [ -n "$RESULTS" ]; then
     # Negate the resolved score, not each candidate: `-.similarity // -.rrf_score`
@@ -87,7 +110,9 @@ for tpl in $(echo "$PREFIXES" | tr ',' ' '); do
   else
     RESULTS="$BATCH_RESULTS"
   fi
+  result_index=$((result_index + 1))
 done
+rm -rf "$SEARCH_TMPDIR"
 
 if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ] && [ -n "$RESULTS" ] && [ "$RESULTS" != "[]" ]; then
   RESULTS=$(printf '%s' "$RESULTS" | _memories_label_project_results "$PROJECT_CONTEXT_ID" 2>/dev/null) || RESULTS="[]"
