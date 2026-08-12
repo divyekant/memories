@@ -1454,14 +1454,19 @@ class MemoryEngine:
             or bool(metadata_patch)
             or apply_trusted_authorship
         )
+        validates_project_target = source is not None or (
+            isinstance(target_source, str)
+            and target_source.startswith("project/")
+            and replaces_authored_content
+        )
+        if validates_project_target:
+            effective_text = text if text is not None else current.get("text", "")
+            _validate_project_write(effective_text, target_source, trusted_authorship)
         if apply_trusted_authorship or (touches_project and replaces_authored_content):
             if trusted_authorship is None:
                 raise ProjectMemoryPolicyError(
                     "project-namespace memories require trusted principal or system authorship"
                 )
-            if source is not None or (target_is_project and replaces_authored_content):
-                effective_text = text if text is not None else current.get("text", "")
-                _validate_project_write(effective_text, target_source, trusted_authorship)
         updated_fields: List[str] = []
 
         # Fast path: source-only change skips backup + re-embed
@@ -1495,20 +1500,22 @@ class MemoryEngine:
                     is_project_source(locked_target_source)
                     and not is_project_source(locked_current_source)
                 )
+                validates_locked_project_target = source is not None or (
+                    isinstance(locked_target_source, str)
+                    and locked_target_source.startswith("project/")
+                    and replaces_authored_content
+                )
+                if validates_locked_project_target:
+                    locked_text = text if text is not None else meta.get("text", "")
+                    _validate_project_write(
+                        locked_text, locked_target_source, trusted_authorship
+                    )
                 if apply_trusted_authorship or (
                     locked_touches_project and replaces_authored_content
                 ):
                     if trusted_authorship is None:
                         raise ProjectMemoryPolicyError(
                             "project-namespace memories require trusted principal or system authorship"
-                        )
-                    if source is not None or (
-                        is_project_source(locked_target_source)
-                        and replaces_authored_content
-                    ):
-                        locked_text = text if text is not None else meta.get("text", "")
-                        _validate_project_write(
-                            locked_text, locked_target_source, trusted_authorship
                         )
 
                 if source_only:

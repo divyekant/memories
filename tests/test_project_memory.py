@@ -288,6 +288,45 @@ def test_source_only_move_rejects_malformed_reserved_project_target(engine):
     assert engine._get_meta_by_id(memory_id)["source"] == "legacy/source"
 
 
+def test_text_update_rejects_preupgrade_malformed_reserved_project_source(engine):
+    memory_id = engine.add_memories(["safe legacy fact"], ["legacy/source"])[0]
+    engine._get_meta_by_id(memory_id)["source"] = "project/fplguru/custom"
+    engine.qdrant_store.set_payload(memory_id, {"source": "project/fplguru/custom"})
+
+    with pytest.raises(ProjectMemoryPolicyError, match="project sources must be"):
+        engine.update_memory(
+            memory_id,
+            text="Production token is ghp_abcdefghijklmnopqrstuvwxyz123456",
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            apply_trusted_authorship=True,
+        )
+
+    assert engine._get_meta_by_id(memory_id)["text"] == "safe legacy fact"
+
+
+def test_text_update_revalidates_locked_malformed_reserved_source(engine, monkeypatch):
+    memory_id = engine.add_memories(["safe legacy fact"], ["legacy/source"])[0]
+    original_acquire = engine._entity_locks.acquire_many
+
+    @contextmanager
+    def racing_acquire(keys):
+        with original_acquire(keys):
+            engine._get_meta_by_id(memory_id)["source"] = "project/fplguru/custom"
+            yield
+
+    monkeypatch.setattr(engine._entity_locks, "acquire_many", racing_acquire)
+
+    with pytest.raises(ProjectMemoryPolicyError, match="project sources must be"):
+        engine.update_memory(
+            memory_id,
+            text="Production token is ghp_abcdefghijklmnopqrstuvwxyz123456",
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            apply_trusted_authorship=True,
+        )
+
+    assert engine._get_meta_by_id(memory_id)["text"] == "safe legacy fact"
+
+
 def test_upsert_replacement_applies_current_trusted_authorship(engine):
     created = engine.upsert_memory(
         text="first",
