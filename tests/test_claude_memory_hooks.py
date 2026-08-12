@@ -1579,7 +1579,11 @@ def test_collaborative_recall_orders_shared_private_then_legacy_and_labels_prove
     responses = [
         {
             "url_suffix": "/api/keys/me",
-            "response": {"type": "managed", "principal_id": "alice"},
+            "response": {
+                "type": "managed",
+                "principal_id": "alice",
+                "prefixes": legacy_prefixes,
+            },
         },
         {
             "url_suffix": "/search",
@@ -1686,7 +1690,11 @@ def test_collaborative_query_keeps_project_sources_ahead_of_legacy_and_labels_th
     responses = [
         {
             "url_suffix": "/api/keys/me",
-            "response": {"type": "managed", "principal_id": "alice"},
+            "response": {
+                "type": "managed",
+                "principal_id": "alice",
+                "prefixes": legacy_prefixes,
+            },
         },
         {
             "url_suffix": "/search",
@@ -1752,6 +1760,77 @@ def test_collaborative_query_keeps_project_sources_ahead_of_legacy_and_labels_th
     assert "Project query result." in context
     assert "[author=alice, origin-client=claude-code]" in context
     assert context.index("project/shared-demo/decisions") < context.index("person/alice/shared-demo/state")
+
+
+@pytest.mark.parametrize(
+    ("script", "payload"),
+    [
+        (RECALL_SCRIPT, {}),
+        (QUERY_SCRIPT, {"prompt": "Please explain the shared project architecture."}),
+        (REHYDRATE_SCRIPT, {"compact_summary": "shared project architecture"}),
+        (HOOKS_DIR / "memory-subagent-recall.sh", {"agent_type": "Plan"}),
+        (CODEX_HOOKS_DIR / "memory-recall.sh", {}),
+        (CODEX_HOOKS_DIR / "memory-query.sh", {"prompt": "Please explain the shared project architecture."}),
+    ],
+    ids=lambda value: value.name if isinstance(value, Path) else "payload",
+)
+def test_active_project_hooks_use_only_authenticated_legacy_prefixes(
+    tmp_path: Path, script: Path, payload: dict[str, object]
+) -> None:
+    """Project fan-out must not trust static/default legacy prefix config.
+
+    The managed key authorizes only codex/<project>; the static hook defaults
+    also contain claude-code/, learning/, and wip/. Active hooks must issue
+    project/<project>, person/<principal>/<project>, and the one authorized
+    legacy exact-project prefix, while WIP gating follows that same effective
+    list and does not issue the unauthorized static WIP search.
+    """
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    responses = [
+        {
+            "url_suffix": "/api/keys/me",
+            "response": {
+                "type": "managed",
+                "principal_id": "alice",
+                "prefixes": [
+                    "project/shared-demo",
+                    "person/alice/shared-demo",
+                    "codex/shared-demo",
+                    "codex/shared-demo/knowledge",
+                    "wip/other-project",
+                ],
+            },
+        }
+    ]
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        {"cwd": str(project_dir), **payload},
+        responses,
+        extra_env={
+            "MEMORIES_SOURCE_PREFIXES": "claude-code/{project},learning/{project},wip/{project}",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    search_prefixes = [
+        call["body"].get("source_prefix", "")
+        for call in calls
+        if str(call["url"]).endswith("/search")
+    ]
+    assert search_prefixes, f"expected scoped search calls for {script}"
+    assert list(dict.fromkeys(search_prefixes)) == [
+        "project/shared-demo",
+        "person/alice/shared-demo",
+        "codex/shared-demo",
+    ]
+    assert "claude-code/shared-demo" not in search_prefixes
+    assert "learning/shared-demo" not in search_prefixes
+    assert "wip/shared-demo" not in search_prefixes
 
 
 @pytest.mark.parametrize(
@@ -1828,7 +1907,11 @@ def test_active_recall_only_runs_wip_when_configured_and_deduplicates_it(
     base_responses = [
         {
             "url_suffix": "/api/keys/me",
-            "response": {"type": "managed", "principal_id": "alice"},
+            "response": {
+                "type": "managed",
+                "principal_id": "alice",
+                "prefixes": [configured_prefixes.replace("{project}", "shared-demo")],
+            },
         },
     ]
     result, calls, _ = _run_hook(
@@ -1846,7 +1929,18 @@ def test_active_recall_only_runs_wip_when_configured_and_deduplicates_it(
         and call["body"].get("source_prefix") == "wip/shared-demo"
     ]
 
-    wip_responses = base_responses + [
+    wip_responses = [
+        {
+            "url_suffix": "/api/keys/me",
+            "response": {
+                "type": "managed",
+                "principal_id": "alice",
+                "prefixes": [
+                    configured_prefixes.replace("{project}", "shared-demo"),
+                    "wip/shared-demo",
+                ],
+            },
+        },
         {
             "url_suffix": "/search",
             "source_prefix": "wip/shared-demo",

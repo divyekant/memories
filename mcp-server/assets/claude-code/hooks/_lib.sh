@@ -559,25 +559,27 @@ _memories_project_recall_prefixes() {
   local -a prefixes=() configured_prefixes=()
   [ -n "$project" ] && prefixes+=("project/$project")
   [ -n "$project" ] && [ -n "$principal" ] && prefixes+=("person/$principal/$project")
-  IFS=',' read -r -a configured_prefixes <<< "$configured"
-  for raw in "${configured_prefixes[@]}"; do
-    prefix=$(printf '%s' "$raw" | xargs)
-    [ -z "$prefix" ] && continue
-    prefix="${prefix//\{project\}/$project}"
-    # Collaborative mode owns the exact project and person namespaces.  A
-    # trailing slash is a legacy family prefix, not an exact-project prefix.
-    case "$prefix" in
-      project/*|person/*|*/|*\*) continue ;;
-    esac
-    # An exact legacy prefix names this project in its final segment.  A
-    # family prefix or another project's prefix must never widen recall.
-    [ "${prefix##*/}" = "$project" ] || continue
-    duplicate=0
-    for existing in "${prefixes[@]}"; do
-      [ "$existing" = "$prefix" ] && duplicate=1 && break
+  if [ -n "$configured" ]; then
+    IFS=',' read -r -a configured_prefixes <<< "$configured"
+    for raw in "${configured_prefixes[@]}"; do
+      prefix=$(printf '%s' "$raw" | xargs)
+      [ -z "$prefix" ] && continue
+      prefix="${prefix//\{project\}/$project}"
+      # Collaborative mode owns the exact project and person namespaces.  A
+      # trailing slash is a legacy family prefix, not an exact-project prefix.
+      case "$prefix" in
+        project/*|person/*|*/|*\*) continue ;;
+      esac
+      # An exact legacy prefix names this project in its final segment.  A
+      # family prefix or another project's prefix must never widen recall.
+      [ "${prefix##*/}" = "$project" ] || continue
+      duplicate=0
+      for existing in "${prefixes[@]}"; do
+        [ "$existing" = "$prefix" ] && duplicate=1 && break
+      done
+      [ "$duplicate" -eq 0 ] && prefixes+=("$prefix")
     done
-    [ "$duplicate" -eq 0 ] && prefixes+=("$prefix")
-  done
+  fi
   printf '%s\n' "${prefixes[@]}"
 }
 
