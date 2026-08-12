@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
-import { createApp, createRateLimiter, validateAuthMode, validateIssuerScheme } from '../remote/server.mjs';
+import { createApp, createRateLimiter, detectRemoteClient, validateAuthMode, validateIssuerScheme } from '../remote/server.mjs';
 import { hashPassword } from '../remote/oauth.mjs';
 import { createStore } from '../remote/store.mjs';
 
@@ -158,6 +158,19 @@ test('validateIssuerScheme: not-a-url throws', () => {
   assert.throws(() => validateIssuerScheme('not-a-url'));
 });
 
+test('detectRemoteClient uses conservative case-insensitive precedence for telemetry', () => {
+  assert.equal(
+    detectRemoteClient({ headers: { 'User-Agent': 'CoDeX-cli/0.146.0', Origin: 'https://claude.ai' } }),
+    'codex',
+  );
+  assert.equal(detectRemoteClient({ headers: { Origin: 'https://claude.ai' } }), 'claude-web');
+  assert.equal(detectRemoteClient({ headers: { 'user-agent': 'Claude Desktop/1.0' } }), 'claude-web');
+  assert.equal(detectRemoteClient({ headers: { 'User-Agent': 'generic-mcp-client/1.0' } }), 'remote-mcp');
+  assert.equal(detectRemoteClient({ headers: { Origin: 'https://claude.ai.evil.example' } }), 'remote-mcp');
+  assert.equal(detectRemoteClient({ headers: { Origin: 'http://claude.ai' } }), 'remote-mcp');
+  assert.equal(detectRemoteClient({ headers: { Origin: 'https://evil.example', 'User-Agent': 'codex-cli/0.146.0' } }), 'codex');
+});
+
 // ---------------------------------------------------------------------------
 // /healthz
 // ---------------------------------------------------------------------------
@@ -230,6 +243,39 @@ test('none mode: tools/call memory_stats hits injected fetchImpl backend', async
     const body = await res.json();
     assert.ok(called, 'expected fetchImpl to be invoked');
     assert.match(body.result.content[0].text, /Total memories: 42/);
+  } finally {
+    await close();
+  }
+});
+
+test('none mode: remote client attribution is telemetry-only and preserves authorization outcome', async () => {
+  const backendCalls = [];
+  const fetchImpl = async (url, options) => {
+    backendCalls.push({ url, headers: options.headers });
+    return new Response(JSON.stringify({
+      total_memories: 42,
+      model: 'test-model',
+      dimension: 768,
+      index_size_bytes: 1024,
+      backup_count: 1,
+      last_updated: '2026-08-01',
+    }), { status: 200 });
+  };
+  const { baseUrl, close } = await noneModeApp(fetchImpl);
+  try {
+    const variants = [
+      { 'User-Agent': 'codex-cli/0.146.0' },
+      { Origin: 'https://claude.ai' },
+      { 'User-Agent': 'generic-mcp-client/1.0' },
+    ];
+    for (const headers of variants) {
+      const res = await mcpFetch(baseUrl, jsonRpc('tools/call', { name: 'memory_stats', arguments: {} }), headers);
+      assert.equal(res.status, 200);
+    }
+    assert.deepEqual(
+      backendCalls.map(({ headers }) => headers['X-Memories-Client']),
+      ['codex', 'claude-web', 'remote-mcp'],
+    );
   } finally {
     await close();
   }

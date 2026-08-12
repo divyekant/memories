@@ -29,6 +29,63 @@ test('parseArgs throws on trailing --api-key with no value', () => {
   assert.throws(() => parseArgs(['init', '--api-key']), /--api-key/);
 });
 
+test('parseArgs accepts --mcp-url and rejects a missing value', () => {
+  assert.equal(
+    parseArgs(['init', '--codex', '--mcp-url', 'https://memory.example/mcp']).mcpUrl,
+    'https://memory.example/mcp',
+  );
+  assert.throws(() => parseArgs(['init', '--mcp-url']), /Missing value/);
+});
+
+test('remote Codex init writes an OAuth URL block without contacting the REST backend', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  const logs = [];
+  let healthCalls = 0;
+  await run(['init', '--codex', '--mcp-url', 'https://memory.example/mcp', '--yes'], {
+    home,
+    log: (message) => logs.push(message),
+    fetchImpl: async () => {
+      healthCalls += 1;
+      throw new Error('REST health/bootstrap must not run for --mcp-url');
+    },
+  });
+
+  const config = await readFile(join(home, '.codex/config.toml'), 'utf8');
+  assert.equal(healthCalls, 0);
+  assert.match(config, /\[mcp_servers\.memories\]\nurl = "https:\/\/memory\.example\/mcp"\nauth = "oauth"/);
+  assert.match(config, /default_tools_approval_mode = "prompt"/);
+  assert.doesNotMatch(config, /command = /);
+  assert.doesNotMatch(config, /MEMORIES_API_KEY/);
+  assert.ok(logs.some((message) => message.includes('codex mcp login memories')));
+});
+
+test('remote MCP options are validated before dry-run or backend checks', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  let healthCalls = 0;
+  const opts = {
+    home,
+    log: () => {},
+    fetchImpl: async () => {
+      healthCalls += 1;
+      throw new Error('health should not run after validation failure');
+    },
+  };
+
+  await assert.rejects(
+    () => run(['init', '--codex', '--mcp-url', 'https://memory.example/mcp', '--url', 'http://localhost:8900'], opts),
+    /--mcp-url cannot be combined with --url/,
+  );
+  await assert.rejects(
+    () => run(['init', '--codex', '--mcp-url', 'https://memory.example/mcp', '--api-key', 'backend-key'], opts),
+    /--mcp-url cannot be combined with --api-key/,
+  );
+  await assert.rejects(
+    () => run(['init', '--claude', '--mcp-url', 'https://memory.example/mcp'], opts),
+    /--mcp-url is only supported with --codex/,
+  );
+  assert.equal(healthCalls, 0);
+});
+
 test('parseArgs collects repeatable --mcp-name into mcpNames', () => {
   assert.deepEqual(parseArgs(['init']).mcpNames, []);
   assert.deepEqual(parseArgs(['init', '--mcp-name', 'Remote_Memories']).mcpNames, ['Remote_Memories']);

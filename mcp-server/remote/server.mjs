@@ -44,6 +44,43 @@ function isAllowedOrigin(originHeader) {
   );
 }
 
+function requestHeader(req, name) {
+  const headers = req?.headers ?? {};
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== wanted) continue;
+    if (Array.isArray(value)) return String(value[0] ?? '');
+    return value == null ? '' : String(value);
+  }
+  return '';
+}
+
+function isClaudeOrigin(originHeader) {
+  if (!isAllowedOrigin(originHeader)) return false;
+  try {
+    const host = new URL(originHeader).hostname;
+    return (
+      host === 'claude.ai' ||
+      host.endsWith('.claude.ai') ||
+      host === 'claude.com' ||
+      host.endsWith('.claude.com')
+    );
+  } catch {
+    return false;
+  }
+}
+
+// Client attribution is telemetry only. Keep this deliberately independent
+// from origin, bearer-auth, OAuth, and rate-limit decisions below: a caller
+// can spoof these headers without changing whether the request is allowed.
+export function detectRemoteClient(req) {
+  const userAgent = requestHeader(req, 'user-agent');
+  const origin = requestHeader(req, 'origin');
+  if (/\bcodex(?:[-_\/\s]|$)/i.test(userAgent)) return 'codex';
+  if (isClaudeOrigin(origin) || /\bclaude(?:[-_\/\s]|$)/i.test(userAgent)) return 'claude-web';
+  return 'remote-mcp';
+}
+
 function originGuard(req, res, next) {
   const origin = req.headers.origin;
   if (!origin) return next();
@@ -318,7 +355,7 @@ export function createApp(cfg = {}) {
     const server = buildServer({
       url: memoriesUrl,
       apiKey: memoriesApiKey,
-      client: "claude-web",
+      client: detectRemoteClient(req),
       fetchImpl,
       // The remote entry point's backend is fully specified by env
       // (MEMORIES_URL/MEMORIES_API_KEY) — never let a stray

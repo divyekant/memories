@@ -52,6 +52,24 @@ test('install writes hooks, hooks.json, current approvals, and config.toml block
   );
 });
 
+test('install writes a direct remote MCP URL/OAuth block with current read-only approvals', async () => {
+  const ctx = await freshCtx();
+  ctx.mcpUrl = 'https://memory.example/mcp';
+  ctx.apiKey = 'backend-key';
+  await adapter.install(ctx);
+
+  const toml = await readFile(join(ctx.home, '.codex/config.toml'), 'utf8');
+  assert.match(
+    toml,
+    /\[mcp_servers\.memories\]\nurl = "https:\/\/memory\.example\/mcp"\nauth = "oauth"\ndefault_tools_approval_mode = "prompt"/,
+  );
+  assert.doesNotMatch(toml, /command = /);
+  assert.doesNotMatch(toml, /MEMORIES_(URL|API_KEY|CLIENT)/);
+  for (const tool of READONLY_MCP_TOOL_NAMES) {
+    assert.match(toml, new RegExp(`\\[mcp_servers\\.memories\\.tools\\.${tool}\\]\\napproval_mode = "approve"`));
+  }
+});
+
 test('supports expanded Codex hooks only at the supported client threshold', () => {
   assert.equal(adapter.supportsExpandedHooks('codex-cli 0.146.0'), true);
   assert.equal(adapter.supportsExpandedHooks('codex-cli 0.145.9'), false);

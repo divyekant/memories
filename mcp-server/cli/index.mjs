@@ -28,12 +28,12 @@ const FLAG_TARGETS = {
   '--generic': 'generic',
 };
 
-const VALID_FLAGS = ['--claude', '--codex', '--cursor', '--generic', '--dry-run', '--yes', '--url', '--api-key', '--mcp-name', '-h', '--help'];
+const VALID_FLAGS = ['--claude', '--codex', '--cursor', '--generic', '--dry-run', '--yes', '--url', '--mcp-url', '--api-key', '--mcp-name', '-h', '--help'];
 
 const HELP_TEXT = `memories — installer/manager CLI for the Memories MCP plugin
 
 Usage:
-  memories init [--claude] [--codex] [--cursor] [--generic] [--url <u>] [--api-key <k>] [--mcp-name <name>]... [--dry-run] [--yes]
+  memories init [--claude] [--codex] [--cursor] [--generic] [--url <u>] [--mcp-url <u>] [--api-key <k>] [--mcp-name <name>]... [--dry-run] [--yes]
   memories update [same flags as init]
   memories doctor [--claude] [--codex] [--cursor] [--generic]
   memories uninstall [--claude] [--codex] [--cursor] [--generic]
@@ -42,6 +42,7 @@ Usage:
 Flags:
   --claude, --codex, --cursor, --generic   Restrict to these targets (default: auto-detect)
   --url <u>                                Backend URL (default: $MEMORIES_URL or http://localhost:8900)
+  --mcp-url <u>                             Direct remote MCP URL (Codex only; uses OAuth)
   --api-key <k>                            Backend API key (default: $MEMORIES_API_KEY or none)
   --mcp-name <name>                        Additional MCP server name to pre-approve read-only tools
                                             for (claude-code/cursor only). Repeatable. Use when your
@@ -61,7 +62,7 @@ export function parseArgs(argv) {
     command = args.shift();
   }
 
-  const result = { command, targets: [], dryRun: false, yes: false, url: undefined, apiKey: undefined, mcpNames: [] };
+  const result = { command, targets: [], dryRun: false, yes: false, url: undefined, mcpUrl: undefined, apiKey: undefined, mcpNames: [] };
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -75,6 +76,10 @@ export function parseArgs(argv) {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --url');
       result.url = args[++i];
+    } else if (a === '--mcp-url') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --mcp-url');
+      result.mcpUrl = args[++i];
     } else if (a === '--api-key') {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --api-key');
@@ -91,6 +96,19 @@ export function parseArgs(argv) {
   }
 
   return result;
+}
+
+function validateRemoteMcpOptions(parsed, targets) {
+  if (parsed.mcpUrl === undefined) return;
+  if (parsed.url !== undefined) {
+    throw new Error('--mcp-url cannot be combined with --url');
+  }
+  if (parsed.apiKey !== undefined) {
+    throw new Error('--mcp-url cannot be combined with --api-key');
+  }
+  if (!targets.length || targets.some((target) => target !== 'codex')) {
+    throw new Error('--mcp-url is only supported with --codex');
+  }
 }
 
 async function autoDetectTargets(home) {
@@ -176,6 +194,7 @@ async function offerBackendBootstrap(ctx) {
 
 async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
   const targets = await resolveTargets(parsed, ctx, restrictedTargets);
+  validateRemoteMcpOptions(parsed, targets);
 
   if (parsed.dryRun) {
     ctx.log(`mode=${parsed.command}`);
@@ -183,23 +202,33 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
     return;
   }
 
-  const url = parsed.url ?? process.env.MEMORIES_URL ?? (parsed.yes ? DEFAULT_URL : await ctx.askImpl('Memories backend URL', { def: DEFAULT_URL }));
-  const apiKey = parsed.apiKey ?? process.env.MEMORIES_API_KEY ?? (parsed.yes ? '' : await ctx.askImpl('Memories API key (blank for none)', { def: '' }));
-  ctx.url = url;
-  ctx.apiKey = apiKey;
   // Default 'memories' plus any --mcp-name overrides, deduped — consumed by
   // the claude-code/cursor adapters when writing the read-only allowlist.
   ctx.mcpNames = [...new Set(['memories', ...parsed.mcpNames])];
 
-  const health = await checkHealth(url, { fetchImpl: ctx.fetchImpl });
-  if (!health.ok) {
-    if (parsed.yes) {
-      ctx.log(`Backend unreachable at ${url} (${health.error}) — continuing; clients will work once it is up.`);
-    } else {
-      await offerBackendBootstrap(ctx);
+  if (parsed.mcpUrl !== undefined) {
+    // A direct remote MCP URL is already the client-facing endpoint. It uses
+    // OAuth at that endpoint, so there is no local REST backend to probe or
+    // bootstrap and no backend API key to copy into Codex configuration.
+    ctx.mcpUrl = parsed.mcpUrl;
+    ctx.url = undefined;
+    ctx.apiKey = '';
+  } else {
+    const url = parsed.url ?? process.env.MEMORIES_URL ?? (parsed.yes ? DEFAULT_URL : await ctx.askImpl('Memories backend URL', { def: DEFAULT_URL }));
+    const apiKey = parsed.apiKey ?? process.env.MEMORIES_API_KEY ?? (parsed.yes ? '' : await ctx.askImpl('Memories API key (blank for none)', { def: '' }));
+    ctx.url = url;
+    ctx.apiKey = apiKey;
+
+    const health = await checkHealth(url, { fetchImpl: ctx.fetchImpl });
+    if (!health.ok) {
+      if (parsed.yes) {
+        ctx.log(`Backend unreachable at ${url} (${health.error}) — continuing; clients will work once it is up.`);
+      } else {
+        await offerBackendBootstrap(ctx);
+      }
+    } else if (parsed.yes) {
+      ctx.log(`Backend healthy (${health.totalMemories} memories).`);
     }
-  } else if (parsed.yes) {
-    ctx.log(`Backend healthy (${health.totalMemories} memories).`);
   }
 
   for (const t of targets) {
@@ -233,6 +262,9 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
     const state = await readState(ctx.home);
     if (!state.installedTargets.includes(t)) state.installedTargets.push(t);
     await writeState(ctx.home, state);
+  }
+  if (parsed.mcpUrl !== undefined) {
+    ctx.log('Run `codex mcp login memories` to authenticate the remote Memories MCP server.');
   }
   ctx.log(`${parsed.command === 'init' ? 'Init' : 'Update'} complete for: ${targets.join(', ')}`);
 }
@@ -333,6 +365,10 @@ export async function run(argv, ctxOverrides = {}) {
 
   if (!VALID_COMMANDS.includes(parsed.command)) {
     throw new Error(`Unknown command: ${parsed.command}. Valid commands: init, doctor, update, uninstall, help`);
+  }
+
+  if (parsed.mcpUrl !== undefined && parsed.command !== 'init' && parsed.command !== 'update') {
+    throw new Error('--mcp-url is only supported with init/update --codex');
   }
 
   let restrictedTargets = null;

@@ -124,6 +124,14 @@ function mcpBlock(ctx) {
   const approvals = READONLY_MCP_TOOL_NAMES.map((tool) =>
     `[mcp_servers.memories.tools.${tool}]\napproval_mode = "approve"`,
   ).join('\n\n');
+  if (ctx.mcpUrl !== undefined) {
+    return `[mcp_servers.memories]
+url = "${tomlEscape(ctx.mcpUrl)}"
+auth = "oauth"
+default_tools_approval_mode = "prompt"
+
+${approvals}`;
+  }
   return `[mcp_servers.memories]
 command = "npx"
 args = ["-y", "memories-mcp"]
