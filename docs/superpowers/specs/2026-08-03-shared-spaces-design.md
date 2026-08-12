@@ -294,6 +294,60 @@ A separate follow-up spec is required before implementation. It must resolve all
 
 Stable `principal_id` and `project_id` values allow each later change to be additive.
 
+## Exploratory Future Evolution
+
+This section records the broader product direction discussed while shaping
+Phase 1. It is not an implementation plan, release commitment, API promise, or
+acceptance criterion for this PR. Each step requires its own evidence, design,
+and review before implementation.
+
+An earlier shape proposed building generic Entity and Space primitives before
+shipping Project. The architectural review deliberately reversed that order:
+Phase 1 proves the collaboration boundary with existing storage and ACL
+machinery first, and generalizes only when the triggers above are met.
+
+### Directional sequence
+
+1. **Explicit shared project memory (this PR).** Prove person-private and
+   project-shared isolation, server-authoritative attribution, explicit shared
+   writes, and same-host use from local and cloud sessions.
+2. **Promotion and reconciliation.** Specify a project-level promotion policy.
+   The intended default for an explicitly collaborative project is automatic
+   promotion once the feature exists, with the agent or configured classifier
+   judging durable project relevance. Structural policy gates remain
+   deterministic, uncertain classifications stay private, and any scheduled
+   reconciler must be idempotent and auditable. The requirements in the
+   preceding promotion section are mandatory inputs to that spec.
+3. **Project knowledge lifecycle and profile.** Evaluate explicit epistemic
+   states such as `provisional`, `proposed`, `accepted`, `superseded`, and
+   `rejected`, so unfinished discoveries can be shared without presenting them
+   as settled decisions. Evaluate a derived Project Profile only after the
+   lifecycle, evidence, and supersession rules are defined. Lifecycle state
+   must not weaken namespace authorization.
+4. **Generic entities and spaces.** If the generalization triggers are met,
+   introduce reusable identity and collaboration primitives. Project remains
+   the first proven case; possible later entity types include Person,
+   Organization, Product, and namespaced custom types. People or project
+   profiles, aliases, relationships, and dedicated membership policy belong
+   here rather than in the Phase 1 namespace layer.
+5. **Federated and synchronized operation.** Validate the one-host model with
+   real local and cloud clients first. Cross-backend projects require
+   backend-qualified handles and safe parity for every ID-based operation
+   before federation, synchronization, or replication can be enabled.
+6. **Dedicated product surfaces.** Add review queues, membership management,
+   administration UI, and relationship views only when the underlying policy
+   and operational evidence justify those additional moving parts.
+
+### External systems research
+
+Before specifying generic entities, automated promotion, or federation,
+compare the proven Phase 1 behavior with relevant OSS memory systems such as
+Mem0 and Supermemory. The comparison should cover identity and tenancy,
+private/shared scopes, provenance, promotion and review, lifecycle state,
+cross-client routing, federation, and extension mechanisms. External designs
+are research inputs, not compatibility requirements; Memories' isolation and
+fail-private contracts remain authoritative.
+
 ## Success Criteria
 
 1. dk and Darshan can start fresh local or cloud sessions using the same host and recall the same reviewed FPLGuru decisions and state.
