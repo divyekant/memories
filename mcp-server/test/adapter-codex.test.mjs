@@ -241,33 +241,55 @@ test('install refreshes the owned MCP block and removes only recorded legacy set
   assert.equal((await readJson(join(ctx.home, '.config/memories/install-state.json'))).permissions, undefined);
 });
 
-test('install fails closed on an incomplete owned MCP block before cleanup', async () => {
-  const ctx = await freshCtx();
-  await mkdir(join(ctx.home, '.codex'), { recursive: true });
-  const malformed = appendMarkedBlock(
-    'model = "gpt-5.5"\n',
-    'Memories Codex MCP',
-    '[mcp_servers.memories]\ncommand = "npx"',
-  ).replace('\n# END Memories Codex MCP\n', '\n');
-  await writeFile(join(ctx.home, '.codex/config.toml'), malformed);
-
-  const legacyRules = [
-    ...READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`),
-    'mcp__memories__memory_is_useful',
+test('install fails closed on malformed owned MCP blocks before any mutation', async () => {
+  const malformedBlocks = [
+    appendMarkedBlock(
+      'model = "gpt-5.5"\n',
+      'Memories Codex MCP',
+      '[mcp_servers.memories]\ncommand = "npx"\nforeign_after = 1',
+    ).replace('\n# END Memories Codex MCP\n', '\n'),
+    '# END Memories Codex MCP\nforeign_between = 2\n# BEGIN Memories Codex MCP\n[mcp_servers.memories]\ncommand = "npx"\nforeign_after = 3\n',
+    '# BEGIN Memories Codex MCP\none = true\n# END Memories Codex MCP\nforeign_between = 4\n# BEGIN Memories Codex MCP\ntwo = true\n# END Memories Codex MCP\nforeign_after = 5\n',
   ];
-  const settingsPath = join(ctx.home, '.codex/settings.json');
-  const statePath = join(ctx.home, '.config/memories/install-state.json');
-  await writeJson(settingsPath, { permissions: { allow: legacyRules } });
-  await writeJson(statePath, { permissions: { codex: legacyRules } });
 
-  const beforeConfig = await readFile(join(ctx.home, '.codex/config.toml'), 'utf8');
-  const beforeSettings = await readJson(settingsPath);
-  const beforeState = await readJson(statePath);
-  await assert.rejects(() => adapter.install(ctx), /invalid marked block/i);
+  for (const malformed of malformedBlocks) {
+    const ctx = await freshCtx();
+    const codexDir = join(ctx.home, '.codex');
+    const hooksDir = join(codexDir, 'hooks/memory');
+    const hooksJsonPath = join(codexDir, 'hooks.json');
+    const configPath = join(codexDir, 'config.toml');
+    const settingsPath = join(codexDir, 'settings.json');
+    const statePath = join(ctx.home, '.config/memories/install-state.json');
+    await mkdir(hooksDir, { recursive: true });
+    await writeFile(join(hooksDir, 'foreign-hook.sh'), '#!/bin/sh\nexit 0\n');
+    await writeJson(hooksJsonPath, {
+      hooks: { Foreign: [{ hooks: [{ type: 'command', command: '/foreign/hook.sh' }] }] },
+      keep: 'foreign',
+    });
+    await writeFile(configPath, malformed);
 
-  assert.equal(await readFile(join(ctx.home, '.codex/config.toml'), 'utf8'), beforeConfig);
-  assert.deepEqual(await readJson(settingsPath), beforeSettings);
-  assert.deepEqual(await readJson(statePath), beforeState);
+    const legacyRules = [
+      ...READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`),
+      'mcp__memories__memory_is_useful',
+    ];
+    await writeJson(settingsPath, { permissions: { allow: legacyRules } });
+    await writeJson(statePath, { permissions: { codex: legacyRules } });
+
+    const beforeConfig = await readFile(configPath, 'utf8');
+    const beforeSettings = await readJson(settingsPath);
+    const beforeState = await readJson(statePath);
+    const beforeHooksJson = await readFile(hooksJsonPath, 'utf8');
+    const beforeHookNames = await readdir(hooksDir);
+    const beforeHook = await readFile(join(hooksDir, 'foreign-hook.sh'), 'utf8');
+    await assert.rejects(() => adapter.install(ctx), /invalid marked block/i);
+
+    assert.equal(await readFile(configPath, 'utf8'), beforeConfig);
+    assert.deepEqual(await readJson(settingsPath), beforeSettings);
+    assert.deepEqual(await readJson(statePath), beforeState);
+    assert.equal(await readFile(hooksJsonPath, 'utf8'), beforeHooksJson);
+    assert.deepEqual(await readdir(hooksDir), beforeHookNames);
+    assert.equal(await readFile(join(hooksDir, 'foreign-hook.sh'), 'utf8'), beforeHook);
+  }
 });
 
 test('uninstall fails closed on malformed owned markers before any cleanup', async () => {

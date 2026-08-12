@@ -144,12 +144,6 @@ export async function install(ctx) {
 
   const versionText = await detectCodexVersion(ctx);
   const profile = supportsExpandedHooks(versionText) ? 'expanded' : 'legacy';
-  ctx.codexHookProfile = profile;
-
-  await copyHookScripts(p.hooksSrc, p.hooksDest);
-  await copyFile(p.notifySrc, join(p.hooksDest, 'memory-codex-notify.sh'));
-  await chmod(join(p.hooksDest, 'memory-codex-notify.sh'), 0o755);
-
   const manifest = profile === 'expanded' ? 'hooks.json' : 'hooks.legacy.json';
   const hooksConfig = JSON.parse(await readFile(join(p.hooksSrc, manifest), 'utf8'));
   const rendered = renderHooksJson(hooksConfig, p.hooksDest);
@@ -157,9 +151,6 @@ export async function install(ctx) {
   // lets a downgrade from expanded to legacy remove stale lifecycle entries
   // while mergeHookSettings still preserves every foreign hook entry.
   const existingHooks = removeManagedHooks(await readJson(p.hooksJson), p.hooksDest);
-  await writeJson(p.hooksJson, mergeHookSettings(existingHooks, rendered));
-
-  await mkdir(join(ctx.home, '.codex'), { recursive: true });
   let toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
   const hasMcpMarker = toml.split('\n').some((line) =>
     line === `# BEGIN ${MARKER_MCP}` || line === `# END ${MARKER_MCP}`,
@@ -174,6 +165,16 @@ export async function install(ctx) {
   if (!hasTomlKey(toml, 'developer_instructions')) {
     toml = insertMarkedBlockAtRoot(toml, MARKER_DEV, DEVELOPER_INSTRUCTIONS);
   }
+
+  // All config validation and in-memory preparation completes before any
+  // filesystem mutation. A malformed owned TOML block must not leave hooks or
+  // foreign hook settings behind when the install fails closed.
+  ctx.codexHookProfile = profile;
+  await copyHookScripts(p.hooksSrc, p.hooksDest);
+  await copyFile(p.notifySrc, join(p.hooksDest, 'memory-codex-notify.sh'));
+  await chmod(join(p.hooksDest, 'memory-codex-notify.sh'), 0o755);
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  await writeJson(p.hooksJson, mergeHookSettings(existingHooks, rendered));
   await writeFile(p.config, toml);
 
   // v5.12 wrote read-only Codex approvals to settings.json. Once the current

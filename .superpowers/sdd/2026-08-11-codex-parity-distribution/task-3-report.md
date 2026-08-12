@@ -128,3 +128,31 @@ GREEN verification:
 
 Follow-up commit: this report is included in the commit carrying
 `fix(codex): fail closed on malformed uninstall markers`.
+
+## Follow-up safety correction: validate config before install mutations
+
+Codex install now prepares and validates the MCP TOML in memory before copying
+hooks, rewriting `hooks.json`, writing config/settings, or clearing install
+provenance. Missing-end, reversed, and duplicate MCP marker regressions seed
+foreign hooks and preserve their directory and JSON byte-for-byte when install
+fails closed.
+
+RED command:
+
+```text
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+RED result: the expanded regression failed after the malformed marker was
+reported because install had already added managed hook entries to the foreign
+`hooks.json` (`30 passed, 1 failed`).
+
+GREEN verification:
+
+- TOML and Codex adapter tests: **31 passed, 0 failed**.
+- Affected adapter, CLI, hooks, and TOML suite: **75 passed, 0 failed**.
+- Full `node --test` from `mcp-server/`: **227 passed, 0 failed**.
+- `git diff --check`: passed.
+
+Follow-up commit: this report is included in the commit carrying
+`fix(codex): validate config before install mutations`.
