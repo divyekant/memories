@@ -1962,6 +1962,60 @@ def test_collaborative_rehydrate_honors_postcompact_end_to_end_deadline(tmp_path
 @pytest.mark.parametrize(
     ("script", "payload"),
     [
+        (RECALL_SCRIPT, {"cwd": "{project}"}),
+        (HOOKS_DIR / "memory-query.sh", {"cwd": "{project}", "prompt": "shared context"}),
+        (REHYDRATE_SCRIPT, {"cwd": "{project}", "compact_summary": "shared context"}),
+        (
+            HOOKS_DIR / "memory-subagent-recall.sh",
+            {"cwd": "{project}", "agent_type": "general-purpose"},
+        ),
+        (EXTRACT_SCRIPT, {"cwd": "{project}", "last_assistant_message": "remember this fact"}),
+        (CODEX_HOOKS_DIR / "memory-recall.sh", {"cwd": "{project}"}),
+        (
+            CODEX_HOOKS_DIR / "memory-query.sh",
+            {"cwd": "{project}", "prompt": "shared context"},
+        ),
+        (
+            CODEX_HOOKS_DIR / "memory-extract.sh",
+            {"cwd": "{project}", "last_assistant_message": "remember this fact"},
+        ),
+    ],
+)
+def test_declared_project_hooks_fail_closed_when_identity_is_unavailable(
+    tmp_path: Path,
+    script: Path,
+    payload: dict[str, object],
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    resolved_payload = {
+        key: str(project_dir) if value == "{project}" else value
+        for key, value in payload.items()
+    }
+
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        resolved_payload,
+        [{"url_suffix": "/api/keys/me", "status": 503, "response": {"detail": "unavailable"}}],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert len([call for call in calls if str(call["url"]).endswith("/api/keys/me")]) == 1
+    assert not [
+        call
+        for call in calls
+        if str(call["url"]).endswith("/search")
+        or str(call["url"]).endswith("/memory/extract")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("script", "payload"),
+    [
         (RECALL_SCRIPT, {}),
         (QUERY_SCRIPT, {"prompt": "Please explain the shared project architecture."}),
         (REHYDRATE_SCRIPT, {"compact_summary": "shared project architecture"}),

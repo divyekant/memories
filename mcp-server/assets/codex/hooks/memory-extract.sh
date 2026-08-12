@@ -48,6 +48,10 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
 PROJECT=$(_memories_resolve_project "$CWD" 2>/dev/null || basename "$CWD")
 PROJECT_CONTEXT_JSON=$(_memories_project_context "${CWD:-}" 2>/dev/null || printf '{"active":false}')
 PROJECT_CONTEXT_ACTIVE=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && declare -F _memories_project_declared >/dev/null && _memories_project_declared "${CWD:-}"; then
+  _log_warn "Collaborative project identity unavailable; skipping automatic extraction"
+  exit 0
+fi
 PROJECT_CONTEXT_ID=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.project_id // empty' 2>/dev/null || true)
 PROJECT_CONTEXT_PRINCIPAL=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.principal_id // empty' 2>/dev/null || true)
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')

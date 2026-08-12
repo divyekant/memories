@@ -323,6 +323,18 @@ _memories_project_file() {
   printf '%s' "$file"
 }
 
+# True only when this repository boundary contains a valid collaborative
+# declaration.  Hooks use this after context resolution to distinguish a
+# legacy checkout (no declaration, keep legacy behavior) from a declared
+# checkout whose authenticated principal is temporarily unavailable (skip all
+# project-aware reads and automatic writes rather than falling back broadly).
+_memories_project_declared() {
+  local cwd="${1:-${CWD:-$PWD}}" file parsed
+  file=$(_memories_project_file "$cwd" 2>/dev/null) || return 1
+  parsed=$(_memories_parse_project_yaml "$file" 2>/dev/null) || return 1
+  [ "$(printf '%s' "$parsed" | jq -r '.ok // false' 2>/dev/null)" = "true" ]
+}
+
 _memories_project_backends_file() {
   local root="${1:-}"
   if [ -n "${MEMORIES_BACKENDS_FILE:-}" ]; then
