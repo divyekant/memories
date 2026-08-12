@@ -341,6 +341,76 @@ _memories_project_backends_file() {
   return 1
 }
 
+# Validate the small mapping grammar accepted by the strict project-context
+# view.  The normal _parse_backends_yaml loader intentionally remains
+# permissive for legacy routing; this guard prevents an ignored sequence,
+# malformed indentation, or unsupported flow value from activating project
+# mode merely because the permissive loader found one backend entry.
+_memories_validate_project_backend_yaml() {
+  awk '
+    function trim(s) {
+      sub(/\r$/, "", s)
+      sub(/[[:space:]]+$/, "", s)
+      return s
+    }
+    function fail() { exit 1 }
+    {
+      line = trim($0)
+      if (line == "" || line ~ /^[[:space:]]*#/) next
+      if (line ~ /\t/) fail()
+
+      # Section headers are the only top-level mappings supported here.
+      if (line ~ /^backends:[[:space:]]*(\{\}|#.*)?$/) {
+        if (seen_backends++) fail()
+        section = "backends"
+        have_backend = 0
+        next
+      }
+      if (line ~ /^routing:[[:space:]]*(\{\}|#.*)?$/) {
+        if (!seen_backends || seen_routing++) fail()
+        section = "routing"
+        route = ""
+        next
+      }
+
+      if (section == "backends") {
+        if (line ~ /^  [A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*(#.*)?$/) {
+          have_backend = 1
+          next
+        }
+        if (line ~ /^    (url|api_key|scenario):[[:space:]]*(.*)$/) {
+          if (!have_backend) fail()
+          value = line
+          sub(/^    (url|api_key|scenario):[[:space:]]*/, "", value)
+          # Values are scalar strings. Flow collections and block scalars are
+          # deliberately outside the supported hook grammar.
+          if (value ~ /^[\[\{>|]/) fail()
+          next
+        }
+        fail()
+      }
+
+      if (section == "routing") {
+        if (line ~ /^  [A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*(.*)$/) {
+          route = line
+          sub(/^  [A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*/, "", route)
+          if (route == "" || route ~ /^#/) next
+          if (route !~ /^\[[[:space:]]*([A-Za-z_][A-Za-z0-9_-]*([[:space:]]*,[[:space:]]*[A-Za-z_][A-Za-z0-9_-]*)*)?[[:space:]]*\]([[:space:]]+#.*)?$/) fail()
+          next
+        }
+        if (line ~ /^    -[[:space:]]+[A-Za-z_][A-Za-z0-9_-]*([[:space:]]+#.*)?$/) {
+          if (route == "") fail()
+          next
+        }
+        fail()
+      }
+
+      fail()
+    }
+    END { if (section == "") exit 1 }
+  ' "$1" >/dev/null 2>&1
+}
+
 # Strict backend view for collaborative activation.  Legacy _load_backends
 # intentionally keeps its env/localhost fallback for ordinary fan-out; this
 # helper never turns an absent or malformed project config into a host probe.
@@ -370,6 +440,10 @@ _memories_project_backend_config() {
   esac
   if ! printf '%s\n' "$first" | grep -qE '^backends:'; then
     jq -nc '{backends:[],error:{reason:"no_backends",diagnostic:"backend configuration does not define any backends"}}'
+    return 0
+  fi
+  if ! _memories_validate_project_backend_yaml "$file"; then
+    jq -nc '{backends:[],error:{reason:"backend_config_invalid",diagnostic:"backend configuration contains unsupported or malformed YAML"}}'
     return 0
   fi
   rhs=$(printf '%s' "$first" | sed -E 's/^backends:[[:space:]]*//;s/[[:space:]]*$//')

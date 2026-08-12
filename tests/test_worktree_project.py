@@ -227,6 +227,11 @@ def test_project_context_requires_managed_principal(
         ("missing", None, "no_backends"),
         ("malformed", "backends: [\n", "backend_config_invalid"),
         ("non_object", "true\n", "backend_config_invalid"),
+        (
+            "sequence_after_backend",
+            "backends:\n  shared:\n    url: http://backend.test\n  - invalid\n",
+            "backend_config_invalid",
+        ),
     ],
 )
 def test_project_context_rejects_missing_or_invalid_backend_config(

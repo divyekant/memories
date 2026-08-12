@@ -225,6 +225,11 @@ test('project context fails closed for missing, malformed, and non-object backen
     { name: 'missing', source: null, reason: 'no_backends' },
     { name: 'malformed', source: 'backends: [\n', reason: 'backend_config_invalid' },
     { name: 'non-object', source: 'true\n', reason: 'backend_config_invalid' },
+    {
+      name: 'sequence-after-backend',
+      source: 'backends:\n  shared:\n    url: http://backend.test\n  - invalid\n',
+      reason: 'backend_config_invalid',
+    },
   ];
   const previousConfigFile = process.env.MEMORIES_BACKENDS_FILE;
   try {
