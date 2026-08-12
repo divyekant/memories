@@ -1436,7 +1436,13 @@ class MemoryEngine:
         target_is_project = is_project_source(target_source)
         touches_project = current_is_project or target_is_project
         source_enters_project = target_is_project and not current_is_project
-        if touches_project:
+        replaces_authored_content = (
+            text is not None
+            or source is not None
+            or bool(metadata_patch)
+            or apply_trusted_authorship
+        )
+        if touches_project and replaces_authored_content:
             if trusted_authorship is None:
                 raise ProjectMemoryPolicyError(
                     "project-namespace memories require trusted principal or system authorship"

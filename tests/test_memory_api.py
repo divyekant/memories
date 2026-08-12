@@ -150,6 +150,31 @@ def test_patch_substantive_project_edit_restamps_current_trusted_authorship(clie
     assert kwargs["apply_trusted_authorship"] is True
 
 
+def test_env_admin_can_patch_project_lifecycle_without_authorship_stamp(client):
+    test_client, mock_engine = client
+    mock_engine.get_memory.return_value = {
+        "id": 4,
+        "text": "Alice's project fact",
+        "source": "project/acme/knowledge",
+        "author": "alice",
+    }
+    mock_engine.update_memory.return_value = {
+        "id": 4,
+        "updated_fields": ["pinned", "archived"],
+    }
+
+    response = test_client.patch(
+        "/memory/4",
+        json={"pinned": True, "archived": True},
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    kwargs = mock_engine.update_memory.call_args.kwargs
+    assert "trusted_authorship" not in kwargs
+    assert "apply_trusted_authorship" not in kwargs
+
+
 def test_managed_dedup_blocker_lookup_is_scoped_to_destination_source(client):
     test_client, mock_engine = client
     import app as app_module

@@ -267,6 +267,23 @@ def test_substantive_project_replacement_restamps_current_editor_and_ignores_spo
     assert meta["kept"] is True
 
 
+def test_project_lifecycle_only_update_needs_no_authorship_and_preserves_author(engine):
+    memory_id = engine.add_memories(
+        ["Alice's project decision"],
+        ["project/fplguru/decisions"],
+        trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+    )[0]
+
+    result = engine.update_memory(memory_id, pinned=True, archived=True)
+
+    assert result["updated_fields"] == ["pinned", "archived"]
+    meta = engine._get_meta_by_id(memory_id)
+    assert meta["pinned"] is True
+    assert meta["archived"] is True
+    assert meta["author"] == "alice"
+    assert meta["origin_client"] == "codex"
+
+
 def test_project_secret_is_rejected_before_storage(engine):
     with pytest.raises(ProjectMemoryPolicyError, match="credential-shaped"):
         engine.add_memories(
