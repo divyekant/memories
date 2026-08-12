@@ -70,6 +70,9 @@ RESULTS=""
 for tpl in $(echo "$PREFIXES" | tr ',' ' '); do
   prefix="${tpl//\{project\}/$PROJECT}"
   BATCH=$(_search_memories_multi "$QUERY" "$prefix" 3 0.35) || { _log_error "Search failed for prefix $prefix"; continue; }
+  if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+    BATCH=$(printf '%s' "$BATCH" | _memories_filter_search_response_for_prefix "$prefix")
+  fi
 
   BATCH_RESULTS=$(echo "$BATCH" | jq -r '.results // []')
   if [ -n "$RESULTS" ]; then

@@ -210,9 +210,18 @@ test('active memory_search routes project and private namespaces before authoriz
   await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
   const calls = [];
   const responses = {
-    'project/shared-demo': [{ id: 1, source: 'project/shared-demo/knowledge', text: 'shared fact', author: 'alice', origin_client: 'codex', similarity: 0.2 }],
-    'person/alice/shared-demo': [{ id: 2, source: 'person/alice/shared-demo/knowledge', text: 'private fact', similarity: 0.9 }],
-    'codex/shared-demo': [{ id: 3, source: 'codex/shared-demo', text: 'legacy fact', similarity: 0.8 }],
+    'project/shared-demo': [
+      { id: 1, source: 'project/shared-demo/knowledge', text: 'shared fact', author: 'alice', origin_client: 'codex', similarity: 0.2 },
+      { id: 91, source: 'project/shared-demo-extra/knowledge', text: 'sibling project leak', similarity: 0.99 },
+    ],
+    'person/alice/shared-demo': [
+      { id: 2, source: 'person/alice/shared-demo/knowledge', text: 'private fact', similarity: 0.9 },
+      { id: 92, source: 'person/alice/shared-demo-extra/knowledge', text: 'sibling private leak', similarity: 0.98 },
+    ],
+    'codex/shared-demo': [
+      { id: 3, source: 'codex/shared-demo', text: 'legacy fact', similarity: 0.8 },
+      { id: 93, source: 'codex/shared-demo-extra', text: 'sibling legacy leak', similarity: 0.97 },
+    ],
     'claude-code/shared-demo': [{ id: 1, source: 'project/shared-demo/knowledge', text: 'shared fact', author: 'alice', origin_client: 'codex', similarity: 0.95 }],
   };
   const fetchImpl = async (url, options = {}) => {
@@ -259,6 +268,9 @@ test('active memory_search routes project and private namespaces before authoriz
     assert.match(text, /origin-client=codex/);
     assert.match(text, /Found 3 memories/);
     assert.equal((text.match(/\bid=/g) || []).length, 3);
+    assert.equal(text.includes('sibling project leak'), false);
+    assert.equal(text.includes('sibling private leak'), false);
+    assert.equal(text.includes('sibling legacy leak'), false);
     assert.equal(text.includes('Confidence:'), false);
   } finally {
     await client.close();

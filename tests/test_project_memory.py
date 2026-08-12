@@ -159,6 +159,15 @@ def test_metadata_patch_cannot_spoof_or_replace_existing_author(engine):
 
 def test_source_move_into_project_requires_and_applies_trusted_authorship(engine):
     memory_id = engine.add_memories(["fact"], ["legacy/source"])[0]
+    # Simulate a pre-upgrade legacy point that predates reserved-field
+    # sanitization. Both in-memory state and Qdrant contain stale provenance.
+    legacy = engine._get_meta_by_id(memory_id)
+    legacy["contributors"] = ["mallory"]
+    legacy["source_memory_ids"] = [999]
+    engine.qdrant_store.set_payload(
+        memory_id,
+        {"contributors": ["mallory"], "source_memory_ids": [999]},
+    )
 
     with pytest.raises(ProjectMemoryPolicyError):
         engine.update_memory(memory_id, source="project/fplguru/knowledge")
@@ -172,6 +181,16 @@ def test_source_move_into_project_requires_and_applies_trusted_authorship(engine
     meta = engine._get_meta_by_id(memory_id)
     assert meta["source"] == "project/fplguru/knowledge"
     assert meta["author"] == "alice"
+    assert "contributors" not in meta
+    assert "source_memory_ids" not in meta
+
+    # Qdrant payload updates merge by default. A snapshot restore must not
+    # resurrect reserved provenance removed during the promotion.
+    engine.reload_from_qdrant()
+    reloaded = engine._get_meta_by_id(memory_id)
+    assert reloaded["author"] == "alice"
+    assert "contributors" not in reloaded
+    assert "source_memory_ids" not in reloaded
 
 
 def test_source_only_move_rejects_existing_credential_before_mutation(engine):

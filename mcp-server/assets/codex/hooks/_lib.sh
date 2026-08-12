@@ -590,6 +590,18 @@ _memories_project_extract_source() {
   printf 'person/%s/%s/knowledge\n' "$principal" "$project"
 }
 
+_memories_filter_search_response_for_prefix() {
+  local prefix="${1:-}"
+  jq -c --arg prefix "$prefix" '
+    (.results // []) as $results
+    | .results = ($results | map(select(
+        ((.source // "") == $prefix)
+        or ((.source // "") | startswith($prefix + "/"))
+      )))
+    | .count = (.results | length)
+  '
+}
+
 _memories_merge_search_results() {
   local ordered="${1:-false}" limit="${2:-6}"
   if [ "$ordered" = "true" ]; then

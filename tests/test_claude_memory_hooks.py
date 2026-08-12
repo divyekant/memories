@@ -1597,7 +1597,13 @@ def test_collaborative_recall_orders_shared_private_then_legacy_and_labels_prove
                         "author": "alice",
                         "origin_client": "codex",
                         "similarity": 0.8,
-                    }
+                    },
+                    {
+                        "id": 901,
+                        "source": "project/shared-demo-extra/knowledge",
+                        "text": "Sibling project recall must stay isolated.",
+                        "similarity": 0.99,
+                    },
                 ],
                 "count": 1,
             },
@@ -1652,6 +1658,7 @@ def test_collaborative_recall_orders_shared_private_then_legacy_and_labels_prove
     context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "Shared project fact." not in context
     assert "candidate memory id=101" in context
+    assert "Sibling project recall must stay isolated." not in context
     assert "[author=alice, origin-client=codex]" in context
     assert context.index("project/shared-demo") < context.index("person/alice/shared-demo")
 
@@ -1708,7 +1715,13 @@ def test_collaborative_query_keeps_project_sources_ahead_of_legacy_and_labels_th
                         "author": "alice",
                         "origin_client": "claude-code",
                         "similarity": 0.5,
-                    }
+                    },
+                    {
+                        "id": 903,
+                        "source": "project/shared-demo-extra/decisions",
+                        "text": "Sibling project query must stay isolated.",
+                        "similarity": 0.99,
+                    },
                 ],
                 "count": 1,
             },
@@ -1758,6 +1771,7 @@ def test_collaborative_query_keeps_project_sources_ahead_of_legacy_and_labels_th
     assert result.returncode == 0, result.stderr
     context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "Project query result." in context
+    assert "Sibling project query must stay isolated." not in context
     assert "[author=alice, origin-client=claude-code]" in context
     assert context.index("project/shared-demo/decisions") < context.index("person/alice/shared-demo/state")
 
@@ -1831,6 +1845,62 @@ def test_active_project_hooks_use_only_authenticated_legacy_prefixes(
     assert "claude-code/shared-demo" not in search_prefixes
     assert "learning/shared-demo" not in search_prefixes
     assert "wip/shared-demo" not in search_prefixes
+
+
+@pytest.mark.parametrize(
+    ("script", "payload"),
+    [
+        (RECALL_SCRIPT, {}),
+        (QUERY_SCRIPT, {"prompt": "Please explain the shared project architecture."}),
+        (REHYDRATE_SCRIPT, {"compact_summary": "shared project architecture"}),
+        (HOOKS_DIR / "memory-subagent-recall.sh", {"agent_type": "Plan"}),
+        (CODEX_HOOKS_DIR / "memory-recall.sh", {}),
+        (CODEX_HOOKS_DIR / "memory-query.sh", {"prompt": "Please explain the shared project architecture."}),
+    ],
+    ids=lambda value: value.name if isinstance(value, Path) else "payload",
+)
+def test_active_project_hooks_drop_sibling_project_prefix_results(
+    tmp_path: Path, script: Path, payload: dict[str, object]
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    sibling_text = "Sibling shared-demo-extra memory must not be recalled."
+    responses = [
+        {
+            "url_suffix": "/api/keys/me",
+            "response": {"type": "managed", "principal_id": "alice"},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "project/shared-demo",
+            "response": {
+                "results": [
+                    {
+                        "id": 990,
+                        "source": "project/shared-demo-extra/knowledge",
+                        "text": sibling_text,
+                        "similarity": 0.99,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+
+    result, _, home_dir = _run_hook(
+        script,
+        tmp_path,
+        {"cwd": str(project_dir), **payload},
+        responses,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sibling_text not in result.stdout
+    for memory_file in home_dir.rglob("MEMORY.md"):
+        assert "candidate memory id=990" not in memory_file.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -2053,6 +2123,33 @@ def test_project_helpers_allowlist_prefixes_and_deduplicate_stable_records(
         (None, "project/demo"),
         (1, "person/alice/demo"),
     ]
+
+    filter_result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; _memories_filter_search_response_for_prefix project/demo',
+            "_",
+            str(lib),
+        ],
+        input=json.dumps(
+            {
+                "results": [
+                    {"id": 10, "source": "project/demo", "text": "exact"},
+                    {"id": 11, "source": "project/demo/knowledge", "text": "child"},
+                    {"id": 12, "source": "project/demo-extra/knowledge", "text": "sibling"},
+                ],
+                "count": 3,
+            }
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert filter_result.returncode == 0, filter_result.stderr
+    filtered = json.loads(filter_result.stdout)
+    assert [item["id"] for item in filtered["results"]] == [10, 11]
+    assert filtered["count"] == 2
 
 
 @pytest.mark.parametrize("lib_name", ["claude-code", "codex"])

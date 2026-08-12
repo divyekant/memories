@@ -117,6 +117,16 @@ class QdrantStore:
             ordering=self.settings.write_ordering,
         )
 
+    def replace_payload(self, point_id: int, payload: Dict[str, Any]) -> None:
+        """Replace an existing point payload without changing its vector."""
+        self.client.overwrite_payload(
+            collection_name=self.collection,
+            payload=payload,
+            points=[_normalize_point_id(point_id)],
+            wait=self.settings.wait,
+            ordering=self.settings.write_ordering,
+        )
+
     def upsert_points(self, points: List[Dict[str, Any]]) -> None:
         point_structs = [
             models.PointStruct(

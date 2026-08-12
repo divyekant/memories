@@ -1475,7 +1475,9 @@ class MemoryEngine:
                         meta.update(trusted_authorship.as_metadata())
                     meta["updated_at"] = datetime.now(timezone.utc).isoformat()
                     # Don't touch created_at or timestamp
-                    self.qdrant_store.set_payload(memory_id, self._point_payload(meta))
+                    # set_payload merges keys in Qdrant, which would preserve
+                    # removed reserved provenance from pre-upgrade records.
+                    self.qdrant_store.replace_payload(memory_id, self._point_payload(meta))
                     self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                     self.save()
                     return {"id": memory_id, "updated_fields": ["source"]}

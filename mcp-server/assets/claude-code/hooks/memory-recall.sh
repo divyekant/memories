@@ -128,7 +128,11 @@ if [ -n "$VERSION_CHECK_BUDGET" ]; then
 fi
 
 search_memories() {
-  _search_memories_multi "$@"
+  if [ "${PROJECT_CONTEXT_ACTIVE:-false}" = "true" ] && [ -n "${2:-}" ]; then
+    _search_memories_multi "$@" | _memories_filter_search_response_for_prefix "$2"
+  else
+    _search_memories_multi "$@"
+  fi
 }
 
 # /health is unauthenticated and can't see a bad API key, so credential

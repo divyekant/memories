@@ -593,7 +593,11 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
         method: "POST",
         body: JSON.stringify(scopedBody),
       }, "search");
-      responses.push(data);
+      const results = (data.results || []).filter((result) => {
+        const source = String(result?.source || "");
+        return source === prefix || source.startsWith(`${prefix}/`);
+      });
+      responses.push({ ...data, results, count: results.length });
     }
 
     const seen = new Set();
