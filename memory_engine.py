@@ -31,6 +31,7 @@ from project_memory import (
     RESERVED_METADATA_FIELDS,
     ProjectMemoryPolicyError,
     TrustedAuthorship,
+    is_person_source,
     is_project_source,
     normalize_origin_client,
     validate_project_write,
@@ -925,12 +926,23 @@ class MemoryEngine:
         old_meta = self._get_meta_by_id(old_id)
         previous_text = old_meta.get("text", "")
         use_source = source or old_meta.get("source", "")
-        if trusted_authorship is not None and use_source != old_meta.get("source", ""):
+        old_source = old_meta.get("source", "")
+        crosses_structured_namespace = (
+            (isinstance(old_source, str) and old_source.startswith("project/"))
+            or (isinstance(use_source, str) and use_source.startswith("project/"))
+            or is_person_source(old_source)
+            or is_person_source(use_source)
+        )
+        if (
+            trusted_authorship is not None
+            and use_source != old_source
+            and crosses_structured_namespace
+        ):
             raise ProjectMemoryPolicyError(
-                "trusted supersede source must match the existing memory source"
+                "trusted supersede source cannot cross project or person namespace boundaries"
             )
-        if is_project_source(old_meta.get("source", "")):
-            _validate_project_write(new_text, old_meta.get("source", ""), trusted_authorship)
+        if is_project_source(old_source):
+            _validate_project_write(new_text, old_source, trusted_authorship)
         _validate_project_write(new_text, use_source, trusted_authorship)
 
         add_kwargs = {

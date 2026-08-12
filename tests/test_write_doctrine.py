@@ -207,6 +207,26 @@ class TestAddWithDoctrine:
 
         assert not engine._get_meta_by_id(old_id).get("archived")
 
+    def test_trusted_supersede_can_move_between_authorized_legacy_sources(self, engine):
+        trusted = TrustedAuthorship.principal("alice")
+        old_id = engine.add_memories(
+            [T78],
+            ["codex/acme"],
+            trusted_authorship=trusted,
+        )[0]
+
+        result = engine.supersede(
+            old_id,
+            T79,
+            source="claude-code/acme",
+            trusted_authorship=trusted,
+        )
+
+        assert engine._get_meta_by_id(old_id)["archived"] is True
+        replacement = engine._get_meta_by_id(result["new_id"])
+        assert replacement["source"] == "claude-code/acme"
+        assert replacement["author"] == "alice"
+
     def test_invalid_mode_rejected(self, engine):
         with pytest.raises(ValueError):
             engine.add_with_doctrine(T78, "learning/health", on_duplicate="merge")
