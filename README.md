@@ -352,6 +352,10 @@ codex mcp login memories
 registration, skips local REST health/bootstrap, and never copies a backend
 API key into Codex. Do not combine it with `--url` or `--api-key`.
 
+Remote MCP tools and lifecycle-hook transport are separate: the hooks remain
+installed, but they are inactive until `MEMORIES_URL` or a REST
+`backends.yaml` configuration is available to the hook process.
+
 If your local stdio API key is prefix-scoped and does not allow `codex/*`, set
 hook source overrides in `~/.config/memories/env`:
 
@@ -1170,7 +1174,7 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 | Every prompt | `memory-query.sh` | Retrieves relevant memories with transcript context |
 | After response | `memory-extract.sh` | Extracts facts via AUDN |
 | Before compaction | `memory-flush.sh` | Aggressive extraction before context loss |
-| After compaction | `memory-rehydrate.sh` | Re-injects memories using compact summary |
+| After compaction | `memory-rehydrate.sh` | Returns `suppressOutput`; Codex recall runs at `SessionStart(source=compact)` |
 | Subagent start | `memory-subagent-recall.sh` | Injects project memories into subagents at spawn |
 | Subagent stop | `memory-subagent-capture.sh` | Captures decisions from Plan/Explore agents |
 | Tool use observed | `memory-observe.sh` | Logs MCP tool invocations (observability) |

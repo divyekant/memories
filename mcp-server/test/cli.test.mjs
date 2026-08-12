@@ -59,6 +59,26 @@ test('remote Codex init writes an OAuth URL block without contacting the REST ba
   assert.ok(logs.some((message) => message.includes('codex mcp login memories')));
 });
 
+test('remote Codex init explains that lifecycle hooks need a separately configured REST backend', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  const logs = [];
+  let healthCalls = 0;
+  await run(['init', '--codex', '--mcp-url', 'https://memory.example/mcp', '--yes'], {
+    home,
+    log: (message) => logs.push(message),
+    fetchImpl: async () => {
+      healthCalls += 1;
+      throw new Error('REST health/bootstrap must not run for --mcp-url');
+    },
+  });
+
+  assert.equal(healthCalls, 0);
+  assert.ok(
+    logs.some((message) => /lifecycle hooks.*MEMORIES_URL.*backends\.yaml.*inactive/i.test(message)),
+    'remote setup must state the REST transport prerequisite for lifecycle hooks',
+  );
+});
+
 test('Codex init --no-persist-api-key omits the API key from generated local TOML', async () => {
   const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
   await run(['init', '--codex', '--url', 'http://localhost:8900', '--api-key', 'super-secret', '--no-persist-api-key', '--yes'], {
@@ -171,7 +191,22 @@ test('invalid remote MCP URLs fail atomically before prompts, logs, health, or s
   }
 });
 
+test('remote MCP authority URL is normalized with a trailing slash in Codex TOML', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await run(['init', '--codex', '--mcp-url', 'https://memory.example.com', '--yes'], {
+    home,
+    log: () => {},
+    fetchImpl: async () => { throw new Error('REST health/bootstrap must not run for --mcp-url'); },
+  });
+
+  const config = await readFile(join(home, '.codex/config.toml'), 'utf8');
+  assert.match(config, /url = "https:\/\/memory\.example\.com\/"/);
+  assert.doesNotMatch(config, /url = "https:\/\/memory\.example\.com"\n/);
+});
+
 test('validateRemoteMcpUrl accepts canonical HTTPS URLs with encoded paths and queries', () => {
+  assert.equal(validateRemoteMcpUrl('https://memory.example.com'), 'https://memory.example.com/');
+  assert.equal(validateRemoteMcpUrl('https://memory.example.com/'), 'https://memory.example.com/');
   assert.doesNotThrow(() => validateRemoteMcpUrl('https://memory.example/mcp?scope=read%2Fonly&next=%2Fv1%2Fsearch'));
   assert.throws(() => validateRemoteMcpUrl('https:memory.example/mcp'), /canonical HTTPS URL/i);
   assert.throws(() => validateRemoteMcpUrl('https:///memory.example/mcp'), /canonical HTTPS URL/i);

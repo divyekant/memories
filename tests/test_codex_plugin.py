@@ -109,6 +109,9 @@ def test_codex_docs_describe_published_installer_and_current_lifecycle() -> None
         assert "codex mcp login memories" in text
         assert "npm package has not been published" not in text.lower()
         assert "has not published its first npm release" not in text.lower()
+        assert "Re-injects memories using compact summary" not in text
+        assert "suppressOutput" in text
+        assert "SessionStart(source=compact)" in text
 
     codex_docs = f"{readme}\n{getting_started}\n{architecture}"
     assert "0.146.0" in codex_docs

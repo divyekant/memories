@@ -146,9 +146,6 @@ export function validateRemoteMcpUrl(value) {
   if (remoteUrl.protocol !== 'https:') {
     throw new Error('--mcp-url must use https:// for remote OAuth MCP');
   }
-  if (remoteUrl.href !== value) {
-    throw new Error('--mcp-url must use canonical HTTPS URL syntax');
-  }
   if (remoteUrl.username || remoteUrl.password) {
     throw new Error('--mcp-url must not include credentials');
   }
@@ -157,6 +154,16 @@ export function validateRemoteMcpUrl(value) {
   if (remoteUrl.hash || value.includes('#')) {
     throw new Error('--mcp-url must not include a fragment');
   }
+
+  // URL() normalizes an authority-only endpoint by adding its canonical root
+  // slash. Accept that one normalization while continuing to reject all
+  // other non-canonical spellings (explicit default ports, case changes,
+  // encoded authority changes, etc.).
+  const authorityOnly = /^https:\/\/[^/?#]+$/u.test(value);
+  if (remoteUrl.href !== value && !(authorityOnly && remoteUrl.href === `${value}/`)) {
+    throw new Error('--mcp-url must use canonical HTTPS URL syntax');
+  }
+  return remoteUrl.href;
 }
 
 async function autoDetectTargets(home) {
@@ -262,6 +269,9 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
     ctx.mcpUrl = parsed.mcpUrl;
     ctx.url = undefined;
     ctx.apiKey = '';
+    ctx.log(
+      'Remote MCP tools use OAuth; Codex lifecycle hooks require MEMORIES_URL or a REST backends.yaml configuration and remain inactive otherwise.',
+    );
   } else {
     const url = parsed.url ?? process.env.MEMORIES_URL ?? (parsed.yes ? DEFAULT_URL : await ctx.askImpl('Memories backend URL', { def: DEFAULT_URL }));
     const apiKey = parsed.apiKey ?? process.env.MEMORIES_API_KEY ?? (parsed.yes ? '' : await ctx.askImpl('Memories API key (blank for none)', { def: '' }));
@@ -401,7 +411,7 @@ export async function run(argv, ctxOverrides = {}) {
   // Validate the raw endpoint before constructing an execution context or
   // taking the help fast path. A malformed value must never be hidden by
   // `help`, nor cause help/logging side effects before it is rejected.
-  if (parsed.mcpUrl !== undefined) validateRemoteMcpUrl(parsed.mcpUrl);
+  if (parsed.mcpUrl !== undefined) parsed.mcpUrl = validateRemoteMcpUrl(parsed.mcpUrl);
 
   const home = ctxOverrides.home ?? os.homedir();
   const assetsDir = ctxOverrides.assetsDir ?? join(dirname(fileURLToPath(import.meta.url)), '../assets');

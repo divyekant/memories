@@ -36,7 +36,10 @@ environment instead.
 For a remote Streamable HTTP MCP server with OAuth, use
 `npx memories-mcp init --codex --mcp-url https://memory.example/mcp --yes`, then
 run `codex mcp login memories`. Remote mode does not copy a backend API key into
-Codex configuration.
+Codex configuration and skips REST health/bootstrap. Remote MCP tools are
+separate from lifecycle-hook transport: hooks are installed but remain inactive
+until `MEMORIES_URL` or a REST `backends.yaml` configuration is available to the
+hook process.
 
 ## Use as a plain MCP server
 

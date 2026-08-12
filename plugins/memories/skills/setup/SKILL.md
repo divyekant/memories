@@ -35,7 +35,9 @@ codex mcp login memories
 `--mcp-url` is an absolute HTTPS MCP URL and uses OAuth. Do not combine it
 with `--url` or `--api-key`; the remote configuration contains no backend API
 key. The second command completes Codex's OAuth login for the `memories`
-server.
+server. Remote MCP tools are separate from lifecycle-hook transport: hooks are
+installed but remain inactive until `MEMORIES_URL` or a REST `backends.yaml`
+configuration is available to the hook process.
 
 ### Verify without exposing credentials
 

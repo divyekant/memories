@@ -248,7 +248,9 @@ codex mcp login memories
 
 `--mcp-url` is a canonical absolute HTTPS MCP endpoint. Do not combine it with
 `--url` or `--api-key`; the remote configuration uses OAuth and does not carry a
-backend API key.
+backend API key. Remote MCP tools are separate from lifecycle-hook transport:
+hooks are installed but remain inactive until `MEMORIES_URL` or a REST
+`backends.yaml` configuration is available to the hook process.
 
 ### Lifecycle and configuration
 

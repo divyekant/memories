@@ -814,3 +814,99 @@ git add -f .superpowers/sdd/2026-08-11-codex-parity-distribution/task-11-report.
 git commit -m "fix(codex): keep query output portable across jq versions"
 git push origin codex/codex-parity-distribution
 ```
+
+### Task 12: Close Remaining Codex Distribution Review Findings
+
+**Files:**
+- Modify: `mcp-server/cli/adapters/codex.mjs`
+- Modify: `mcp-server/cli/index.mjs`
+- Modify: `mcp-server/cli/lib/toml.mjs` only if required by the canonical URL/marker fix
+- Modify: `mcp-server/test/adapter-codex.test.mjs`
+- Modify: `mcp-server/test/cli.test.mjs`
+- Modify: `README.md`
+- Modify: `GETTING_STARTED.md`
+- Modify: `integrations/QUICKSTART-LLM.md`
+- Modify: `plugins/memories/skills/setup/SKILL.md`
+- Modify: `mcp-server/README.md`
+- Modify: `tests/test_codex_plugin.py` only if the documentation contract requires it
+- Create (forced-added): `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-12-report.md`
+
+**Scope:**
+
+Resolve the remaining PR #93 review findings without broadening installer ownership or
+weakening marker/permission preflight behavior:
+
+1. Fresh Codex initialization must place the developer-instructions marked block outside
+   the MCP marked block. Updating after a user edits the managed developer instructions
+   must preserve that edit, and uninstall remains strict/atomic.
+2. Remote `--mcp-url` setup must preserve hook installation for users with a separately
+   configured REST backend, but log an explicit actionable statement that lifecycle hooks
+   require `MEMORIES_URL` or a `backends.yaml` REST configuration and are inactive without
+   one. Remote mode still skips REST health/bootstrap and writes no secret. Documentation
+   must distinguish remote MCP tools from REST hook transport.
+3. For pre-manifest Codex installs with no recorded Codex rule ownership, exact on-disk
+   installer ownership evidence (owned hooks directory/known hook assets) permits update
+   and uninstall to remove only the exact legacy seven settings rules, including
+   `memory_is_useful`, while preserving unrelated/user rules. Machines without ownership
+   evidence must not receive a broad fallback cleanup; current recorded ownership stays
+   exact.
+4. `--mcp-url https://memory.example.com` is accepted and generated TOML uses the
+   canonical normalized `https://memory.example.com/`. Malformed/noncanonical authority,
+   credentials, fragments, whitespace/control, raw backslashes, malformed percent escapes,
+   and non-HTTPS inputs remain rejected. Cover the pure validator and end-to-end atomic
+   behavior.
+5. Correct stale lifecycle documentation rows in `README.md` and `GETTING_STARTED.md`
+   that describe `memory-rehydrate.sh` as re-injecting a compact summary; they must match
+   the later `suppressOutput`/`SessionStart(source=compact)` behavior.
+
+**TDD / RED capture before production edits:**
+
+Add behavioral regressions first, then run each focused command on `039e82d` and record
+the expected failures in Task 12's report before changing production code:
+
+```bash
+node --test mcp-server/test/adapter-codex.test.mjs mcp-server/test/cli.test.mjs
+uv run pytest -q tests/test_codex_plugin.py
+```
+
+The RED cases must cover marker placement and edited-instruction preservation, strict
+atomic uninstall, remote hook warning plus no REST bootstrap/secret, evidence-gated
+legacy seven-rule cleanup on update/uninstall, canonical URL normalization and rejection
+matrix, and the stale lifecycle wording in the shipped docs.
+
+**Implementation and validation:**
+
+Implement the smallest adapter/CLI/TOML and documentation changes. Preserve all strict
+marker preflight semantics, unmanaged blocks/rules, remote setup atomicity, and exact
+ownership checks. Run:
+
+```bash
+node --test mcp-server/test/adapter-codex.test.mjs mcp-server/test/cli.test.mjs
+cd mcp-server && npm test
+cd ..
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+for f in mcp-server/assets/codex/hooks/*.sh integrations/codex/hooks/*.sh; do bash -n "$f"; done
+uv run python scripts/render_project_hooks.py --check
+cd mcp-server && npm pack --dry-run
+cd ..
+git diff --check
+git status --short
+```
+
+Review the final diff for security/ownership regressions and verify only the named files
+plus the forced report are staged.
+
+**Exact staging and commit:**
+
+```bash
+git add docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
+  mcp-server/cli/adapters/codex.mjs mcp-server/cli/index.mjs \
+  mcp-server/cli/lib/toml.mjs mcp-server/test/adapter-codex.test.mjs \
+  mcp-server/test/cli.test.mjs README.md GETTING_STARTED.md \
+  integrations/QUICKSTART-LLM.md plugins/memories/skills/setup/SKILL.md \
+  mcp-server/README.md tests/test_codex_plugin.py
+git add -f .superpowers/sdd/2026-08-11-codex-parity-distribution/task-12-report.md
+git commit -m "fix(codex): address integration review findings"
+git push origin codex/codex-parity-distribution
+```

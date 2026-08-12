@@ -132,6 +132,18 @@ const LEGACY_HOOK_COMMANDS = {
   PostToolUse: 'memory-observe.sh',
   PreToolUse: 'memory-guard.sh',
 };
+
+// These are the seven allow-rules written by the pre-manifest Codex
+// installer. They are retained only as a narrowly gated migration path for
+// installs that predate install-state provenance.
+const LEGACY_CODEX_RULES = [
+  ...READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`),
+  'mcp__memories__memory_is_useful',
+];
+const LEGACY_CODEX_HOOK_ASSETS = [
+  ...Object.values(LEGACY_HOOK_COMMANDS),
+  'memory-codex-notify.sh',
+];
 const EXPANDED_HOOK_COMMANDS = {
   ...LEGACY_HOOK_COMMANDS,
   PreCompact: 'memory-flush.sh',
@@ -140,6 +152,19 @@ const EXPANDED_HOOK_COMMANDS = {
   SubagentStop: 'memory-subagent-capture.sh',
   SessionEnd: 'memory-commit.sh',
 };
+
+async function hasLegacyCodexOwnershipEvidence(p) {
+  if (!(await exists(p.hooksDest))) return false;
+  // The old adapter copied all five legacy lifecycle scripts plus its
+  // Codex-specific notify helper. Requiring every known asset keeps this
+  // fallback fail-closed for arbitrary user-created ~/.codex/hooks/memory
+  // directories while still recognizing installs from before provenance was
+  // recorded.
+  for (const name of LEGACY_CODEX_HOOK_ASSETS) {
+    if (!(await exists(join(p.hooksDest, name)))) return false;
+  }
+  return true;
+}
 
 async function installedHookProfileAt(path, hooksDir) {
   try {
@@ -212,6 +237,10 @@ export async function install(ctx) {
   const p = paths(ctx);
   const statePath = installStatePath(ctx.home);
   const recordedRules = await readRecordedPermissions(statePath, 'codex');
+  const legacyOwnershipEvidence = recordedRules === null
+    ? await hasLegacyCodexOwnershipEvidence(p)
+    : false;
+  const cleanupRules = recordedRules ?? (legacyOwnershipEvidence ? LEGACY_CODEX_RULES : null);
 
   let toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
   // Preflight every installer-owned marker before preparing hooks or changing
@@ -255,12 +284,23 @@ export async function install(ctx) {
 
   // v5.12 wrote read-only Codex approvals to settings.json. Once the current
   // TOML policy is durable, remove exactly the rules that install-state says
-  // that older run introduced, then clear provenance last for retry safety.
-  if (recordedRules !== null && await exists(p.settings)) {
-    const owned = new Set(recordedRules);
+  // that older run introduced (or the narrowly evidenced seven-rule legacy
+  // set), then retain an explicit empty provenance record for installs that
+  // introduced no legacy rules. That sentinel prevents a later uninstall from
+  // mistaking freshly copied current hooks for a pre-manifest install.
+  if (cleanupRules !== null && await exists(p.settings)) {
+    const owned = new Set(cleanupRules);
     await writeJson(p.settings, removePermissions(await readJson(p.settings), (rule) => owned.has(rule)));
   }
-  await clearRecordedPermissions(statePath, 'codex');
+  if (recordedRules === null) {
+    const state = await readJson(statePath);
+    await writeJson(statePath, {
+      ...state,
+      permissions: { ...(state.permissions ?? {}), codex: [] },
+    });
+  } else {
+    await clearRecordedPermissions(statePath, 'codex');
+  }
 
   ctx.log(`Codex wired (hooks: ${p.hooksDest}, hook profile: ${profile})`);
 }
@@ -269,6 +309,10 @@ export async function uninstall(ctx) {
   const p = paths(ctx);
   // Read before the removal below erases the evidence.
   const recordedRules = await readRecordedPermissions(installStatePath(ctx.home), 'codex');
+  const legacyOwnershipEvidence = recordedRules === null
+    ? await hasLegacyCodexOwnershipEvidence(p)
+    : false;
+  const cleanupRules = recordedRules ?? (legacyOwnershipEvidence ? LEGACY_CODEX_RULES : null);
 
   // Validate and prepare every installer-owned TOML block before touching any
   // other artifact. A malformed later marker must not partially remove earlier
@@ -299,7 +343,7 @@ export async function uninstall(ctx) {
   if (await exists(p.settings)) {
     // Only rules this install recorded; see the claude-code adapter for why
     // shape-matching is unsafe here.
-    const owned = new Set(recordedRules ?? []);
+    const owned = new Set(cleanupRules ?? []);
     await writeJson(p.settings, removePermissions(await readJson(p.settings), (rule) => owned.has(rule)));
   }
 

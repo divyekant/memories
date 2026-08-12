@@ -50,8 +50,17 @@ export function insertMarkedBlockAtRoot(text, marker, body) {
   const block = `${start}\n${body}\n# END ${marker}\n`;
   const lines = text.split('\n');
   const firstSection = lines.findIndex((l) => /^\s*\[/.test(l));
-  if (firstSection === -1) return `${text}\n${block}`;
-  return [...lines.slice(0, firstSection), block, ...lines.slice(firstSection)].join('\n');
+  // A previously managed block can begin in the root and contain its own
+  // table header. Insert before that block rather than between its marker and
+  // body; otherwise a new root block would accidentally become nested inside
+  // the existing block (notably when MCP wiring is installed first).
+  const firstMarkedBlock = lines.findIndex((line) => /^# BEGIN /.test(line));
+  const insertion = firstMarkedBlock !== -1
+    && (firstSection === -1 || firstMarkedBlock < firstSection)
+    ? firstMarkedBlock
+    : firstSection;
+  if (insertion === -1) return `${text}\n${block}`;
+  return [...lines.slice(0, insertion), block, ...lines.slice(insertion)].join('\n');
 }
 
 export function removeMarkedBlock(text, marker) {

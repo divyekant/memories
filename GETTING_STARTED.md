@@ -29,7 +29,9 @@ codex mcp login memories
 
 The remote path is absolute HTTPS, skips REST health/bootstrap, and contains
 no backend API key. Do not paste credentials into chat or print them in setup
-output.
+output. Remote MCP tools are separate from lifecycle-hook transport: hooks are
+installed but remain inactive until `MEMORIES_URL` or a REST `backends.yaml`
+configuration is available to the hook process.
 
 ### Manual backend setup (repo checkout, advanced)
 
@@ -168,7 +170,7 @@ optional plugin only guides setup.
 | `memory-query.sh` | Each prompt | Search memories with transcript context |
 | `memory-extract.sh` | After response | Extract facts (AUDN pipeline) |
 | `memory-flush.sh` | Before compaction | Aggressive extraction before context loss |
-| `memory-rehydrate.sh` | After compaction | Re-inject memories using compact summary |
+| `memory-rehydrate.sh` | After compaction | Returns `suppressOutput`; Codex recall runs at `SessionStart(source=compact)` |
 | `memory-subagent-capture.sh` | Subagent stop | Capture Plan/Explore agent decisions |
 | `memory-observe.sh` | Tool use | Log MCP tool invocations |
 | `memory-guard.sh` | File write | Block direct MEMORY.md writes |

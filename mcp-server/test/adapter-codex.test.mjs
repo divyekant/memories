@@ -23,6 +23,20 @@ function rootPrefix(toml) {
   return lines.slice(0, firstSection === -1 ? lines.length : firstSection).join('\n');
 }
 
+const LEGACY_RULES = [
+  ...READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`),
+  'mcp__memories__memory_is_useful',
+];
+
+const LEGACY_HOOK_ASSETS = [
+  'memory-recall.sh',
+  'memory-query.sh',
+  'memory-extract.sh',
+  'memory-observe.sh',
+  'memory-guard.sh',
+  'memory-codex-notify.sh',
+];
+
 test('install writes hooks, hooks.json, current approvals, and config.toml blocks', async () => {
   const ctx = await freshCtx();
   await adapter.install(ctx);
@@ -51,6 +65,36 @@ test('install writes hooks, hooks.json, current approvals, and config.toml block
     rootPrefix(toml).includes('developer_instructions'),
     'developer_instructions must be in the TOML root table, before any [section]',
   );
+});
+
+test('fresh install keeps developer instructions outside the MCP marker and preserves user edits on update', async () => {
+  const ctx = await freshCtx();
+  await adapter.install(ctx);
+
+  const configPath = join(ctx.home, '.codex/config.toml');
+  const initial = await readFile(configPath, 'utf8');
+  const mcpBegin = initial.indexOf('# BEGIN Memories Codex MCP');
+  const mcpEnd = initial.indexOf('# END Memories Codex MCP');
+  const devBegin = initial.indexOf('# BEGIN Memories Codex developer instructions');
+  const devEnd = initial.indexOf('# END Memories Codex developer instructions');
+  assert.ok(devBegin >= 0 && devEnd > devBegin);
+  assert.ok(devBegin < mcpBegin, 'developer instructions must be a separate root block before MCP');
+  assert.ok(devEnd < mcpBegin || devBegin > mcpEnd, 'developer marker must not be nested in MCP marker');
+
+  const edited = initial.replace(
+    'Source prefixes: replace {project} with the current working directory basename.',
+    'USER EDIT: keep this instruction.\n\nSource prefixes: replace {project} with the current working directory basename.',
+  );
+  await writeFile(configPath, edited);
+  await adapter.install(ctx);
+
+  const updated = await readFile(configPath, 'utf8');
+  assert.match(updated, /USER EDIT: keep this instruction/);
+  const updatedMcpBegin = updated.indexOf('# BEGIN Memories Codex MCP');
+  const updatedDevBegin = updated.indexOf('# BEGIN Memories Codex developer instructions');
+  const updatedDevEnd = updated.indexOf('# END Memories Codex developer instructions');
+  assert.ok(updatedDevBegin < updatedMcpBegin);
+  assert.ok(updatedDevEnd < updatedMcpBegin || updatedDevBegin > updated.indexOf('# END Memories Codex MCP'));
 });
 
 test('install omits only the local API key when persistence is disabled', async () => {
@@ -370,6 +414,65 @@ test('install refreshes the owned MCP block and removes only recorded legacy set
   const settings = await readJson(join(ctx.home, '.codex/settings.json'));
   assert.deepEqual(settings.permissions.allow, preservedRules);
   assert.equal((await readJson(join(ctx.home, '.config/memories/install-state.json'))).permissions, undefined);
+});
+
+test('pre-manifest Codex update removes exact legacy rules when hook ownership evidence exists', async () => {
+  const ctx = await freshCtx();
+  const hooksDir = join(ctx.home, '.codex/hooks/memory');
+  await mkdir(hooksDir, { recursive: true });
+  for (const name of LEGACY_HOOK_ASSETS) await writeFile(join(hooksDir, name), '#!/bin/sh\n');
+  const preserved = ['mcp__memories__memory_delete', 'mcp__other_memory_product__memory_search'];
+  await writeJson(join(ctx.home, '.codex/settings.json'), {
+    permissions: { allow: [...LEGACY_RULES, ...preserved] },
+  });
+
+  await adapter.install(ctx);
+
+  const settings = await readJson(join(ctx.home, '.codex/settings.json'));
+  assert.deepEqual(settings.permissions.allow, preserved);
+});
+
+test('pre-manifest Codex cleanup stays untouched without hook ownership evidence', async () => {
+  const ctx = await freshCtx();
+  const preserved = ['mcp__memories__memory_delete', 'mcp__other_memory_product__memory_search'];
+  await writeJson(join(ctx.home, '.codex/settings.json'), {
+    permissions: { allow: [...LEGACY_RULES, ...preserved] },
+  });
+
+  await adapter.install(ctx);
+
+  const settings = await readJson(join(ctx.home, '.codex/settings.json'));
+  assert.deepEqual(settings.permissions.allow, [...LEGACY_RULES, ...preserved]);
+});
+
+test('pre-manifest Codex uninstall removes exact legacy rules only with ownership evidence', async () => {
+  const ctx = await freshCtx();
+  const hooksDir = join(ctx.home, '.codex/hooks/memory');
+  await mkdir(hooksDir, { recursive: true });
+  for (const name of LEGACY_HOOK_ASSETS) await writeFile(join(hooksDir, name), '#!/bin/sh\n');
+  const preserved = ['mcp__memories__memory_delete', 'mcp__other_memory_product__memory_search'];
+  await writeJson(join(ctx.home, '.codex/settings.json'), {
+    permissions: { allow: [...LEGACY_RULES, ...preserved] },
+  });
+
+  await adapter.uninstall(ctx);
+
+  const settings = await readJson(join(ctx.home, '.codex/settings.json'));
+  assert.deepEqual(settings.permissions.allow, preserved);
+});
+
+test('pre-manifest Codex uninstall leaves legacy-looking rules untouched without ownership evidence', async () => {
+  const ctx = await freshCtx();
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  const preserved = ['mcp__memories__memory_delete', 'mcp__other_memory_product__memory_search'];
+  await writeJson(join(ctx.home, '.codex/settings.json'), {
+    permissions: { allow: [...LEGACY_RULES, ...preserved] },
+  });
+
+  await adapter.uninstall(ctx);
+
+  const settings = await readJson(join(ctx.home, '.codex/settings.json'));
+  assert.deepEqual(settings.permissions.allow, [...LEGACY_RULES, ...preserved]);
 });
 
 test('install fails closed on malformed owned blocks before any mutation', async () => {
