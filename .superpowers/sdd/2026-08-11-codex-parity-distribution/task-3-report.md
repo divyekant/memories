@@ -156,3 +156,37 @@ GREEN verification:
 
 Follow-up commit: this report is included in the commit carrying
 `fix(codex): validate config before install mutations`.
+
+## Follow-up safety correction: preflight all owned markers
+
+Codex install now validates the notify, MCP, and developer-instructions marker
+pairs before assigning `ctx.codexHookProfile`, preparing hook state, logging,
+or performing any filesystem mutation. `insertMarkedBlockAtRoot` uses the same
+strict validator, so a malformed developer marker cannot be bypassed by its
+idempotence path. The adapter matrix covers missing-end, reversed, and duplicate
+markers for each owned block and snapshots context, logs, hooks, config,
+settings, and install-state on failure.
+
+The README permission note now accurately says that repo `.claude/settings.json`
+alone does not pre-approve tools; only npm/deprecated installer-generated user
+settings can add the six read-only approvals.
+
+RED command:
+
+```text
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+RED result: the notify/developer install cases bypassed strict validation and
+the developer insert helper accepted an incomplete marker (`30 passed, 2
+failed`).
+
+GREEN verification:
+
+- TOML and Codex adapter tests: **32 passed, 0 failed**.
+- Affected adapter, CLI, hooks, and TOML suite: **76 passed, 0 failed**.
+- Full `node --test` from `mcp-server/`: **228 passed, 0 failed**.
+- Relevant installer tests and `git diff --check`: passed.
+
+Follow-up commit: this report is included in the commit carrying
+`fix(codex): preflight all owned config markers`.

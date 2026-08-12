@@ -114,6 +114,16 @@ test('insertMarkedBlockAtRoot is idempotent when the marker is already present',
   assert.equal(twice, once);
 });
 
+test('insertMarkedBlockAtRoot rejects malformed ownership markers', () => {
+  assert.throws(
+    () => insertMarkedBlockAtRoot('# BEGIN Dev Instructions\nforeign = true\n', 'Dev Instructions', 'developer_instructions = "x"'),
+    (error) => {
+      assert.equal(error.code, 'ERR_TOML_MARKED_BLOCK');
+      return true;
+    },
+  );
+});
+
 test('hasTomlSection / hasTomlKey', () => {
   assert.ok(hasTomlSection('  [mcp_servers.memories]  \n', 'mcp_servers.memories'));
   assert.ok(hasTomlKey('developer_instructions = """x"""\n', 'developer_instructions'));

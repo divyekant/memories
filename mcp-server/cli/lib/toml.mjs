@@ -13,7 +13,9 @@ function markedBlockError(marker, reason) {
   return error;
 }
 
-function validateMarkedBlock(text, marker) {
+// Validate a marker pair without changing the input. A marker-free text
+// returns null; any present pair must have exactly one begin/end in order.
+export function validateMarkedBlock(text, marker) {
   const start = `# BEGIN ${marker}`;
   const end = `# END ${marker}`;
   const lines = text.split('\n');
@@ -42,8 +44,9 @@ export function upsertMarkedBlock(text, marker, body) {
 }
 
 export function insertMarkedBlockAtRoot(text, marker, body) {
+  const existingBlock = validateMarkedBlock(text, marker);
+  if (existingBlock) return text;
   const start = `# BEGIN ${marker}`;
-  if (text.split('\n').some((l) => l === start)) return text;
   const block = `${start}\n${body}\n# END ${marker}\n`;
   const lines = text.split('\n');
   const firstSection = lines.findIndex((l) => /^\s*\[/.test(l));

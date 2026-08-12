@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { readJson, writeJson, removePermissions, mergeHookSettings } from '../lib/json-file.mjs';
 import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOL_NAMES } from '../lib/hooks.mjs';
 import { installStatePath, readRecordedPermissions, clearRecordedPermissions } from '../lib/install-state.mjs';
-import { upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlockStrict, hasTomlSection, hasTomlKey, tomlEscape } from '../lib/toml.mjs';
+import { upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlockStrict, validateMarkedBlock, hasTomlSection, hasTomlKey, tomlEscape } from '../lib/toml.mjs';
 
 const MARKER_NOTIFY = 'Memories Codex notify';
 const MARKER_MCP = 'Memories Codex MCP';
@@ -142,6 +142,15 @@ export async function install(ctx) {
   const statePath = installStatePath(ctx.home);
   const recordedRules = await readRecordedPermissions(statePath, 'codex');
 
+  let toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
+  // Preflight every installer-owned marker before preparing hooks or changing
+  // observable install state. Developer insertion is strict as well, but this
+  // explicit pass ensures no malformed notify/MCP/developer marker can be
+  // bypassed by an idempotence check below.
+  validateMarkedBlock(toml, MARKER_NOTIFY);
+  const mcpMarker = validateMarkedBlock(toml, MARKER_MCP);
+  validateMarkedBlock(toml, MARKER_DEV);
+
   const versionText = await detectCodexVersion(ctx);
   const profile = supportsExpandedHooks(versionText) ? 'expanded' : 'legacy';
   const manifest = profile === 'expanded' ? 'hooks.json' : 'hooks.legacy.json';
@@ -151,14 +160,10 @@ export async function install(ctx) {
   // lets a downgrade from expanded to legacy remove stale lifecycle entries
   // while mergeHookSettings still preserves every foreign hook entry.
   const existingHooks = removeManagedHooks(await readJson(p.hooksJson), p.hooksDest);
-  let toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
-  const hasMcpMarker = toml.split('\n').some((line) =>
-    line === `# BEGIN ${MARKER_MCP}` || line === `# END ${MARKER_MCP}`,
-  );
   // An existing MCP section without any ownership marker belongs to the user.
   // Refresh only a marked block, or create one when no Memories server exists.
   // upsertMarkedBlock fails closed when the marker pair is incomplete/ambiguous.
-  if (hasMcpMarker || !hasTomlSection(toml, 'mcp_servers.memories')) {
+  if (mcpMarker || !hasTomlSection(toml, 'mcp_servers.memories')) {
     toml = upsertMarkedBlock(toml, MARKER_MCP, mcpBlock(ctx));
   }
 

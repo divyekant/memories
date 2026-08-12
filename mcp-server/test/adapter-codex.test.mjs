@@ -241,16 +241,17 @@ test('install refreshes the owned MCP block and removes only recorded legacy set
   assert.equal((await readJson(join(ctx.home, '.config/memories/install-state.json'))).permissions, undefined);
 });
 
-test('install fails closed on malformed owned MCP blocks before any mutation', async () => {
+test('install fails closed on malformed owned blocks before any mutation', async () => {
   const malformedBlocks = [
-    appendMarkedBlock(
-      'model = "gpt-5.5"\n',
-      'Memories Codex MCP',
-      '[mcp_servers.memories]\ncommand = "npx"\nforeign_after = 1',
-    ).replace('\n# END Memories Codex MCP\n', '\n'),
-    '# END Memories Codex MCP\nforeign_between = 2\n# BEGIN Memories Codex MCP\n[mcp_servers.memories]\ncommand = "npx"\nforeign_after = 3\n',
-    '# BEGIN Memories Codex MCP\none = true\n# END Memories Codex MCP\nforeign_between = 4\n# BEGIN Memories Codex MCP\ntwo = true\n# END Memories Codex MCP\nforeign_after = 5\n',
-  ];
+    ['Memories Codex notify', 'notify = true'],
+    ['Memories Codex MCP', '[mcp_servers.memories]\ncommand = "npx"'],
+    ['Memories Codex developer instructions', 'dev = true'],
+  ].flatMap(([marker, body]) => [
+    appendMarkedBlock('model = "gpt-5.5"\n', marker, `${body}\nforeign_after = 1`)
+      .replace(`\n# END ${marker}\n`, '\n'),
+    `# END ${marker}\nforeign_between = 2\n# BEGIN ${marker}\n${body}\nforeign_after = 3\n`,
+    `# BEGIN ${marker}\none = true\n# END ${marker}\nforeign_between = 4\n# BEGIN ${marker}\ntwo = true\n# END ${marker}\nforeign_after = 5\n`,
+  ]);
 
   for (const malformed of malformedBlocks) {
     const ctx = await freshCtx();
@@ -281,6 +282,8 @@ test('install fails closed on malformed owned MCP blocks before any mutation', a
     const beforeHooksJson = await readFile(hooksJsonPath, 'utf8');
     const beforeHookNames = await readdir(hooksDir);
     const beforeHook = await readFile(join(hooksDir, 'foreign-hook.sh'), 'utf8');
+    const logs = [];
+    ctx.log = (message) => logs.push(message);
     await assert.rejects(() => adapter.install(ctx), /invalid marked block/i);
 
     assert.equal(await readFile(configPath, 'utf8'), beforeConfig);
@@ -289,6 +292,8 @@ test('install fails closed on malformed owned MCP blocks before any mutation', a
     assert.equal(await readFile(hooksJsonPath, 'utf8'), beforeHooksJson);
     assert.deepEqual(await readdir(hooksDir), beforeHookNames);
     assert.equal(await readFile(join(hooksDir, 'foreign-hook.sh'), 'utf8'), beforeHook);
+    assert.equal(ctx.codexHookProfile, undefined);
+    assert.deepEqual(logs, []);
   }
 });
 
