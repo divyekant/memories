@@ -2827,6 +2827,7 @@ class MemoryEngine:
         similarities = np.matmul(all_embeddings, all_embeddings.T)
         search_k = min(5, len(self.metadata))
         id_list = [m["id"] for m in self.metadata]
+        source_list = [str(m.get("source", "")) for m in self.metadata]
 
         duplicates: List[Dict[str, Any]] = []
         seen = set()
@@ -2834,7 +2835,11 @@ class MemoryEngine:
         for i in range(len(self.metadata)):
             row = similarities[i]
             nearest = np.argsort(row)[::-1]
-            neighbors = [j for j in nearest if j != i][:search_k]
+            neighbors = [
+                j
+                for j in nearest
+                if j != i and source_list[int(j)] == source_list[i]
+            ][:search_k]
             for j in neighbors:
                 sim = float(row[j])
                 id_a, id_b = id_list[i], id_list[int(j)]
@@ -2845,6 +2850,7 @@ class MemoryEngine:
                         {
                             "id_a": pair_key[0],
                             "id_b": pair_key[1],
+                            "source": source_list[i],
                             "similarity": round(sim, 4),
                             "text_a": self._get_meta_by_id(pair_key[0])["text"][:120],
                             "text_b": self._get_meta_by_id(pair_key[1])["text"][:120],
@@ -2859,11 +2865,10 @@ class MemoryEngine:
         if not pairs:
             return {"duplicate_pairs": 0, "removed": 0, "dry_run": dry_run}
 
-        ids_to_remove = set()
-        for pair in pairs:
-            ids_to_remove.add(max(pair["id_a"], pair["id_b"]))
-
         if dry_run:
+            ids_to_remove = {
+                max(pair["id_a"], pair["id_b"]) for pair in pairs
+            }
             return {
                 "duplicate_pairs": len(pairs),
                 "would_remove": len(ids_to_remove),
@@ -2873,6 +2878,27 @@ class MemoryEngine:
 
         with self._entity_locks.acquire_many(["__all__"]):
             with self._write_lock:
+                # The scan ran unlocked. Recheck the namespace boundary at
+                # the mutation point so a concurrent source move cannot turn
+                # a same-source candidate into a cross-source deletion.
+                pairs = [
+                    pair
+                    for pair in pairs
+                    if self._id_exists(pair["id_a"])
+                    and self._id_exists(pair["id_b"])
+                    and self._get_meta_by_id(pair["id_a"]).get("source", "")
+                    == self._get_meta_by_id(pair["id_b"]).get("source", "")
+                ]
+                ids_to_remove = {
+                    max(pair["id_a"], pair["id_b"]) for pair in pairs
+                }
+                if not ids_to_remove:
+                    return {
+                        "duplicate_pairs": 0,
+                        "removed": 0,
+                        "remaining": len(self.metadata),
+                        "dry_run": False,
+                    }
                 self._backup(prefix="pre_dedup")
 
                 self._delete_ids_targeted(ids_to_remove)

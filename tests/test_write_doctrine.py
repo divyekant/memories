@@ -242,3 +242,32 @@ class TestAddWithDoctrine:
         # excluded from search; against live T79 it sits in the supersede band.
         assert third["action"] == "superseded"
         assert third["superseded"] == second["id"]
+
+
+class TestMaintenanceDeduplicationIsolation:
+    def test_deduplicate_pairs_and_deletes_only_within_exact_source(self, engine):
+        trusted = TrustedAuthorship.principal("alice")
+        project_id, private_id, private_duplicate_id = engine.add_memories(
+            [T78, T78, T78],
+            [
+                "project/acme/knowledge",
+                "person/alice/acme/knowledge",
+                "person/alice/acme/knowledge",
+            ],
+            deduplicate=False,
+            trusted_authorship=trusted,
+        )
+
+        dry_run = engine.deduplicate(threshold=0.99, dry_run=True)
+        assert dry_run["duplicate_pairs"] == 1
+        assert {
+            dry_run["pairs"][0]["id_a"],
+            dry_run["pairs"][0]["id_b"],
+        } == {private_id, private_duplicate_id}
+
+        result = engine.deduplicate(threshold=0.99, dry_run=False)
+        assert result["duplicate_pairs"] == 1
+        assert result["removed"] == 1
+        assert engine._id_exists(project_id)
+        assert engine._id_exists(private_id)
+        assert not engine._id_exists(private_duplicate_id)
