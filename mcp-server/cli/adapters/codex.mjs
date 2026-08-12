@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { readJson, writeJson, removePermissions, mergeHookSettings } from '../lib/json-file.mjs';
 import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOL_NAMES } from '../lib/hooks.mjs';
 import { installStatePath, readRecordedPermissions, clearRecordedPermissions } from '../lib/install-state.mjs';
-import { upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlockStrict, validateMarkedBlock, hasTomlSection, hasTomlKey, tomlEscape } from '../lib/toml.mjs';
+import { upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlockStrict, validateMarkedBlock, hasTomlSection, hasTomlKey, tomlEscape, maskTomlMultilineStrings } from '../lib/toml.mjs';
 
 const MARKER_NOTIFY = 'Memories Codex notify';
 const MARKER_MCP = 'Memories Codex MCP';
@@ -30,48 +30,6 @@ Source prefixes: replace {project} with the current working directory basename. 
 """`;
 
 const exists = (p) => access(p).then(() => true, () => false);
-
-// Mask TOML multiline string bodies before the deliberately narrow status
-// reader below examines table headers and assignments. This is not intended
-// to validate TOML; on malformed or exotic input it prefers masking too much
-// (a false-negative) over treating prose inside a string as configuration.
-function maskTomlMultilineStrings(text) {
-  const chars = [...String(text ?? '')];
-  const original = [...chars];
-  let mode = null;
-
-  const isEscaped = (index) => {
-    let slashes = 0;
-    for (let i = index - 1; i >= 0 && original[i] === '\\'; i -= 1) slashes += 1;
-    return slashes % 2 === 1;
-  };
-
-  for (let i = 0; i < chars.length; i += 1) {
-    if (mode === null) {
-      if ((chars[i] === '"' || chars[i] === "'") && chars[i + 1] === chars[i] && chars[i + 2] === chars[i]) {
-        mode = chars[i];
-        chars[i] = chars[i + 1] = chars[i + 2] = ' ';
-        i += 2;
-      }
-      continue;
-    }
-
-    if (chars[i] === '\n' || chars[i] === '\r') continue;
-    if (
-      chars[i] === mode
-      && chars[i + 1] === mode
-      && chars[i + 2] === mode
-      && (mode !== '"' || !isEscaped(i))
-    ) {
-      chars[i] = chars[i + 1] = chars[i + 2] = ' ';
-      i += 2;
-      mode = null;
-      continue;
-    }
-    chars[i] = ' ';
-  }
-  return chars.join('');
-}
 
 // Read only the exact root tables used by Codex's optional native memory
 // settings. This deliberately is not a general TOML parser: status must not

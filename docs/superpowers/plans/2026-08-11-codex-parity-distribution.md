@@ -1066,3 +1066,82 @@ git add mcp-server/cli/adapters/codex.mjs mcp-server/test/adapter-codex.test.mjs
 git commit -m "fix(codex): preserve legacy cleanup across retries"
 git push origin codex/codex-parity-distribution
 ```
+
+### Task 15: Ignore TOML Multiline Strings During Root Insertion
+
+**Files:**
+- Modify: `mcp-server/cli/lib/toml.mjs`
+- Modify: `mcp-server/cli/adapters/codex.mjs`
+- Modify: `mcp-server/test/toml.test.mjs`
+- Modify: `mcp-server/test/adapter-codex.test.mjs` only if an integration regression materially helps
+- Modify: this plan
+- Create (forced-added): `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-15-report.md`
+
+**Failure:**
+
+`insertMarkedBlockAtRoot` scans raw TOML lines, so a root-level multiline
+string containing a line beginning `# BEGIN ...` can make insertion land inside
+the string. Its raw first-section scan also treats a line beginning `[` inside a
+multiline string as a real table. The resulting config corrupts the string and
+can place the owned developer block after or inside prose instead of before the
+first actual table.
+
+**Step 1: Add failing insertion regressions and capture RED**
+
+Use TDD before production edits. Add behavioral TOML regressions for both
+triple-double-quoted and triple-single-quoted root strings. Include prose with
+an ownership-looking `# BEGIN whatever` line and a leading `[` line before an
+actual `[profiles.a]` table. Assert insertion is outside the string, before the
+actual first table, and preserves the original unmanaged bytes. Keep malformed
+actual ownership-marker cases fail-closed; add an adapter install parse/output
+regression only if the direct helper tests do not exercise the integration
+boundary sufficiently.
+
+Run before production edits:
+
+```bash
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+Expected: RED on `aab9803` because raw first-section/marked-block scans are
+steered by marker/table-looking lines inside multiline strings.
+
+**Step 2: Share the structural TOML mask and fix root insertion**
+
+Lift/export the existing line-preserving `maskTomlMultilineStrings` helper from
+`codex.mjs` into `toml.mjs`, import it back into `codex.mjs` for
+`explicitRootBoolean`, and use masked lines for both `firstSection` and
+`firstMarkedBlock` scans in `insertMarkedBlockAtRoot` while slicing/inserting
+into the original lines. Preserve current insertion before an actual earlier
+managed/foreign marked block, idempotence, and strict ownership validation.
+Avoid unrelated refactors.
+
+**Step 3: Verify focused, package, and repository contracts**
+
+Run:
+
+```bash
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+cd mcp-server && npm test
+cd ..
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+git diff --check
+git status --short
+```
+
+Run hook syntax, project-hook rendering, or package dry-run checks only if this
+change affects those artifacts; otherwise record that they were not needed.
+Inspect the final diff for preserved bytes, strict malformed-marker behavior,
+and absence of unrelated edits.
+
+**Exact staging and commit:**
+
+```bash
+git add -f docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
+  .superpowers/sdd/2026-08-11-codex-parity-distribution/task-15-report.md
+git add mcp-server/cli/lib/toml.mjs mcp-server/cli/adapters/codex.mjs \
+  mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+git commit -m "fix(codex): ignore TOML strings during root insertion"
+git push origin codex/codex-parity-distribution
+```

@@ -101,6 +101,64 @@ test('insertMarkedBlockAtRoot inserts before the first section', () => {
   assert.ok(out.indexOf('developer_instructions') < out.indexOf('[mcp_servers.memories]'));
 });
 
+test('insertMarkedBlockAtRoot ignores marker and section-looking lines in triple-quoted strings', () => {
+  const original = [
+    'description = """',
+    'prose before marker',
+    '# BEGIN foreign-looking',
+    '[not_a_real_table]',
+    'prose after marker',
+    '"""',
+    '',
+    '[profiles.a]',
+    'name = "x"',
+    '',
+  ].join('\n');
+  const marker = '# BEGIN Owned\nowned = true\n# END Owned\n';
+  const out = insertMarkedBlockAtRoot(original, 'Owned', 'owned = true');
+  const actualFirstTable = out.indexOf('[profiles.a]');
+  const inserted = out.indexOf(marker);
+  assert.ok(inserted >= 0);
+  assert.ok(inserted < actualFirstTable);
+  assert.ok(inserted > out.lastIndexOf('"""') + 3, 'insertion must be after the closing delimiter');
+  const firstTableLine = original.split('\n').findIndex((line) => line === '[profiles.a]');
+  const expected = [
+    ...original.split('\n').slice(0, firstTableLine),
+    marker,
+    ...original.split('\n').slice(firstTableLine),
+  ].join('\n');
+  assert.equal(out, expected, 'unmanaged bytes must remain unchanged around the insertion');
+});
+
+test('insertMarkedBlockAtRoot ignores marker and section-looking lines in triple-literal strings', () => {
+  const original = [
+    "description = '''",
+    'prose before marker',
+    '# BEGIN foreign-looking',
+    '[not_a_real_table]',
+    'prose after marker',
+    "'''",
+    '',
+    '[profiles.a]',
+    'name = "x"',
+    '',
+  ].join('\n');
+  const marker = '# BEGIN Owned\nowned = true\n# END Owned\n';
+  const out = insertMarkedBlockAtRoot(original, 'Owned', 'owned = true');
+  const actualFirstTable = out.indexOf('[profiles.a]');
+  const inserted = out.indexOf(marker);
+  assert.ok(inserted >= 0);
+  assert.ok(inserted < actualFirstTable);
+  assert.ok(inserted > out.lastIndexOf("'''") + 3, 'insertion must be after the closing delimiter');
+  const firstTableLine = original.split('\n').findIndex((line) => line === '[profiles.a]');
+  const expected = [
+    ...original.split('\n').slice(0, firstTableLine),
+    marker,
+    ...original.split('\n').slice(firstTableLine),
+  ].join('\n');
+  assert.equal(out, expected, 'unmanaged bytes must remain unchanged around the insertion');
+});
+
 test('insertMarkedBlockAtRoot appends when there are no sections', () => {
   const out = insertMarkedBlockAtRoot('a = 1\n', 'Dev Instructions', 'developer_instructions = "x"');
   assert.ok(out.includes('a = 1'));

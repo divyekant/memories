@@ -1,5 +1,47 @@
 export const tomlEscape = (v) => String(v).replaceAll('\\', '\\\\').replaceAll('"', '\\"');
 
+// Mask TOML multiline string bodies before the deliberately narrow structural
+// scans below examine table headers and ownership markers. This is not intended
+// to validate TOML; on malformed or exotic input it prefers masking too much
+// (a false-negative) over treating prose inside a string as configuration.
+export function maskTomlMultilineStrings(text) {
+  const chars = [...String(text ?? '')];
+  const original = [...chars];
+  let mode = null;
+
+  const isEscaped = (index) => {
+    let slashes = 0;
+    for (let i = index - 1; i >= 0 && original[i] === '\\'; i -= 1) slashes += 1;
+    return slashes % 2 === 1;
+  };
+
+  for (let i = 0; i < chars.length; i += 1) {
+    if (mode === null) {
+      if ((chars[i] === '"' || chars[i] === "'") && chars[i + 1] === chars[i] && chars[i + 2] === chars[i]) {
+        mode = chars[i];
+        chars[i] = chars[i + 1] = chars[i + 2] = ' ';
+        i += 2;
+      }
+      continue;
+    }
+
+    if (chars[i] === '\n' || chars[i] === '\r') continue;
+    if (
+      chars[i] === mode
+      && chars[i + 1] === mode
+      && chars[i + 2] === mode
+      && (mode !== '"' || !isEscaped(i))
+    ) {
+      chars[i] = chars[i + 1] = chars[i + 2] = ' ';
+      i += 2;
+      mode = null;
+      continue;
+    }
+    chars[i] = ' ';
+  }
+  return chars.join('');
+}
+
 export function appendMarkedBlock(text, marker, body) {
   const start = `# BEGIN ${marker}`;
   if (text.split('\n').some((l) => l === start)) return text;
@@ -49,12 +91,13 @@ export function insertMarkedBlockAtRoot(text, marker, body) {
   const start = `# BEGIN ${marker}`;
   const block = `${start}\n${body}\n# END ${marker}\n`;
   const lines = text.split('\n');
-  const firstSection = lines.findIndex((l) => /^\s*\[/.test(l));
+  const maskedLines = maskTomlMultilineStrings(text).split('\n');
+  const firstSection = maskedLines.findIndex((l) => /^\s*\[/.test(l));
   // A previously managed block can begin in the root and contain its own
   // table header. Insert before that block rather than between its marker and
   // body; otherwise a new root block would accidentally become nested inside
   // the existing block (notably when MCP wiring is installed first).
-  const firstMarkedBlock = lines.findIndex((line) => /^# BEGIN /.test(line));
+  const firstMarkedBlock = maskedLines.findIndex((line) => /^# BEGIN /.test(line));
   const insertion = firstMarkedBlock !== -1
     && (firstSection === -1 || firstMarkedBlock < firstSection)
     ? firstMarkedBlock
