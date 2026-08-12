@@ -31,7 +31,99 @@ function memoryId(memory) {
 }
 
 function memoryDate(memory) {
-  return memory.document_at || memory.date || memory.created_at || "";
+  return memory.document_at || memory.date || memory.updated_at || memory.created_at || memory.timestamp || "";
+}
+
+function evidenceScore(memory) {
+  const value = memory?.similarity ?? memory?.rrf_score ?? 0;
+  const score = Number(value);
+  return Number.isFinite(score) ? score : 0;
+}
+
+function evidenceCompact(memory, relation) {
+  return {
+    id: memory?.id,
+    source: memory?.source || "",
+    date: memoryDate(memory || {}),
+    text: memory?.text || "",
+    relation,
+    score: evidenceScore(memory),
+    is_latest: Boolean(memory?.is_latest),
+    archived: Boolean(memory?.archived),
+  };
+}
+
+function evidenceFollowUps(query) {
+  const clean = String(query || "").trim().replace(/\s+/g, " ");
+  if (!clean) return [];
+  const candidates = [clean];
+  if (!/^latest\s/i.test(clean)) candidates.push(`latest ${clean}`);
+  if (!/^current\s/i.test(clean)) candidates.push(`current ${clean}`);
+  if (!/^what changed\b/i.test(clean)) candidates.push(`what changed about ${clean}`);
+  return [...new Map(candidates.map((item) => [item.toLowerCase(), item])).values()];
+}
+
+function buildEvidencePacket(query, results) {
+  if (!(results || []).length) {
+    return {
+      current_answer: null,
+      supporting_memories: [],
+      older_evidence: [],
+      older_conflicting_memories: [],
+      source_date_trail: [],
+      confidence: { level: "missing", reasons: ["No memories were retrieved for this query."] },
+      follow_up_queries: evidenceFollowUps(query),
+    };
+  }
+  const preferRecency = /\b(latest|current|now|recent|changed|newest|today|yesterday)\b/i.test(query);
+  const rank = (memory) => {
+    const time = chronologicalValue(memory);
+    const dated = Number.isFinite(time) ? 1 : 0;
+    return preferRecency
+      ? [dated, time, evidenceScore(memory), memory?.is_latest ? 1 : 0]
+      : [evidenceScore(memory), dated, time, memory?.is_latest ? 1 : 0];
+  };
+  const ranked = [...results].sort((a, b) => {
+    const left = rank(a);
+    const right = rank(b);
+    for (let i = 0; i < left.length; i += 1) {
+      if (left[i] !== right[i]) return right[i] - left[i];
+    }
+    return 0;
+  });
+  const current = ranked[0];
+  const currentTime = chronologicalValue(current);
+  const supporting = [];
+  const older = [];
+  for (const memory of ranked.slice(1)) {
+    const time = chronologicalValue(memory);
+    if (Number.isFinite(currentTime) && Number.isFinite(time) && time < currentTime) {
+      older.push(evidenceCompact(memory, "older"));
+    } else if (memory.archived) {
+      older.push(evidenceCompact(memory, "archived"));
+    } else if (!Number.isFinite(currentTime) && Number.isFinite(time)) {
+      older.push(evidenceCompact(memory, "dated_unranked"));
+    } else {
+      supporting.push(evidenceCompact(memory, "supporting"));
+    }
+  }
+  const reasons = [
+    memoryDate(current) ? "Current candidate has a source date." : "Current candidate has no source date.",
+  ];
+  if (older.length) reasons.push("Packet includes older evidence or separately dated evidence that may be superseded.");
+  if (current.is_latest) reasons.push("Current candidate is explicitly marked is_latest.");
+  const level = !memoryDate(current) ? "low" : older.length ? "medium" : "high";
+  const currentCompact = evidenceCompact(current, "current");
+  const trail = [currentCompact, ...supporting, ...older];
+  return {
+    current_answer: currentCompact,
+    supporting_memories: supporting.slice(0, 5),
+    older_evidence: older.slice(0, 5),
+    older_conflicting_memories: older.slice(0, 5),
+    source_date_trail: trail.slice(0, 10),
+    confidence: { level, reasons },
+    follow_up_queries: evidenceFollowUps(query),
+  };
 }
 
 // Render a legible relevance tag for one search result.
@@ -850,20 +942,7 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       let data;
       if (projectContext.active && source_prefix === undefined) {
         const scoped = await projectSearchRequest(body, projectContext);
-        const ordered = [...(scoped.results || [])].sort(
-          (a, b) => chronologicalValue(b) - chronologicalValue(a)
-        );
-        data = { evidence_packet: {
-          current_answer: ordered[0] || null,
-          older_evidence: ordered.slice(1, 6),
-          source_date_trail: ordered.map((item) => ({
-            relation: item === ordered[0] ? "current" : "older",
-            source: item.source,
-            date: memoryDate(item),
-          })),
-          confidence: { level: ordered.length ? "scoped" : "unknown", reasons: [] },
-          follow_up_queries: [],
-        } };
+        data = { evidence_packet: buildEvidencePacket(query, scoped.results || []) };
       } else {
         data = await memoriesRequest("/search/evidence", {
           method: "POST",

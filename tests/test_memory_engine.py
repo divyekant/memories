@@ -121,18 +121,13 @@ class TestAddAndSearch:
         assert meta["source_memory_ids"] == [11, 12]
         assert meta["origin_client"] == "hook"
 
-    def test_legacy_source_keeps_legacy_write_behavior(self, engine):
-        ids = engine.add_memories(
-            texts=["legacy-looking fact"],
-            sources=["project/fplguru/custom"],
-            metadata_list=[{"origin_client": "  unknown-client "}],
-        )
-
-        meta = engine.metadata[ids[0]]
-        assert meta["source"] == "project/fplguru/custom"
-        assert meta["origin_client"] == "other"
-        assert "author" not in meta
-        assert "contributors" not in meta
+    def test_malformed_reserved_project_source_is_rejected(self, engine):
+        with pytest.raises(ProjectMemoryPolicyError, match="project sources must be"):
+            engine.add_memories(
+                texts=["legacy-looking fact"],
+                sources=["project/fplguru/custom"],
+                metadata_list=[{"origin_client": "  unknown-client "}],
+            )
 
 
 class TestHybridSearch:

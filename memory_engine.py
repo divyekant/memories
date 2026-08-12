@@ -1447,7 +1447,7 @@ class MemoryEngine:
                 raise ProjectMemoryPolicyError(
                     "project-namespace memories require trusted principal or system authorship"
                 )
-            if target_is_project and replaces_authored_content:
+            if source is not None or (target_is_project and replaces_authored_content):
                 effective_text = text if text is not None else current.get("text", "")
                 _validate_project_write(effective_text, target_source, trusted_authorship)
         updated_fields: List[str] = []
@@ -1490,7 +1490,10 @@ class MemoryEngine:
                         raise ProjectMemoryPolicyError(
                             "project-namespace memories require trusted principal or system authorship"
                         )
-                    if is_project_source(locked_target_source) and replaces_authored_content:
+                    if source is not None or (
+                        is_project_source(locked_target_source)
+                        and replaces_authored_content
+                    ):
                         locked_text = text if text is not None else meta.get("text", "")
                         _validate_project_write(
                             locked_text, locked_target_source, trusted_authorship

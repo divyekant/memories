@@ -218,6 +218,10 @@ def validate_project_write(
     trusted_authorship: Optional[TrustedAuthorship],
 ) -> None:
     """Validate an exact project write before any mutation or storage work."""
+    if isinstance(source, str) and source.startswith("project/") and not is_project_source(source):
+        raise ProjectMemoryPolicyError(
+            "project sources must be project/<project>/<decisions|knowledge|state|operations>"
+        )
     if not is_project_source(source):
         return
     if trusted_authorship is None:

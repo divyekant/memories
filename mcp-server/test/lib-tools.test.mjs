@@ -211,11 +211,11 @@ test('active memory_search routes project and private namespaces before authoriz
   const calls = [];
   const responses = {
     'project/shared-demo': [
-      { id: 1, source: 'project/shared-demo/knowledge', text: 'shared fact', author: 'alice', origin_client: 'codex', similarity: 0.2 },
+      { id: 1, source: 'project/shared-demo/knowledge', text: 'newer weak fact', author: 'alice', origin_client: 'codex', similarity: 0.2, document_at: '2026-08-12T00:00:00Z' },
       { id: 91, source: 'project/shared-demo-extra/knowledge', text: 'sibling project leak', similarity: 0.99 },
     ],
     'person/alice/shared-demo': [
-      { id: 2, source: 'person/alice/shared-demo/knowledge', text: 'private fact', similarity: 0.9 },
+      { id: 2, source: 'person/alice/shared-demo/knowledge', text: 'older strong fact', similarity: 0.9, document_at: '2026-08-10T00:00:00Z' },
       { id: 92, source: 'person/alice/shared-demo-extra/knowledge', text: 'sibling private leak', similarity: 0.98 },
     ],
     'codex/shared-demo': [
@@ -278,7 +278,7 @@ test('active memory_search routes project and private namespaces before authoriz
       name: 'memory_timeline',
       arguments: { query: 'shared timeline', k: 3 },
     });
-    await client.callTool({
+    const evidenceResult = await client.callTool({
       name: 'memory_evidence',
       arguments: { query: 'shared evidence', k: 3 },
     });
@@ -286,6 +286,9 @@ test('active memory_search routes project and private namespaces before authoriz
     assert.ok(recallCalls.length > 0);
     assert.equal(calls.slice(beforeRecallTools).some((call) => call.url.endsWith('/search/evidence')), false);
     assert.equal(recallCalls.some((call) => !searchPrefixes.includes(call.body.source_prefix)), false);
+    const evidenceText = evidenceResult.content.map((item) => item.text || '').join('\n');
+    assert.match(evidenceText, /Current candidate:\n\[2\].*older strong fact/s);
+    assert.match(evidenceText, /\[supporting\] project\/shared-demo\/knowledge 2026-08-12/);
   } finally {
     await client.close();
     await server.close();

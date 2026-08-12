@@ -117,7 +117,7 @@ def test_project_write_gate_rejects_detected_credentials_before_storage():
         )
 
 
-def test_project_write_gate_keeps_person_and_legacy_sources_unchanged():
+def test_project_write_gate_keeps_person_and_nonreserved_legacy_sources_unchanged():
     from memory_engine import _validate_project_write
 
     _validate_project_write(
@@ -125,11 +125,21 @@ def test_project_write_gate_keeps_person_and_legacy_sources_unchanged():
         "person/alice/fplguru/knowledge",
         None,
     )
-    _validate_project_write(
-        "Production token is ghp_abcdefghijklmnopqrstuvwxyz123456",
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
         "project/fplguru/custom",
-        None,
-    )
+        "project/fplguru/knowledge/extra",
+        "project/FPLGuru/knowledge",
+    ],
+)
+def test_project_write_gate_rejects_malformed_reserved_sources(source):
+    from memory_engine import _validate_project_write
+
+    with pytest.raises(ProjectMemoryPolicyError, match="project sources must be"):
+        _validate_project_write("shared fact", source, None)
 
 
 def test_metadata_patch_cannot_spoof_or_replace_existing_author(engine):
@@ -262,6 +272,20 @@ def test_source_only_move_out_of_project_restamps_current_editor(engine):
     assert meta["origin_client"] == "codex"
     assert "contributors" not in meta
     assert "source_memory_ids" not in meta
+
+
+def test_source_only_move_rejects_malformed_reserved_project_target(engine):
+    memory_id = engine.add_memories(["legacy fact"], ["legacy/source"])[0]
+
+    with pytest.raises(ProjectMemoryPolicyError, match="project sources must be"):
+        engine.update_memory(
+            memory_id,
+            source="project/fplguru/custom",
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            apply_trusted_authorship=True,
+        )
+
+    assert engine._get_meta_by_id(memory_id)["source"] == "legacy/source"
 
 
 def test_upsert_replacement_applies_current_trusted_authorship(engine):
