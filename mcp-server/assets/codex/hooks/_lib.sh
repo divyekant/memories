@@ -543,18 +543,6 @@ _memories_project_context() {
     '{active:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,backend:$backend}'
 }
 
-_memories_project_active() {
-  [ "$( _memories_project_context "${1:-${CWD:-$PWD}}" | jq -r '.active // false' 2>/dev/null )" = "true" ]
-}
-
-_memories_project_id() {
-  _memories_project_context "${1:-${CWD:-$PWD}}" | jq -r '.project_id // empty' 2>/dev/null
-}
-
-_memories_principal_id() {
-  _memories_project_context "${1:-${CWD:-$PWD}}" | jq -r '.principal_id // empty' 2>/dev/null
-}
-
 _memories_project_recall_prefixes() {
   local project="${1:-}" principal="${2:-}" configured="${3:-}" raw prefix existing duplicate
   local -a prefixes=() configured_prefixes=()
