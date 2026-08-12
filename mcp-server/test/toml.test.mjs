@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendMarkedBlock, upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, removeMarkedBlockStrict, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../cli/lib/toml.mjs';
+import { appendMarkedBlock, upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, removeMarkedBlockStrict, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape, maskTomlMultilineStrings } from '../cli/lib/toml.mjs';
 
 test('appendMarkedBlock appends once, idempotent', () => {
   const once = appendMarkedBlock('a = 1\n', 'Memories Codex MCP', '[mcp_servers.memories]\ncommand = "npx"');
@@ -265,6 +265,57 @@ test('insertMarkedBlockAtRoot ignores exact ownership markers inside triple-lite
   const appended = appendMarkedBlock(original, 'Owned', 'owned = true');
   assert.notEqual(appended, original, 'append must not short-circuit on in-string markers');
   assert.ok(appended.endsWith(block));
+});
+
+function assertMultilineClosingRunCase(quote, kind, runLength) {
+  const delimiter = quote.repeat(3);
+  const closingRun = quote.repeat(runLength);
+  const original = [
+    `description = ${delimiter}`,
+    `prose for ${kind} ${runLength}-quote case`,
+    '# BEGIN foreign-looking',
+    '[fake.table]',
+    '# END foreign-looking',
+    closingRun,
+    '[profiles.a]',
+    'name = "x"',
+    '',
+  ].join('\n');
+  const block = '# BEGIN Owned\nowned = true\n# END Owned\n';
+  const masked = maskTomlMultilineStrings(original);
+  assert.equal(masked.split('\n').length, original.split('\n').length, `${kind} ${runLength}: line count`);
+  assert.deepEqual(
+    masked.split('\n').map((line) => line.length),
+    original.split('\n').map((line) => line.length),
+    `${kind} ${runLength}: line lengths`,
+  );
+  assert.equal(masked.split('\n')[5], ' '.repeat(runLength), `${kind} ${runLength}: closing run is fully masked`);
+
+  const out = insertMarkedBlockAtRoot(original, 'Owned', 'owned = true');
+  const firstTableLine = original.split('\n').findIndex((line) => line === '[profiles.a]');
+  const expected = [
+    ...original.split('\n').slice(0, firstTableLine),
+    block,
+    ...original.split('\n').slice(firstTableLine),
+  ].join('\n');
+  assert.equal(out, expected, `${kind} ${runLength}: preserve original bytes and insert at root`);
+  assert.ok(out.indexOf(block) < out.indexOf('[profiles.a]'), `${kind} ${runLength}: root block precedes real table`);
+}
+
+test('insertMarkedBlockAtRoot handles four-quote basic multiline closing runs', () => {
+  assertMultilineClosingRunCase('"', 'basic', 4);
+});
+
+test('insertMarkedBlockAtRoot handles five-quote basic multiline closing runs', () => {
+  assertMultilineClosingRunCase('"', 'basic', 5);
+});
+
+test('insertMarkedBlockAtRoot handles four-quote literal multiline closing runs', () => {
+  assertMultilineClosingRunCase("'", 'literal', 4);
+});
+
+test('insertMarkedBlockAtRoot handles five-quote literal multiline closing runs', () => {
+  assertMultilineClosingRunCase("'", 'literal', 5);
 });
 
 test('insertMarkedBlockAtRoot appends when there are no sections', () => {

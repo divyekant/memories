@@ -222,3 +222,74 @@ warning.
 `git diff --check`: passed. Hook syntax, project-hook rendering, and package
 dry-run checks were not rerun because no hook assets or packaging inputs
 changed.
+
+## Task 15 third follow-up: multiline closing-run regression and validation
+
+Base commit: `9447764`.
+
+### RED capture before production edits
+
+Added a four-case valid-TOML matrix for basic and literal multiline strings
+whose closing line contains four or five consecutive quote characters. Each
+case includes marker/table-looking prose, a real `[profiles.a]` table, exact
+expected root insertion, original-byte preservation, and mask line-count/
+line-length checks. The tests also require every character in the closing run
+to be masked. Python `tomllib` confirmed the fixtures are valid: four quotes
+leave one quote of content and five leave two before the final triple delimiter.
+
+Before changing production code:
+
+```text
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+Result: **RED**, 58 tests total, 56 passed, 2 failed. The basic-4 and
+literal-4 cases inserted the owned block after `[profiles.a]`; both 5-quote
+cases passed on the old scanner because the leftover quote pair happened to
+close the temporary single-line state.
+
+### Implementation and GREEN validation
+
+Multiline close handling now computes contiguous quote runs. Runs of three
+through five quote characters are masked atomically and close the multiline
+mode, treating the final three as the delimiter and any leading one or two as
+content. The prior first-triple fallback remains for malformed runs longer than
+five, while escaped basic-string quote handling is unchanged.
+
+Focused JavaScript:
+
+```text
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+Result: **GREEN**, 58 passed, 0 failed.
+
+Package suite:
+
+```text
+cd mcp-server && npm test
+```
+
+Result: **GREEN**, 271 passed, 0 failed. npm emitted only its existing
+`minimum-release-age` configuration deprecation warning.
+
+Relevant Python checks:
+
+```text
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+```
+
+Result: **GREEN**, 22 passed.
+
+Full Python suite:
+
+```text
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+```
+
+Result: **GREEN**, 1807 passed, 1 pre-existing local-Qdrant payload-index
+warning.
+
+`git diff --check`: passed. Hook syntax, project-hook rendering, and package
+dry-run checks were not rerun because this scanner/test change does not modify
+hook assets or packaging inputs.

@@ -55,16 +55,28 @@ export function maskTomlMultilineStrings(text) {
 
     const quote = mode.at(-1);
     if (chars[i] === '\n' || chars[i] === '\r') continue;
-    if (
-      chars[i] === quote
-      && chars[i + 1] === quote
-      && chars[i + 2] === quote
-      && (quote !== '"' || !isEscaped(i))
-    ) {
-      chars[i] = chars[i + 1] = chars[i + 2] = ' ';
-      i += 2;
-      mode = null;
-      continue;
+    if (chars[i] === quote) {
+      let runEnd = i + 1;
+      while (chars[runEnd] === quote) runEnd += 1;
+      const runLength = runEnd - i;
+      if (runLength >= 3 && runLength <= 5 && (quote !== '"' || !isEscaped(i))) {
+        // TOML permits one or two quote characters as content immediately
+        // before the final triple-quote delimiter. Mask the whole 3–5 quote
+        // run atomically so no content quote can be mistaken for a new
+        // single-line string on the following scan step.
+        for (let j = i; j < runEnd; j += 1) chars[j] = ' ';
+        i = runEnd - 1;
+        mode = null;
+        continue;
+      }
+      if (runLength >= 3 && (quote !== '"' || !isEscaped(i))) {
+        // Preserve conservative handling for malformed longer runs: close at
+        // the first triple delimiter as the previous scanner did.
+        chars[i] = chars[i + 1] = chars[i + 2] = ' ';
+        i += 2;
+        mode = null;
+        continue;
+      }
     }
     chars[i] = ' ';
   }

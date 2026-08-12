@@ -1286,4 +1286,77 @@ git add -f docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
 git add mcp-server/cli/lib/toml.mjs mcp-server/test/toml.test.mjs
 git commit -m "fix(codex): ignore in-string ownership markers"
 git push origin codex/codex-parity-distribution
+
+### Task 15 third follow-up: Handle TOML Multiline Closing Runs
+
+**Files:**
+- Modify: `mcp-server/cli/lib/toml.mjs`
+- Modify: `mcp-server/test/toml.test.mjs`
+- Modify: this plan
+- Modify: `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-15-report.md`
+
+**Failure:**
+
+Valid TOML multiline basic and literal strings may close with four or five
+consecutive quote characters: one or two quote characters are string content
+followed by the final three-character delimiter. The line-preserving scanner
+currently consumes only the first three, leaves a quote behind, and can enter a
+single-line state or otherwise mask the following real table incorrectly.
+
+**Step 1: Add closing-run matrix regressions and capture RED**
+
+Add a matrix in `mcp-server/test/toml.test.mjs` for multiline basic and literal
+strings with four- and five-quote closing runs immediately before a real
+`[profiles.a]` table. Include marker/table-looking prose in each body. Assert
+the owned block is inserted at the root before the real table, original bytes
+are preserved, and `maskTomlMultilineStrings` preserves line count and each
+line's length. Keep the existing escaped-triple-quote and external marker
+fail-closed coverage.
+
+Run on `9447764` before production edits:
+
+```bash
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+Expected: RED with exactly the new closing-run cases failing because the
+scanner leaves one or two closing-run quotes unconsumed.
+
+**Step 2: Consume multiline closing runs atomically**
+
+Adjust the multiline close logic to consume quote runs of three through five
+characters atomically. Treat the final three as the delimiter conceptually and
+mask any zero-, one-, or two-character leading content quotes as part of the
+same run. All run characters remain spaces, no leftover quote may open a
+single-line state, and escaped basic-string quote behavior remains unchanged.
+Avoid changing invalid runs longer than five beyond the existing conservative
+behavior; do not implement a full TOML parser.
+
+**Step 3: Verify focused, package, Python, and diff contracts**
+
+Run:
+
+```bash
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+cd mcp-server && npm test
+cd ..
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+git diff --check
+git status --short
+```
+
+Run hook syntax, project-hook rendering, or package dry-run checks only if this
+scanner/test change affects those artifacts; otherwise record that they were
+not needed.
+
+**Exact staging and commit:**
+
+```bash
+git add -f docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
+  .superpowers/sdd/2026-08-11-codex-parity-distribution/task-15-report.md
+git add mcp-server/cli/lib/toml.mjs mcp-server/test/toml.test.mjs
+git commit -m "fix(codex): handle TOML multiline closing runs"
+git push origin codex/codex-parity-distribution
+```
 ```
