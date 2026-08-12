@@ -415,13 +415,14 @@ _memories_validate_project_backend_yaml() {
 # intentionally keeps its env/localhost fallback for ordinary fan-out; this
 # helper never turns an absent or malformed project config into a host probe.
 _memories_project_backend_config() {
-  local root="${1:-}" file="" first="" rhs="" raw=""
-  file=$(_memories_project_backends_file "$root" 2>/dev/null) || {
-    if [ -n "${MEMORIES_BACKENDS_FILE:-}" ]; then
-      jq -nc '{backends:[],error:{reason:"no_backends",diagnostic:"no backend configuration is available"}}'
-    elif [ -n "${MEMORIES_URL:-}" ]; then
+  local cwd="${1:-}" file="" first="" rhs="" raw=""
+  # Use the exact resolver consumed by _load_backends.  Project declaration
+  # lookup may use the main repository root for worktrees, but backend
+  # identity must bind to the same cwd/override precedence as real requests.
+  file=$(_resolve_backends_file "$cwd" 2>/dev/null) || {
+    if [ -n "${MEMORIES_URL:-}" ]; then
       jq -nc --arg url "$MEMORIES_URL" --arg key "${MEMORIES_API_KEY:-}" \
-        '{backends:[{name:"default",url:$url,api_key:$key,scenario:""}]}'
+        '{backends:[{name:"default",url:$url,api_key:$key,scenario:""}],config_origin:"environment"}'
     else
       jq -nc '{backends:[],error:{reason:"no_backends",diagnostic:"no backend configuration is available"}}'
     fi
@@ -460,7 +461,7 @@ _memories_project_backend_config() {
     jq -nc '{backends:[],error:{reason:"backend_config_invalid",diagnostic:"backend configuration is malformed"}}'
     return 0
   fi
-  printf '%s' "$raw" | jq -c '{backends:(.backends // [])}'
+  printf '%s' "$raw" | jq -c --arg origin "$file" '{backends:(.backends // []),config_origin:$origin}'
 }
 
 _memories_project_context() {
@@ -476,13 +477,11 @@ _memories_project_context() {
     return 0
   fi
 
-  # Load exactly the backend set the hooks already use, but anchor project
-  # resolution at the main repository root for worktrees.  This function runs
-  # in command-substitution scope, so its temporary CWD/cache cannot alter the
-  # caller's legacy routing state.
-  local root project_config backends count backend url key response http_status body identity principal
-  root=$(_memories_resolve_repo_root "$cwd" 2>/dev/null) || root="$cwd"
-  project_config=$(_memories_project_backend_config "$root" 2>/dev/null) || project_config='{"backends":[]}'
+  # Load exactly the backend set the hooks already use for this payload cwd.
+  # This function runs in command-substitution scope, so its temporary cache
+  # cannot alter the caller's legacy routing state.
+  local project_config backends count backend url key response http_status body identity principal config_origin
+  project_config=$(_memories_project_backend_config "$cwd" 2>/dev/null) || project_config='{"backends":[]}'
   if [ "$(printf '%s' "$project_config" | jq -r '.error.reason // empty' 2>/dev/null)" ]; then
     printf '%s' "$project_config" | jq -c '{active:false,reason:.error.reason,diagnostic:.error.diagnostic}'
     return 0
@@ -499,6 +498,7 @@ _memories_project_context() {
     return 0
   fi
   backend=$(printf '%s' "$backends" | jq -c '.[0]')
+  config_origin=$(printf '%s' "$project_config" | jq -r '.config_origin // empty' 2>/dev/null || true)
   url=$(printf '%s' "$backend" | jq -r '.url // empty')
   key=$(printf '%s' "$backend" | jq -r '.api_key // .apiKey // empty')
   [ -n "$url" ] || {
@@ -535,12 +535,23 @@ _memories_project_context() {
     jq -nc '{active:false,reason:"invalid_principal",diagnostic:"authenticated principal_id must be a lowercase path-safe slug"}'
     return 0
   fi
-  local project_id
+  local project_id identity_prefixes legacy_prefixes
   project_id=$(printf '%s' "$parsed" | jq -r '.project_id')
   local backend_name
   backend_name=$(printf '%s' "$backend" | jq -r '.name // "default"')
+  identity_prefixes=$(printf '%s' "$identity" | jq -c '.prefixes // []' 2>/dev/null || printf '[]')
+  legacy_prefixes=$(printf '%s' "$identity_prefixes" | jq -c --arg project "$project_id" '
+    reduce .[]? as $raw ([ ];
+      ($raw | if type == "string" then (gsub("^[[:space:]]+|[[:space:]]+$"; "") | gsub("\\{project\\}"; $project)) else "" end) as $prefix
+      | if ($prefix == "" or ($prefix | contains("*")) or ($prefix | endswith("/"))) then .
+        else ($prefix | split("/")) as $parts
+        | if (($parts | length) >= 2 and $parts[-1] == $project and $parts[0] != "project" and $parts[0] != "person" and (index($prefix) | not)) then . + [$prefix] else . end
+        end
+    )
+  ' 2>/dev/null || printf '[]')
   jq -nc --arg project "$project_id" --arg principal "$principal" --arg backend "$backend_name" \
-    '{active:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,backend:$backend}'
+    --arg url "$url" --arg origin "$config_origin" --argjson prefixes "$identity_prefixes" --argjson legacy "$legacy_prefixes" \
+    '{active:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,backend:$backend,backend_name:$backend,backend_url:$url,config_origin:$origin,prefixes:$prefixes,legacy_source_prefixes:$legacy}'
 }
 
 _memories_project_recall_prefixes() {
@@ -558,6 +569,9 @@ _memories_project_recall_prefixes() {
     case "$prefix" in
       project/*|person/*|*/|*\*) continue ;;
     esac
+    # An exact legacy prefix names this project in its final segment.  A
+    # family prefix or another project's prefix must never widen recall.
+    [ "${prefix##*/}" = "$project" ] || continue
     duplicate=0
     for existing in "${prefixes[@]}"; do
       [ "$existing" = "$prefix" ] && duplicate=1 && break
@@ -818,6 +832,28 @@ _parse_backends_yaml() {
   _flush_backend
 
   jq -nc --argjson b "$backends_json" --argjson r "$routing_json" '{backends: $b, routing: $r}'
+}
+
+# Resolve the same backend file precedence used by this packaged Codex copy's
+# _load_backends implementation: explicit override, payload cwd, then global
+# config.  Project activation must probe this exact host rather than the main
+# repository root when a worktree carries a divergent backend config.
+_resolve_backends_file() {
+  local cwd="${1:-}"
+  if [ -n "${MEMORIES_BACKENDS_FILE:-}" ]; then
+    [ -f "$MEMORIES_BACKENDS_FILE" ] || return 1
+    printf '%s' "$MEMORIES_BACKENDS_FILE"
+    return 0
+  fi
+  if [ -n "$cwd" ] && [ -f "$cwd/.memories/backends.yaml" ]; then
+    printf '%s' "$cwd/.memories/backends.yaml"
+    return 0
+  fi
+  if [ -f "$HOME/.config/memories/backends.yaml" ]; then
+    printf '%s' "$HOME/.config/memories/backends.yaml"
+    return 0
+  fi
+  return 1
 }
 
 _load_backends() {

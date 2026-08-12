@@ -183,6 +183,94 @@ def test_project_declaration_in_worktree_uses_main_repository_boundary(
 
 
 @pytest.mark.parametrize("lib", LIBS, ids=["claude-code-lib", "codex-lib"])
+def test_project_context_binds_to_the_same_worktree_backend_as_normal_routing(
+    lib: Path,
+    repo_with_worktree: dict,
+    tmp_path: Path,
+) -> None:
+    """A worktree-specific backend must be used for both /me and searches.
+
+    The declaration remains authoritative at the main repository boundary,
+    while backend selection follows the hook's real cwd routing.  A strict
+    project preflight that probes the main-root URL would authenticate one
+    host and then issue memory requests to another host.
+    """
+    repo = repo_with_worktree["repo"]
+    worktree = repo_with_worktree["worktree"]
+    memories_dir = repo / ".memories"
+    memories_dir.mkdir(exist_ok=True)
+    (memories_dir / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    (memories_dir / "backends.yaml").write_text(
+        "backends:\n"
+        "  main:\n"
+        "    url: http://main-backend.test\n"
+        "    api_key: main-secret\n"
+    )
+    worktree_memories = worktree / ".memories"
+    worktree_memories.mkdir(exist_ok=True)
+    (worktree_memories / "backends.yaml").write_text(
+        "backends:\n"
+        "  worktree:\n"
+        "    url: http://worktree-backend.test\n"
+        "    api_key: worktree-secret\n"
+    )
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl_log = tmp_path / "curl.log"
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$FAKE_CURL_LOG\"\n"
+        "printf '%s\\n200' '{\"type\":\"managed\",\"principal_id\":\"alice\",\"prefixes\":[\"project/shared-demo\"]}'\n"
+    )
+    curl.chmod(0o755)
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "MEMORIES_URL": "",
+        "MEMORIES_API_KEY": "",
+        "MEMORIES_BACKENDS_FILE": "",
+        "CLAUDE_PROJECT_DIR": "",
+        "FAKE_CURL_LOG": str(curl_log),
+        "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+    }
+    command = (
+        'source "$1" 2>/dev/null; '
+        'CWD="$2"; '
+        'context=$(_memories_project_context "$CWD"); '
+        'normal=$(_get_backends_for_op search); '
+        'jq -nc --argjson context "$context" --argjson normal "$normal" '
+        "'{context:$context,normal:$normal}'"
+    )
+    result = subprocess.run(
+        ["bash", "-c", command, "_", str(lib), str(worktree)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    context = payload["context"]
+    assert context["active"] is True
+    assert context["backend_url"] == "http://worktree-backend.test"
+    assert context["config_origin"] == str(worktree_memories / "backends.yaml")
+    assert payload["normal"] == [
+        {
+            "name": "worktree",
+            "url": "http://worktree-backend.test",
+            "api_key": "worktree-secret",
+            "scenario": "",
+        }
+    ]
+    assert "http://worktree-backend.test/api/keys/me" in curl_log.read_text()
+    assert "http://main-backend.test/api/keys/me" not in curl_log.read_text()
+
+
+@pytest.mark.parametrize("lib", LIBS, ids=["claude-code-lib", "codex-lib"])
 @pytest.mark.parametrize(
     ("identity", "reason"),
     [

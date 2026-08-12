@@ -199,6 +199,8 @@ export function loadBackendConfig({ cwd = process.cwd(), url, apiKey, skipFileCo
     return {
       backends: [{ name: "default", url: url || "http://localhost:8900", apiKey: apiKey || "", scenario: "" }],
       routing: {},
+      configOrigin: "options",
+      configured: url !== undefined || apiKey !== undefined,
     };
   }
 
@@ -219,12 +221,14 @@ export function loadBackendConfig({ cwd = process.cwd(), url, apiKey, skipFileCo
       apiKey: interpolateConfigValue(cfg.api_key || ""),
       scenario: cfg.scenario || "",
     }));
-    return { backends, routing: raw.routing || {} };
+    return { backends, routing: raw.routing || {}, configOrigin: configPath, configured: true };
   }
 
   return {
     backends: [{ name: "default", url: url || "http://localhost:8900", apiKey: apiKey || "", scenario: "" }],
     routing: {},
+    configOrigin: url !== undefined || apiKey !== undefined ? "options" : "fallback",
+    configured: url !== undefined || apiKey !== undefined,
   };
 }
 
@@ -311,6 +315,35 @@ function contextFailure(reason, diagnostic) {
 }
 
 /**
+ * Keep legacy continuity narrow when collaborative mode is active.  The
+ * authenticated key's prefixes are the authorization source; repository
+ * configuration never grants a new prefix.  A legacy prefix is eligible only
+ * when it names this project exactly in its final path segment.  Project and
+ * person namespaces are routed explicitly before this list and must never be
+ * treated as legacy continuity.  Family/wildcard prefixes are intentionally
+ * excluded because they would widen recall beyond this project.
+ */
+export function deriveLegacyProjectPrefixes(projectId, authorizedPrefixes) {
+  if (!Array.isArray(authorizedPrefixes)) return [];
+  const result = [];
+  const seen = new Set();
+  for (const raw of authorizedPrefixes) {
+    if (typeof raw !== "string") continue;
+    const original = raw.trim();
+    if (!original) continue;
+    const prefix = original.replaceAll("{project}", projectId);
+    if (!prefix || prefix.includes("*") || prefix.endsWith("/")) continue;
+    const segments = prefix.split("/");
+    if (segments.length < 2 || segments.at(-1) !== projectId) continue;
+    if (segments[0] === "project" || segments[0] === "person") continue;
+    if (seen.has(prefix)) continue;
+    seen.add(prefix);
+    result.push(prefix);
+  }
+  return result;
+}
+
+/**
  * Resolve collaborative mode for a checkout and one authenticated backend.
  * The `/api/keys/me` request is deliberately last: invalid declarations and
  * ambiguous backend sets must not probe a host or accidentally turn a
@@ -322,16 +355,21 @@ export async function resolveProjectContext(options = {}) {
     url,
     apiKey,
     backends: suppliedBackends,
+    backendConfig: suppliedBackendConfig,
     fetchImpl = globalThis.fetch,
     skipFileConfig = false,
   } = options;
   const declaration = loadProjectDeclaration(cwd);
   if (!declaration.ok) return contextFailure(declaration.reason, declaration.diagnostic);
 
-  const config = suppliedBackends
+  const config = suppliedBackendConfig
+    || (suppliedBackends
     ? { backends: suppliedBackends }
-    : loadStrictBackendConfig({ cwd: resolveProjectRoot(cwd), url, apiKey, skipFileConfig });
+    : loadStrictBackendConfig({ cwd: resolveProjectRoot(cwd), url, apiKey, skipFileConfig }));
   if (config.error) return contextFailure(config.error.reason, config.error.diagnostic);
+  if (config.configured === false) {
+    return contextFailure("no_backends", "no backend configuration is available");
+  }
   const backends = Array.isArray(config.backends) ? config.backends : [];
   if (backends.length !== 1) {
     return contextFailure(
@@ -381,6 +419,14 @@ export async function resolveProjectContext(options = {}) {
     return contextFailure("invalid_principal", "authenticated principal_id must be a lowercase path-safe slug");
   }
 
+  const prefixes = identity?.prefixes === undefined || identity?.prefixes === null
+    ? []
+    : identity.prefixes;
+  if (!Array.isArray(prefixes) || prefixes.some((prefix) => typeof prefix !== "string")) {
+    return contextFailure("invalid_prefixes", "authenticated principal lookup returned invalid source prefixes");
+  }
+  const legacySourcePrefixes = deriveLegacyProjectPrefixes(declaration.projectId, prefixes);
+
   return {
     active: true,
     reason: "active",
@@ -391,6 +437,12 @@ export async function resolveProjectContext(options = {}) {
     sharedMemory: true,
     shared_memory: true,
     backend: backend.name || "default",
+    backendName: backend.name || "default",
+    backendUrl,
+    backendConfigOrigin: config.configOrigin || null,
+    prefixes: [...prefixes],
+    legacySourcePrefixes,
+    legacy_source_prefixes: [...legacySourcePrefixes],
   };
 }
 
@@ -509,6 +561,57 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     return { results: deduped, count: deduped.length };
   }
 
+  function projectProvenanceLabel(result, projectId) {
+    if (!result || typeof result !== "object") return "";
+    const source = String(result.source || "");
+    if (!source.startsWith(`project/${projectId}/`)) return "";
+    const clean = (value) => String(value)
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+    const labels = [];
+    if (result.author !== undefined && result.author !== null && String(result.author) !== "") {
+      labels.push(`author=${clean(result.author)}`);
+    }
+    if (result.origin_client !== undefined && result.origin_client !== null && String(result.origin_client) !== "") {
+      labels.push(`origin-client=${clean(result.origin_client)}`);
+    }
+    return labels.length ? `[${labels.join(", ")}]` : "";
+  }
+
+  async function projectSearchRequest(body, projectContext) {
+    const prefixes = [
+      `project/${projectContext.projectId}`,
+      `person/${projectContext.principalId}/${projectContext.projectId}`,
+      ...(projectContext.legacySourcePrefixes || []),
+    ];
+    const responses = [];
+    for (const prefix of prefixes) {
+      const scopedBody = { ...body, source_prefix: prefix };
+      const data = await memoriesRequest("/search", {
+        method: "POST",
+        body: JSON.stringify(scopedBody),
+      }, "search");
+      responses.push(data);
+    }
+
+    const seen = new Set();
+    const results = [];
+    for (const data of responses) {
+      for (const result of data.results || []) {
+        const key = result?.id !== undefined && result?.id !== null
+          ? `id:${result.id}:source:${result.source || ""}`
+          : `text:${result?.text || ""}:source:${result?.source || ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        results.push(result);
+      }
+    }
+    const capped = results.slice(0, body.k);
+    return { results: capped, count: capped.length };
+  }
+
   // -- Server ------------------------------------------------------------------
 
   const server = new McpServer({
@@ -517,9 +620,9 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
   });
 
   // Expose a lazy, memoized context lookup for project-aware tool behavior.
-  // Task 4 only resolves and validates the context; source routing remains
-  // unchanged until a later task opts into this helper.  Keeping the lookup
-  // lazy means legacy callers never incur a `/api/keys/me` request.
+  // Keeping the lookup lazy means legacy callers never incur a `/api/keys/me`
+  // request.  Pass the already-loaded config object so project mode and normal
+  // routing cannot resolve different worktree/main-repository backends.
   let projectContextPromise;
   server.resolveProjectContext = () => {
     if (!projectContextPromise) {
@@ -527,6 +630,7 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
         cwd,
         url,
         apiKey,
+        backendConfig: config,
         fetchImpl: fetchFn,
         skipFileConfig,
       });
@@ -566,10 +670,13 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       if (reference_date) body.reference_date = reference_date;
       if (include_archived) body.include_archived = true;
 
-      const data = await memoriesRequest("/search", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, "search");
+      const projectContext = await server.resolveProjectContext();
+      const data = projectContext.active && source_prefix === undefined
+        ? await projectSearchRequest(body, projectContext)
+        : await memoriesRequest("/search", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }, "search");
 
       if (data.count === 0) {
         return { content: [{ type: "text", text: `No memories found for: "${query}"` }] };
@@ -582,7 +689,9 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
           const id = memoryId(r);
           const date = memoryDate(r);
           const dateText = date ? ` ${date}` : "";
-          return `[${i + 1}] id=${id}${relevanceTag(r)} ${r.source || "unknown-source"}${dateText}\n${snippet(r.text)}\nUse memory_get id=${id} for full text.`;
+          const provenance = projectContext.active ? projectProvenanceLabel(r, projectContext.projectId) : "";
+          const source = `${provenance ? `${provenance} ` : ""}${r.source || "unknown-source"}`;
+          return `[${i + 1}] id=${id}${relevanceTag(r)} ${source}${dateText}\n${snippet(r.text)}\nUse memory_get id=${id} for full text.`;
         });
 
         return {
@@ -596,7 +705,9 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       const lines = data.results.map((r, i) => {
         const d = memoryDate(r);
         const dateTag = d ? ` [${String(d).slice(0, 10)}]` : "";
-        return `[${i + 1}] id=${memoryId(r)}${relevanceTag(r)}${dateTag} ${r.source}\n${r.text}`;
+        const provenance = projectContext.active ? projectProvenanceLabel(r, projectContext.projectId) : "";
+        const source = `${provenance ? `${provenance} ` : ""}${r.source || "unknown-source"}`;
+        return `[${i + 1}] id=${memoryId(r)}${relevanceTag(r)}${dateTag} ${source}\n${r.text}`;
       });
 
       return {
@@ -1079,8 +1190,12 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       document_at: z.string().optional().describe("ISO 8601 date for when the conversation happened. All extracted memories inherit this timestamp."),
     },
     async ({ messages, source, context = "stop", document_at }) => {
+      const projectContext = await server.resolveProjectContext();
+      const effectiveSource = projectContext.active
+        ? `person/${projectContext.principalId}/${projectContext.projectId}/knowledge`
+        : source;
       // Submit extraction job
-      const body = { messages, source, context };
+      const body = { messages, source: effectiveSource, context };
       if (document_at) body.document_at = document_at;
       const submitData = await memoriesRequest("/memory/extract", {
         method: "POST",

@@ -164,6 +164,261 @@ test('project context resolves backend config from the main repository boundary 
   assert.equal(context.principalId, 'alice');
 });
 
+test('project context retains managed prefixes and allows only exact legacy project prefixes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-prefixes-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const context = await resolveProjectContext({
+    cwd: dir,
+    backends: [{ name: 'shared', url: 'http://backend.test', apiKey: 'secret' }],
+    fetchImpl: async () => new Response(JSON.stringify({
+      type: 'managed',
+      principal_id: 'alice',
+      prefixes: [
+        'project/shared-demo',
+        'person/alice/shared-demo',
+        'codex/shared-demo',
+        'claude-code/{project}',
+        'learning/shared-demo/*',
+        'wip/',
+        'other/not-this-project',
+        'person/bob/shared-demo',
+        'codex/shared-demo/knowledge',
+      ],
+    }), { status: 200 }),
+  });
+
+  assert.equal(context.active, true);
+  assert.deepEqual(context.prefixes, [
+    'project/shared-demo',
+    'person/alice/shared-demo',
+    'codex/shared-demo',
+    'claude-code/{project}',
+    'learning/shared-demo/*',
+    'wip/',
+    'other/not-this-project',
+    'person/bob/shared-demo',
+    'codex/shared-demo/knowledge',
+  ]);
+  assert.deepEqual(context.legacySourcePrefixes, ['codex/shared-demo', 'claude-code/shared-demo']);
+  assert.deepEqual(context.legacy_source_prefixes, ['codex/shared-demo', 'claude-code/shared-demo']);
+});
+
+test('active memory_search routes project and private namespaces before authorized legacy prefixes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-search-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const calls = [];
+  const responses = {
+    'project/shared-demo': [{ id: 1, source: 'project/shared-demo/knowledge', text: 'shared fact', author: 'alice', origin_client: 'codex', similarity: 0.2 }],
+    'person/alice/shared-demo': [{ id: 2, source: 'person/alice/shared-demo/knowledge', text: 'private fact', similarity: 0.9 }],
+    'codex/shared-demo': [{ id: 3, source: 'codex/shared-demo', text: 'legacy fact', similarity: 0.8 }],
+    'claude-code/shared-demo': [{ id: 1, source: 'project/shared-demo/knowledge', text: 'shared fact', author: 'alice', origin_client: 'codex', similarity: 0.95 }],
+  };
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url: requestUrl, body });
+    if (requestUrl.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({
+        type: 'managed',
+        principal_id: 'alice',
+        prefixes: [
+          'project/shared-demo',
+          'person/alice/shared-demo',
+          'codex/shared-demo',
+          'claude-code/{project}',
+          'learning/shared-demo/*',
+          'wip/',
+        ],
+      }), { status: 200 });
+    }
+    const result = responses[body.source_prefix] || [];
+    return new Response(JSON.stringify({ results: result, count: result.length }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({
+      name: 'memory_search',
+      arguments: { query: 'shared', k: 3 },
+    });
+    assert.equal(result.isError, undefined);
+    const searchPrefixes = calls.filter((call) => call.url.endsWith('/search')).map((call) => call.body.source_prefix);
+    assert.deepEqual(searchPrefixes, [
+      'project/shared-demo',
+      'person/alice/shared-demo',
+      'codex/shared-demo',
+      'claude-code/shared-demo',
+    ]);
+    assert.equal(searchPrefixes.includes(''), false);
+    const text = result.content.map((item) => item.text || '').join('\n');
+    assert.match(text, /author=alice/);
+    assert.match(text, /origin-client=codex/);
+    assert.match(text, /Found 3 memories/);
+    assert.equal((text.match(/\bid=/g) || []).length, 3);
+    assert.equal(text.includes('Confidence:'), false);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('active memory_search preserves an explicit source_prefix without project fan-out', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-search-explicit-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url: requestUrl, body });
+    if (requestUrl.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({ type: 'managed', principal_id: 'alice', prefixes: ['codex/shared-demo'] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ results: [{ id: 10, source: body.source_prefix, text: 'explicit' }], count: 1 }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({
+      name: 'memory_search',
+      arguments: { query: 'explicit', k: 5, source_prefix: 'codex/shared-demo' },
+    });
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(calls.filter((call) => call.url.endsWith('/search')).map((call) => call.body.source_prefix), ['codex/shared-demo']);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('inactive memory_search keeps one unscoped legacy request and skips principal lookup', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-search-inactive-'));
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url: requestUrl, body });
+    return new Response(JSON.stringify({ results: [], count: 0 }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({ name: 'memory_search', arguments: { query: 'legacy', k: 5 } });
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(calls.map((call) => call.url), ['http://backend.test/search']);
+    assert.deepEqual(calls[0].body, { query: 'legacy', k: 5, hybrid: true, feedback_weight: 0.1, graph_weight: 0.1 });
+    assert.equal(Object.hasOwn(calls[0].body, 'source_prefix'), false);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('project mode does not invent localhost when skipFileConfig has no explicit backend', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-no-backend-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  let principalCalls = 0;
+  const context = await resolveProjectContext({
+    cwd: dir,
+    skipFileConfig: true,
+    fetchImpl: async () => {
+      principalCalls += 1;
+      throw new Error('must not probe localhost');
+    },
+  });
+  assert.equal(context.active, false);
+  assert.equal(context.reason, 'no_backends');
+  assert.equal(principalCalls, 0);
+});
+
+test('active memory_extract substitutes the private project source and rejects project input before fetch', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-extract-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url: requestUrl, body });
+    if (requestUrl.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({ type: 'managed', principal_id: 'alice', prefixes: ['person/alice/shared-demo'] }), { status: 200 });
+    }
+    if (requestUrl.endsWith('/memory/extract')) return new Response(JSON.stringify({ job_id: 'job-1' }), { status: 200 });
+    return new Response(JSON.stringify({ status: 'completed', result: { extracted_count: 0, stored_count: 0, updated_count: 0, deleted_count: 0, actions: [] } }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const rejected = await client.callTool({ name: 'memory_extract', arguments: { messages: 'shared', source: 'project/shared-demo/knowledge' } });
+    assert.equal(rejected.isError, true);
+    assert.equal(calls.length, 0);
+
+    const extracted = await client.callTool({ name: 'memory_extract', arguments: { messages: 'private', source: 'codex/shared-demo' } });
+    assert.equal(extracted.isError, undefined);
+    const extractPost = calls.find((call) => call.url.endsWith('/memory/extract'));
+    assert.equal(extractPost.body.source, 'person/alice/shared-demo/knowledge');
+    assert.equal(calls.filter((call) => call.url.endsWith('/api/keys/me')).length, 1);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('project mode binds principal lookup and requests to the worktree backend config', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'mem-project-bind-repo-'));
+  await mkdir(join(repo, '.memories'), { recursive: true });
+  await writeFile(join(repo, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  await writeFile(join(repo, '.memories', 'backends.yaml'), 'backends:\n  main:\n    url: http://main-backend.test\n    api_key: main-secret\n');
+  await writeFile(join(repo, 'README.md'), 'fixture\n');
+  const git = (args) => execFileSync('git', args, {
+    cwd: repo,
+    env: { ...process.env, GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@example.com' },
+    stdio: 'ignore',
+  });
+  git(['init', '-q']);
+  git(['add', '.']);
+  git(['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'init']);
+  const worktree = join(repo, '.claude', 'worktrees', 'divergent');
+  await mkdir(join(repo, '.claude', 'worktrees'), { recursive: true });
+  git(['worktree', 'add', '-q', '-b', 'fixture-divergent', worktree]);
+  await mkdir(join(worktree, '.memories'), { recursive: true });
+  await writeFile(join(worktree, '.memories', 'backends.yaml'), 'backends:\n  worktree:\n    url: http://worktree-backend.test\n    api_key: worktree-secret\n');
+
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url: requestUrl, body, headers: options.headers });
+    if (requestUrl.endsWith('/api/keys/me')) return new Response(JSON.stringify({ type: 'managed', principal_id: 'alice', prefixes: ['project/shared-demo'] }), { status: 200 });
+    return new Response(JSON.stringify({ results: [], count: 0 }), { status: 200 });
+  };
+  const server = buildServer({ cwd: worktree, fetchImpl });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    await client.callTool({ name: 'memory_search', arguments: { query: 'bound', k: 1 } });
+    assert.ok(calls.length > 0);
+    assert.ok(calls.every((call) => call.url.startsWith('http://worktree-backend.test/')));
+    assert.equal(calls.some((call) => call.url.startsWith('http://main-backend.test/')), false);
+    assert.equal(calls[0].headers['X-API-Key'], 'worktree-secret');
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('project context disables itself before principal lookup for multiple backends', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mem-project-multi-'));
   await mkdir(join(dir, '.memories'), { recursive: true });
