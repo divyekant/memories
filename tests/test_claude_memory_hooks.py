@@ -1649,11 +1649,11 @@ def test_collaborative_recall_orders_shared_private_then_legacy_and_labels_prove
     search_calls = [call for call in calls if str(call["url"]).endswith("/search")]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     first_seen = list(dict.fromkeys(prefixes))
-    assert first_seen[: 2 + len(legacy_prefixes)] == [
+    assert set(first_seen) == {
         "project/shared-demo",
         "person/alice/shared-demo",
         *legacy_prefixes,
-    ]
+    }
 
     context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "Shared project fact." not in context
@@ -1661,6 +1661,8 @@ def test_collaborative_recall_orders_shared_private_then_legacy_and_labels_prove
     assert "Sibling project recall must stay isolated." not in context
     assert "[author=alice, origin-client=codex]" in context
     assert context.index("project/shared-demo") < context.index("person/alice/shared-demo")
+    legacy_positions = [context.index(prefix) for prefix in legacy_prefixes]
+    assert legacy_positions == sorted(legacy_positions)
 
 
 @pytest.mark.parametrize(

@@ -11,6 +11,7 @@ import pytest
 
 import memory_engine as memory_engine_module
 from memory_engine import MemoryEngine
+from project_memory import TrustedAuthorship, is_project_source
 
 DIM = 8
 
@@ -51,7 +52,10 @@ def _iso(days_ago: int) -> str:
 
 
 def _add(engine, text, days_ago, source="learning/x", **extra):
-    mid = engine.add_memories([text], [source])[0]
+    kwargs = {}
+    if is_project_source(source):
+        kwargs["trusted_authorship"] = TrustedAuthorship.principal("alice", "manual")
+    mid = engine.add_memories([text], [source], **kwargs)[0]
     meta = engine._get_meta_by_id(mid)
     meta["created_at"] = _iso(days_ago)
     meta.update(extra)
@@ -96,7 +100,7 @@ def test_newest_wins_archives_older_side(engine):
 @pytest.mark.parametrize(
     "flagger_source, other_source",
     [
-        ("project/private", "project/shared"),
+        ("project/private/knowledge", "project/shared/knowledge"),
         ("person/alice/shared-demo/knowledge", "person/bob/shared-demo/knowledge"),
     ],
 )
