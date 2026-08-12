@@ -271,6 +271,56 @@ def test_project_context_binds_to_the_same_worktree_backend_as_normal_routing(
 
 
 @pytest.mark.parametrize("lib", LIBS, ids=["claude-code-lib", "codex-lib"])
+def test_project_context_accepts_quoted_and_commented_backend_scalars(
+    lib: Path,
+    repo_with_worktree: dict,
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_worktree["repo"]
+    memories_dir = repo / ".memories"
+    memories_dir.mkdir(exist_ok=True)
+    (memories_dir / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    (memories_dir / "backends.yaml").write_text(
+        "backends:\n"
+        "  shared:\n"
+        '    url: "http://backend.test" # shared host\n'
+        "    api_key: 'secret' # managed key\n"
+    )
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl_log = tmp_path / "curl.log"
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$FAKE_CURL_LOG"\n'
+        "printf '%s\\n200' '{\"type\":\"managed\",\"principal_id\":\"alice\"}'\n"
+    )
+    curl.chmod(0o755)
+    context = _project_context(
+        lib,
+        str(repo),
+        env={
+            "HOME": str(tmp_path / "home"),
+            "MEMORIES_URL": "",
+            "MEMORIES_API_KEY": "",
+            "MEMORIES_BACKENDS_FILE": "",
+            "FAKE_CURL_LOG": str(curl_log),
+            "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        },
+    )
+
+    assert context["active"] is True
+    assert context["backend_url"] == "http://backend.test"
+    call = curl_log.read_text()
+    assert "http://backend.test/api/keys/me" in call
+    assert '"http://backend.test"' not in call
+    assert "# shared host" not in call
+
+
+@pytest.mark.parametrize("lib", LIBS, ids=["claude-code-lib", "codex-lib"])
 @pytest.mark.parametrize(
     ("identity", "reason"),
     [

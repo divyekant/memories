@@ -678,8 +678,7 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       `person/${projectContext.principalId}/${projectContext.projectId}`,
       ...(projectContext.legacySourcePrefixes || []),
     ];
-    const responses = [];
-    for (const prefix of prefixes) {
+    const responses = await Promise.all(prefixes.map(async (prefix) => {
       const scopedBody = { ...body, source_prefix: prefix };
       const data = await memoriesRequest("/search", {
         method: "POST",
@@ -689,8 +688,8 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
         const source = String(result?.source || "");
         return source === prefix || source.startsWith(`${prefix}/`);
       });
-      responses.push({ ...data, results, count: results.length });
-    }
+      return { ...data, results, count: results.length };
+    }));
 
     const seen = new Set();
     const results = [];

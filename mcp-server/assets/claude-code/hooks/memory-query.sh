@@ -233,14 +233,10 @@ queue_search() {
   local query="$1" prefix="$2" limit="$3" threshold="$4"
   local outfile="$SEARCH_TMPDIR/result_${SEARCH_INDEX}.json"
   SEARCH_INDEX=$((SEARCH_INDEX + 1))
-  if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  (
     search_memories "$query" "$prefix" "$limit" "$threshold" > "$outfile" || true
-  else
-    (
-      search_memories "$query" "$prefix" "$limit" "$threshold" > "$outfile" || true
-    ) &
-    SEARCH_JOBS+=("$!")
-  fi
+  ) &
+  SEARCH_JOBS+=("$!")
 }
 
 # Strategy A: enriched unscoped (cross-project, semantic)
@@ -274,9 +270,14 @@ if [ "${#SEARCH_JOBS[@]}" -gt 0 ]; then
   done
 fi
 
-if ls "$SEARCH_TMPDIR"/result_*.json >/dev/null 2>&1; then
-  RAW_RESPONSES=$(cat "$SEARCH_TMPDIR"/result_*.json 2>/dev/null || true)
-fi
+RAW_RESPONSES=$(
+  result_index=0
+  while [ "$result_index" -lt "$SEARCH_INDEX" ]; do
+    result_file="$SEARCH_TMPDIR/result_${result_index}.json"
+    [ -f "$result_file" ] && cat "$result_file"
+    result_index=$((result_index + 1))
+  done
+)
 rm -rf "$SEARCH_TMPDIR"
 
 # Merge, deduplicate, cap at 6

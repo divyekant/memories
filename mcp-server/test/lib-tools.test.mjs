@@ -209,6 +209,8 @@ test('active memory_search routes project and private namespaces before authoriz
   await mkdir(join(dir, '.memories'), { recursive: true });
   await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
   const calls = [];
+  let activeSearches = 0;
+  let maxActiveSearches = 0;
   const responses = {
     'project/shared-demo': [
       { id: 1, source: 'project/shared-demo/knowledge', text: 'newer weak fact', author: 'alice', origin_client: 'codex', similarity: 0.2, document_at: '2026-08-12T00:00:00Z' },
@@ -242,7 +244,11 @@ test('active memory_search routes project and private namespaces before authoriz
         ],
       }), { status: 200 });
     }
+    activeSearches += 1;
+    maxActiveSearches = Math.max(maxActiveSearches, activeSearches);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const result = responses[body.source_prefix] || [];
+    activeSearches -= 1;
     return new Response(JSON.stringify({ results: result, count: result.length }), { status: 200 });
   };
   const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
@@ -262,6 +268,7 @@ test('active memory_search routes project and private namespaces before authoriz
       'codex/shared-demo',
       'claude-code/shared-demo',
     ]);
+    assert.ok(maxActiveSearches > 1, 'project prefix requests must run concurrently');
     assert.equal(searchPrefixes.includes(''), false);
     const text = result.content.map((item) => item.text || '').join('\n');
     assert.match(text, /author=alice/);

@@ -758,6 +758,47 @@ _health_check() {
 
 _BACKENDS_CACHE=""
 
+# Normalize the simple scalar subset accepted by the strict backends.yaml
+# validator. Comments start only at an unquoted # preceded by whitespace;
+# matching outer quotes are removed after comment stripping.
+_memories_yaml_scalar() {
+  printf '%s\n' "${1:-}" | awk '
+    {
+      value = $0
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      single_quote = sprintf("%c", 39)
+      double_quote = sprintf("%c", 34)
+      quote = ""
+      output = ""
+      previous = ""
+      for (i = 1; i <= length(value); i++) {
+        character = substr(value, i, 1)
+        if (quote == "") {
+          if (character == single_quote || character == double_quote) {
+            quote = character
+          } else if (character == "#" && previous ~ /[[:space:]]/) {
+            break
+          }
+        } else if (character == quote) {
+          quote = ""
+        }
+        output = output character
+        previous = character
+      }
+      sub(/[[:space:]]+$/, "", output)
+      if (length(output) >= 2) {
+        first = substr(output, 1, 1)
+        last = substr(output, length(output), 1)
+        if ((first == single_quote || first == double_quote) && last == first) {
+          output = substr(output, 2, length(output) - 2)
+        }
+      }
+      print output
+    }
+  '
+}
+
 # Pure-shell YAML parser for backends.yaml — handles the simple flat format only.
 # Supports: backends.<name>.url, backends.<name>.api_key, backends.<name>.scenario,
 # and routing.<op>: [name1, name2].
@@ -803,13 +844,13 @@ _parse_backends_yaml() {
       fi
       # Properties (4-space indent)
       if printf '%s' "$line" | grep -qE '^    url:'; then
-        url=$(printf '%s' "$line" | sed 's/^    url: *//;s/^ *//;s/ *$//')
+        url=$(_memories_yaml_scalar "$(printf '%s' "$line" | sed 's/^    url: *//')")
       fi
       if printf '%s' "$line" | grep -qE '^    api_key:'; then
-        api_key=$(printf '%s' "$line" | sed 's/^    api_key: *//;s/^ *//;s/ *$//')
+        api_key=$(_memories_yaml_scalar "$(printf '%s' "$line" | sed 's/^    api_key: *//')")
       fi
       if printf '%s' "$line" | grep -qE '^    scenario:'; then
-        scenario=$(printf '%s' "$line" | sed 's/^    scenario: *//;s/^ *//;s/ *$//')
+        scenario=$(_memories_yaml_scalar "$(printf '%s' "$line" | sed 's/^    scenario: *//')")
       fi
     fi
 

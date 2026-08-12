@@ -174,6 +174,24 @@ status_code=$(jq -r --arg url "$url" --argjson body "$body" '
   ][0]) // 200
 ' "$FAKE_CURL_RESPONSES")
 
+delay_seconds=$(jq -r --arg url "$url" --argjson body "$body" '
+  ([
+    .[]
+    | . as $rule
+    | select(($rule.url_suffix == null) or ($url | endswith($rule.url_suffix)))
+    | select(($rule.url_contains == null) or ($url | contains($rule.url_contains)))
+    | select(($rule | has("source_prefix") | not) or (($rule.source_prefix // "") == (($body.source_prefix // ""))))
+    | select(
+        ($rule.query_contains // null) == null
+        or (($body.query // "") | contains($rule.query_contains))
+      )
+    | ($rule.delay_seconds // 0)
+  ][0]) // 0
+' "$FAKE_CURL_RESPONSES")
+if [ "$delay_seconds" != "0" ]; then
+  sleep "$delay_seconds"
+fi
+
 printf '%s' "$response_body"
 # Mimic curl's -w/--write-out: only append the status line when the caller
 # actually asked for %{http_code}, same as real curl would.
@@ -1776,6 +1794,63 @@ def test_collaborative_query_keeps_project_sources_ahead_of_legacy_and_labels_th
     assert "Sibling project query must stay isolated." not in context
     assert "[author=alice, origin-client=claude-code]" in context
     assert context.index("project/shared-demo/decisions") < context.index("person/alice/shared-demo/state")
+
+
+@pytest.mark.parametrize(
+    "script",
+    [QUERY_SCRIPT, CODEX_HOOKS_DIR / "memory-query.sh"],
+    ids=["claude-code", "codex"],
+)
+def test_collaborative_query_searches_prefixes_concurrently(
+    tmp_path: Path, script: Path
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    prefixes = [
+        "project/shared-demo",
+        "person/alice/shared-demo",
+        "codex/shared-demo",
+        "claude-code/shared-demo",
+    ]
+    responses: list[dict[str, object]] = [
+        {
+            "url_suffix": "/api/keys/me",
+            "response": {
+                "type": "managed",
+                "principal_id": "alice",
+                "prefixes": prefixes[2:],
+            },
+        }
+    ]
+    responses.extend(
+        {
+            "url_suffix": "/search",
+            "source_prefix": prefix,
+            "delay_seconds": 1,
+            "response": {"results": [], "count": 0},
+        }
+        for prefix in prefixes
+    )
+
+    started = time.monotonic()
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        {"cwd": str(project_dir), "prompt": "Explain the shared project architecture in detail."},
+        responses,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < 3.0, f"four independent prefix searches serialized: {elapsed:.2f}s"
+    assert {
+        call["body"].get("source_prefix", "")
+        for call in calls
+        if str(call["url"]).endswith("/search")
+    } == set(prefixes)
 
 
 @pytest.mark.parametrize(
