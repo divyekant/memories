@@ -79,3 +79,72 @@ The helper intentionally masks until a closing delimiter on malformed or
 exotic multiline input, preferring a false-negative structural scan over
 treating prose as configuration. It is not a TOML validator; strict ownership
 marker validation remains the separate fail-closed path.
+
+## Task 15 follow-up: delimiter-context regression and validation
+
+Base commit: `f9dd1c2`.
+
+### RED capture before production edits
+
+Added two valid-TOML regressions in `mcp-server/test/toml.test.mjs`: a comment
+containing `developer_instructions = """` and an ordinary basic string
+containing `'''`, each before `[profiles.a]`. Both assert root insertion before
+the real table and exact preservation of the original bytes. The existing
+triple-double fixture also includes an escaped-quote sequence to retain the
+multiline basic-string close behavior.
+
+Before changing the scanner:
+
+```text
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+Result: **RED**, 51 tests total, 49 passed, 2 failed. Both new tests failed on
+`insertion must precede the real table`, because the old scanner entered a
+multiline mode from delimiter-looking text and masked the actual table to EOF.
+
+### Implementation and GREEN validation
+
+`maskTomlMultilineStrings` now tracks comment state and ordinary single-line
+basic/literal strings before recognizing triple delimiters. It retains
+line-preserving masking for multiline bodies, escaped basic-string quote
+handling, and conservative masking after an unterminated ordinary string
+encounters a raw newline. No full TOML parser was introduced.
+
+Focused JavaScript:
+
+```text
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+Result: **GREEN**, 51 passed, 0 failed.
+
+Package suite:
+
+```text
+cd mcp-server && npm test
+```
+
+Result: **GREEN**, 264 passed, 0 failed. npm emitted only its existing
+`minimum-release-age` configuration deprecation warning.
+
+Relevant Python checks:
+
+```text
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+```
+
+Result: **GREEN**, 22 passed.
+
+Full Python suite:
+
+```text
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+```
+
+Result: **GREEN**, 1807 passed, 1 pre-existing local-Qdrant payload-index
+warning.
+
+`git diff --check`: passed. Hook syntax, project-hook rendering, and package
+dry-run checks were not rerun because this follow-up changes only the TOML
+scanner/tests and does not touch hook assets or packaging inputs.

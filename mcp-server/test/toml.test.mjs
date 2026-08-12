@@ -105,6 +105,7 @@ test('insertMarkedBlockAtRoot ignores marker and section-looking lines in triple
   const original = [
     'description = """',
     'prose before marker',
+    'escaped quote sequence: ' + '\\' + '"""',
     '# BEGIN foreign-looking',
     '[not_a_real_table]',
     'prose after marker',
@@ -157,6 +158,50 @@ test('insertMarkedBlockAtRoot ignores marker and section-looking lines in triple
     ...original.split('\n').slice(firstTableLine),
   ].join('\n');
   assert.equal(out, expected, 'unmanaged bytes must remain unchanged around the insertion');
+});
+
+test('insertMarkedBlockAtRoot ignores triple delimiters in TOML comments', () => {
+  const original = [
+    '# Example: developer_instructions = """',
+    '[profiles.a]',
+    'name = "x"',
+    '',
+  ].join('\n');
+  const marker = '# BEGIN Owned\nowned = true\n# END Owned\n';
+  const out = insertMarkedBlockAtRoot(original, 'Owned', 'owned = true');
+  const actualFirstTable = out.indexOf('[profiles.a]');
+  const inserted = out.indexOf(marker);
+  assert.ok(inserted >= 0);
+  assert.ok(inserted < actualFirstTable, 'insertion must precede the real table');
+  const firstTableLine = original.split('\n').findIndex((line) => line === '[profiles.a]');
+  const expected = [
+    ...original.split('\n').slice(0, firstTableLine),
+    marker,
+    ...original.split('\n').slice(firstTableLine),
+  ].join('\n');
+  assert.equal(out, expected, 'comment and table bytes must remain unchanged around the insertion');
+});
+
+test('insertMarkedBlockAtRoot ignores triple delimiters in ordinary single-line strings', () => {
+  const original = [
+    "description = \"ordinary text containing ''' delimiter text\"",
+    '[profiles.a]',
+    'name = "x"',
+    '',
+  ].join('\n');
+  const marker = '# BEGIN Owned\nowned = true\n# END Owned\n';
+  const out = insertMarkedBlockAtRoot(original, 'Owned', 'owned = true');
+  const actualFirstTable = out.indexOf('[profiles.a]');
+  const inserted = out.indexOf(marker);
+  assert.ok(inserted >= 0);
+  assert.ok(inserted < actualFirstTable, 'insertion must precede the real table');
+  const firstTableLine = original.split('\n').findIndex((line) => line === '[profiles.a]');
+  const expected = [
+    ...original.split('\n').slice(0, firstTableLine),
+    marker,
+    ...original.split('\n').slice(firstTableLine),
+  ].join('\n');
+  assert.equal(out, expected, 'single-line string and table bytes must remain unchanged around the insertion');
 });
 
 test('insertMarkedBlockAtRoot appends when there are no sections', () => {

@@ -1145,3 +1145,71 @@ git add mcp-server/cli/lib/toml.mjs mcp-server/cli/adapters/codex.mjs \
 git commit -m "fix(codex): ignore TOML strings during root insertion"
 git push origin codex/codex-parity-distribution
 ```
+
+### Task 15 follow-up: Distinguish TOML Delimiter Contexts
+
+**Files:**
+- Modify: `mcp-server/cli/lib/toml.mjs`
+- Modify: `mcp-server/test/toml.test.mjs`
+- Modify: this plan
+- Modify: `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-15-report.md`
+
+**Failure:**
+
+The shared multiline-string mask still recognizes any triple quote sequence,
+including one inside a TOML comment or an ordinary single-line basic/literal
+string. A valid comment containing `developer_instructions = """` or a valid
+single-line string containing `'''` can therefore mask the real first table to
+EOF and append the owned root block after `[profiles.a]`.
+
+**Step 1: Add valid-TOML regressions and capture RED**
+
+Before production edits, add two `toml.test.mjs` regressions: a comment line
+containing `developer_instructions = """` before `[profiles.a]`, and a normal
+single-line string containing triple-single-delimiter text before the same
+table. Each must insert the owned block before the real table at the root and
+preserve all original bytes exactly.
+
+Run on `f9dd1c2` before changing production code:
+
+```bash
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+Expected: RED because the current mask treats those delimiter-looking strings
+as multiline openings and masks the actual table to EOF.
+
+**Step 2: Recognize delimiter context without becoming a TOML parser**
+
+Update `maskTomlMultilineStrings` minimally so triple delimiters are recognized
+only outside TOML comments and ordinary single-line basic/literal strings.
+Preserve line lengths/newlines and the current multiline handling, including
+escaped basic-string quotes. Keep conservative malformed-input behavior rather
+than attempting full TOML validation.
+
+**Step 3: Verify focused, package, Python, and diff contracts**
+
+Run:
+
+```bash
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+cd mcp-server && npm test
+cd ..
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+git diff --check
+git status --short
+```
+
+Run the full Python suite if practical; do not rerun hook/render/pack checks
+unless this helper change affects those artifacts.
+
+**Exact staging and commit:**
+
+```bash
+git add -f docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
+  .superpowers/sdd/2026-08-11-codex-parity-distribution/task-15-report.md
+git add mcp-server/cli/lib/toml.mjs mcp-server/test/toml.test.mjs
+git commit -m "fix(codex): distinguish TOML delimiter contexts"
+git push origin codex/codex-parity-distribution
+```

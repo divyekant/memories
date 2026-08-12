@@ -8,6 +8,7 @@ export function maskTomlMultilineStrings(text) {
   const chars = [...String(text ?? '')];
   const original = [...chars];
   let mode = null;
+  let inComment = false;
 
   const isEscaped = (index) => {
     let slashes = 0;
@@ -17,20 +18,48 @@ export function maskTomlMultilineStrings(text) {
 
   for (let i = 0; i < chars.length; i += 1) {
     if (mode === null) {
+      if (inComment) {
+        if (chars[i] === '\n' || chars[i] === '\r') inComment = false;
+        continue;
+      }
+      if (chars[i] === '#') {
+        inComment = true;
+        continue;
+      }
       if ((chars[i] === '"' || chars[i] === "'") && chars[i + 1] === chars[i] && chars[i + 2] === chars[i]) {
-        mode = chars[i];
+        mode = `multiline:${chars[i]}`;
         chars[i] = chars[i + 1] = chars[i + 2] = ' ';
         i += 2;
+      } else if (chars[i] === '"' || chars[i] === "'") {
+        mode = `single:${chars[i]}`;
       }
       continue;
     }
 
+    if (mode.startsWith('single:')) {
+      const quote = mode.at(-1);
+      if (chars[i] === '\n' || chars[i] === '\r') {
+        // Ordinary TOML strings cannot span a raw newline. Treat an
+        // unterminated one conservatively as a multiline body so later
+        // table-looking prose is masked instead of being trusted as config.
+        mode = `multiline:${quote}`;
+        continue;
+      }
+      if (quote === '"' && chars[i] === '\\' && chars[i + 1] !== '\n' && chars[i + 1] !== '\r') {
+        i += 1;
+        continue;
+      }
+      if (chars[i] === quote) mode = null;
+      continue;
+    }
+
+    const quote = mode.at(-1);
     if (chars[i] === '\n' || chars[i] === '\r') continue;
     if (
-      chars[i] === mode
-      && chars[i + 1] === mode
-      && chars[i + 2] === mode
-      && (mode !== '"' || !isEscaped(i))
+      chars[i] === quote
+      && chars[i + 1] === quote
+      && chars[i + 2] === quote
+      && (quote !== '"' || !isEscaped(i))
     ) {
       chars[i] = chars[i + 1] = chars[i + 2] = ' ';
       i += 2;
