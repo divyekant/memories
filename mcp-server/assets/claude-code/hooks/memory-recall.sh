@@ -153,6 +153,7 @@ query_for_prefix() {
 
 RAW_RESPONSES=""
 SCOPED_PREFIX_LIST=""
+PREFIX_FANOUT_DIR=$(mktemp -d)
 IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
 prefix_idx=0
 for raw_prefix in "${prefix_templates[@]}"; do
@@ -160,11 +161,8 @@ for raw_prefix in "${prefix_templates[@]}"; do
   raw_prefix=$(echo "$raw_prefix" | xargs)
   [ -z "$raw_prefix" ] && continue
 
-  # End-to-end deadline: several sequential searches can sum past the
-  # hook's own budget even with nothing failing. Once there isn't enough
-  # left to justify another call, stop issuing them — partial context
-  # delivered on time beats complete context discarded when hooks.json
-  # kills the whole process at its own timeout.
+  # Deadline is checked ONCE, before the fan-out: every prefix search is
+  # issued together, so there is no "remaining" set to shed mid-loop.
   if [ "$(_hook_deadline_exhausted)" = "true" ]; then
     SKIPPED_PREFIXES=$(IFS=,; echo "${prefix_templates[*]:$((prefix_idx - 1))}")
     _log_warn "Hook budget exhausted — skipping remaining prefix searches: $SKIPPED_PREFIXES"
@@ -179,17 +177,37 @@ for raw_prefix in "${prefix_templates[@]}"; do
     learning/*|wip/*) limit=2 ;;
   esac
 
-  response=$(search_memories "$query" "$prefix" "$limit" "$MEMORIES_RECALL_SCOPED_THRESHOLD")
-  _note_auth_status "$response"
-  if [ -n "$response" ]; then
-    RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
-  fi
+  # Issue in parallel. Sequentially these summed past the hook budget on any
+  # non-local backend: measured 0.80-1.19s per call against a remote backend
+  # through a proxy, versus 4.5s usable, so the tail searches (notably the
+  # deferred-work WIP prefix) were shed every session and never surfaced —
+  # one of the things recall exists for. Fanned out, wall-clock is one call
+  # rather than their sum. Each still derives its own --max-time from the
+  # shared deadline inside _search_memories_multi, and they all start at
+  # roughly the same moment, so none is starved by the others.
+  (
+    search_memories "$query" "$prefix" "$limit" "$MEMORIES_RECALL_SCOPED_THRESHOLD" \
+      > "$PREFIX_FANOUT_DIR/p_${prefix_idx}" 2>/dev/null
+  ) &
 
   if [ -n "$SCOPED_PREFIX_LIST" ]; then
     SCOPED_PREFIX_LIST="$SCOPED_PREFIX_LIST, "
   fi
   SCOPED_PREFIX_LIST="$SCOPED_PREFIX_LIST$prefix"
 done
+
+# Collect after the fan-out. Auth status is read from the response JSON, so it
+# survives the subshells that produced it.
+wait 2>/dev/null || true
+for _fanout_file in "$PREFIX_FANOUT_DIR"/p_*; do
+  [ -e "$_fanout_file" ] || continue
+  response=$(cat "$_fanout_file" 2>/dev/null) || response=""
+  _note_auth_status "$response"
+  if [ -n "$response" ]; then
+    RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
+  fi
+done
+rm -rf "$PREFIX_FANOUT_DIR"
 
 RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$RECALL_LIMIT" '
   map(select(type == "object") | (.results // []))
