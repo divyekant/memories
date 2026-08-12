@@ -51,8 +51,50 @@ RED result: the file failed at module loading because
 - Installer-owned Codex MCP blocks now refresh in place; unmanaged
   `[mcp_servers.memories]` sections are left byte-for-byte unchanged.
 - Current Codex approval policy defaults to `prompt` and explicitly approves
-  only the seven read-only Memories tools. Legacy settings rules are removed
+  only the six read-only Memories tools; `memory_is_useful` is a persistent
+  feedback write and remains prompt-gated. Legacy settings rules are removed
   only when recorded in install-state, after the TOML write; provenance is
   cleared last and remains available when cleanup fails.
 - Codex uninstall now removes only recorded settings rules; unrecorded rules
   are preserved because their ownership cannot be inferred safely.
+
+## Follow-up safety correction
+
+The review identified two safety gaps and the follow-up closes both:
+
+- `memory_is_useful` POSTs persistent ranking feedback, so it was removed from
+  the six-tool auto-approved set while recorded legacy feedback rules remain
+  eligible for provenance-based migration cleanup.
+- Incomplete, reversed, or duplicate installer markers now raise a specific
+  `ERR_TOML_MARKED_BLOCK` error. Codex install propagates that failure before
+  writing the config or cleaning legacy settings/provenance.
+
+RED command:
+
+```text
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs mcp-server/test/hooks.test.mjs mcp-server/test/adapter-claude-code.test.mjs mcp-server/test/cli.test.mjs
+```
+
+RED result: `64 passed, 9 failed`; failures covered the stale seven-tool
+allowlist and the missing fail-closed marker/retry behavior.
+
+GREEN verification:
+
+- The same affected suite: **73 passed, 0 failed**.
+- `node --test` from `mcp-server/`: **225 passed, 0 failed**.
+- `git diff --check`: passed.
+
+The deprecated shell installer now derives the same six-tool approval set. Its
+focused regression passed:
+
+```text
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q -o addopts='' tests/test_installer.py -k 'does_not_auto_approve_feedback_writes'
+```
+
+Result: **1 passed**. The remaining installer tests pass with the pre-existing
+expanded-lifecycle assertion excluded (`16 passed, 1 deselected`); that stale
+assertion predates this follow-up and expects no `PreCompact` output even though
+the shipped installer emits the accepted expanded lifecycle.
+
+Follow-up commit: this report is included in the commit carrying
+`fix(codex): keep feedback writes prompt-gated`.

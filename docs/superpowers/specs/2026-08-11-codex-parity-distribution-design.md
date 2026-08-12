@@ -46,7 +46,7 @@ The installer will detect the installed Codex version. Codex 0.146.0 and newer r
 
 ### Current Codex MCP configuration
 
-The Codex adapter will move the seven read-only tool approvals into the documented `config.toml` MCP tool approval structure for the installer-owned `memories` server. Write and destructive tools remain prompt-gated.
+The Codex adapter will move the six read-only tool approvals into the documented `config.toml` MCP tool approval structure for the installer-owned `memories` server. Feedback, write, and destructive tools remain prompt-gated.
 
 Legacy allow-rules previously written to `~/.codex/settings.json` will be removed only when the install-state record proves Memories owns them. Foreign and pre-existing rules remain untouched. Uninstall will remove only installer-owned TOML blocks and recorded legacy settings.
 

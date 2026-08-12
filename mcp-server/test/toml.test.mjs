@@ -17,6 +17,24 @@ test('upsertMarkedBlock replaces only the owned block', () => {
   assert.match(next, /new = true/);
 });
 
+test('upsertMarkedBlock rejects incomplete or ambiguous ownership markers', () => {
+  for (const text of [
+    '# BEGIN Owned\nold = true\n',
+    '# END Owned\nold = true\n',
+    '# END Owned\n# BEGIN Owned\nold = true\n# END Owned\n',
+    '# BEGIN Owned\none = true\n# END Owned\n# BEGIN Owned\ntwo = true\n# END Owned\n',
+  ]) {
+    assert.throws(
+      () => upsertMarkedBlock(text, 'Owned', 'new = true'),
+      (error) => {
+        assert.equal(error.code, 'ERR_TOML_MARKED_BLOCK');
+        assert.match(error.message, /invalid marked block/i);
+        return true;
+      },
+    );
+  }
+});
+
 test('removeMarkedBlock strips block and markers, keeps rest', () => {
   const text = 'keep = 1\n\n# BEGIN M\ninner = 2\n# END M\ntail = 3\n';
   const out = removeMarkedBlock(text, 'M');

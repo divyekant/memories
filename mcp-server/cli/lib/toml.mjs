@@ -13,10 +13,23 @@ export function upsertMarkedBlock(text, marker, body) {
   const start = `# BEGIN ${marker}`;
   const end = `# END ${marker}`;
   const lines = text.split('\n');
-  const startIndex = lines.findIndex((line) => line === start);
-  if (startIndex === -1) return appendMarkedBlock(text, marker, body);
-  const endIndex = lines.findIndex((line, index) => index > startIndex && line === end);
-  if (endIndex === -1) return appendMarkedBlock(text, marker, body);
+  const starts = lines.flatMap((line, index) => line === start ? [index] : []);
+  const ends = lines.flatMap((line, index) => line === end ? [index] : []);
+  if (starts.length === 0 && ends.length === 0) return appendMarkedBlock(text, marker, body);
+  if (starts.length !== 1 || ends.length !== 1) {
+    const error = new Error(`Invalid marked block "${marker}": ambiguous ownership markers`);
+    error.name = 'TomlMarkedBlockError';
+    error.code = 'ERR_TOML_MARKED_BLOCK';
+    throw error;
+  }
+  const startIndex = starts[0];
+  const endIndex = ends[0];
+  if (endIndex < startIndex) {
+    const error = new Error(`Invalid marked block "${marker}": end marker precedes begin marker`);
+    error.name = 'TomlMarkedBlockError';
+    error.code = 'ERR_TOML_MARKED_BLOCK';
+    throw error;
+  }
   return [...lines.slice(0, startIndex + 1), body, ...lines.slice(endIndex)].join('\n');
 }
 

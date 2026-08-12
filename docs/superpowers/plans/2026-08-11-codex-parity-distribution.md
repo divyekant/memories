@@ -272,7 +272,7 @@ default_tools_approval_mode = "prompt"
 approval_mode = "approve"
 ```
 
-Assert all seven read-only tools are approved and no write/delete/update tool is approved. Seed a v5.12 managed block plus recorded legacy settings permissions, run update/install, and assert the TOML is replaced while only recorded legacy settings rules are removed. An unmanaged MCP section must remain byte-for-byte unchanged.
+Assert all six read-only tools are approved and no write/delete/update/feedback tool is approved. Seed a v5.12 managed block plus recorded legacy settings permissions, run update/install, and assert the TOML is replaced while only recorded legacy settings rules are removed. An unmanaged MCP section must remain byte-for-byte unchanged.
 
 - [ ] **Step 2: Run TOML/adapter tests and verify RED**
 
@@ -378,7 +378,7 @@ auth = "oauth"
 default_tools_approval_mode = "prompt"
 ```
 
-followed by the seven read-only approval tables from Task 3. Preserve local stdio behavior when absent and unmanaged-section protection in both modes.
+followed by the six read-only approval tables from Task 3. Preserve local stdio behavior when absent and unmanaged-section protection in both modes.
 
 - [ ] **Step 4: Write failing remote-attribution tests**
 

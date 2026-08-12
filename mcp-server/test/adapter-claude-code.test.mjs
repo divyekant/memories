@@ -43,8 +43,8 @@ test('install with ctx.mcpNames pre-approves read-only tools for every named ser
   assert.ok(allow.includes('mcp__memories__memory_search'));
   assert.ok(allow.includes('mcp__Remote_Memories__memory_search'));
   assert.ok(allow.includes('mcp__Remote_Memories__memory_conflicts'));
-  // 7 default + 7 for Remote_Memories, no duplicates from the repeated name
-  assert.equal(allow.filter((t) => t.startsWith('mcp__memories__') || t.startsWith('mcp__Remote_Memories__')).length, 14);
+  // 6 default + 6 for Remote_Memories, no duplicates from the repeated name
+  assert.equal(allow.filter((t) => t.startsWith('mcp__memories__') || t.startsWith('mcp__Remote_Memories__')).length, 12);
   assert.equal(new Set(allow).size, allow.length);
 });
 
@@ -53,8 +53,9 @@ test('install without ctx.mcpNames falls back to the default "memories" server o
   await adapter.install(ctx);
   const settings = await readJson(join(ctx.home, '.claude/settings.json'));
   const allow = settings.permissions.allow;
-  assert.equal(allow.length, 7);
+  assert.equal(allow.length, 6);
   assert.ok(allow.every((t) => t.startsWith('mcp__memories__')));
+  assert.ok(!allow.includes('mcp__memories__memory_is_useful'));
 });
 
 test('install is idempotent — second run changes nothing', async () => {
@@ -218,7 +219,7 @@ test('a failed uninstall keeps its record so a retry still clears custom --mcp-n
   const ctx = await freshCtx();
   await adapter.install({ ...ctx, mcpNames: ['memories', 'Remote_Memories'] });
   const statePath = join(ctx.home, '.config/memories/install-state.json');
-  assert.equal((await readRecordedPermissions(statePath, 'claude-code')).length, 14);
+  assert.equal((await readRecordedPermissions(statePath, 'claude-code')).length, 12);
 
   // Malformed settings.json makes uninstall throw before it can remove
   // anything from permissions.allow.
@@ -227,7 +228,7 @@ test('a failed uninstall keeps its record so a retry still clears custom --mcp-n
 
   // Provenance must survive: hooks/skills are gone, so a retry could no
   // longer infer that the Remote_Memories rules were ours.
-  assert.equal((await readRecordedPermissions(statePath, 'claude-code')).length, 14);
+  assert.equal((await readRecordedPermissions(statePath, 'claude-code')).length, 12);
 
   await writeJson(join(ctx.home, '.claude/settings.json'), {
     permissions: { allow: ['mcp__Remote_Memories__memory_search', 'mcp__memories__memory_search', 'Bash(ls)'] },

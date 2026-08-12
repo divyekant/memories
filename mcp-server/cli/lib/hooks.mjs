@@ -9,10 +9,10 @@ import { basename, join } from 'node:path';
 // no single rule that covers an unknown name. See readonlyMcpTools().
 export const READONLY_MCP_TOOL_NAMES = [
   'memory_search', 'memory_list', 'memory_count', 'memory_stats',
-  'memory_is_novel', 'memory_is_useful', 'memory_conflicts',
+  'memory_is_novel', 'memory_conflicts',
 ];
 
-// Returns the 7 read-only memory-tool allow-rules for a given MCP server
+// Returns the 6 read-only memory-tool allow-rules for a given MCP server
 // name. Deliberately NOT `mcp__<server>__*` — that would also pre-approve
 // destructive tools (memory_delete, memory_update, ...), defeating the
 // point of a read-only allowlist.
@@ -20,7 +20,7 @@ export function readonlyMcpTools(serverName = 'memories') {
   return READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__${serverName}__${tool}`);
 }
 
-// Back-compat export: the default-name rule set, byte-identical to before.
+// Back-compat export: the default-name rule set.
 export const READONLY_MCP_TOOLS = readonlyMcpTools();
 
 export function renderHooksJson(config, hooksDir) {

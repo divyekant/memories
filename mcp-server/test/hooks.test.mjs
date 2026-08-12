@@ -72,8 +72,9 @@ test('copyHookScripts copies expanded Codex lifecycle scripts', async () => {
 });
 
 test('READONLY_MCP_TOOLS matches install.sh allowlist', () => {
-  assert.equal(READONLY_MCP_TOOLS.length, 7);
+  assert.equal(READONLY_MCP_TOOLS.length, 6);
   assert.ok(READONLY_MCP_TOOLS.includes('mcp__memories__memory_search'));
+  assert.ok(!READONLY_MCP_TOOLS.includes('mcp__memories__memory_is_useful'));
 });
 
 test('readonlyMcpTools() default matches READONLY_MCP_TOOLS byte-for-byte', () => {
@@ -83,14 +84,13 @@ test('readonlyMcpTools() default matches READONLY_MCP_TOOLS byte-for-byte', () =
 
 test('readonlyMcpTools(serverName) substitutes the server segment only', () => {
   const tools = readonlyMcpTools('Remote_Memories');
-  assert.equal(tools.length, 7);
+  assert.equal(tools.length, 6);
   assert.deepEqual(tools, [
     'mcp__Remote_Memories__memory_search',
     'mcp__Remote_Memories__memory_list',
     'mcp__Remote_Memories__memory_count',
     'mcp__Remote_Memories__memory_stats',
     'mcp__Remote_Memories__memory_is_novel',
-    'mcp__Remote_Memories__memory_is_useful',
     'mcp__Remote_Memories__memory_conflicts',
   ]);
 });

@@ -186,6 +186,26 @@ def test_codex_install_writes_standalone_hooks_json(tmp_path: Path) -> None:
     assert (hook_dir / "response-hints.json").exists()
 
 
+def test_codex_installer_does_not_auto_approve_feedback_writes(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write_fake_curl(bin_dir)
+
+    result = _run_installer(
+        home,
+        "--codex",
+        install_script=install_script,
+        input_text="4\n",
+        extra_env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    settings = json.loads((home / ".codex" / "settings.json").read_text())
+    assert "mcp__memories__memory_is_useful" not in settings["permissions"]["allow"]
+
+
 def test_codex_install_adds_client_attribution_to_existing_mcp_config(tmp_path: Path) -> None:
     install_script = _prepare_installer_fixture(tmp_path)
     home = tmp_path / "home"

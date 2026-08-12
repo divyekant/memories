@@ -41,7 +41,7 @@ test('install writes hooks, hooks.json, current approvals, and config.toml block
   for (const tool of READONLY_MCP_TOOL_NAMES) {
     assert.match(toml, new RegExp(`\\[mcp_servers\\.memories\\.tools\\.${tool}\\]\\napproval_mode = "approve"`));
   }
-  for (const tool of ['memory_add', 'memory_delete', 'memory_delete_batch', 'memory_update', 'memory_extract']) {
+  for (const tool of ['memory_add', 'memory_delete', 'memory_delete_batch', 'memory_update', 'memory_extract', 'memory_is_useful']) {
     assert.doesNotMatch(toml, new RegExp(`mcp_servers\\.memories\\.tools\\.${tool}`));
   }
   assert.ok(toml.includes('# BEGIN Memories Codex developer instructions'));
@@ -212,7 +212,12 @@ test('install refreshes the owned MCP block and removes only recorded legacy set
     appendMarkedBlock('model = "gpt-5.5"\n', 'Memories Codex MCP', oldBody),
   );
 
-  const legacyRules = READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`);
+  // Include the former feedback rule to prove recorded legacy cleanup still
+  // removes it even though current approvals no longer include it.
+  const legacyRules = [
+    ...READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`),
+    'mcp__memories__memory_is_useful',
+  ];
   const preservedRules = ['mcp__memories__memory_delete', 'mcp__other_memory_product__memory_search'];
   await writeJson(join(ctx.home, '.codex/settings.json'), {
     permissions: { allow: [...legacyRules, ...preservedRules] },
@@ -234,6 +239,35 @@ test('install refreshes the owned MCP block and removes only recorded legacy set
   const settings = await readJson(join(ctx.home, '.codex/settings.json'));
   assert.deepEqual(settings.permissions.allow, preservedRules);
   assert.equal((await readJson(join(ctx.home, '.config/memories/install-state.json'))).permissions, undefined);
+});
+
+test('install fails closed on an incomplete owned MCP block before cleanup', async () => {
+  const ctx = await freshCtx();
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  const malformed = appendMarkedBlock(
+    'model = "gpt-5.5"\n',
+    'Memories Codex MCP',
+    '[mcp_servers.memories]\ncommand = "npx"',
+  ).replace('\n# END Memories Codex MCP\n', '\n');
+  await writeFile(join(ctx.home, '.codex/config.toml'), malformed);
+
+  const legacyRules = [
+    ...READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`),
+    'mcp__memories__memory_is_useful',
+  ];
+  const settingsPath = join(ctx.home, '.codex/settings.json');
+  const statePath = join(ctx.home, '.config/memories/install-state.json');
+  await writeJson(settingsPath, { permissions: { allow: legacyRules } });
+  await writeJson(statePath, { permissions: { codex: legacyRules } });
+
+  const beforeConfig = await readFile(join(ctx.home, '.codex/config.toml'), 'utf8');
+  const beforeSettings = await readJson(settingsPath);
+  const beforeState = await readJson(statePath);
+  await assert.rejects(() => adapter.install(ctx), /invalid marked block/i);
+
+  assert.equal(await readFile(join(ctx.home, '.codex/config.toml'), 'utf8'), beforeConfig);
+  assert.deepEqual(await readJson(settingsPath), beforeSettings);
+  assert.deepEqual(await readJson(statePath), beforeState);
 });
 
 test('uninstall removes blocks and hooks but keeps foreign toml', async () => {
@@ -289,10 +323,13 @@ test('a failed uninstall keeps its ownership record so a retry still cleans up',
   await mkdir(join(ctx.home, '.codex'), { recursive: true });
   await adapter.install(ctx);
   const statePath = join(ctx.home, '.config/memories/install-state.json');
-  const legacyRules = READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`);
+  const legacyRules = [
+    ...READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`),
+    'mcp__memories__memory_is_useful',
+  ];
   await writeJson(join(ctx.home, '.codex/settings.json'), { permissions: { allow: legacyRules } });
   await writeJson(statePath, { permissions: { codex: legacyRules } });
-  assert.equal((await readJson(statePath)).permissions.codex.length, 7);
+  assert.equal((await readJson(statePath)).permissions.codex.length, legacyRules.length);
 
   // Make uninstall throw partway through, after the point where provenance
   // used to be consumed.
@@ -301,7 +338,7 @@ test('a failed uninstall keeps its ownership record so a retry still cleans up',
 
   // The record must survive the failure — the on-disk artifacts it would
   // otherwise be inferred from are already gone.
-  assert.deepEqual((await readJson(statePath)).permissions.codex.length, 7);
+  assert.deepEqual((await readJson(statePath)).permissions.codex.length, legacyRules.length);
 
   await writeFile(join(ctx.home, '.codex/hooks.json'), '{}');
   await adapter.uninstall(ctx);

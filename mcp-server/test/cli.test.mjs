@@ -77,8 +77,9 @@ test('init --yes without --mcp-name only pre-approves the default server (unchan
     fetchImpl: async () => new Response(JSON.stringify({ total_memories: 0 }), { status: 200 }),
   });
   const settings = await readJson(join(home, '.claude/settings.json'));
-  assert.equal(settings.permissions.allow.length, 7);
+  assert.equal(settings.permissions.allow.length, 6);
   assert.ok(settings.permissions.allow.every((t) => t.startsWith('mcp__memories__')));
+  assert.ok(!settings.permissions.allow.includes('mcp__memories__memory_is_useful'));
 });
 
 test('init --dry-run writes nothing', async () => {

@@ -161,10 +161,13 @@ export async function install(ctx) {
 
   await mkdir(join(ctx.home, '.codex'), { recursive: true });
   let toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
-  const ownsMcpBlock = toml.split('\n').some((line) => line === `# BEGIN ${MARKER_MCP}`);
-  // An existing MCP section without our marker belongs to the user. Refresh
-  // only a marked block, or create one when no Memories server exists yet.
-  if (ownsMcpBlock || !hasTomlSection(toml, 'mcp_servers.memories')) {
+  const hasMcpMarker = toml.split('\n').some((line) =>
+    line === `# BEGIN ${MARKER_MCP}` || line === `# END ${MARKER_MCP}`,
+  );
+  // An existing MCP section without any ownership marker belongs to the user.
+  // Refresh only a marked block, or create one when no Memories server exists.
+  // upsertMarkedBlock fails closed when the marker pair is incomplete/ambiguous.
+  if (hasMcpMarker || !hasTomlSection(toml, 'mcp_servers.memories')) {
     toml = upsertMarkedBlock(toml, MARKER_MCP, mcpBlock(ctx));
   }
 
