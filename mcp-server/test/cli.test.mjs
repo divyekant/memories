@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { parseArgs, run } from '../cli/index.mjs';
+import { parseArgs, run, validateRemoteMcpUrl } from '../cli/index.mjs';
 import { readJson, writeJson } from '../cli/lib/json-file.mjs';
 
 const exists = (p) => access(p).then(() => true, () => false);
@@ -115,6 +115,9 @@ test('invalid remote MCP URLs fail atomically before prompts, logs, health, or s
   const cases = [
     ['https://memory.example/mcp\nmalicious = true', /control character/i],
     ['https://memory.example/mcp\u0000malicious', /control character/i],
+    ['https:memory.example/mcp', /canonical HTTPS URL/i],
+    ['https:///memory.example/mcp', /canonical HTTPS URL/i],
+    [String.raw`https:\memory.example\mcp`, /canonical HTTPS URL/i],
     ['memory.example/mcp', /absolute HTTPS URL/i],
     ['http://memory.example/mcp', /HTTPS/i],
     ['https://user:pass@memory.example/mcp', /credentials/i],
@@ -149,6 +152,27 @@ test('invalid remote MCP URLs fail atomically before prompts, logs, health, or s
     assert.equal(promptCalls, 0, `prompts should stay untouched for ${JSON.stringify(mcpUrl)}`);
     assert.equal(healthCalls, 0, `health should stay untouched for ${JSON.stringify(mcpUrl)}`);
   }
+});
+
+test('validateRemoteMcpUrl accepts canonical HTTPS URLs with encoded paths and queries', () => {
+  assert.doesNotThrow(() => validateRemoteMcpUrl('https://memory.example/mcp?scope=read%2Fonly&next=%2Fv1%2Fsearch'));
+  assert.throws(() => validateRemoteMcpUrl('https:memory.example/mcp'), /canonical HTTPS URL/i);
+  assert.throws(() => validateRemoteMcpUrl('https:///memory.example/mcp'), /canonical HTTPS URL/i);
+  assert.throws(() => validateRemoteMcpUrl(String.raw`https:\memory.example\mcp`), /canonical HTTPS URL/i);
+});
+
+test('remote MCP value validation precedes the injectable Windows restriction log', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  const logs = [];
+  await assert.rejects(
+    () => run(['init', '--codex', '--mcp-url', 'https:memory.example/mcp', '--yes'], {
+      home,
+      platform: 'win32',
+      log: (message) => logs.push(message),
+    }),
+    /canonical HTTPS URL/i,
+  );
+  assert.deepEqual(logs, []);
 });
 
 test('parseArgs collects repeatable --mcp-name into mcpNames', () => {

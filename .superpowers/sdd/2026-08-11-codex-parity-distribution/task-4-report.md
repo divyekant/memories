@@ -41,6 +41,49 @@ Result: **234 passed, 0 failed**.
 
 `git diff --check`: passed.
 
+## Follow-up safety correction: require canonical remote MCP URLs
+
+The follow-up rejects URL-parser-normalized authority forms such as
+`https:memory.example/mcp`, `https:///memory.example/mcp`, and
+`https:\\memory.example\\mcp`. A remote URL must begin literally with
+`https://`, have a parsed hostname, and serialize identically to the supplied
+value; this preserves canonical percent-encoded paths and query strings while
+preventing ambiguous normalization. Value validation now runs immediately
+after command validation and before the Windows restriction log; target
+combination checks remain after target resolution. The platform is injectable
+for the ordering regression test.
+
+RED command:
+
+```text
+node --test mcp-server/test/cli.test.mjs
+```
+
+RED result: test-file module loading failed because the new
+`validateRemoteMcpUrl` export was not yet implemented.
+
+GREEN verification:
+
+```text
+node --test mcp-server/test/cli.test.mjs
+```
+
+Result: **25 passed, 0 failed**.
+
+```text
+node --test mcp-server/test/cli.test.mjs mcp-server/test/adapter-codex.test.mjs mcp-server/test/remote-server.test.mjs
+```
+
+Result: **89 passed, 0 failed**.
+
+```text
+cd mcp-server && node --test
+```
+
+Result: **239 passed, 0 failed**.
+
+`git diff --check`: passed.
+
 ## Behavior
 
 - `--mcp-url` is parsed separately from the REST `--url`, is accepted only

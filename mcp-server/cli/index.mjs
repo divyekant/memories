@@ -109,10 +109,9 @@ function validateRemoteMcpOptions(parsed, targets) {
   if (!targets.length || targets.some((target) => target !== 'codex')) {
     throw new Error('--mcp-url is only supported with --codex');
   }
-  validateRemoteMcpUrl(parsed.mcpUrl);
 }
 
-function validateRemoteMcpUrl(value) {
+export function validateRemoteMcpUrl(value) {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error('--mcp-url must be an absolute HTTPS URL');
   }
@@ -129,8 +128,17 @@ function validateRemoteMcpUrl(value) {
   } catch {
     throw new Error('--mcp-url must be an absolute HTTPS URL');
   }
+  if (!value.startsWith('https://')) {
+    throw new Error('--mcp-url must use canonical HTTPS URL syntax beginning with https://');
+  }
+  if (!remoteUrl.hostname) {
+    throw new Error('--mcp-url must be an absolute HTTPS URL with a host');
+  }
   if (remoteUrl.protocol !== 'https:') {
     throw new Error('--mcp-url must use https:// for remote OAuth MCP');
+  }
+  if (remoteUrl.href !== value) {
+    throw new Error('--mcp-url must use canonical HTTPS URL syntax');
   }
   if (remoteUrl.username || remoteUrl.password) {
     throw new Error('--mcp-url must not include credentials');
@@ -398,12 +406,18 @@ export async function run(argv, ctxOverrides = {}) {
     throw new Error(`Unknown command: ${parsed.command}. Valid commands: init, doctor, update, uninstall, help`);
   }
 
+  // Validate the raw remote endpoint before platform restrictions can log or
+  // target resolution can perform any other work. Target/flag combinations
+  // remain checked later, after the target set is resolved.
+  if (parsed.mcpUrl !== undefined) validateRemoteMcpUrl(parsed.mcpUrl);
+
   if (parsed.mcpUrl !== undefined && parsed.command !== 'init' && parsed.command !== 'update') {
     throw new Error('--mcp-url is only supported with init/update --codex');
   }
 
   let restrictedTargets = null;
-  if (process.platform === 'win32') {
+  const platform = ctxOverrides.platform ?? process.platform;
+  if (platform === 'win32') {
     restrictedTargets = ['generic'];
     log('Windows detected — only the generic (manual) target is supported here; wire other clients by hand using `memories doctor` output.');
   }
