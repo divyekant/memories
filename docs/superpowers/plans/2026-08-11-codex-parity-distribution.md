@@ -979,3 +979,90 @@ git add mcp-server/cli/adapters/codex.mjs mcp-server/test/adapter-codex.test.mjs
 git commit -m "fix(codex): retain current install provenance"
 git push origin codex/codex-parity-distribution
 ```
+
+### Task 14: Preserve Pre-Manifest Legacy Cleanup Across Uninstall Retries
+
+**Files:**
+- Modify: `mcp-server/cli/adapters/codex.mjs`
+- Modify: `mcp-server/test/adapter-codex.test.mjs`
+- Modify: `README.md`
+- Modify: `GETTING_STARTED.md`
+- Modify: `tests/test_codex_plugin.py`
+- Modify: this plan
+- Create (forced-added): `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-14-report.md`
+
+**Failure:**
+
+For a pre-manifest install with exact legacy hook ownership evidence and no
+install-state record, uninstall removes the hooks directory before parsing
+`hooks.json`. If that JSON is malformed, the first uninstall fails after
+destroying the evidence. A repaired retry then cannot infer ownership and
+strands the seven legacy settings rules.
+
+The lifecycle documentation tables also need their client-specific truth
+restored: Claude Code/Cursor `memory-rehydrate.sh` searches `compact_summary`
+and synchronizes `MEMORY.md`; only the later Codex lifecycle section is the
+silent `suppressOutput`/`SessionStart(source=compact)` contract.
+
+**Step 1: Add failing retry and documentation regressions; capture RED**
+
+Seed all exact legacy assets, seven legacy rules, an unrelated rule, no state,
+and malformed `.codex/hooks.json`. Assert the first uninstall fails while
+leaving hooks/settings recoverable; repair the JSON and retry, then assert the
+exact seven rules are removed, unrelated rules remain, and any inferred
+provenance is cleared only after successful cleanup. Add doc assertions that
+the generic Claude Code/Cursor lifecycle rows describe compact-summary search
+and `MEMORY.md` synchronization while the Codex-specific rows retain
+`suppressOutput`.
+
+Run before production edits:
+
+```bash
+node --test mcp-server/test/adapter-codex.test.mjs
+uv run pytest -q tests/test_codex_plugin.py
+```
+
+Expected: RED on `552b965` because malformed hooks JSON is parsed after the
+owned hook directory is removed, and the generic README/Cursor lifecycle row is
+currently phrased as the Codex no-op contract.
+
+**Step 2: Implement retry-safe preflight and documentation correction**
+
+Preflight parse every mutable JSON artifact (`hooks.json` and `settings.json`)
+before removing any ownership evidence or writing any artifact. Keep strict TOML
+marker validation first, so malformed JSON/TOML failures leave all evidence and
+state recoverable for a retry; with no pre-manifest state, do not create a
+durable inferred record merely to clean it up later. Preserve unrelated
+install-state fields/rules. Restore only the generic Claude Code/Cursor
+lifecycle wording in `README.md` and `GETTING_STARTED.md`; do not alter the
+accurate Codex section.
+
+**Step 3: Verify focused, package, and repository contracts**
+
+```bash
+node --test mcp-server/test/adapter-codex.test.mjs mcp-server/test/cli.test.mjs
+cd mcp-server && npm test
+cd ..
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+for f in mcp-server/assets/codex/hooks/*.sh integrations/codex/hooks/*.sh; do bash -n "$f"; done
+uv run python scripts/render_project_hooks.py --check
+cd mcp-server && npm pack --dry-run
+cd ..
+git diff --check
+git status --short
+```
+
+Review strict marker/JSON preflight, retry ownership, unrelated state/rule
+preservation, and the distinction between generic and Codex lifecycle docs.
+
+**Exact staging and commit:**
+
+```bash
+git add -f docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
+  .superpowers/sdd/2026-08-11-codex-parity-distribution/task-14-report.md
+git add mcp-server/cli/adapters/codex.mjs mcp-server/test/adapter-codex.test.mjs \
+  README.md GETTING_STARTED.md tests/test_codex_plugin.py
+git commit -m "fix(codex): preserve legacy cleanup across retries"
+git push origin codex/codex-parity-distribution
+```

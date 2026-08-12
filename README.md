@@ -1174,7 +1174,7 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 | Every prompt | `memory-query.sh` | Retrieves relevant memories with transcript context |
 | After response | `memory-extract.sh` | Extracts facts via AUDN |
 | Before compaction | `memory-flush.sh` | Aggressive extraction before context loss |
-| After compaction | `memory-rehydrate.sh` | Returns `suppressOutput`; Codex recall runs at `SessionStart(source=compact)` |
+| After compaction | `memory-rehydrate.sh` | Searches `compact_summary` and synchronizes `MEMORY.md` |
 | Subagent start | `memory-subagent-recall.sh` | Injects project memories into subagents at spawn |
 | Subagent stop | `memory-subagent-capture.sh` | Captures decisions from Plan/Explore agents |
 | Tool use observed | `memory-observe.sh` | Logs MCP tool invocations (observability) |

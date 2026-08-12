@@ -540,6 +540,32 @@ test('pre-manifest migration establishes provenance for later updates and clears
   assert.equal(state.unrelated, 'preserve me');
 });
 
+test('pre-manifest uninstall keeps inferred ownership recoverable when hooks JSON is malformed', async () => {
+  const ctx = await freshCtx();
+  const hooksDir = join(ctx.home, '.codex/hooks/memory');
+  const hooksJsonPath = join(ctx.home, '.codex/hooks.json');
+  const settingsPath = join(ctx.home, '.codex/settings.json');
+  const statePath = join(ctx.home, '.config/memories/install-state.json');
+  await mkdir(hooksDir, { recursive: true });
+  for (const name of LEGACY_HOOK_ASSETS) await writeFile(join(hooksDir, name), '#!/bin/sh\n');
+
+  const unrelatedRules = ['mcp__memories__memory_delete', 'mcp__other_memory_product__memory_search'];
+  await writeJson(settingsPath, { permissions: { allow: [...LEGACY_RULES, ...unrelatedRules] } });
+  await writeFile(hooksJsonPath, '{ malformed');
+
+  await assert.rejects(() => adapter.uninstall(ctx), /JSON|unexpected|end of JSON/i);
+  assert.equal(await exists(hooksDir), true, 'malformed JSON must not erase ownership evidence');
+  assert.deepEqual((await readJson(settingsPath)).permissions.allow, [...LEGACY_RULES, ...unrelatedRules]);
+  assert.equal(await exists(statePath), false, 'failed preflight must not create provenance state');
+
+  await writeJson(hooksJsonPath, { hooks: { Foreign: [{ hooks: [{ type: 'command', command: '/foreign/hook.sh' }] }] } });
+  await adapter.uninstall(ctx);
+
+  assert.equal(await exists(hooksDir), false);
+  assert.deepEqual((await readJson(settingsPath)).permissions.allow, unrelatedRules);
+  assert.equal(await exists(statePath), false, 'successful cleanup clears inferred ownership without leaving state');
+});
+
 test('install fails closed on malformed owned blocks before any mutation', async () => {
   const malformedBlocks = [
     ['Memories Codex notify', 'notify = true'],

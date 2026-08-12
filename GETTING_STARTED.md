@@ -170,7 +170,7 @@ optional plugin only guides setup.
 | `memory-query.sh` | Each prompt | Search memories with transcript context |
 | `memory-extract.sh` | After response | Extract facts (AUDN pipeline) |
 | `memory-flush.sh` | Before compaction | Aggressive extraction before context loss |
-| `memory-rehydrate.sh` | After compaction | Returns `suppressOutput`; Codex recall runs at `SessionStart(source=compact)` |
+| `memory-rehydrate.sh` | After compaction | Searches `compact_summary` and synchronizes `MEMORY.md` |
 | `memory-subagent-capture.sh` | Subagent stop | Capture Plan/Explore agent decisions |
 | `memory-observe.sh` | Tool use | Log MCP tool invocations |
 | `memory-guard.sh` | File write | Block direct MEMORY.md writes |

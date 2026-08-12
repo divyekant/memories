@@ -326,10 +326,17 @@ export async function uninstall(ctx) {
     }
   }
 
+  // Parse every mutable JSON artifact before removing the hook directory. A
+  // pre-manifest install has no recorded provenance, so its exact hook assets
+  // are the only ownership evidence available for the legacy-rule migration.
+  // If malformed JSON were discovered after rm(), a retry would lose that
+  // evidence and strand the seven legacy rules permanently.
+  const hooksJson = await exists(p.hooksJson) ? await readJson(p.hooksJson) : null;
+  const settings = await exists(p.settings) ? await readJson(p.settings) : null;
+
   await rm(p.hooksDest, { recursive: true, force: true });
 
-  if (await exists(p.hooksJson)) {
-    const hooksJson = await readJson(p.hooksJson);
+  if (hooksJson !== null) {
     if (hooksJson.hooks) {
       for (const [event, entries] of Object.entries(hooksJson.hooks)) {
         const kept = entries
@@ -341,11 +348,11 @@ export async function uninstall(ctx) {
     await writeJson(p.hooksJson, hooksJson);
   }
 
-  if (await exists(p.settings)) {
+  if (settings !== null) {
     // Only rules this install recorded; see the claude-code adapter for why
     // shape-matching is unsafe here.
     const owned = new Set(cleanupRules ?? []);
-    await writeJson(p.settings, removePermissions(await readJson(p.settings), (rule) => owned.has(rule)));
+    await writeJson(p.settings, removePermissions(settings, (rule) => owned.has(rule)));
   }
 
   if (toml !== null) {

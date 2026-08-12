@@ -110,6 +110,7 @@ def test_codex_docs_describe_published_installer_and_current_lifecycle() -> None
         assert "npm package has not been published" not in text.lower()
         assert "has not published its first npm release" not in text.lower()
         assert "Re-injects memories using compact summary" not in text
+        assert "Searches `compact_summary` and synchronizes `MEMORY.md`" in text
         assert "suppressOutput" in text
         assert "SessionStart(source=compact)" in text
 
