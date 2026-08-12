@@ -376,7 +376,7 @@ if [ "$PLAYBOOK_MODE" = "minimal" ]; then
   jq -n --arg down "${MEMORIES_BACKEND_DOWN:-0}" --arg sharing "$PROJECT_SHARING_GUIDANCE" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
-	  additionalContext: (if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first." end) + (if ($sharing | length) > 0 then "\n\n" + $sharing else "" end)
+	  additionalContext: ((if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first." end) + (if ($sharing | length) > 0 then "\n\n" + $sharing else "" end))
 	}
 }'
   exit 0
