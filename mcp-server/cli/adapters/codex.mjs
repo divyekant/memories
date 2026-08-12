@@ -1,5 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
+import { execFile as nodeExecFile } from 'node:child_process';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { readJson, writeJson, addPermissions, removePermissions, mergeHookSettings } from '../lib/json-file.mjs';
 import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS } from '../lib/hooks.mjs';
 import { installStatePath, recordPermissions, readRecordedPermissions, clearRecordedPermissions } from '../lib/install-state.mjs';
@@ -8,6 +10,14 @@ import { appendMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlS
 const MARKER_NOTIFY = 'Memories Codex notify';
 const MARKER_MCP = 'Memories Codex MCP';
 const MARKER_DEV = 'Memories Codex developer instructions';
+const CODEX_EXPANDED_HOOK_VERSION = [0, 146, 0];
+const CODEX_MANAGED_HOOKS = [
+  'memory-recall.sh', 'memory-query.sh', 'memory-extract.sh',
+  'memory-observe.sh', 'memory-guard.sh', 'memory-flush.sh',
+  'memory-rehydrate.sh', 'memory-subagent-recall.sh',
+  'memory-subagent-capture.sh', 'memory-commit.sh',
+];
+const execFile = promisify(nodeExecFile);
 
 const DEVELOPER_INSTRUCTIONS = `developer_instructions = """
 Use the Memories MCP tools as your memory layer with three responsibilities:
@@ -21,6 +31,59 @@ Source prefixes: replace {project} with the current working directory basename. 
 
 const exists = (p) => access(p).then(() => true, () => false);
 
+/**
+ * Codex added the expanded lifecycle events in 0.146.0. Parse only the first
+ * semantic version in the command output so distro suffixes and a leading
+ * `codex-cli` label do not affect the numeric comparison.
+ */
+export function supportsExpandedHooks(versionText) {
+  const match = String(versionText ?? '').match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return false;
+  const version = match.slice(1, 4).map(Number);
+  for (let i = 0; i < CODEX_EXPANDED_HOOK_VERSION.length; i += 1) {
+    if (version[i] !== CODEX_EXPANDED_HOOK_VERSION[i]) {
+      return version[i] > CODEX_EXPANDED_HOOK_VERSION[i];
+    }
+  }
+  return true;
+}
+
+async function detectCodexVersion(ctx) {
+  if (ctx.codexVersion !== undefined) {
+    return String(ctx.codexVersion ?? '');
+  }
+  const execImpl = ctx.execFileImpl ?? execFile;
+  try {
+    const result = await execImpl('codex', ['--version']);
+    return typeof result === 'string' ? result : String(result?.stdout ?? '');
+  } catch {
+    return '';
+  }
+}
+
+async function installedHookProfile(path) {
+  try {
+    const hooks = await readJson(path);
+    if (!hooks.hooks) return 'unknown';
+    return Object.prototype.hasOwnProperty.call(hooks.hooks ?? {}, 'PreCompact') ? 'expanded' : 'legacy';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function removeManagedHooks(settings, hooksDir) {
+  if (!settings.hooks) return settings;
+  const ownedCommands = new Set(CODEX_MANAGED_HOOKS.map((name) => join(hooksDir, name)));
+  const hooks = {};
+  for (const [event, entries] of Object.entries(settings.hooks)) {
+    const kept = entries
+      .map((entry) => ({ ...entry, hooks: (entry.hooks ?? []).filter((hook) => !ownedCommands.has(hook.command)) }))
+      .filter((entry) => entry.hooks.length > 0);
+    if (kept.length) hooks[event] = kept;
+  }
+  return { ...settings, hooks };
+}
+
 const paths = (ctx) => ({
   hooksSrc: join(ctx.assetsDir, 'codex/hooks'),
   hooksDest: join(ctx.home, '.codex/hooks/memory'),
@@ -33,13 +96,21 @@ const paths = (ctx) => ({
 export async function install(ctx) {
   const p = paths(ctx);
 
+  const versionText = await detectCodexVersion(ctx);
+  const profile = supportsExpandedHooks(versionText) ? 'expanded' : 'legacy';
+  ctx.codexHookProfile = profile;
+
   await copyHookScripts(p.hooksSrc, p.hooksDest);
   await copyFile(p.notifySrc, join(p.hooksDest, 'memory-codex-notify.sh'));
   await chmod(join(p.hooksDest, 'memory-codex-notify.sh'), 0o755);
 
-  const hooksConfig = JSON.parse(await readFile(join(p.hooksSrc, 'hooks.json'), 'utf8'));
+  const manifest = profile === 'expanded' ? 'hooks.json' : 'hooks.legacy.json';
+  const hooksConfig = JSON.parse(await readFile(join(p.hooksSrc, manifest), 'utf8'));
   const rendered = renderHooksJson(hooksConfig, p.hooksDest);
-  const existingHooks = await readJson(p.hooksJson);
+  // Remove only commands from a prior Memories profile before merging. This
+  // lets a downgrade from expanded to legacy remove stale lifecycle entries
+  // while mergeHookSettings still preserves every foreign hook entry.
+  const existingHooks = removeManagedHooks(await readJson(p.hooksJson), p.hooksDest);
   await writeJson(p.hooksJson, mergeHookSettings(existingHooks, rendered));
 
   let settings = await readJson(p.settings);
@@ -71,7 +142,7 @@ MEMORIES_CLIENT = "codex"`;
   }
   await writeFile(p.config, toml);
 
-  ctx.log(`Codex wired (hooks: ${p.hooksDest})`);
+  ctx.log(`Codex wired (hooks: ${p.hooksDest}, hook profile: ${profile})`);
 }
 
 export async function uninstall(ctx) {
@@ -120,5 +191,6 @@ export async function status(ctx) {
   const hooks = await exists(p.hooksDest);
   const toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
   const mcp = hasTomlSection(toml, 'mcp_servers.memories');
-  return { installed: hooks && mcp, details: [`hooks: ${hooks}`, `mcp: ${mcp}`] };
+  const profile = ctx.codexHookProfile ?? await installedHookProfile(p.hooksJson);
+  return { installed: hooks && mcp, details: [`hooks: ${hooks}`, `mcp: ${mcp}`, `hook profile: ${profile}`] };
 }

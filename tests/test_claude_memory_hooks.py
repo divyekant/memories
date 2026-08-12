@@ -1391,6 +1391,187 @@ def test_codex_memory_recall_logs_session_metrics_and_attributes_searches(tmp_pa
     }
 
 
+def test_codex_precompact_submits_transcript_extraction(tmp_path: Path) -> None:
+    transcript = tmp_path / "precompact.jsonl"
+    transcript.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "user", "message": {"content": "Decision: keep the Codex hook payload snake_case."}}),
+                json.dumps({"type": "assistant", "message": {"content": "The lifecycle adapter will preserve Codex source semantics."}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    payload = {
+        "session_id": "codex-precompact",
+        "transcript_path": str(transcript),
+        "cwd": "/Users/example/memories",
+        "hook_event_name": "PreCompact",
+        "trigger": "auto",
+    }
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-flush.sh",
+        tmp_path,
+        payload,
+        responses=[],
+    )
+
+    assert result.returncode == 0, result.stderr
+    extract_calls = [call for call in calls if str(call["url"]).endswith("/memory/extract")]
+    assert len(extract_calls) == 1
+    assert extract_calls[0]["body"]["context"] == "pre_compact"
+    assert extract_calls[0]["body"]["source"] == "codex/memories"
+    assert "snake_case" in extract_calls[0]["body"]["messages"]
+
+
+def test_codex_postcompact_returns_scoped_additional_context(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 951,
+                        "source": "codex/memories",
+                        "text": "Codex compaction keeps the project source prefix scoped.",
+                        "similarity": 0.95,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+    payload = {
+        "session_id": "codex-postcompact",
+        "cwd": "/Users/example/memories",
+        "hook_event_name": "PostCompact",
+        "trigger": "Codex compaction preserved the project source prefix.",
+    }
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-rehydrate.sh",
+        tmp_path,
+        payload,
+        responses=responses,
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    assert output["hookSpecificOutput"]["hookEventName"] == "PostCompact"
+    assert "Codex compaction keeps the project source prefix scoped." in output["hookSpecificOutput"]["additionalContext"]
+    search_calls = [call for call in calls if str(call["url"]).endswith("/search")]
+    assert any(call["body"].get("source_prefix") == "codex/memories" for call in search_calls)
+
+
+def test_codex_subagent_start_returns_project_scoped_additional_context(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 952,
+                        "source": "codex/memories",
+                        "text": "Subagents inherit the Codex project memory context.",
+                        "similarity": 0.94,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+    payload = {
+        "session_id": "codex-subagent-start",
+        "cwd": "/Users/example/memories",
+        "hook_event_name": "SubagentStart",
+        "agent_id": "agent-1",
+        "agent_type": "explorer",
+        "trigger": "spawn",
+    }
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-subagent-recall.sh",
+        tmp_path,
+        payload,
+        responses=responses,
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    assert output["hookSpecificOutput"]["hookEventName"] == "SubagentStart"
+    assert "Subagents inherit the Codex project memory context." in output["hookSpecificOutput"]["additionalContext"]
+    search_calls = [call for call in calls if str(call["url"]).endswith("/search")]
+    assert any(call["body"].get("source_prefix") == "codex/memories" for call in search_calls)
+
+
+def test_codex_subagent_stop_submits_subagent_transcript_and_last_message(tmp_path: Path) -> None:
+    transcript = tmp_path / "subagent.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "assistant", "message": {"content": "Subagent decision: retain the hook timeout."}}) + "\n",
+        encoding="utf-8",
+    )
+    payload = {
+        "session_id": "codex-subagent-stop",
+        "transcript_path": str(transcript),
+        "cwd": "/Users/example/memories",
+        "hook_event_name": "SubagentStop",
+        "agent_id": "agent-1",
+        "agent_type": "explorer",
+        "last_assistant_message": "Subagent final message: the timeout remains bounded.",
+    }
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-subagent-capture.sh",
+        tmp_path,
+        payload,
+        responses=[],
+    )
+
+    assert result.returncode == 0, result.stderr
+    extract_calls = [call for call in calls if str(call["url"]).endswith("/memory/extract")]
+    assert len(extract_calls) == 1
+    assert extract_calls[0]["body"]["context"] == "subagent_stop"
+    assert "hook timeout" in extract_calls[0]["body"]["messages"]
+    assert "final message" in extract_calls[0]["body"]["messages"]
+
+
+def test_codex_session_end_enqueues_once_without_polling(tmp_path: Path) -> None:
+    transcript = tmp_path / "session-end.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "assistant", "message": {"content": "Session decision: preserve the queued extraction."}}) + "\n",
+        encoding="utf-8",
+    )
+    payload = {
+        "session_id": "codex-session-end",
+        "transcript_path": str(transcript),
+        "cwd": "/Users/example/memories",
+        "hook_event_name": "SessionEnd",
+        "trigger": "exit",
+        "last_assistant_message": "Session final message: extraction is queued.",
+    }
+
+    started = time.monotonic()
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-commit.sh",
+        tmp_path,
+        payload,
+        responses=[],
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < 3
+    extract_calls = [call for call in calls if str(call["url"]).endswith("/memory/extract")]
+    assert len(extract_calls) == 1
+    assert extract_calls[0]["body"]["context"] == "session_end"
+    assert all("status" not in str(call["url"]) for call in calls)
+    assert all("poll" not in str(call["url"]) for call in calls)
+
+
 def test_memory_extract_drops_system_reminder_content_items(tmp_path: Path) -> None:
     """Hook-injected <system-reminder> items (recalled memories) must not be
     sent to the extraction endpoint — that re-ingests them every session."""

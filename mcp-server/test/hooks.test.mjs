@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS, readonlyMcpTools } from '../cli/lib/hooks.mjs';
 
 const ASSETS = join(dirname(fileURLToPath(import.meta.url)), '../assets/claude-code/hooks');
+const CODEX_ASSETS = join(dirname(fileURLToPath(import.meta.url)), '../assets/codex/hooks');
 
 test('renderHooksJson rewrites every command to hooksDir/basename', async () => {
   const cfg = { hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: '${CLAUDE_PLUGIN_ROOT}/hooks/memory-extract.sh', timeout: 30 }] }] } };
@@ -35,6 +36,39 @@ test('copyHookScripts copies scripts + support files and sets exec bit', async (
   assert.ok(!names.includes('hooks.json')); // config is rendered, not copied
   const mode = (await stat(join(dest, 'memory-recall.sh'))).mode & 0o777;
   assert.equal(mode & 0o100, 0o100);
+});
+
+test('Codex expanded hook assets include every lifecycle script and legacy manifest', async () => {
+  const names = await readdir(CODEX_ASSETS);
+  for (const name of [
+    'memory-flush.sh',
+    'memory-rehydrate.sh',
+    'memory-subagent-recall.sh',
+    'memory-subagent-capture.sh',
+    'memory-commit.sh',
+    'hooks.legacy.json',
+  ]) {
+    assert.ok(names.includes(name), name);
+  }
+
+  const legacy = JSON.parse(await (await import('node:fs/promises')).readFile(join(CODEX_ASSETS, 'hooks.legacy.json'), 'utf8'));
+  assert.deepEqual(Object.keys(legacy.hooks).sort(), [
+    'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit',
+  ]);
+});
+
+test('copyHookScripts copies expanded Codex lifecycle scripts', async () => {
+  const dest = await mkdtemp(join(tmpdir(), 'mem-codex-hooks-'));
+  await copyHookScripts(CODEX_ASSETS, dest);
+  for (const name of [
+    'memory-flush.sh',
+    'memory-rehydrate.sh',
+    'memory-subagent-recall.sh',
+    'memory-subagent-capture.sh',
+    'memory-commit.sh',
+  ]) {
+    assert.ok((await readdir(dest)).includes(name), name);
+  }
 });
 
 test('READONLY_MCP_TOOLS matches install.sh allowlist', () => {

@@ -34,9 +34,12 @@ export function renderHooksJson(config, hooksDir) {
 
 export async function copyHookScripts(srcDir, destDir) {
   await mkdir(destDir, { recursive: true });
+  // Keep lifecycle additions (including version-gated Codex hooks) data-driven:
+  // every shipped memory hook script is copied without maintaining a second
+  // allowlist here. Sort for stable installs and deterministic pack tests.
   const names = (await readdir(srcDir)).filter(
     (n) => (n.startsWith('memory-') && n.endsWith('.sh')) || n === '_lib.sh' || n === 'response-hints.json',
-  );
+  ).sort();
   for (const n of names) {
     await copyFile(join(srcDir, n), join(destDir, n));
     if (n.endsWith('.sh')) await chmod(join(destDir, n), 0o755);

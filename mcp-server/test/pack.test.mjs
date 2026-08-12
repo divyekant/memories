@@ -13,6 +13,17 @@ test('npm pack ships exactly what we intend', async () => {
   assert.ok(files.includes('index.js'));
   assert.ok(files.includes('cli/index.mjs'));
   assert.ok(files.includes('assets/claude-code/hooks/hooks.json'));
+  assert.ok(files.includes('assets/codex/hooks/hooks.json'));
+  assert.ok(files.includes('assets/codex/hooks/hooks.legacy.json'));
+  for (const name of [
+    'memory-flush.sh',
+    'memory-rehydrate.sh',
+    'memory-subagent-recall.sh',
+    'memory-subagent-capture.sh',
+    'memory-commit.sh',
+  ]) {
+    assert.ok(files.includes(`assets/codex/hooks/${name}`), name);
+  }
   assert.ok(files.includes('assets/backend/docker-compose.standalone.yml'));
   assert.ok(files.includes('lib-tools.mjs'));
   assert.ok(files.includes('remote/server.mjs'));

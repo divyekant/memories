@@ -43,6 +43,110 @@ test('install writes hooks, hooks.json, settings perms, config.toml blocks', asy
   );
 });
 
+test('supports expanded Codex hooks only at the supported client threshold', () => {
+  assert.equal(adapter.supportsExpandedHooks('codex-cli 0.146.0'), true);
+  assert.equal(adapter.supportsExpandedHooks('codex-cli 0.145.9'), false);
+  assert.equal(adapter.supportsExpandedHooks('unknown'), false);
+});
+
+test('install selects the expanded profile and renders every native lifecycle event', async () => {
+  const ctx = await freshCtx();
+  ctx.codexVersion = 'codex-cli 0.146.0';
+  await adapter.install(ctx);
+
+  const hooksJson = await readJson(join(ctx.home, '.codex/hooks.json'));
+  assert.deepEqual(Object.keys(hooksJson.hooks).sort(), [
+    'PostCompact', 'PostToolUse', 'PreCompact', 'PreToolUse',
+    'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart',
+    'SubagentStop', 'UserPromptSubmit',
+  ]);
+  assert.equal(hooksJson.hooks.SessionEnd[0].hooks[0].timeout, 3);
+  assert.equal(ctx.codexHookProfile, 'expanded');
+
+  for (const name of [
+    'memory-flush.sh',
+    'memory-rehydrate.sh',
+    'memory-subagent-recall.sh',
+    'memory-subagent-capture.sh',
+    'memory-commit.sh',
+  ]) {
+    assert.ok(await exists(join(ctx.home, '.codex/hooks/memory', name)), name);
+  }
+
+  const status = await adapter.status(ctx);
+  assert.ok(status.details.some((detail) => detail.includes('expanded')));
+});
+
+test('install selects the five-event legacy profile for older or undetectable clients', async () => {
+  const oldCtx = await freshCtx();
+  oldCtx.codexVersion = 'codex-cli 0.145.9';
+  await adapter.install(oldCtx);
+  const oldHooks = await readJson(join(oldCtx.home, '.codex/hooks.json'));
+  assert.deepEqual(Object.keys(oldHooks.hooks).sort(), [
+    'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit',
+  ]);
+  assert.equal(oldCtx.codexHookProfile, 'legacy');
+
+  const unknownCtx = await freshCtx();
+  unknownCtx.codexVersion = 'unknown';
+  await adapter.install(unknownCtx);
+  const unknownHooks = await readJson(join(unknownCtx.home, '.codex/hooks.json'));
+  assert.deepEqual(Object.keys(unknownHooks.hooks).sort(), [
+    'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit',
+  ]);
+  assert.equal(unknownCtx.codexHookProfile, 'legacy');
+});
+
+test('install removes stale expanded lifecycle entries when downgrading to legacy', async () => {
+  const ctx = await freshCtx();
+  ctx.codexVersion = 'codex-cli 0.146.0';
+  await adapter.install(ctx);
+  ctx.codexVersion = 'codex-cli 0.145.9';
+  await adapter.install(ctx);
+
+  const hooksJson = await readJson(join(ctx.home, '.codex/hooks.json'));
+  assert.deepEqual(Object.keys(hooksJson.hooks).sort(), [
+    'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit',
+  ]);
+});
+
+test('install uses injectable Codex detection and fails closed on detection errors', async () => {
+  const expandedCtx = await freshCtx();
+  let expandedArgs;
+  expandedCtx.execFileImpl = async (...args) => {
+    expandedArgs = args;
+    return { stdout: 'codex-cli 0.146.0' };
+  };
+  await adapter.install(expandedCtx);
+  assert.deepEqual(expandedArgs, ['codex', ['--version']]);
+  assert.equal(expandedCtx.codexHookProfile, 'expanded');
+
+  const failedCtx = await freshCtx();
+  failedCtx.execFileImpl = async () => { throw new Error('codex is unavailable'); };
+  await adapter.install(failedCtx);
+  assert.equal(failedCtx.codexHookProfile, 'legacy');
+});
+
+test('install preserves foreign hooks while merging the selected Codex profile', async () => {
+  const ctx = await freshCtx();
+  ctx.codexVersion = 'codex-cli 0.146.0';
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  await writeJson(join(ctx.home, '.codex/hooks.json'), {
+    hooks: {
+      SessionStart: [{ matcher: 'foreign', hooks: [{ type: 'command', command: '/x/foreign.sh' }] }],
+      CustomEvent: [{ matcher: '', hooks: [{ type: 'command', command: '/x/custom.sh' }] }],
+    },
+  });
+
+  await adapter.install(ctx);
+
+  const hooksJson = await readJson(join(ctx.home, '.codex/hooks.json'));
+  assert.ok(JSON.stringify(hooksJson).includes('/x/foreign.sh'));
+  assert.ok(JSON.stringify(hooksJson).includes('/x/custom.sh'));
+  assert.equal(hooksJson.hooks.SessionStart.some((entry) => entry.matcher === 'foreign'), true);
+  assert.ok(hooksJson.hooks.SessionStart.some((entry) => entry.hooks.some((hook) => hook.command.endsWith('/memory-recall.sh'))));
+});
+
 test('install is idempotent on config.toml', async () => {
   const ctx = await freshCtx();
   await adapter.install(ctx);
