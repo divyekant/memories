@@ -1102,6 +1102,13 @@ class MemoryEngine:
                     mutated = True
                 continue
 
+            if m.get("source") != other.get("source"):
+                needs_review.append({"id": mid, "conflicts_with": cw, "reason": "cross_source"})
+                if not dry_run and m.get("conflict_review") != "cross_source":
+                    m["conflict_review"] = "cross_source"
+                    mutated = True
+                continue
+
             t_m, t_o = _when(m), _when(other)
             if t_m is None or t_o is None:
                 needs_review.append({"id": mid, "conflicts_with": cw, "reason": "undated"})
