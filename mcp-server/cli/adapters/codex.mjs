@@ -203,8 +203,7 @@ default_tools_approval_mode = "prompt"
 
 [mcp_servers.memories.env]
 MEMORIES_URL = "${tomlEscape(ctx.url)}"
-MEMORIES_API_KEY = "${tomlEscape(ctx.apiKey)}"
-MEMORIES_CLIENT = "codex"
+${ctx.persistApiKey === false ? '' : `MEMORIES_API_KEY = "${tomlEscape(ctx.apiKey)}"\n`}MEMORIES_CLIENT = "codex"
 
 ${approvals}`;
 }

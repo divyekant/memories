@@ -732,3 +732,44 @@ git add docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
   .superpowers/sdd/2026-08-11-codex-parity-distribution/task-9-report.md
 git commit -m "fix(codex): preserve environment across expanded hooks"
 ```
+
+---
+
+### Task 10: Omit API Keys from Local Codex TOML on `--no-persist-api-key`
+
+**Files:**
+- Modify: `mcp-server/cli/adapters/codex.mjs`
+- Modify: `mcp-server/test/adapter-codex.test.mjs`
+- Modify: `mcp-server/test/cli.test.mjs` (if needed for CLI-level generation)
+- Modify: `mcp-server/README.md` (only if wording needs precision)
+- Create (forced-added): `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-10-report.md`
+- Modify: this plan
+
+**Contract:**
+
+- `--no-persist-api-key` makes the local Codex TOML `[mcp_servers.memories].env` block omit `MEMORIES_API_KEY` entirely while preserving `MEMORIES_URL` and `MEMORIES_CLIENT`.
+- Default persistence remains unchanged: without the flag, local Codex TOML still contains `MEMORIES_API_KEY` when an API key is supplied.
+- Remote OAuth setup remains unchanged and contains no API key.
+- Hooks may read `MEMORIES_API_KEY` from the process environment; do not change hook behavior.
+
+- [ ] **Step 1: Add the failing adapter/CLI regressions and capture RED**
+
+Assert explicit secret absence for local `--no-persist-api-key`, plus preserved URL/client fields, default persistence, and unchanged remote OAuth output. Run the focused adapter/CLI tests on the current HEAD before production edits and record the failing command/output in the Task 10 report.
+
+- [ ] **Step 2: Implement the smallest Codex TOML generation fix**
+
+Follow the JSON-file/Claude adapter precedent and TOML formatting safety. Remove only the API-key assignment from the local environment block when the no-persist option is active; retain all other fields and unmanaged configuration.
+
+- [ ] **Step 3: Verify focused, package, and repository contracts**
+
+Run the focused adapter/CLI/pack tests, `cd mcp-server && npm test`, targeted Python Codex/plugin/installer tests if affected, `bash -n` for changed shell scripts, and `git diff --check`. Verify the final worktree contains only the owned files before commit.
+
+- [ ] **Step 4: Commit the exact owned files (do not push)**
+
+```bash
+git add docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
+  mcp-server/cli/adapters/codex.mjs mcp-server/test/adapter-codex.test.mjs \
+  mcp-server/test/cli.test.mjs mcp-server/README.md \
+  .superpowers/sdd/2026-08-11-codex-parity-distribution/task-10-report.md
+git commit -m "fix(codex): honor non-persistent API keys"
+```

@@ -59,6 +59,21 @@ test('remote Codex init writes an OAuth URL block without contacting the REST ba
   assert.ok(logs.some((message) => message.includes('codex mcp login memories')));
 });
 
+test('Codex init --no-persist-api-key omits the API key from generated local TOML', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await run(['init', '--codex', '--url', 'http://localhost:8900', '--api-key', 'super-secret', '--no-persist-api-key', '--yes'], {
+    home,
+    log: () => {},
+    fetchImpl: async () => new Response(JSON.stringify({ total_memories: 0 }), { status: 200 }),
+  });
+
+  const config = await readFile(join(home, '.codex/config.toml'), 'utf8');
+  assert.match(config, /MEMORIES_URL = "http:\/\/localhost:8900"/);
+  assert.match(config, /MEMORIES_CLIENT = "codex"/);
+  assert.doesNotMatch(config, /MEMORIES_API_KEY/);
+  assert.doesNotMatch(config, /super-secret/);
+});
+
 test('remote MCP options are validated before dry-run or backend checks', async () => {
   const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
   let healthCalls = 0;

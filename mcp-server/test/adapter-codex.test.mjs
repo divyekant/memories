@@ -37,6 +37,7 @@ test('install writes hooks, hooks.json, current approvals, and config.toml block
   assert.ok(toml.includes('# BEGIN Memories Codex MCP'));
   assert.ok(toml.includes('command = "npx"'));
   assert.ok(toml.includes('MEMORIES_CLIENT = "codex"'));
+  assert.ok(toml.includes('MEMORIES_API_KEY = "k"'));
   assert.ok(toml.includes('default_tools_approval_mode = "prompt"'));
   for (const tool of READONLY_MCP_TOOL_NAMES) {
     assert.match(toml, new RegExp(`\\[mcp_servers\\.memories\\.tools\\.${tool}\\]\\napproval_mode = "approve"`));
@@ -50,6 +51,19 @@ test('install writes hooks, hooks.json, current approvals, and config.toml block
     rootPrefix(toml).includes('developer_instructions'),
     'developer_instructions must be in the TOML root table, before any [section]',
   );
+});
+
+test('install omits only the local API key when persistence is disabled', async () => {
+  const ctx = await freshCtx();
+  ctx.persistApiKey = false;
+  ctx.apiKey = 'super-secret';
+  await adapter.install(ctx);
+
+  const toml = await readFile(join(ctx.home, '.codex/config.toml'), 'utf8');
+  assert.match(toml, /MEMORIES_URL = "http:\/\/localhost:8900"/);
+  assert.match(toml, /MEMORIES_CLIENT = "codex"/);
+  assert.doesNotMatch(toml, /MEMORIES_API_KEY/);
+  assert.doesNotMatch(toml, /super-secret/);
 });
 
 test('install writes a direct remote MCP URL/OAuth block with current read-only approvals', async () => {
