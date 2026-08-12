@@ -281,6 +281,82 @@ test('none mode: remote client attribution is telemetry-only and preserves autho
   }
 });
 
+test('oauth mode: authenticated client attribution preserves authorization and forwards telemetry only', async () => {
+  const backendCalls = [];
+  const fetchImpl = async (url, options) => {
+    backendCalls.push({ url, headers: options.headers });
+    return new Response(JSON.stringify({
+      total_memories: 42,
+      model: 'test-model',
+      dimension: 768,
+      index_size_bytes: 1024,
+      backup_count: 1,
+      last_updated: '2026-08-01',
+    }), { status: 200 });
+  };
+  const { baseUrl, close } = await oauthModeApp(fetchImpl);
+  try {
+    const registerRes = await fetch(`${baseUrl}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: ['https://claude.ai/api/mcp/callback'], client_name: 'Parity test' }),
+    });
+    assert.equal(registerRes.status, 201);
+    const client = await registerRes.json();
+    const verifier = Buffer.from('oauth-attribution-verifier-long-enough').toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    const authorizeRes = await fetch(`${baseUrl}/authorize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      redirect: 'manual',
+      body: new URLSearchParams({
+        password: 's3cret-pw',
+        client_id: client.client_id,
+        redirect_uri: client.redirect_uris[0],
+        state: 'attribution-state',
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+      }),
+    });
+    assert.equal(authorizeRes.status, 302);
+    const code = new URL(authorizeRes.headers.get('location')).searchParams.get('code');
+    assert.ok(code);
+    const tokenRes = await fetch(`${baseUrl}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: client.redirect_uris[0],
+        client_id: client.client_id,
+        code_verifier: verifier,
+      }),
+    });
+    assert.equal(tokenRes.status, 200);
+    const { access_token: accessToken } = await tokenRes.json();
+    assert.ok(accessToken);
+
+    for (const headers of [
+      { 'User-Agent': 'codex-cli/0.146.0' },
+      { Origin: 'https://claude.ai' },
+      { 'User-Agent': 'generic-mcp-client/1.0' },
+    ]) {
+      const res = await mcpFetch(
+        baseUrl,
+        jsonRpc('tools/call', { name: 'memory_stats', arguments: {} }),
+        { ...headers, Authorization: `Bearer ${accessToken}` },
+      );
+      assert.equal(res.status, 200);
+    }
+    assert.deepEqual(
+      backendCalls.map(({ headers }) => headers['X-Memories-Client']),
+      ['codex', 'claude-web', 'remote-mcp'],
+    );
+  } finally {
+    await close();
+  }
+});
+
 test('none mode: 200 without any Authorization header', async () => {
   const { baseUrl, close } = await noneModeApp();
   try {

@@ -179,6 +179,20 @@ test('remote MCP value validation precedes the injectable Windows restriction lo
   assert.deepEqual(logs, []);
 });
 
+test('invalid remote MCP URLs fail before help output for command and flag help paths', async () => {
+  for (const argv of [
+    ['help', '--mcp-url', 'https:memory.example/mcp'],
+    ['--help', '--mcp-url', 'https:memory.example/mcp'],
+  ]) {
+    const logs = [];
+    await assert.rejects(
+      () => run(argv, { log: (message) => logs.push(message) }),
+      /canonical HTTPS URL/i,
+    );
+    assert.deepEqual(logs, [], `help path logged before validating ${argv.join(' ')}`);
+  }
+});
+
 test('parseArgs collects repeatable --mcp-name into mcpNames', () => {
   assert.deepEqual(parseArgs(['init']).mcpNames, []);
   assert.deepEqual(parseArgs(['init', '--mcp-name', 'Remote_Memories']).mcpNames, ['Remote_Memories']);

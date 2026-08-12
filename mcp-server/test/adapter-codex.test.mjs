@@ -261,6 +261,36 @@ test('status preserves explicit false values in the exact root tables', async ()
   assert.ok(status.details.includes('external-context dedupe: enabled'));
 });
 
+test('status ignores root-looking assignments inside TOML multiline strings', async () => {
+  const ctx = await freshCtx();
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  const configPath = join(ctx.home, '.codex/config.toml');
+  await writeFile(
+    configPath,
+    '[features]\n'
+      + 'description = """embedded text [features]\n'
+      + 'memories = false\n'
+      + '"""\n'
+      + "literal = '''embedded text [memories]\n"
+      + 'disable_on_external_context = true\n'
+      + "'''\n",
+  );
+
+  const embeddedOnly = await adapter.status(ctx);
+  assert.ok(embeddedOnly.details.includes('native memories: not explicitly configured'));
+  assert.ok(embeddedOnly.details.includes('external-context dedupe: not explicitly configured'));
+
+  await writeFile(
+    configPath,
+    (await readFile(configPath, 'utf8'))
+      + '\n[features]\nmemories = true\n\n[memories]\ndisable_on_external_context = false\n',
+  );
+  const status = await adapter.status(ctx);
+
+  assert.ok(status.details.includes('native memories: enabled'));
+  assert.ok(status.details.includes('external-context dedupe: disabled'));
+});
+
 test('install is idempotent on config.toml', async () => {
   const ctx = await freshCtx();
   await adapter.install(ctx);

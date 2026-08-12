@@ -134,6 +134,7 @@ git commit -m "fix(codex): match hook runtime reliability guarantees"
 - Modify: `mcp-server/cli/adapters/codex.mjs`
 - Modify: `mcp-server/cli/lib/hooks.mjs`
 - Modify: `mcp-server/test/adapter-codex.test.mjs`
+- Modify: `mcp-server/test/remote-server.test.mjs`
 - Modify: `mcp-server/test/hooks.test.mjs`
 - Modify: `tests/test_claude_memory_hooks.py`
 - Modify: `mcp-server/test/pack.test.mjs`
@@ -612,4 +613,69 @@ Expected: zero failures.
 ```bash
 git add tests/test_installer.py docs/superpowers/plans/2026-08-11-codex-parity-distribution.md
 git commit -m "test(codex): align legacy installer lifecycle coverage"
+```
+
+---
+
+### Task 8: Close Final Task 4/5 Acceptance Gaps
+
+**Files:**
+- Modify: `mcp-server/cli/index.mjs`
+- Modify: `mcp-server/test/cli.test.mjs`
+- Modify: `mcp-server/cli/adapters/codex.mjs`
+- Modify: `mcp-server/test/adapter-codex.test.mjs`
+- Modify: `mcp-server/assets/claude-code/skills/memories/SKILL.md`
+- Modify: `integrations/QUICKSTART-LLM.md`
+- Replace: `plugins/memories/skills/memories` symlink with a self-contained copied skill directory
+- Modify: `tests/test_codex_plugin.py`
+
+**Failures captured on `9905c01`:**
+
+- `run(['help', '--mcp-url', <invalid>])` logs help before raw URL validation.
+- `status(ctx)` treats `[features]` and assignments inside TOML multiline strings
+  as real root configuration.
+- The npm-shipped Memories skill and `integrations/QUICKSTART-LLM.md` still
+  describe the obsolete five-hook/settings.json/repo-checkout Codex flow.
+- The repo-local plugin's Memories skill is an out-of-tree symlink, so copying
+  the plugin directory alone does not produce a self-contained package.
+- Remote client-attribution invariance is covered only with authentication
+  disabled, not by an authenticated OAuth request matrix.
+
+- [ ] **Step 1: Add focused failing regressions**
+
+Add a help-path invalid-URL no-log test, a multiline-TOML status false-positive
+test, and plugin tests that reject symlinks/out-of-tree dependencies and assert
+the current lifecycle/setup contract in both shipped guides. Add authenticated
+OAuth tool calls carrying Codex, Claude, and generic metadata; all must have the
+same successful authorization outcome while forwarding only the expected
+telemetry client header.
+
+- [ ] **Step 2: Implement minimal corrections**
+
+Validate a provided raw MCP URL before the help early return. Make the explicit
+root-boolean reader ignore TOML basic/literal multiline string bodies without
+becoming a general config resolver. Synchronize the shipped skill and quickstart
+with the accepted Task 4/5 behavior. Replace the out-of-tree skill symlink with
+a real copied directory whose bytes match the npm canonical skill.
+
+- [ ] **Step 3: Verify focused and full contracts**
+
+```bash
+node --test mcp-server/test/cli.test.mjs mcp-server/test/adapter-codex.test.mjs mcp-server/test/pack.test.mjs
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+cd mcp-server && npm test
+uv run pytest -q
+git diff --check
+```
+
+- [ ] **Step 4: Stage and commit exact files**
+
+```bash
+git add mcp-server/cli/index.mjs mcp-server/test/cli.test.mjs \
+  mcp-server/cli/adapters/codex.mjs mcp-server/test/adapter-codex.test.mjs \
+  mcp-server/test/remote-server.test.mjs \
+  mcp-server/assets/claude-code/skills/memories/SKILL.md \
+  integrations/QUICKSTART-LLM.md plugins/memories/skills/memories \
+  tests/test_codex_plugin.py docs/superpowers/plans/2026-08-11-codex-parity-distribution.md
+git commit -m "fix(codex): close parity acceptance gaps"
 ```

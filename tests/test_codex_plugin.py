@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -14,7 +15,7 @@ PLUGIN_MANIFEST = REPO_ROOT / "plugins" / "memories" / ".codex-plugin" / "plugin
 MARKETPLACE = REPO_ROOT / ".agents" / "plugins" / "marketplace.json"
 MEMORIES_SKILL = REPO_ROOT / "plugins" / "memories" / "skills" / "memories" / "SKILL.md"
 SETUP_SKILL = REPO_ROOT / "plugins" / "memories" / "skills" / "setup" / "SKILL.md"
-CANONICAL_MEMORIES_SKILL = REPO_ROOT / "plugin" / "skills" / "memories" / "SKILL.md"
+CANONICAL_MEMORIES_SKILL = REPO_ROOT / "mcp-server" / "assets" / "claude-code" / "skills" / "memories" / "SKILL.md"
 
 
 def test_codex_plugin_package_is_wired_for_current_release() -> None:
@@ -44,6 +45,7 @@ def test_codex_plugin_package_is_wired_for_current_release() -> None:
 
 
 def test_codex_plugin_skills_include_memory_discipline_and_codex_bootstrap() -> None:
+    assert not MEMORIES_SKILL.parent.is_symlink()
     assert MEMORIES_SKILL.read_text() == CANONICAL_MEMORIES_SKILL.read_text()
 
     setup_text = SETUP_SKILL.read_text()
@@ -56,6 +58,44 @@ def test_codex_plugin_skills_include_memory_discipline_and_codex_bootstrap() -> 
     assert re.search(r"\bnpm install\b", setup_text) is None
     assert "MEMORIES_API_KEY =" not in setup_text
     assert "~/.codex/hooks.json" in setup_text
+
+
+def test_codex_plugin_copy_is_self_contained(tmp_path: Path) -> None:
+    copied = tmp_path / "plugins" / "memories"
+    shutil.copytree(REPO_ROOT / "plugins" / "memories", copied)
+
+    assert (copied / ".codex-plugin" / "plugin.json").is_file()
+    assert (copied / "skills" / "setup" / "SKILL.md").is_file()
+    copied_skill = copied / "skills" / "memories" / "SKILL.md"
+    assert copied_skill.is_file()
+    assert not (copied / "skills" / "memories").is_symlink()
+    assert not copied_skill.is_symlink()
+    assert copied_skill.read_bytes() == CANONICAL_MEMORIES_SKILL.read_bytes()
+
+
+def test_codex_shipped_guides_describe_current_installer_and_lifecycle() -> None:
+    skill = CANONICAL_MEMORIES_SKILL.read_text()
+    quickstart = (REPO_ROOT / "integrations" / "QUICKSTART-LLM.md").read_text()
+    codex_quickstart = quickstart.split("## Setup for Codex", 1)[1].split("## Setup for OpenCode", 1)[0]
+
+    for text in (skill, codex_quickstart):
+        assert "npx -y memories-mcp@latest init --codex" in text
+        assert "--mcp-url https://" in text
+        assert "codex mcp login memories" in text
+        assert "0.146.0" in text
+        assert "ten" in text.lower() or "10" in text
+        assert "five" in text.lower() or "5" in text
+        assert "SessionEnd" in text and "PostCompact" in text
+        assert "config.toml" in text
+        assert "six" in text.lower() or "6" in text
+        assert "memory_is_useful" in text and "prompt-gated" in text.lower()
+        assert "native" in text.lower() and "optional" in text.lower()
+
+    assert "integrations/claude-code/install.sh --codex" in codex_quickstart
+    assert "not the canonical" in codex_quickstart
+    assert "does not write `~/.codex/settings.json`" in skill
+    assert "does not write\n`~/.codex/settings.json`" in codex_quickstart
+    assert "No repository checkout is required" in codex_quickstart
 
 
 def test_codex_docs_describe_published_installer_and_current_lifecycle() -> None:

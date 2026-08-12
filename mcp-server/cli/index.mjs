@@ -394,6 +394,11 @@ async function runUninstall(parsed, ctx, restrictedTargets) {
 export async function run(argv, ctxOverrides = {}) {
   const parsed = parseArgs(argv);
 
+  // Validate the raw endpoint before constructing an execution context or
+  // taking the help fast path. A malformed value must never be hidden by
+  // `help`, nor cause help/logging side effects before it is rejected.
+  if (parsed.mcpUrl !== undefined) validateRemoteMcpUrl(parsed.mcpUrl);
+
   const home = ctxOverrides.home ?? os.homedir();
   const assetsDir = ctxOverrides.assetsDir ?? join(dirname(fileURLToPath(import.meta.url)), '../assets');
   const log = ctxOverrides.log ?? console.log;
@@ -411,11 +416,6 @@ export async function run(argv, ctxOverrides = {}) {
   if (!VALID_COMMANDS.includes(parsed.command)) {
     throw new Error(`Unknown command: ${parsed.command}. Valid commands: init, doctor, update, uninstall, help`);
   }
-
-  // Validate the raw remote endpoint before platform restrictions can log or
-  // target resolution can perform any other work. Target/flag combinations
-  // remain checked later, after the target set is resolved.
-  if (parsed.mcpUrl !== undefined) validateRemoteMcpUrl(parsed.mcpUrl);
 
   if (parsed.mcpUrl !== undefined && parsed.command !== 'init' && parsed.command !== 'update') {
     throw new Error('--mcp-url is only supported with init/update --codex');
