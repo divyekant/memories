@@ -147,6 +147,24 @@ test('install preserves foreign hooks while merging the selected Codex profile',
   assert.ok(hooksJson.hooks.SessionStart.some((entry) => entry.hooks.some((hook) => hook.command.endsWith('/memory-recall.sh'))));
 });
 
+test('status does not classify a foreign PreCompact hook as expanded', async () => {
+  const ctx = await freshCtx();
+  ctx.codexVersion = 'codex-cli 0.145.9';
+  await adapter.install(ctx);
+  delete ctx.codexHookProfile;
+
+  const hooksPath = join(ctx.home, '.codex/hooks.json');
+  const hooksJson = await readJson(hooksPath);
+  hooksJson.hooks.PreCompact = [{
+    matcher: '',
+    hooks: [{ type: 'command', command: '/foreign/precompact.sh' }],
+  }];
+  await writeJson(hooksPath, hooksJson);
+
+  const status = await adapter.status(ctx);
+  assert.ok(status.details.some((detail) => detail.includes('hook profile: legacy')));
+});
+
 test('install is idempotent on config.toml', async () => {
   const ctx = await freshCtx();
   await adapter.install(ctx);

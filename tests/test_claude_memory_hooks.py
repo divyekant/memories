@@ -78,8 +78,28 @@ jq -nc --arg url "$url" --argjson body "$body" '{url: $url, body: $body}' >> "$F
 #                       so a per-host rule needs this to also match POSTs
 #                       with a real source_prefix).
 #   query_contains   — optional, match-any when absent.
+#   delay            — optional seconds to sleep before returning a matching
+#                      response, for bounded-time lifecycle tests.
 # fail: true on the winning rule simulates a connection failure — no output,
 # nonzero exit — for real per-host failure, not just a canned error body.
+delay_seconds=$(jq -r --arg url "$url" --argjson body "$body" '
+  ([
+    .[]
+    | . as $rule
+    | select(($rule.url_suffix == null) or ($url | endswith($rule.url_suffix)))
+    | select(($rule.url_contains == null) or ($url | contains($rule.url_contains)))
+    | select(($rule | has("source_prefix") | not) or (($rule.source_prefix // "") == (($body.source_prefix // ""))))
+    | select(
+        ($rule.query_contains // null) == null
+        or (($body.query // "") | contains($rule.query_contains))
+      )
+    | ($rule.delay // 0)
+  ][0]) // 0
+' "$FAKE_CURL_RESPONSES")
+case "$delay_seconds" in
+  ''|0|0.0|null) ;;
+  *) sleep "$delay_seconds" ;;
+esac
 fail_flag=$(jq -r --arg url "$url" --argjson body "$body" '
   ([
     .[]
@@ -1426,24 +1446,7 @@ def test_codex_precompact_submits_transcript_extraction(tmp_path: Path) -> None:
     assert "snake_case" in extract_calls[0]["body"]["messages"]
 
 
-def test_codex_postcompact_returns_scoped_additional_context(tmp_path: Path) -> None:
-    responses = [
-        {
-            "url_suffix": "/search",
-            "source_prefix": "codex/memories",
-            "response": {
-                "results": [
-                    {
-                        "id": 951,
-                        "source": "codex/memories",
-                        "text": "Codex compaction keeps the project source prefix scoped.",
-                        "similarity": 0.95,
-                    }
-                ],
-                "count": 1,
-            },
-        }
-    ]
+def test_codex_postcompact_is_schema_valid_silent_hook(tmp_path: Path) -> None:
     payload = {
         "session_id": "codex-postcompact",
         "cwd": "/Users/example/memories",
@@ -1455,15 +1458,53 @@ def test_codex_postcompact_returns_scoped_additional_context(tmp_path: Path) -> 
         CODEX_HOOKS_DIR / "memory-rehydrate.sh",
         tmp_path,
         payload,
+        responses=[],
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    assert set(output) <= {"continue", "stopReason", "suppressOutput", "systemMessage"}
+    assert output == {"suppressOutput": True}
+    assert calls == []
+
+
+def test_codex_session_start_compact_remains_the_recall_injection_surface(tmp_path: Path) -> None:
+    responses = [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {
+                "results": [
+                    {
+                        "id": 951,
+                        "source": "codex/memories",
+                        "text": "Compact sessions rehydrate through SessionStart recall.",
+                        "similarity": 0.95,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+    payload = {
+        "session_id": "codex-session-compact",
+        "cwd": "/Users/example/memories",
+        "hook_event_name": "SessionStart",
+        "source": "compact",
+    }
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        payload,
         responses=responses,
     )
 
     assert result.returncode == 0, result.stderr
     output = json.loads(result.stdout)
-    assert output["hookSpecificOutput"]["hookEventName"] == "PostCompact"
-    assert "Codex compaction keeps the project source prefix scoped." in output["hookSpecificOutput"]["additionalContext"]
-    search_calls = [call for call in calls if str(call["url"]).endswith("/search")]
-    assert any(call["body"].get("source_prefix") == "codex/memories" for call in search_calls)
+    assert "Compact sessions rehydrate through SessionStart recall." not in output["hookSpecificOutput"]["additionalContext"]
+    assert "candidate memory id=951" in output["hookSpecificOutput"]["additionalContext"]
+    assert any(call["body"].get("source_prefix") == "codex/memories" for call in calls if call["body"] is not None)
 
 
 def test_codex_subagent_start_returns_project_scoped_additional_context(tmp_path: Path) -> None:
@@ -1508,15 +1549,21 @@ def test_codex_subagent_start_returns_project_scoped_additional_context(tmp_path
     assert any(call["body"].get("source_prefix") == "codex/memories" for call in search_calls)
 
 
-def test_codex_subagent_stop_submits_subagent_transcript_and_last_message(tmp_path: Path) -> None:
-    transcript = tmp_path / "subagent.jsonl"
-    transcript.write_text(
+def test_codex_subagent_stop_prefers_child_transcript_and_last_message(tmp_path: Path) -> None:
+    parent_transcript = tmp_path / "parent.jsonl"
+    parent_transcript.write_text(
+        json.dumps({"type": "assistant", "message": {"content": "Parent-only content must not be extracted."}}) + "\n",
+        encoding="utf-8",
+    )
+    child_transcript = tmp_path / "subagent.jsonl"
+    child_transcript.write_text(
         json.dumps({"type": "assistant", "message": {"content": "Subagent decision: retain the hook timeout."}}) + "\n",
         encoding="utf-8",
     )
     payload = {
         "session_id": "codex-subagent-stop",
-        "transcript_path": str(transcript),
+        "transcript_path": str(parent_transcript),
+        "agent_transcript_path": str(child_transcript),
         "cwd": "/Users/example/memories",
         "hook_event_name": "SubagentStop",
         "agent_id": "agent-1",
@@ -1537,9 +1584,10 @@ def test_codex_subagent_stop_submits_subagent_transcript_and_last_message(tmp_pa
     assert extract_calls[0]["body"]["context"] == "subagent_stop"
     assert "hook timeout" in extract_calls[0]["body"]["messages"]
     assert "final message" in extract_calls[0]["body"]["messages"]
+    assert "Parent-only content" not in extract_calls[0]["body"]["messages"]
 
 
-def test_codex_session_end_enqueues_once_without_polling(tmp_path: Path) -> None:
+def test_codex_session_end_enqueues_once_without_polling_across_backends(tmp_path: Path) -> None:
     transcript = tmp_path / "session-end.jsonl"
     transcript.write_text(
         json.dumps({"type": "assistant", "message": {"content": "Session decision: preserve the queued extraction."}}) + "\n",
@@ -1554,12 +1602,38 @@ def test_codex_session_end_enqueues_once_without_polling(tmp_path: Path) -> None
         "last_assistant_message": "Session final message: extraction is queued.",
     }
 
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  first:\n"
+        "    url: https://first-extract.example\n"
+        "    api_key: test-key\n"
+        "    scenario: dev\n"
+        "  second:\n"
+        "    url: https://second-extract.example\n"
+        "    api_key: test-key\n"
+        "    scenario: dev\n"
+    )
     started = time.monotonic()
     result, calls, _ = _run_hook(
         CODEX_HOOKS_DIR / "memory-commit.sh",
         tmp_path,
         payload,
-        responses=[],
+        responses=[
+            {
+                "url_suffix": "/memory/extract",
+                "url_contains": "first-extract.example",
+                "delay": 2,
+                "response": {"job_id": "queued-first"},
+            },
+            {
+                "url_suffix": "/memory/extract",
+                "url_contains": "second-extract.example",
+                "delay": 2,
+                "response": {"job_id": "queued-second"},
+            },
+        ],
+        extra_env={"MEMORIES_URL": "", "MEMORIES_BACKENDS_FILE": str(backends_file)},
     )
     elapsed = time.monotonic() - started
 
@@ -1567,6 +1641,7 @@ def test_codex_session_end_enqueues_once_without_polling(tmp_path: Path) -> None
     assert elapsed < 3
     extract_calls = [call for call in calls if str(call["url"]).endswith("/memory/extract")]
     assert len(extract_calls) == 1
+    assert "first-extract.example" in extract_calls[0]["url"]
     assert extract_calls[0]["body"]["context"] == "session_end"
     assert all("status" not in str(call["url"]) for call in calls)
     assert all("poll" not in str(call["url"]) for call in calls)

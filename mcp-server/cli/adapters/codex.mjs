@@ -61,11 +61,38 @@ async function detectCodexVersion(ctx) {
   }
 }
 
-async function installedHookProfile(path) {
+const LEGACY_HOOK_COMMANDS = {
+  SessionStart: 'memory-recall.sh',
+  UserPromptSubmit: 'memory-query.sh',
+  Stop: 'memory-extract.sh',
+  PostToolUse: 'memory-observe.sh',
+  PreToolUse: 'memory-guard.sh',
+};
+const EXPANDED_HOOK_COMMANDS = {
+  ...LEGACY_HOOK_COMMANDS,
+  PreCompact: 'memory-flush.sh',
+  PostCompact: 'memory-rehydrate.sh',
+  SubagentStart: 'memory-subagent-recall.sh',
+  SubagentStop: 'memory-subagent-capture.sh',
+  SessionEnd: 'memory-commit.sh',
+};
+
+async function installedHookProfileAt(path, hooksDir) {
   try {
     const hooks = await readJson(path);
-    if (!hooks.hooks) return 'unknown';
-    return Object.prototype.hasOwnProperty.call(hooks.hooks ?? {}, 'PreCompact') ? 'expanded' : 'legacy';
+    if (!hooks.hooks || !hooksDir) return 'unknown';
+    const owns = (event, filename) => {
+      const command = join(hooksDir, filename);
+      return (hooks.hooks[event] ?? []).some((entry) =>
+        (entry.hooks ?? []).some((hook) => hook.type === 'command' && hook.command === command));
+    };
+    if (Object.entries(EXPANDED_HOOK_COMMANDS).every(([event, filename]) => owns(event, filename))) {
+      return 'expanded';
+    }
+    if (Object.entries(LEGACY_HOOK_COMMANDS).every(([event, filename]) => owns(event, filename))) {
+      return 'legacy';
+    }
+    return 'unknown';
   } catch {
     return 'unknown';
   }
@@ -191,6 +218,6 @@ export async function status(ctx) {
   const hooks = await exists(p.hooksDest);
   const toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
   const mcp = hasTomlSection(toml, 'mcp_servers.memories');
-  const profile = ctx.codexHookProfile ?? await installedHookProfile(p.hooksJson);
+  const profile = await installedHookProfileAt(p.hooksJson, p.hooksDest);
   return { installed: hooks && mcp, details: [`hooks: ${hooks}`, `mcp: ${mcp}`, `hook profile: ${profile}`] };
 }

@@ -25,9 +25,13 @@ _exit_if_disabled "$CWD" 2>/dev/null || true
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 TRANSCRIPT_PATH=$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty')
+AGENT_TRANSCRIPT_PATH=$(printf '%s' "$INPUT" | jq -r '.agent_transcript_path // empty')
 LAST_ASSISTANT_MESSAGE=$(printf '%s' "$INPUT" | jq -r '.last_assistant_message // empty')
 AGENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.agent_type // empty')
 PROJECT=$(_memories_resolve_project "${CWD:-unknown}" 2>/dev/null || basename "${CWD:-unknown}")
+if [ -n "$AGENT_TRANSCRIPT_PATH" ]; then
+  TRANSCRIPT_PATH="$AGENT_TRANSCRIPT_PATH"
+fi
 TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
 
 _DEFAULT_SRC="$(_default_extract_source)"

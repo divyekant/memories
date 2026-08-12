@@ -15,7 +15,6 @@ else
   _exit_if_disabled() { return 0; }
   _memories_resolve_project() { basename "${1:-unknown}"; }
   _default_extract_source() { echo 'codex/{project}'; }
-  _extract_multi() { :; }
 fi
 
 INPUT=$(cat)
@@ -24,6 +23,7 @@ _exit_if_disabled "$CWD" 2>/dev/null || true
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
+SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty')
 TAIL_LINES="${MEMORIES_COMMIT_TAIL_LINES:-500}"
 MSG_PAIRS="${MEMORIES_COMMIT_MSG_PAIRS:-10}"
 MSG_CAP="${MEMORIES_COMMIT_MSG_CAP:-8000}"
@@ -77,6 +77,28 @@ fi
 MESSAGES="${MESSAGES:0:$MSG_CAP}"
 
 _log_info "Commit-extracting from $PROJECT (${#MESSAGES} chars, source=$SOURCE)"
-# Do not poll the extraction job here: SessionEnd has a three-second Codex
-# budget, and _extract_multi's POST is the sole enqueue operation.
-_extract_multi "$MESSAGES" "$SOURCE" "session_end"
+
+# SessionEnd has a three-second Codex budget. Select only the first routed
+# extraction backend and give its single enqueue request a hard two-second
+# ceiling; never poll the queued job or contact another backend here.
+BACKENDS=$(_get_backends_for_op "extract" 2>/dev/null) || BACKENDS='[]'
+BACKEND=$(printf '%s' "$BACKENDS" | jq -c '.[0] // empty' 2>/dev/null || true)
+[ -n "$BACKEND" ] || exit 0
+
+URL=$(printf '%s' "$BACKEND" | jq -r '.url // empty')
+API_KEY=$(printf '%s' "$BACKEND" | jq -r '.api_key // empty')
+BODY=$(jq -nc \
+  --arg m "$MESSAGES" \
+  --arg s "$SOURCE" \
+  --arg d "$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")" \
+  '{messages: $m, source: $s, context: "session_end", document_at: $d}')
+
+if ! curl -sf --max-time 2 -X POST "$URL/memory/extract" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "X-Memories-Client: codex" \
+  -H "X-Memories-Session-Id: $SESSION_ID" \
+  -H "X-Memories-Invocation: $MEMORIES_HOOK_NAME" \
+  -d "$BODY" >/dev/null 2>&1; then
+  _log_error "Session-end enqueue failed for backend $(printf '%s' "$BACKEND" | jq -r '.name // "unknown"')"
+fi
