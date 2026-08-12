@@ -276,7 +276,7 @@ else
 fi
 
 # Fallback if dual strategy returns empty
-if [ "$RESULTS_JSON" = "[]" ]; then
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ "$RESULTS_JSON" = "[]" ]; then
   FALLBACK_RESPONSE=$(search_memories "$QUERY_TEXT" "" "$MEMORIES_QUERY_FALLBACK_K" "$MEMORIES_QUERY_FALLBACK_THRESHOLD")
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
 fi

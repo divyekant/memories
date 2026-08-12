@@ -105,6 +105,17 @@ query_for_prefix() {
 RAW_RESPONSES=""
 SCOPED_PREFIX_LIST=""
 SEARCH_COUNT=0
+WIP_PREFIX="wip/$PROJECT"
+WIP_CONFIGURED=false
+WIP_SEARCHED=false
+WIP_RESULTS='{"results":[],"count":0}'
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  IFS=',' read -r -a configured_wip_prefixes <<< "$MEMORIES_SOURCE_PREFIXES"
+  for configured_wip_prefix in "${configured_wip_prefixes[@]}"; do
+    configured_wip_prefix=$(printf '%s' "$configured_wip_prefix" | xargs)
+    [ "$configured_wip_prefix" = "$WIP_PREFIX" ] && WIP_CONFIGURED=true
+  done
+fi
 IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
 for raw_prefix in "${prefix_templates[@]}"; do
   raw_prefix=$(echo "$raw_prefix" | xargs)
@@ -120,6 +131,10 @@ for raw_prefix in "${prefix_templates[@]}"; do
 
   SEARCH_COUNT=$((SEARCH_COUNT + 1))
   response=$(search_memories "$query" "$prefix" "$limit" "$MEMORIES_RECALL_SCOPED_THRESHOLD")
+  if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ] && [ "$prefix" = "$WIP_PREFIX" ]; then
+    WIP_SEARCHED=true
+    [ -n "$response" ] && WIP_RESULTS="$response"
+  fi
   if [ -n "$response" ]; then
     RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
   fi
@@ -145,7 +160,7 @@ if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
   RESULTS_JSON=$(printf '%s' "$RESULTS_JSON" | _memories_label_project_results "$PROJECT_CONTEXT_ID" 2>/dev/null) || RESULTS_JSON="[]"
 fi
 
-if [ "$RESULTS_JSON" = "[]" ]; then
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ "$RESULTS_JSON" = "[]" ]; then
   SEARCH_COUNT=$((SEARCH_COUNT + 1))
   FALLBACK_RESPONSE=$(search_memories "project $PROJECT conventions decisions patterns" "" 6 "$MEMORIES_RECALL_FALLBACK_THRESHOLD")
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
@@ -163,8 +178,15 @@ _log_info "Recalled $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null |
 
 # Dedicated deferred-work surfacing
 WIP_QUERY="deferred incomplete blocked todo revisit wip"
-SEARCH_COUNT=$((SEARCH_COUNT + 1))
-WIP_RESULTS=$(search_memories "$WIP_QUERY" "wip/$PROJECT" 5 0.3)
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  if [ "$WIP_CONFIGURED" = "true" ] && [ "$WIP_SEARCHED" != "true" ]; then
+    SEARCH_COUNT=$((SEARCH_COUNT + 1))
+    WIP_RESULTS=$(search_memories "$WIP_QUERY" "$WIP_PREFIX" 5 0.3)
+  fi
+else
+  SEARCH_COUNT=$((SEARCH_COUNT + 1))
+  WIP_RESULTS=$(search_memories "$WIP_QUERY" "$WIP_PREFIX" 5 0.3)
+fi
 WIP_COUNT=$(echo "$WIP_RESULTS" | jq -r '.count // 0')
 DEFERRED_SECTION=""
 if [ "$WIP_COUNT" -gt 0 ] && [ "$WIP_COUNT" != "null" ]; then

@@ -1751,6 +1751,132 @@ def test_collaborative_query_keeps_project_sources_ahead_of_legacy_and_labels_th
     assert context.index("project/shared-demo/decisions") < context.index("person/alice/shared-demo/state")
 
 
+@pytest.mark.parametrize(
+    "script_name",
+    [
+        "claude-query",
+        "codex-query",
+        "claude-recall",
+        "codex-recall",
+        "claude-subagent-recall",
+    ],
+)
+def test_active_project_hooks_never_fall_back_to_unscoped_search(
+    tmp_path: Path, script_name: str
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    scripts = {
+        "claude-query": (QUERY_SCRIPT, {"prompt": "Please explain the shared project architecture."}),
+        "codex-query": (
+            CODEX_HOOKS_DIR / "memory-query.sh",
+            {"prompt": "Please explain the shared project architecture."},
+        ),
+        "claude-recall": (RECALL_SCRIPT, {}),
+        "codex-recall": (CODEX_HOOKS_DIR / "memory-recall.sh", {}),
+        "claude-subagent-recall": (
+            HOOKS_DIR / "memory-subagent-recall.sh",
+            {"agent_type": "Plan"},
+        ),
+    }
+    script, extra_payload = scripts[script_name]
+    payload = {"cwd": str(project_dir), **extra_payload}
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        payload,
+        responses=[
+            {
+                "url_suffix": "/api/keys/me",
+                "response": {"type": "managed", "principal_id": "alice"},
+            }
+        ],
+        extra_env={"MEMORIES_SOURCE_PREFIXES": "claude-code/{project},codex/{project}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    search_prefixes = [
+        call["body"].get("source_prefix", "")
+        for call in calls
+        if str(call["url"]).endswith("/search")
+    ]
+    assert search_prefixes, f"expected scoped search calls for {script_name}"
+    assert "" not in search_prefixes, f"active {script_name} issued an unscoped fallback"
+
+
+@pytest.mark.parametrize(
+    ("script", "configured_prefixes"),
+    [
+        (RECALL_SCRIPT, "claude-code/{project}"),
+        (CODEX_HOOKS_DIR / "memory-recall.sh", "codex/{project}"),
+    ],
+)
+def test_active_recall_only_runs_wip_when_configured_and_deduplicates_it(
+    tmp_path: Path, script: Path, configured_prefixes: str
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    base_responses = [
+        {
+            "url_suffix": "/api/keys/me",
+            "response": {"type": "managed", "principal_id": "alice"},
+        },
+    ]
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        {"cwd": str(project_dir)},
+        base_responses,
+        extra_env={"MEMORIES_SOURCE_PREFIXES": configured_prefixes},
+    )
+    assert result.returncode == 0, result.stderr
+    assert not [
+        call
+        for call in calls
+        if str(call["url"]).endswith("/search")
+        and call["body"].get("source_prefix") == "wip/shared-demo"
+    ]
+
+    wip_responses = base_responses + [
+        {
+            "url_suffix": "/search",
+            "source_prefix": "wip/shared-demo",
+            "response": {
+                "results": [
+                    {
+                        "id": 501,
+                        "source": "wip/shared-demo",
+                        "text": "Deferred project work.",
+                        "similarity": 0.8,
+                    }
+                ],
+                "count": 1,
+            },
+        }
+    ]
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        {"cwd": str(project_dir)},
+        wip_responses,
+        extra_env={"MEMORIES_SOURCE_PREFIXES": f"{configured_prefixes},wip/{{project}}"},
+    )
+    assert result.returncode == 0, result.stderr
+    wip_calls = [
+        call
+        for call in calls
+        if str(call["url"]).endswith("/search")
+        and call["body"].get("source_prefix") == "wip/shared-demo"
+    ]
+    assert len(wip_calls) == 1, "configured WIP must be searched once, not once per path"
+
+
 def test_inactive_hooks_keep_legacy_prefixes_and_extraction_source(tmp_path: Path) -> None:
     payload = {"cwd": "/Users/example/memories", "last_assistant_message": "Assistant: keep this."}
     result, calls, _ = _run_hook(
@@ -1830,6 +1956,34 @@ def test_project_helpers_allowlist_prefixes_and_deduplicate_stable_records(
         (None, "project/demo"),
         (1, "person/alice/demo"),
     ]
+
+
+@pytest.mark.parametrize("lib_name", ["claude-code", "codex"])
+def test_project_provenance_labels_replace_controls_and_cap_length(
+    lib_name: str,
+) -> None:
+    lib = HOOKS_DIR / "_lib.sh" if lib_name == "claude-code" else CODEX_HOOKS_DIR / "_lib.sh"
+    source = "project/demo/knowledge"
+    record = {
+        "id": 9,
+        "source": source,
+        "text": "safe text",
+        "author": "alice\n\r\t" + ("x" * 200),
+        "origin_client": "codex\u001b[31m\u0000\u007f" + ("y" * 200),
+    }
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1"; _memories_label_project_results demo', "_", str(lib)],
+        input=json.dumps([record]),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    label = json.loads(result.stdout)[0]["provenance_label"]
+    assert "\n" not in label and "\r" not in label and "\t" not in label
+    assert "\x1b" not in label and "\x00" not in label and "\x7f" not in label
+    assert len(label) < 220
+    assert label.startswith("[author=alice")
 
 
 def test_build_keyword_bag_strips_filler_keeps_domain_terms(tmp_path: Path) -> None:

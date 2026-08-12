@@ -339,6 +339,47 @@ test('memory_extract guidance keeps automatic extraction private to the contribu
   }
 });
 
+test('memory_extract rejects every project namespace before fetch but keeps projectx legacy behavior', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+    if (String(url).endsWith('/memory/extract')) {
+      return new Response(JSON.stringify({ job_id: 'extract-1' }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      status: 'completed',
+      result: { extracted_count: 0, stored_count: 0, updated_count: 0, deleted_count: 0, actions: [] },
+    }), { status: 200 });
+  };
+  const server = buildServer({ url: 'http://x', apiKey: '', client: 'manual', fetchImpl });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    for (const source of ['project/shared-demo/knowledge', 'project/shared-demo/other']) {
+      const rejected = await client.callTool({
+        name: 'memory_extract',
+        arguments: { messages: 'Shared fact', source },
+      });
+      assert.equal(rejected.isError, true);
+      const errorText = (rejected.content || []).map((item) => item.text || '').join('\n');
+      assert.match(errorText, /automatic extraction/i);
+      assert.match(errorText, /memory_add/i);
+    }
+    assert.equal(calls.length, 0, 'project extraction must fail before any backend request');
+
+    const legacy = await client.callTool({
+      name: 'memory_extract',
+      arguments: { messages: 'Legacy fact', source: 'projectx/shared-demo/knowledge' },
+    });
+    assert.equal(legacy.isError, undefined);
+    assert.equal(calls[0].body.source, 'projectx/shared-demo/knowledge');
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // skipFileConfig — ctx wins over .memories/backends.yaml (item 3)
 // ---------------------------------------------------------------------------

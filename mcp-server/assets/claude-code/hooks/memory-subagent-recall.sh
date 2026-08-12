@@ -138,7 +138,7 @@ if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
 fi
 
 # Fallback to unscoped search if nothing found
-if [ "$RESULTS_JSON" = "[]" ]; then
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ "$RESULTS_JSON" = "[]" ]; then
   if [ "$(_hook_deadline_exhausted)" = "true" ]; then
     _log_warn "Hook budget exhausted — skipping the unscoped fallback search"
   else

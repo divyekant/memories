@@ -586,15 +586,6 @@ _memories_project_extract_source() {
   printf 'person/%s/%s/knowledge\n' "$principal" "$project"
 }
 
-_memories_project_search_results() {
-  local query="${1:-}" project="${2:-}" principal="${3:-}" configured="${4:-}" limit="${5:-3}" threshold="${6:-0.35}" prefix response
-  while IFS= read -r prefix; do
-    [ -n "$prefix" ] || continue
-    response=$(_search_memories_multi "$query" "$prefix" "$limit" "$threshold" || true)
-    [ -n "$response" ] && printf '%s\n' "$response" | jq -c --arg requested_prefix "$prefix" '. + {_requested_prefix:$requested_prefix}'
-  done < <(_memories_project_recall_prefixes "$project" "$principal" "$configured")
-}
-
 _memories_merge_search_results() {
   local ordered="${1:-false}" limit="${2:-6}"
   if [ "$ordered" = "true" ]; then
@@ -626,7 +617,21 @@ _memories_merge_search_results() {
 
 _memories_label_project_results() {
   local project="${1:-}"
-  jq -c --arg project "$project" 'map(if ((.source // "") | startswith("project/" + $project + "/")) then . + {provenance_label: ([if (.author // "") != "" then "author=" + (.author|tostring) else empty end, if (.origin_client // "") != "" then "origin-client=" + (.origin_client|tostring) else empty end] | if length > 0 then "[" + join(", ") + "]" else "" end)} else . end)'
+  jq -c --arg project "$project" '
+    def clean_provenance:
+      tostring
+      | gsub("[[:cntrl:]]"; " ")
+      | gsub("[[:space:]]+"; " ")
+      | .[0:80];
+    map(
+      if ((.source // "") | startswith("project/" + $project + "/")) then
+        . + {provenance_label: ([
+          if (.author // "") != "" then "author=" + (.author | clean_provenance) else empty end,
+          if (.origin_client // "") != "" then "origin-client=" + (.origin_client | clean_provenance) else empty end
+        ] | if length > 0 then "[" + join(", ") + "]" else "" end)}
+      else . end
+    )
+  '
 }
 
 

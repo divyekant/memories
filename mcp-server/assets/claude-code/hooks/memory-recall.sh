@@ -152,6 +152,17 @@ query_for_prefix() {
 
 RAW_RESPONSES=""
 SCOPED_PREFIX_LIST=""
+WIP_PREFIX="wip/$PROJECT"
+WIP_CONFIGURED=false
+WIP_SEARCHED=false
+WIP_RESULTS='{"results":[],"count":0}'
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  IFS=',' read -r -a configured_wip_prefixes <<< "$MEMORIES_SOURCE_PREFIXES"
+  for configured_wip_prefix in "${configured_wip_prefixes[@]}"; do
+    configured_wip_prefix=$(printf '%s' "$configured_wip_prefix" | xargs)
+    [ "$configured_wip_prefix" = "$WIP_PREFIX" ] && WIP_CONFIGURED=true
+  done
+fi
 IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
 prefix_idx=0
 for raw_prefix in "${prefix_templates[@]}"; do
@@ -180,6 +191,10 @@ for raw_prefix in "${prefix_templates[@]}"; do
 
   response=$(search_memories "$query" "$prefix" "$limit" "$MEMORIES_RECALL_SCOPED_THRESHOLD")
   _note_auth_status "$response"
+  if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ] && [ "$prefix" = "$WIP_PREFIX" ]; then
+    WIP_SEARCHED=true
+    [ -n "$response" ] && WIP_RESULTS="$response"
+  fi
   if [ -n "$response" ]; then
     RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
   fi
@@ -205,7 +220,7 @@ if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
   RESULTS_JSON=$(printf '%s' "$RESULTS_JSON" | _memories_label_project_results "$PROJECT_CONTEXT_ID" 2>/dev/null) || RESULTS_JSON="[]"
 fi
 
-if [ "$RESULTS_JSON" = "[]" ]; then
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ "$RESULTS_JSON" = "[]" ]; then
   if [ "$(_hook_deadline_exhausted)" = "true" ]; then
     _log_warn "Hook budget exhausted — skipping the unscoped fallback search"
   else
@@ -227,11 +242,20 @@ _log_info "Recalled $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null |
 
 # Dedicated deferred-work surfacing
 WIP_QUERY="deferred incomplete blocked todo revisit wip"
-if [ "$(_hook_deadline_exhausted)" = "true" ]; then
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  if [ "$WIP_CONFIGURED" = "true" ] && [ "$WIP_SEARCHED" != "true" ]; then
+    if [ "$(_hook_deadline_exhausted)" = "true" ]; then
+      _log_warn "Hook budget exhausted — skipping the deferred-work (WIP) search"
+    else
+      WIP_RESULTS=$(search_memories "$WIP_QUERY" "$WIP_PREFIX" 5 0.3)
+      _note_auth_status "$WIP_RESULTS"
+    fi
+  fi
+elif [ "$(_hook_deadline_exhausted)" = "true" ]; then
   _log_warn "Hook budget exhausted — skipping the deferred-work (WIP) search"
   WIP_RESULTS='{"results":[],"count":0}'
 else
-  WIP_RESULTS=$(search_memories "$WIP_QUERY" "wip/$PROJECT" 5 0.3)
+  WIP_RESULTS=$(search_memories "$WIP_QUERY" "$WIP_PREFIX" 5 0.3)
   _note_auth_status "$WIP_RESULTS"
 fi
 WIP_COUNT=$(echo "$WIP_RESULTS" | jq -r '.count // 0')

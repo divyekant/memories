@@ -1066,7 +1066,14 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     "Extract and store memories from conversation text using LLM-based AUDN (Add/Update/Delete/Noop/Conflict). Costs ~$0.001 per call. Use when decisions change, deferred work completes, or rich conversation contains multiple facts worth remembering. Automatic extraction remains private: in collaborative mode it writes only person/<principal>/<project>/knowledge and never infers project/.... For an intentional shared fact, use memory_add exactly once with one of the four project kinds after applying the durable-sharing test. Returns what was added, updated, deleted, conflicted, or skipped.",
     {
       messages: z.string().min(1).describe("Conversation text to extract memories from"),
-      source: z.string().min(1).describe("Source identifier (e.g. 'claude-code/myapp')"),
+      source: z.string().min(1).superRefine((value, ctx) => {
+        if (value.startsWith("project/")) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "automatic extraction cannot write project/...; use memory_add exactly once with project/<project>/<decisions|knowledge|state|operations>",
+          });
+        }
+      }).describe("Private extraction source; project/... writes must use memory_add exactly once"),
       context: z.enum(["stop", "pre_compact", "session_end"]).default("stop")
         .describe("Extraction intensity: 'stop' (standard), 'pre_compact' (aggressive), 'session_end'"),
       document_at: z.string().optional().describe("ISO 8601 date for when the conversation happened. All extracted memories inherit this timestamp."),
