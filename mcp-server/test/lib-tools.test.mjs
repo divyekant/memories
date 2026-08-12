@@ -543,12 +543,14 @@ test('project-aware tools retry an inactive principal resolution and cache recov
   const client = new Client({ name: 'test-client', version: '1.0.0' });
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
   try {
-    await client.callTool({ name: 'memory_search', arguments: { query: 'first', k: 3 } });
+    const unavailable = await client.callTool({ name: 'memory_search', arguments: { query: 'first', k: 3 } });
     await client.callTool({ name: 'memory_search', arguments: { query: 'second', k: 3 } });
     await client.callTool({ name: 'memory_search', arguments: { query: 'third', k: 3 } });
 
     assert.equal(principalCalls, 2);
-    assert.equal(Object.hasOwn(searchBodies[0], 'source_prefix'), false);
+    assert.equal(unavailable.isError, true);
+    assert.match(unavailable.content[0].text, /collaborative project memory is unavailable/i);
+    assert.equal(searchBodies.some((body) => body.query === 'first'), false);
     assert.deepEqual(
       searchBodies.filter((body) => body.query === 'second').map((body) => body.source_prefix),
       ['project/shared-demo', 'person/alice/shared-demo', 'codex/shared-demo'],

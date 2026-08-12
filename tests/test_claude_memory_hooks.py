@@ -81,7 +81,9 @@ url=""
 body=""
 pending_data=0
 pending_write=0
+pending_max_time=0
 write_out=""
+max_time=""
 
 for arg in "$@"; do
   if [ "$pending_data" -eq 1 ]; then
@@ -94,6 +96,11 @@ for arg in "$@"; do
     pending_write=0
     continue
   fi
+  if [ "$pending_max_time" -eq 1 ]; then
+    max_time="$arg"
+    pending_max_time=0
+    continue
+  fi
 
   case "$arg" in
     -d|--data|--data-raw|--data-binary)
@@ -101,6 +108,9 @@ for arg in "$@"; do
       ;;
     -w|--write-out)
       pending_write=1
+      ;;
+    --max-time)
+      pending_max_time=1
       ;;
     http://*|https://*)
       url="$arg"
@@ -189,6 +199,10 @@ delay_seconds=$(jq -r --arg url "$url" --argjson body "$body" '
   ][0]) // 0
 ' "$FAKE_CURL_RESPONSES")
 if [ "$delay_seconds" != "0" ]; then
+  if [ -n "$max_time" ] && [ "$(jq -n --argjson delay "$delay_seconds" --argjson cap "$max_time" '$delay > $cap')" = "true" ]; then
+    sleep "$max_time"
+    exit 28
+  fi
   sleep "$delay_seconds"
 fi
 
@@ -1901,6 +1915,48 @@ def test_collaborative_rehydrate_searches_prefixes_concurrently(tmp_path: Path) 
         for call in calls
         if str(call["url"]).endswith("/search")
     } == set(prefixes)
+
+
+def test_collaborative_rehydrate_honors_postcompact_end_to_end_deadline(tmp_path: Path) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    prefixes = ["project/shared-demo", "person/alice/shared-demo"]
+    responses: list[dict[str, object]] = [
+        {
+            "url_suffix": "/api/keys/me",
+            "delay_seconds": 1.8,
+            "response": {
+                "type": "managed",
+                "principal_id": "alice",
+                "prefixes": [],
+            },
+        }
+    ]
+    responses.extend(
+        {
+            "url_suffix": "/search",
+            "source_prefix": prefix,
+            "delay_seconds": 4,
+            "response": {"results": [], "count": 0},
+        }
+        for prefix in prefixes
+    )
+
+    started = time.monotonic()
+    result, calls, _ = _run_hook(
+        REHYDRATE_SCRIPT,
+        tmp_path,
+        {"cwd": str(project_dir), "compact_summary": "deadline-sensitive project context"},
+        responses,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < 5.0, f"PostCompact exceeded its configured five-second deadline: {elapsed:.2f}s"
+    assert len([call for call in calls if str(call["url"]).endswith("/search")]) == 2
 
 
 @pytest.mark.parametrize(

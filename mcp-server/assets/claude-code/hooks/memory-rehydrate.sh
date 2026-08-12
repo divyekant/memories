@@ -34,9 +34,16 @@ else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
   _default_source_prefixes() { echo 'claude-code/{project},codex/{project},learning/{project},wip/{project}'; }
+  _hook_deadline_init() { :; }
 fi
 
 _exit_if_disabled 2>/dev/null || true
+
+# PostCompact has one five-second budget for principal resolution, scoped
+# searches, result assembly, and the MEMORY.md write.  Initialize the shared
+# deadline before any backend call so every search is capped by the time left
+# after authenticated project-context lookup.
+_hook_deadline_init
 
 INPUT=$(cat)
 

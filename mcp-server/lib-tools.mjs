@@ -542,6 +542,7 @@ export async function resolveProjectContext(options = {}) {
 
 export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = false, version, cwd = process.cwd() } = {}) {
   const fetchFn = fetchImpl || fetch;
+  const collaborativeProjectDeclared = loadProjectDeclaration(cwd).ok;
 
   // -- Config Loading ----------------------------------------------------------
 
@@ -743,6 +744,17 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     }
   };
 
+  function unavailableProjectContextResult(context) {
+    if (!collaborativeProjectDeclared || context.active) return null;
+    return {
+      content: [{
+        type: "text",
+        text: `Collaborative project memory is unavailable until authenticated project identity resolves: ${context.diagnostic || context.reason || "unknown error"}`,
+      }],
+      isError: true,
+    };
+  }
+
   // -- Tools -------------------------------------------------------------------
 
   server.tool(
@@ -776,6 +788,8 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       if (include_archived) body.include_archived = true;
 
       const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
       const data = projectContext.active && source_prefix === undefined
         ? await projectSearchRequest(body, projectContext)
         : await memoriesRequest("/search", {
@@ -844,6 +858,8 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     },
     async ({ query, k = 20, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived, user_facts_only = false }) => {
       const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
       const seen = new Set();
       const merged = [];
       const searches = timelineQueryVariants(query).map(async (variant) => {
@@ -948,6 +964,8 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       if (include_archived) body.include_archived = true;
 
       const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
       let data;
       if (projectContext.active && source_prefix === undefined) {
         const scoped = await projectSearchRequest(body, projectContext);
@@ -1306,6 +1324,8 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     },
     async ({ messages, source, context = "stop", document_at }) => {
       const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
       const effectiveSource = projectContext.active
         ? `person/${projectContext.principalId}/${projectContext.projectId}/knowledge`
         : source;
