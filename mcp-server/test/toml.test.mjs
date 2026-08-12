@@ -9,6 +9,11 @@ test('appendMarkedBlock appends once, idempotent', () => {
   assert.equal(appendMarkedBlock(once, 'Memories Codex MCP', 'anything'), once);
 });
 
+test('appendMarkedBlock preserves its legacy no-op for an incomplete real begin marker', () => {
+  const text = '# BEGIN Owned\nforeign = true\n';
+  assert.equal(appendMarkedBlock(text, 'Owned', 'owned = true'), text);
+});
+
 test('upsertMarkedBlock replaces only the owned block', () => {
   const old = appendMarkedBlock('model = "x"\n', 'Owned', 'old = true');
   const next = upsertMarkedBlock(old, 'Owned', 'new = true');
@@ -204,6 +209,64 @@ test('insertMarkedBlockAtRoot ignores triple delimiters in ordinary single-line 
   assert.equal(out, expected, 'single-line string and table bytes must remain unchanged around the insertion');
 });
 
+test('insertMarkedBlockAtRoot ignores exact ownership markers inside triple-basic strings', () => {
+  const original = [
+    'description = """',
+    'prose before marker',
+    '# BEGIN Owned',
+    '# END Owned',
+    '[fake.table]',
+    'prose after marker',
+    '"""',
+    '',
+    '[profiles.a]',
+    'name = "x"',
+    '',
+  ].join('\n');
+  const block = '# BEGIN Owned\nowned = true\n# END Owned\n';
+  const out = insertMarkedBlockAtRoot(original, 'Owned', 'owned = true');
+  const firstTableLine = original.split('\n').findIndex((line) => line === '[profiles.a]');
+  const expected = [
+    ...original.split('\n').slice(0, firstTableLine),
+    block,
+    ...original.split('\n').slice(firstTableLine),
+  ].join('\n');
+  assert.equal(out, expected, 'in-string ownership markers and bytes must be preserved');
+  assert.ok(out.indexOf(block) < out.indexOf('[profiles.a]'));
+  const appended = appendMarkedBlock(original, 'Owned', 'owned = true');
+  assert.notEqual(appended, original, 'append must not short-circuit on in-string markers');
+  assert.ok(appended.endsWith(block));
+});
+
+test('insertMarkedBlockAtRoot ignores exact ownership markers inside triple-literal strings', () => {
+  const original = [
+    "description = '''",
+    'prose before marker',
+    '# BEGIN Owned',
+    '# END Owned',
+    '[fake.table]',
+    'prose after marker',
+    "'''",
+    '',
+    '[profiles.a]',
+    'name = "x"',
+    '',
+  ].join('\n');
+  const block = '# BEGIN Owned\nowned = true\n# END Owned\n';
+  const out = insertMarkedBlockAtRoot(original, 'Owned', 'owned = true');
+  const firstTableLine = original.split('\n').findIndex((line) => line === '[profiles.a]');
+  const expected = [
+    ...original.split('\n').slice(0, firstTableLine),
+    block,
+    ...original.split('\n').slice(firstTableLine),
+  ].join('\n');
+  assert.equal(out, expected, 'in-string ownership markers and bytes must be preserved');
+  assert.ok(out.indexOf(block) < out.indexOf('[profiles.a]'));
+  const appended = appendMarkedBlock(original, 'Owned', 'owned = true');
+  assert.notEqual(appended, original, 'append must not short-circuit on in-string markers');
+  assert.ok(appended.endsWith(block));
+});
+
 test('insertMarkedBlockAtRoot appends when there are no sections', () => {
   const out = insertMarkedBlockAtRoot('a = 1\n', 'Dev Instructions', 'developer_instructions = "x"');
   assert.ok(out.includes('a = 1'));
@@ -218,13 +281,20 @@ test('insertMarkedBlockAtRoot is idempotent when the marker is already present',
 });
 
 test('insertMarkedBlockAtRoot rejects malformed ownership markers', () => {
-  assert.throws(
-    () => insertMarkedBlockAtRoot('# BEGIN Dev Instructions\nforeign = true\n', 'Dev Instructions', 'developer_instructions = "x"'),
-    (error) => {
-      assert.equal(error.code, 'ERR_TOML_MARKED_BLOCK');
-      return true;
-    },
-  );
+  for (const text of [
+    '# BEGIN Dev Instructions\nforeign = true\n',
+    '# END Dev Instructions\nforeign = true\n',
+    '# END Dev Instructions\n# BEGIN Dev Instructions\nforeign = true\n# END Dev Instructions\n',
+    '# BEGIN Dev Instructions\none = true\n# END Dev Instructions\n# BEGIN Dev Instructions\ntwo = true\n# END Dev Instructions\n',
+  ]) {
+    assert.throws(
+      () => insertMarkedBlockAtRoot(text, 'Dev Instructions', 'developer_instructions = "x"'),
+      (error) => {
+        assert.equal(error.code, 'ERR_TOML_MARKED_BLOCK');
+        return true;
+      },
+    );
+  }
 });
 
 test('hasTomlSection / hasTomlKey', () => {

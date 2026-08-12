@@ -73,7 +73,7 @@ export function maskTomlMultilineStrings(text) {
 
 export function appendMarkedBlock(text, marker, body) {
   const start = `# BEGIN ${marker}`;
-  if (text.split('\n').some((l) => l === start)) return text;
+  if (maskTomlMultilineStrings(text).split('\n').some((line) => line === start)) return text;
   return `${text}\n${start}\n${body}\n# END ${marker}\n`;
 }
 
@@ -90,8 +90,9 @@ export function validateMarkedBlock(text, marker) {
   const start = `# BEGIN ${marker}`;
   const end = `# END ${marker}`;
   const lines = text.split('\n');
-  const starts = lines.flatMap((line, index) => line === start ? [index] : []);
-  const ends = lines.flatMap((line, index) => line === end ? [index] : []);
+  const maskedLines = maskTomlMultilineStrings(text).split('\n');
+  const starts = maskedLines.flatMap((line, index) => line === start ? [index] : []);
+  const ends = maskedLines.flatMap((line, index) => line === end ? [index] : []);
   if (starts.length === 0 && ends.length === 0) return null;
   if (starts.length !== 1 || ends.length !== 1) {
     throw markedBlockError(marker, 'ambiguous ownership markers');

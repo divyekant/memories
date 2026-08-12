@@ -1213,3 +1213,77 @@ git add mcp-server/cli/lib/toml.mjs mcp-server/test/toml.test.mjs
 git commit -m "fix(codex): distinguish TOML delimiter contexts"
 git push origin codex/codex-parity-distribution
 ```
+
+### Task 15 second follow-up: Ignore In-String Ownership Markers
+
+**Files:**
+- Modify: `mcp-server/cli/lib/toml.mjs`
+- Modify: `mcp-server/test/toml.test.mjs`
+- Modify: this plan
+- Modify: `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-15-report.md`
+
+**Failure:**
+
+`validateMarkedBlock` still scans raw lines. Exact `# BEGIN <marker>` and
+`# END <marker>` lines inside valid multiline strings are therefore treated as
+real ownership, causing insertion to no-op or target the wrong location. The
+raw early return in `appendMarkedBlock` has the same in-string marker hazard
+after masked validation finds no real block.
+
+**Step 1: Add failing ownership-marker regressions and capture RED**
+
+Add two `toml.test.mjs` regressions, one for triple-basic and one for
+triple-literal strings. Each contains exact `# BEGIN Owned` and `# END Owned`
+lines plus a fake table before a real `[profiles.a]` table. Assert the in-string
+markers are ignored, the actual owned block is inserted at the root before the
+real table, and all original bytes are preserved. Retain focused assertions
+that real incomplete, duplicate, and reversed external markers still throw;
+the existing malformed-marker tests cover those cases for upsert/strict
+removal and insertion.
+
+Run on `6ca7488` before production edits:
+
+```bash
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+Expected: RED with exactly the two new tests failing because raw validation
+finds the marker-looking lines inside each multiline string.
+
+**Step 2: Use masked ownership detection while preserving original edits**
+
+Make `validateMarkedBlock` scan `maskTomlMultilineStrings(text).split('\n')`
+for marker counts/order while returning original `text.split('\n')` for all
+slice/edit operations. Update `appendMarkedBlock` to reuse validated ownership
+or masked exact-line detection rather than raw-short-circuiting on an in-string
+marker. Preserve fail-closed errors for actual incomplete, duplicate, and
+reversed external markers, strict upsert/removal semantics, and current
+insertion/idempotence behavior. Do not implement a full TOML parser.
+
+**Step 3: Verify focused, package, Python, and diff contracts**
+
+Run:
+
+```bash
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+cd mcp-server && npm test
+cd ..
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+git diff --check
+git status --short
+```
+
+Run hook syntax, project-hook rendering, or package dry-run checks only if this
+helper/test change affects those artifacts; otherwise record that they were not
+needed.
+
+**Exact staging and commit:**
+
+```bash
+git add -f docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
+  .superpowers/sdd/2026-08-11-codex-parity-distribution/task-15-report.md
+git add mcp-server/cli/lib/toml.mjs mcp-server/test/toml.test.mjs
+git commit -m "fix(codex): ignore in-string ownership markers"
+git push origin codex/codex-parity-distribution
+```

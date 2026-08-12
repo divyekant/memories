@@ -148,3 +148,77 @@ warning.
 `git diff --check`: passed. Hook syntax, project-hook rendering, and package
 dry-run checks were not rerun because this follow-up changes only the TOML
 scanner/tests and does not touch hook assets or packaging inputs.
+
+## Task 15 second follow-up: in-string ownership-marker regression and validation
+
+Base commit: `6ca7488`.
+
+### RED capture before production edits
+
+Added triple-basic and triple-literal insertion regressions containing exact
+`# BEGIN Owned` and `# END Owned` lines plus a fake table before `[profiles.a]`.
+The tests require the in-string marker text and all unmanaged bytes to remain
+unchanged while a real owned block is inserted at the root before the actual
+table. Expanded insertion coverage to assert incomplete, duplicate, and
+reversed external markers remain fail-closed. Added an append regression for
+the in-string marker case.
+
+Before changing production code:
+
+```text
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+Result: **RED**, 53 tests total, 51 passed, 2 failed. Both new multiline
+ownership tests failed because raw `validateMarkedBlock` treated the in-string
+markers as real ownership and insertion returned unchanged text.
+
+### Implementation and GREEN validation
+
+`validateMarkedBlock` now counts exact markers on masked lines while returning
+the original line array and indexes for edits. `appendMarkedBlock` uses the
+masked exact-begin-line check, preserving its legacy no-op behavior for an
+actual incomplete begin marker while avoiding in-string short-circuits. Strict
+upsert/removal and external malformed-marker behavior remain fail-closed.
+
+Focused JavaScript:
+
+```text
+node --test mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+```
+
+Result: **GREEN**, 54 passed, 0 failed.
+
+The first full npm run exposed four idempotence failures in Claude/CLI tests:
+the initial implementation had routed `appendMarkedBlock` through strict
+validation, changing its established behavior for incomplete external markers.
+After restoring the masked exact-begin check, the required package validation
+was rerun successfully:
+
+```text
+cd mcp-server && npm test
+```
+
+Result: **GREEN**, 267 passed, 0 failed. npm emitted only its existing
+`minimum-release-age` configuration deprecation warning.
+
+Relevant Python checks:
+
+```text
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+```
+
+Result: **GREEN**, 22 passed.
+
+Full Python validation was also run:
+
+```text
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+```
+
+Result: **GREEN**, 1807 passed, 1 pre-existing local-Qdrant payload-index
+warning.
+
+`git diff --check`: passed. Hook syntax, project-hook rendering, and package
+dry-run checks were not rerun because no hook assets or packaging inputs
+changed.
