@@ -692,6 +692,78 @@ test('memory_add documents and enforces one explicit project kind without a pref
   }
 });
 
+test('declared project memory_add rejects ambiguous multi-backend routing before any write', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-add-multi-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  await writeFile(
+    join(dir, '.memories', 'backends.yaml'),
+    'backends:\n  one:\n    url: http://one.test\n  two:\n    url: http://two.test\n',
+  );
+  const calls = [];
+  const server = buildServer({
+    cwd: dir,
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url: String(url), body: options.body });
+      return new Response(JSON.stringify({ id: 1, action: 'added' }), { status: 200 });
+    },
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const rejected = await client.callTool({
+      name: 'memory_add',
+      arguments: { text: 'Shared decision', source: 'project/shared-demo/decisions' },
+    });
+    assert.equal(rejected.isError, true);
+    assert.match(rejected.content[0].text, /collaborative project memory is unavailable/i);
+    assert.equal(calls.length, 0);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('declared project memory_add binds the write to its authenticated project backend', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-add-bound-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+    if (String(url).endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({ type: 'managed', principal_id: 'alice' }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ id: 1, action: 'added' }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://shared.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const added = await client.callTool({
+      name: 'memory_add',
+      arguments: { text: 'Shared decision', source: 'project/shared-demo/decisions' },
+    });
+    assert.equal(added.isError, undefined);
+    assert.deepEqual(calls.map((call) => call.url), [
+      'http://shared.test/api/keys/me',
+      'http://shared.test/memory/add',
+    ]);
+
+    const mismatch = await client.callTool({
+      name: 'memory_add',
+      arguments: { text: 'Wrong project', source: 'project/other/decisions' },
+    });
+    assert.equal(mismatch.isError, true);
+    assert.equal(calls.length, 2);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('memory_extract guidance keeps automatic extraction private to the contributor namespace', async () => {
   const server = buildServer({ url: 'http://x', apiKey: '', client: 'manual', fetchImpl: async () => {
     throw new Error('not expected');

@@ -1066,6 +1066,20 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       document_at: z.string().optional().describe("ISO 8601 date for when the content was created (e.g. session date). Enables temporal search."),
     },
     async ({ text, source, deduplicate = true, on_duplicate = "supersede", document_at }) => {
+      if (source.startsWith("project/") && collaborativeProjectDeclared) {
+        const projectContext = await server.resolveProjectContext();
+        const unavailable = unavailableProjectContextResult(projectContext);
+        if (unavailable) return unavailable;
+        if (!source.startsWith(`project/${projectContext.projectId}/`)) {
+          return {
+            content: [{
+              type: "text",
+              text: `Project memory source must target the declared project: project/${projectContext.projectId}/<kind>`,
+            }],
+            isError: true,
+          };
+        }
+      }
       const body = { text, source, on_duplicate };
       if (document_at) body.metadata = { document_at };
       const data = await memoriesRequest("/memory/add", {
