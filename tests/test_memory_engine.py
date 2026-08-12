@@ -90,7 +90,6 @@ class TestAddAndSearch:
                     "contributors": ["mallory"],
                     "origin_client": "  spoofed-client ",
                     "source_memory_ids": [999],
-                    "authorship_verified": True,
                     "custom": "kept",
                 }
             ],
@@ -102,7 +101,6 @@ class TestAddAndSearch:
         assert meta["origin_client"] == "codex"
         assert "contributors" not in meta
         assert "source_memory_ids" not in meta
-        assert meta["authorship_verified"] is True
         assert meta["custom"] == "kept"
 
     def test_system_authorship_stamps_contributors_and_source_memory_ids(self, engine):
@@ -122,7 +120,6 @@ class TestAddAndSearch:
         assert meta["contributors"] == ["alice", "bob"]
         assert meta["source_memory_ids"] == [11, 12]
         assert meta["origin_client"] == "hook"
-        assert meta["authorship_verified"] is True
 
     def test_malformed_reserved_project_source_is_rejected(self, engine):
         with pytest.raises(ProjectMemoryPolicyError, match="project sources must be"):

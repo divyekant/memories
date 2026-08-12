@@ -221,6 +221,7 @@ class TestConsolidation:
                 **_make_memory(0, "Legacy fact A", source="codex/acme"),
                 "author": "mallory",
                 "contributors": ["mallory", "alice"],
+                "authorship_verified": True,
             },
             {
                 **_make_memory(1, "Legacy fact B", source="codex/acme"),

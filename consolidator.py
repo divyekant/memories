@@ -253,21 +253,12 @@ def consolidate_cluster(
             {"category": category, "consolidated_from": old_ids}
             for _ in new_texts
         ]
-        contributors: list[str] = []
-        for memory in cluster:
-            # Pre-upgrade authorship fields were caller-controlled. Only
-            # provenance stamped by the trusted write boundary may flow into
-            # a new server-authored consolidated record.
-            if memory.get("authorship_verified") is not True:
-                continue
-            author = memory.get("author")
-            if isinstance(author, str) and author != "system":
-                contributors.append(author)
-            for contributor in memory.get("contributors", []) or []:
-                if isinstance(contributor, str):
-                    contributors.append(contributor)
+        # Existing records have no cryptographically trustworthy way to prove
+        # their authorship fields came from the new server boundary: every
+        # possible plain metadata marker could also exist on a pre-upgrade
+        # caller-controlled record. Preserve source IDs for traceability, but
+        # do not inherit author/contributor labels during Phase 1 consolidation.
         trusted_authorship = TrustedAuthorship.system(
-            contributors=contributors,
             source_memory_ids=old_ids,
         )
         added = engine.add_memories(
