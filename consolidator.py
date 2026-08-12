@@ -99,7 +99,14 @@ def find_clusters(
         # for. hybrid_search returns RRF rank-fusion scores structurally
         # bounded near 1/60, so comparing those against 0.75 meant no cluster
         # could ever form.
-        search_kwargs = {"query": mem["text"], "k": 10}
+        search_kwargs = {
+            "query": mem["text"],
+            "k": 10,
+            # Consolidation is a write operation: similar records from a
+            # different principal/project/namespace must never join the
+            # candidate cluster, even when a broad prefix is authorized.
+            "source_exact": mem.get("source", ""),
+        }
         if source_prefix:
             search_kwargs["source_prefix"] = source_prefix
         similar = engine.search(**search_kwargs)
@@ -116,6 +123,8 @@ def find_clusters(
             if hit_id in clustered_ids:
                 continue
             if hit.get("pinned") or hit.get("archived"):
+                continue
+            if hit.get("source", "") != mem.get("source", ""):
                 continue
             score = hit.get("similarity", 0.0)
             if score >= similarity_threshold:
@@ -172,6 +181,16 @@ def consolidate_cluster(
         Dict with merged_count, new_count, old_ids, new_texts, dry_run.
     """
     old_ids = [m["id"] for m in cluster]
+    sources = {m.get("source", "") for m in cluster}
+    if len(sources) > 1:
+        return {
+            "merged_count": 0,
+            "new_count": 0,
+            "old_ids": old_ids,
+            "new_texts": [],
+            "dry_run": dry_run,
+            "skipped_reason": "cluster contains memories from multiple exact sources",
+        }
     protected = [m["id"] for m in cluster if m.get("pinned") or m.get("archived")]
     if protected:
         return {

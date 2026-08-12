@@ -194,6 +194,39 @@ class TestNovelty:
         assert is_new is False
         assert match is not None
 
+    def test_exact_source_filter_scopes_search_and_novelty(self, populated_engine):
+        query = "Python is a great programming language"
+        scoped = populated_engine.search(query, k=5, source_exact="lang.md")
+        assert scoped
+        assert all(result["source"] == "lang.md" for result in scoped)
+
+        is_new, match = populated_engine.is_novel(
+            query,
+            threshold=0.5,
+            source_exact="other/source",
+        )
+        assert is_new is True
+        assert match is None
+
+    def test_trusted_dedup_does_not_cross_exact_sources(self, engine):
+        alice = TrustedAuthorship.principal("alice")
+        bob = TrustedAuthorship.principal("bob")
+        engine.add_memories(
+            ["The shared deployment decision"],
+            ["project/acme/decisions"],
+            trusted_authorship=alice,
+        )
+
+        added = engine.add_memories(
+            ["The shared deployment decision"],
+            ["project/other/decisions"],
+            deduplicate=True,
+            trusted_authorship=bob,
+        )
+
+        assert added
+        assert engine._get_meta_by_id(added[0])["source"] == "project/other/decisions"
+
 
 class TestFetchAndUpsert:
     def test_get_memory(self, populated_engine):

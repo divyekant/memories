@@ -42,7 +42,7 @@ class TestClusterDetection:
         engine.metadata = [m0, m1, m2, m3]
 
         # hybrid_search returns similar memories for each query
-        def fake_search(query, k=10, source_prefix=None):
+        def fake_search(query, k=10, source_prefix=None, source_exact=None):
             if "Postgres" in query or "database" in query.lower():
                 results = []
                 for m in [m0, m1, m2]:
@@ -97,6 +97,35 @@ class TestClusterDetection:
         for cluster in clusters:
             for mem in cluster:
                 assert mem["source"].startswith("project/")
+
+    def test_never_clusters_across_exact_sources(self):
+        from consolidator import find_clusters
+
+        m0 = _make_memory(0, "Use Postgres", source="project/acme/decisions")
+        m1 = _make_memory(1, "Postgres is great", source="project/other/decisions")
+        engine = MagicMock()
+        engine.metadata = [m0, m1]
+        calls = []
+
+        def fake_search(**kwargs):
+            calls.append(kwargs)
+            return [{**m1, "similarity": 0.95}]
+
+        engine.search.side_effect = fake_search
+
+        clusters = find_clusters(
+            engine,
+            source_prefix="project/",
+            similarity_threshold=0.75,
+            min_cluster_size=2,
+        )
+
+        assert clusters == []
+        assert calls
+        assert {call["source_exact"] for call in calls} == {
+            "project/acme/decisions",
+            "project/other/decisions",
+        }
 
     def test_respects_min_cluster_size(self):
         from consolidator import find_clusters
@@ -183,6 +212,22 @@ class TestConsolidation:
         engine.delete_memories.assert_not_called()
         engine.delete_memory.assert_not_called()
         engine.add_memories.assert_not_called()
+
+    def test_mixed_source_cluster_is_rejected_before_mutation(self):
+        from consolidator import consolidate_cluster
+
+        m0 = _make_memory(0, "Fact A", source="project/acme/decisions")
+        m1 = _make_memory(1, "Fact B", source="project/other/decisions")
+        provider = MagicMock()
+        engine = MagicMock()
+
+        result = consolidate_cluster(provider, engine, [m0, m1], dry_run=False)
+
+        assert result["merged_count"] == 0
+        assert "source" in result["skipped_reason"]
+        provider.complete.assert_not_called()
+        engine.add_memories.assert_not_called()
+        engine.delete_memories.assert_not_called()
 
     def test_consolidate_uses_dominant_category(self):
         from consolidator import consolidate_cluster

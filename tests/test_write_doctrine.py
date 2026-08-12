@@ -11,6 +11,7 @@ import pytest
 
 import memory_engine as memory_engine_module
 from memory_engine import MemoryEngine
+from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
 
 DIM = 8
 
@@ -169,6 +170,42 @@ class TestAddWithDoctrine:
         engine.add_with_doctrine(T78, "learning/health")
         out = engine.add_with_doctrine(UNRELATED, "learning/deploys")
         assert out["action"] == "added"
+
+    def test_trusted_collision_is_scoped_to_exact_destination_source(self, engine):
+        alice = TrustedAuthorship.principal("alice")
+        bob = TrustedAuthorship.principal("bob")
+        first = engine.add_with_doctrine(
+            T78,
+            "project/acme/decisions",
+            trusted_authorship=alice,
+        )
+
+        out = engine.add_with_doctrine(
+            T79,
+            "project/other/decisions",
+            trusted_authorship=bob,
+        )
+
+        assert out["action"] == "added"
+        assert out.get("blocked_by") is None
+        assert not engine._get_meta_by_id(first["id"]).get("archived")
+
+    def test_trusted_supersede_cannot_cross_destination_source(self, engine):
+        old_id = engine.add_memories(
+            [T78],
+            ["project/acme/decisions"],
+            trusted_authorship=TrustedAuthorship.principal("alice"),
+        )[0]
+
+        with pytest.raises(ProjectMemoryPolicyError, match="source"):
+            engine.supersede(
+                old_id,
+                T79,
+                source="project/other/decisions",
+                trusted_authorship=TrustedAuthorship.principal("bob"),
+            )
+
+        assert not engine._get_meta_by_id(old_id).get("archived")
 
     def test_invalid_mode_rejected(self, engine):
         with pytest.raises(ValueError):

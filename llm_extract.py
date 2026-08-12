@@ -208,13 +208,25 @@ def _novelty_gate_threshold() -> float:
         return _NOVELTY_GATE_DEFAULT_THRESHOLD
 
 
-def _novelty_gate_check(engine, fact_text: str) -> tuple[bool, Optional[dict]]:
+def _novelty_gate_check(
+    engine,
+    fact_text: str,
+    source: Optional[str] = None,
+) -> tuple[bool, Optional[dict]]:
     """Return (gated, similar_memory). Fail-open: any error means not gated,
     leaving engine-side dedup (add_memories deduplicate=True) as the backstop.
     """
     try:
-        is_new, similar = engine.is_novel(fact_text, threshold=_novelty_gate_threshold())
+        novelty_kwargs = {"threshold": _novelty_gate_threshold()}
+        if source is not None:
+            novelty_kwargs["source_exact"] = source
+        is_new, similar = engine.is_novel(fact_text, **novelty_kwargs)
         if isinstance(is_new, bool) and not is_new:
+            if source is not None and (
+                not isinstance(similar, dict)
+                or str(similar.get("source", "")) != source
+            ):
+                return False, None
             return True, similar if isinstance(similar, dict) else None
         return False, None
     except Exception as e:
@@ -459,7 +471,11 @@ def run_audn(
         decisions = []
         for i, fact in enumerate(facts):
             fact_text = fact["text"] if isinstance(fact, dict) else str(fact)
-            is_new, _ = engine.is_novel(fact_text, threshold=0.88)
+            is_new, _ = engine.is_novel(
+                fact_text,
+                threshold=0.88,
+                source_exact=source,
+            )
             if is_new:
                 decisions.append({"action": "ADD", "fact_index": i})
             else:
@@ -471,7 +487,17 @@ def run_audn(
     for i, fact in enumerate(facts):
         fact_text = fact["text"] if isinstance(fact, dict) else str(fact)
         try:
-            results = engine.hybrid_search(fact_text, k=EXTRACT_SIMILAR_PER_FACT)
+            results = engine.hybrid_search(
+                fact_text,
+                k=EXTRACT_SIMILAR_PER_FACT,
+                source_exact=source,
+            )
+            # Defense in depth for engines/providers that do not enforce the
+            # exact-source filter themselves.
+            results = [
+                r for r in results
+                if str(r.get("source", "")) == source
+            ]
             if allowed_prefixes is not None:
                 results = [
                     r for r in results
@@ -682,7 +708,7 @@ def execute_actions(
                 if not source_matches_prefixes(source, allowed_prefixes):
                     raise PermissionError(f"source not authorized for add: {source}")
                 if gate_active:
-                    gated, similar = _novelty_gate_check(engine, fact_text)
+                    gated, similar = _novelty_gate_check(engine, fact_text, source)
                     if gated:
                         result_actions.append({
                             "action": "noop",
@@ -716,15 +742,17 @@ def execute_actions(
 
             elif act == "UPDATE":
                 old_id = action.get("old_id")
+                existing = None
                 if old_id is not None:
                     existing = engine.get_memory(old_id)
+                    existing_source = str(existing.get("source", ""))
+                    if existing_source != source:
+                        raise PermissionError(f"old_id not authorized for update: {old_id}")
                     if existing and (existing.get("pinned") is True or existing.get("archived") is True):
                         result_actions.append({"action": "skipped", "reason": "protected", "old_id": old_id})
                         continue
                 new_text = action.get("new_text", fact_text)
                 if old_id is not None and allowed_prefixes is not None:
-                    existing = engine.get_memory(old_id)
-                    existing_source = str(existing.get("source", ""))
                     if not source_matches_prefixes(existing_source, allowed_prefixes):
                         raise PermissionError(f"old_id not authorized for update: {old_id}")
                 if not source_matches_prefixes(source, allowed_prefixes):
@@ -767,15 +795,17 @@ def execute_actions(
 
             elif act == "DELETE":
                 old_id = action.get("old_id")
+                existing = None
                 if old_id is not None:
                     existing = engine.get_memory(old_id)
+                    existing_source = str(existing.get("source", ""))
+                    if existing_source != source:
+                        raise PermissionError(f"old_id not authorized for delete: {old_id}")
                     if existing and (existing.get("pinned") is True or existing.get("archived") is True):
                         result_actions.append({"action": "skipped", "reason": "protected", "old_id": old_id})
                         continue
                 if old_id is not None:
                     if allowed_prefixes is not None:
-                        existing = engine.get_memory(old_id)
-                        existing_source = str(existing.get("source", ""))
                         if not source_matches_prefixes(existing_source, allowed_prefixes):
                             raise PermissionError(f"old_id not authorized for delete: {old_id}")
                     engine.delete_memory(old_id)
@@ -793,9 +823,11 @@ def execute_actions(
                 if document_at:
                     fact_meta["document_at"] = document_at
                 if old_id is not None:
+                    existing = engine.get_memory(old_id)
+                    existing_source = str(existing.get("source", ""))
+                    if existing_source != source:
+                        raise PermissionError(f"old_id not authorized for conflict: {old_id}")
                     if allowed_prefixes is not None:
-                        existing = engine.get_memory(old_id)
-                        existing_source = str(existing.get("source", ""))
                         if not source_matches_prefixes(existing_source, allowed_prefixes):
                             raise PermissionError(f"old_id not authorized for conflict: {old_id}")
                     fact_meta["conflicts_with"] = old_id
@@ -854,6 +886,7 @@ def _apply_maintenance(
     audn_artifacts: dict,
     max_links: int = None,
     min_link_score: float = None,
+    source: Optional[str] = None,
 ) -> dict:
     """Post-execution maintenance: auto-linking and compaction detection.
 
@@ -900,6 +933,7 @@ def _apply_maintenance(
                 m for m in similar
                 if _mem_score(m) >= min_link_score
                 and m.get("id") is not None
+                and (source is None or str(m.get("source", "")) == source)
                 and m["id"] not in deleted_ids
                 and m["id"] != new_id
             ]
@@ -927,7 +961,9 @@ def _apply_maintenance(
         scores = [
             (m.get("id"), _mem_score(m), m.get("source", ""))
             for m in similar
-            if m.get("id") is not None and m.get("id") not in deleted_ids
+            if m.get("id") is not None
+            and (source is None or str(m.get("source", "")) == source)
+            and m.get("id") not in deleted_ids
         ]
         if len(scores) < 3:
             continue
@@ -1170,7 +1206,7 @@ def run_extraction(
     # Step 4b: Post-execution maintenance (auto-linking + compaction detection)
     try:
         maintenance = _apply_maintenance(
-            engine, decisions, result, audn_artifacts
+            engine, decisions, result, audn_artifacts, source=source
         )
         result["links_created"] = maintenance["links_created"]
         result["compaction_candidates"] = maintenance["compaction_candidates"]

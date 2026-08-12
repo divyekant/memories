@@ -219,3 +219,43 @@ class TestImportSmart:
         result = engine.import_memories(lines, strategy="smart")
         assert result["imported"] == 2
         assert engine.count_memories() == 2
+
+    def test_smart_import_never_deletes_cross_source_match(self, engine, monkeypatch):
+        from project_memory import TrustedAuthorship
+
+        trusted = TrustedAuthorship.principal("bob")
+        old_id = engine.add_memories(
+            ["Old source fact"],
+            ["project/other/decisions"],
+            trusted_authorship=trusted,
+        )[0]
+        monkeypatch.setattr(
+            engine,
+            "search",
+            lambda *args, **kwargs: [{
+                "id": old_id,
+                "text": "Old source fact",
+                "source": "project/other/decisions",
+                "similarity": 0.85,
+                "created_at": "2020-01-01T00:00:00+00:00",
+            }],
+        )
+        lines = [
+            json.dumps({"_header": True, "count": 1}),
+            json.dumps({
+                "text": "New destination fact",
+                "source": "project/acme/decisions",
+                "created_at": "2030-01-01T00:00:00+00:00",
+            }),
+        ]
+
+        result = engine.import_memories(
+            lines,
+            strategy="smart",
+            create_backup=False,
+            trusted_authorship=trusted,
+        )
+
+        assert engine._id_exists(old_id)
+        assert result["updated"] == 0
+        assert result["imported"] == 1

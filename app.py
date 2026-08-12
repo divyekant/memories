@@ -685,7 +685,11 @@ def _run_fallback_extraction(
         }
 
     for fact in facts:
-        is_new, similar = memory.is_novel(fact, threshold=EXTRACT_FALLBACK_NOVELTY_THRESHOLD)
+        is_new, similar = memory.is_novel(
+            fact,
+            threshold=EXTRACT_FALLBACK_NOVELTY_THRESHOLD,
+            source_exact=source_value,
+        )
         if is_new:
             add_kwargs = {
                 "texts": [fact],
@@ -1612,7 +1616,8 @@ async def update_key(key_id: str, request_body: UpdateKeyRequest, request: Reque
         )
         return {"success": True, "id": key_id}
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        status_code = 422 if "principal_id" in str(e) else 404
+        raise HTTPException(status_code=status_code, detail=str(e))
 
 
 @app.delete("/api/keys/{key_id}")
@@ -2377,8 +2382,14 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
         if not ids and request_body.deduplicate:
             # Surface WHICH memory blocked the write so callers can act on it
             # instead of silently losing a correction.
-            _, top = memory.is_novel(request_body.text)
-            if top is not None:
+            novelty_kwargs = {}
+            if trusted_authorship is not None:
+                novelty_kwargs["source_exact"] = request_body.source
+            _, top = memory.is_novel(request_body.text, **novelty_kwargs)
+            if top is not None and (
+                trusted_authorship is None
+                or str(top.get("source", "")) == request_body.source
+            ):
                 response["blocked_by"] = top.get("id")
                 response["blocked_similarity"] = round(float(top.get("similarity", 0.0)), 4)
                 response["hint"] = (
@@ -2779,6 +2790,18 @@ async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request
             "pinned": request_body.pinned,
             "archived": request_body.archived,
         }
+        # A substantive project replacement is authored by the current
+        # authenticated editor.  Pin/archive-only operations intentionally do
+        # not restamp authorship.
+        if (
+            trusted_authorship is not None
+            and (
+                request_body.text is not None
+                or request_body.source is not None
+                or request_body.metadata_patch
+            )
+        ):
+            update_kwargs["apply_trusted_authorship"] = True
         result = memory.update_memory(
             **_with_trusted_authorship(update_kwargs, trusted_authorship)
         )

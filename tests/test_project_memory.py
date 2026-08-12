@@ -216,6 +216,38 @@ def test_upsert_replacement_applies_current_trusted_authorship(engine):
     assert meta["origin_client"] == "hook"
 
 
+def test_substantive_project_replacement_restamps_current_editor_and_ignores_spoofed_reserved_metadata(engine):
+    alice = TrustedAuthorship.principal("alice", "codex")
+    bob = TrustedAuthorship.principal("bob", "hook")
+    memory_id = engine.add_memories(
+        ["Alice's project decision"],
+        ["project/fplguru/decisions"],
+        trusted_authorship=alice,
+    )[0]
+
+    engine.update_memory(
+        memory_id,
+        text="Bob's replacement decision",
+        metadata_patch={
+            "author": "mallory",
+            "contributors": ["mallory"],
+            "origin_client": "spoofed",
+            "source_memory_ids": [999],
+            "kept": True,
+        },
+        trusted_authorship=bob,
+        apply_trusted_authorship=True,
+    )
+
+    meta = engine._get_meta_by_id(memory_id)
+    assert meta["text"] == "Bob's replacement decision"
+    assert meta["author"] == "bob"
+    assert meta["origin_client"] == "hook"
+    assert "contributors" not in meta
+    assert "source_memory_ids" not in meta
+    assert meta["kept"] is True
+
+
 def test_project_secret_is_rejected_before_storage(engine):
     with pytest.raises(ProjectMemoryPolicyError, match="credential-shaped"):
         engine.add_memories(

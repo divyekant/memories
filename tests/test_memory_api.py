@@ -112,6 +112,70 @@ def test_get_memory_by_id_logs_attributed_usage(client):
     )
 
 
+def test_patch_substantive_project_edit_restamps_current_trusted_authorship(client):
+    test_client, mock_engine = client
+    import app as app_module
+    from project_memory import TrustedAuthorship
+
+    mock_engine.get_memory.return_value = {
+        "id": 4,
+        "text": "Alice's project fact",
+        "source": "project/acme/knowledge",
+        "author": "alice",
+    }
+    mock_engine.update_memory.return_value = {
+        "id": 4,
+        "updated_fields": ["text", "metadata"],
+        "author": "bob",
+    }
+    bob = TrustedAuthorship.principal("bob", "codex")
+    with patch.object(app_module, "_trusted_authorship", return_value=bob):
+        response = test_client.patch(
+            "/memory/4",
+            json={
+                "text": "Bob's replacement",
+                "metadata_patch": {
+                    "author": "mallory",
+                    "contributors": ["mallory"],
+                    "kept": True,
+                },
+            },
+            headers={"X-API-Key": "test-key"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["author"] == "bob"
+    kwargs = mock_engine.update_memory.call_args.kwargs
+    assert kwargs["trusted_authorship"] == bob
+    assert kwargs["apply_trusted_authorship"] is True
+
+
+def test_managed_dedup_blocker_lookup_is_scoped_to_destination_source(client):
+    test_client, mock_engine = client
+    import app as app_module
+    from project_memory import TrustedAuthorship
+
+    mock_engine.add_memories.return_value = []
+    mock_engine.is_novel.return_value = (
+        False,
+        {"id": 8, "source": "project/acme/knowledge", "similarity": 0.99},
+    )
+    bob = TrustedAuthorship.principal("bob", "codex")
+    with patch.object(app_module, "_trusted_authorship", return_value=bob):
+        response = test_client.post(
+            "/memory/add",
+            json={
+                "text": "Project fact",
+                "source": "project/acme/knowledge",
+                "deduplicate": True,
+            },
+            headers={"X-API-Key": "test-key"},
+        )
+
+    assert response.status_code == 200
+    assert mock_engine.is_novel.call_args.kwargs["source_exact"] == "project/acme/knowledge"
+
+
 def test_get_memory_batch(client):
     test_client, mock_engine = client
     response = test_client.post(

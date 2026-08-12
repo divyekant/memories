@@ -309,7 +309,7 @@ class TestAUDNCycle:
 
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = [
-            {"id": 42, "text": long_memory, "similarity": 0.95}
+            {"id": 42, "text": long_memory, "similarity": 0.95, "source": "test/project"}
         ]
 
         run_audn(
@@ -334,7 +334,7 @@ class TestAUDNCycle:
 
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = [
-            {"id": 42, "text": "Uses Drizzle ORM", "rrf_score": 0.025}
+            {"id": 42, "text": "Uses Drizzle ORM", "rrf_score": 0.025, "source": "test/project"}
         ]
 
         run_audn(
@@ -395,6 +395,33 @@ class TestAUDNCycle:
         assert "Allowed" in prompt
         assert "Blocked" not in prompt
 
+    def test_audn_filters_similar_memories_by_exact_destination_source(self):
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {"action": "ADD", "fact_index": 0}
+        ]))
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {"id": 1, "text": "Same source", "source": "project/acme/decisions", "similarity": 0.9},
+            {"id": 2, "text": "Other source secret", "source": "project/other/decisions", "similarity": 0.99},
+        ]
+
+        run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "Uses Postgres", "category": "decision"}],
+            source="project/acme/decisions",
+            allowed_prefixes=["project/"],
+        )
+
+        prompt = mock_provider.complete.call_args[0][1]
+        assert "Same source" in prompt
+        assert "Other source secret" not in prompt
+        assert mock_engine.hybrid_search.call_args.kwargs["source_exact"] == "project/acme/decisions"
+
     def test_audn_returns_artifacts_dict_with_similar_per_fact(self):
         """run_audn() always returns audn_artifacts dict with similar_per_fact."""
         from llm_extract import run_audn
@@ -403,7 +430,7 @@ class TestAUDNCycle:
         mock_provider.complete.return_value = _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = [
-            {"id": 5, "text": "Existing memory", "rrf_score": 0.025, "source": "test/proj"}
+            {"id": 5, "text": "Existing memory", "rrf_score": 0.025, "source": "test/project"}
         ]
         decisions, tokens, artifacts = run_audn(
             mock_provider, mock_engine,
@@ -444,6 +471,22 @@ class TestAUDNCycle:
         )
         assert isinstance(artifacts, dict)
         assert artifacts["similar_per_fact"] == {}
+
+    def test_ollama_novelty_is_scoped_to_destination_source(self):
+        from llm_extract import run_audn
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = False
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (True, None)
+
+        run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "New fact", "category": "detail"}],
+            source="project/acme/decisions",
+        )
+
+        assert mock_engine.is_novel.call_args.kwargs["source_exact"] == "project/acme/decisions"
 
     def test_audn_empty_facts_returns_empty_artifacts(self):
         from llm_extract import run_audn
@@ -538,7 +581,7 @@ class TestExecuteActions:
         from llm_extract import execute_actions
 
         mock_engine = MagicMock()
-        mock_engine.get_memory.return_value = {"id": 42, "source": "test", "text": "old"}
+        mock_engine.get_memory.return_value = {"id": 42, "source": "test/proj", "text": "old"}
         mock_engine.add_memories.return_value = [101]
         mock_engine.add_link.return_value = {}
 
@@ -572,6 +615,7 @@ class TestExecuteActions:
         from llm_extract import execute_actions
 
         mock_engine = MagicMock()
+        mock_engine.get_memory.return_value = {"id": 55, "source": "test/proj"}
         actions = [{"action": "DELETE", "fact_index": 0, "old_id": 55}]
         facts = [{"text": "contradicted fact", "category": "detail"}]
 
@@ -632,6 +676,38 @@ class TestExecuteActions:
         assert result["deleted_count"] == 0
         mock_engine.delete_memory.assert_not_called()
         assert any(a.get("action") == "error" for a in result["actions"])
+
+    @pytest.mark.parametrize("action_name", ["UPDATE", "DELETE", "CONFLICT"])
+    def test_execute_actions_rejects_cross_source_old_id_even_with_broad_prefix(self, action_name):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.get_memory.return_value = {
+            "id": 42,
+            "source": "person/alice/acme/decisions",
+            "text": "Alice's private fact",
+        }
+        mock_engine.add_memories.return_value = [100]
+        facts = [{"text": "Replacement fact", "category": "decision"}]
+        action = {"action": action_name, "fact_index": 0, "old_id": 42}
+        if action_name == "UPDATE":
+            action["new_text"] = "Replacement fact"
+
+        result = execute_actions(
+            mock_engine,
+            [action],
+            facts,
+            source="project/acme/decisions",
+            allowed_prefixes=["project/", "person/"],
+        )
+
+        assert result["stored_count"] == 0
+        assert result["updated_count"] == 0
+        assert result["deleted_count"] == 0
+        assert result["conflict_count"] == 0
+        assert result["actions"][0]["action"] == "error"
+        mock_engine.add_memories.assert_not_called()
+        mock_engine.delete_memory.assert_not_called()
 
 
 class TestFullPipeline:
@@ -1007,7 +1083,7 @@ class TestExtractionMaintenance:
         ]
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = [
-            {"id": 30, "text": "Prisma was the old ORM", "rrf_score": 0.022, "source": "test/proj"}
+            {"id": 30, "text": "Prisma was the old ORM", "rrf_score": 0.022, "source": "test/project"}
         ]
         mock_engine.add_memories.return_value = [121]
         mock_engine.add_link.return_value = {}

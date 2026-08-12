@@ -304,6 +304,15 @@ class TestKeyManagementAPI:
         )
         assert resp.status_code == 200
 
+    def test_update_key_rejects_malformed_principal_as_validation_error(self, app_with_keys):
+        client, _, _ = app_with_keys
+        resp = client.patch(
+            "/api/keys/not-a-real-key",
+            json={"principal_id": "Not A Slug"},
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert resp.status_code == 422
+
     def test_revoke_nonexistent_returns_404(self, app_with_keys):
         client, _, _ = app_with_keys
         resp = client.delete(

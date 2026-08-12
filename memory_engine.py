@@ -708,7 +708,13 @@ class MemoryEngine:
                 novel_sources = []
                 novel_meta = []
                 for i, text in enumerate(texts):
-                    is_new, _ = self.is_novel(text, threshold=dedup_threshold)
+                    novelty_kwargs = {"threshold": dedup_threshold}
+                    # Authenticated writes are isolated to the exact
+                    # destination source.  Legacy callers without trusted
+                    # authorship retain the historical global dedup behavior.
+                    if trusted_authorship is not None:
+                        novelty_kwargs["source_exact"] = sources[i]
+                    is_new, _ = self.is_novel(text, **novelty_kwargs)
                     if is_new:
                         novel_texts.append(text)
                         novel_sources.append(sources[i])
@@ -919,6 +925,10 @@ class MemoryEngine:
         old_meta = self._get_meta_by_id(old_id)
         previous_text = old_meta.get("text", "")
         use_source = source or old_meta.get("source", "")
+        if trusted_authorship is not None and use_source != old_meta.get("source", ""):
+            raise ProjectMemoryPolicyError(
+                "trusted supersede source must match the existing memory source"
+            )
         if is_project_source(old_meta.get("source", "")):
             _validate_project_write(new_text, old_meta.get("source", ""), trusted_authorship)
         _validate_project_write(new_text, use_source, trusted_authorship)
@@ -982,7 +992,10 @@ class MemoryEngine:
             identical_threshold = float(os.getenv("DOCTRINE_IDENTICAL_THRESHOLD", "0.97"))
 
         if on_duplicate != "add" and self.metadata:
-            novel, top = self.is_novel(text, threshold=dedup_threshold)
+            novelty_kwargs = {"threshold": dedup_threshold}
+            if trusted_authorship is not None:
+                novelty_kwargs["source_exact"] = source
+            novel, top = self.is_novel(text, **novelty_kwargs)
             if not novel and top is not None:
                 top_id = top.get("id")
                 sim = float(top.get("similarity", 0.0))
@@ -1796,6 +1809,7 @@ class MemoryEngine:
         source_prefix: Optional[str] = None,
         allowed_prefixes: Optional[List[str]] = None,
         include_archived: bool = False,
+        source_exact: Optional[str] = None,
     ) -> Optional[qdrant_models.Filter]:
         """Build a Qdrant filter from source prefix, auth prefixes, and archive state.
 
@@ -1804,11 +1818,17 @@ class MemoryEngine:
         """
         filter_obj: Optional[qdrant_models.Filter] = None
 
-        if source_prefix is not None or allowed_prefixes is not None:
+        if source_prefix is not None or source_exact is not None or allowed_prefixes is not None:
             all_sources = self.distinct_sources()
 
-            # Narrow by source_prefix first
-            if source_prefix:
+            # An exact source is a strict boundary.  Keep prefix filtering as
+            # an optional additional constraint for callers that provide both.
+            if source_exact is not None:
+                candidates = [s for s in all_sources if s == source_exact]
+                if source_prefix:
+                    candidates = [s for s in candidates if s.startswith(source_prefix)]
+            elif source_prefix:
+                # Narrow by source_prefix first
                 candidates = [s for s in all_sources if s.startswith(source_prefix)]
             else:
                 candidates = all_sources
@@ -1861,6 +1881,7 @@ class MemoryEngine:
         include_archived: bool = False,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        source_exact: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Vector-only search for similar memories."""
         if not self.metadata:
@@ -1875,8 +1896,12 @@ class MemoryEngine:
             kind="query",
         )[0].astype("float32").tolist()
 
-        # Pre-filter at Qdrant level when source_prefix is specified
-        query_filter = self._build_source_filter(source_prefix=source_prefix, include_archived=include_archived)
+        # Pre-filter at Qdrant level when source scope is specified
+        query_filter = self._build_source_filter(
+            source_prefix=source_prefix,
+            source_exact=source_exact,
+            include_archived=include_archived,
+        )
 
         hits = self.qdrant_store.search(
             query_vector=query_vec,
@@ -1896,6 +1921,8 @@ class MemoryEngine:
             source = str(meta.get("source", ""))
             # Defense-in-depth: still verify source prefix in Python
             if source_prefix and not source.startswith(source_prefix):
+                continue
+            if source_exact is not None and source != source_exact:
                 continue
 
             # Temporal filtering
@@ -1985,18 +2012,21 @@ class MemoryEngine:
         adj: Dict[int, Set[int]],
         source_prefix: Optional[str],
         include_archived: bool,
+        source_exact: Optional[str] = None,
     ) -> Dict[int, Set[int]]:
         """Filter adjacency to visible subgraph.
 
         Scope is a boundary — out-of-scope nodes cannot act as transit bridges.
         Nodes with no visible neighbors are omitted from the result.
         """
-        if not source_prefix and include_archived:
+        if source_exact is None and not source_prefix and include_archived:
             return adj
 
         visible = set()
         for m in self.metadata:
             if source_prefix and not m.get("source", "").startswith(source_prefix):
+                continue
+            if source_exact is not None and m.get("source", "") != source_exact:
                 continue
             if not include_archived and m.get("archived"):
                 continue
@@ -2017,6 +2047,7 @@ class MemoryEngine:
         graph_weight: float,
         source_prefix: Optional[str],
         include_archived: bool,
+        source_exact: Optional[str] = None,
     ) -> tuple:
         """Expand search results via PPR on scope-filtered adjacency graph.
 
@@ -2039,7 +2070,12 @@ class MemoryEngine:
 
         # 1. Build and filter adjacency
         full_adj = self._build_adjacency("related_to")
-        adj = self._filter_adjacency(full_adj, source_prefix, include_archived)
+        adj = self._filter_adjacency(
+            full_adj,
+            source_prefix,
+            include_archived,
+            source_exact=source_exact,
+        )
 
         # Edge counts for info
         unfiltered_edges = sum(len(n) for n in full_adj.values()) // 2
@@ -2211,6 +2247,7 @@ class MemoryEngine:
         graph_weight: float = 0.0,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        source_exact: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -2230,6 +2267,7 @@ class MemoryEngine:
             k=oversample,
             threshold=threshold,
             source_prefix=source_prefix,
+            source_exact=source_exact,
             include_archived=include_archived,
             since=since,
             until=until,
@@ -2239,12 +2277,21 @@ class MemoryEngine:
         if self.bm25_index is not None:
             tokenized = query.lower().split()
             bm25_scores = self.bm25_index.get_scores(tokenized)
-            if source_prefix:
+            if source_prefix or source_exact is not None:
                 bm25_ranked = [
                     (pos, score)
                     for pos, score in enumerate(bm25_scores)
                     if pos < len(self._bm25_pos_to_id)
-                    and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                    and (
+                        (
+                            source_exact is None
+                            or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "") == source_exact
+                        )
+                        and (
+                            not source_prefix
+                            or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                        )
+                    )
                     and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
                 ]
                 bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
@@ -2363,6 +2410,7 @@ class MemoryEngine:
             graph_weight=graph_weight,
             source_prefix=source_prefix,
             include_archived=include_archived,
+            source_exact=source_exact,
         )
 
         return self._merge_graph_results(
@@ -2378,13 +2426,18 @@ class MemoryEngine:
         include_archived: bool = False,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        source_exact: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Vector search without reinforcement side effects (for explain/debug)."""
         if not self.metadata:
             return []
         k = min(k, len(self.metadata), 100)
         query_vec = self._encode([query], normalize_embeddings=True, show_progress_bar=False, kind="query")[0].astype("float32").tolist()
-        query_filter = self._build_source_filter(source_prefix=source_prefix, include_archived=include_archived)
+        query_filter = self._build_source_filter(
+            source_prefix=source_prefix,
+            source_exact=source_exact,
+            include_archived=include_archived,
+        )
         hits = self.qdrant_store.search(
             query_vector=query_vec, limit=k, score_threshold=threshold,
             consistency=self.qdrant_settings.read_consistency, query_filter=query_filter,
@@ -2397,6 +2450,8 @@ class MemoryEngine:
             meta = self._get_meta_by_id(mem_id)
             source = str(meta.get("source", ""))
             if source_prefix and not source.startswith(source_prefix):
+                continue
+            if source_exact is not None and source != source_exact:
                 continue
             # Temporal filtering
             if not self._passes_temporal_filter(meta, since, until):
@@ -2424,6 +2479,7 @@ class MemoryEngine:
         graph_weight: float = 0.0,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        source_exact: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -2462,6 +2518,7 @@ class MemoryEngine:
             k=oversample,
             threshold=threshold,
             source_prefix=source_prefix,
+            source_exact=source_exact,
             include_archived=include_archived,
             since=since,
             until=until,
@@ -2481,12 +2538,21 @@ class MemoryEngine:
         if self.bm25_index is not None:
             tokenized = query.lower().split()
             bm25_scores = self.bm25_index.get_scores(tokenized)
-            if source_prefix:
+            if source_prefix or source_exact is not None:
                 bm25_ranked = [
                     (pos, score)
                     for pos, score in enumerate(bm25_scores)
                     if pos < len(self._bm25_pos_to_id)
-                    and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                    and (
+                        (
+                            source_exact is None
+                            or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "") == source_exact
+                        )
+                        and (
+                            not source_prefix
+                            or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                        )
+                    )
                     and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
                 ]
                 bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
@@ -2521,14 +2587,23 @@ class MemoryEngine:
 
         # Count how many were filtered by source prefix
         filtered_by_source = 0
-        if source_prefix and self.bm25_index is not None:
+        if (source_prefix or source_exact is not None) and self.bm25_index is not None:
             tokenized = query.lower().split()
             raw_bm25 = self.bm25_index.get_scores(tokenized)
             total_bm25_with_score = sum(1 for s in raw_bm25 if s > 0)
             bm25_after_source = len([
                 pos for pos, score in enumerate(raw_bm25)
                 if score > 0 and pos < len(self._bm25_pos_to_id)
-                and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                and (
+                    (
+                        source_exact is None
+                        or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "") == source_exact
+                    )
+                    and (
+                        not source_prefix
+                        or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                    )
+                )
             ])
             filtered_by_source = total_bm25_with_score - bm25_after_source
 
@@ -2630,6 +2705,7 @@ class MemoryEngine:
                 graph_weight=graph_weight,
                 source_prefix=source_prefix,
                 include_archived=include_archived,
+                source_exact=source_exact,
             )
 
             results = self._merge_graph_results(
@@ -2657,12 +2733,24 @@ class MemoryEngine:
             },
         }
 
-    def is_novel(self, text: str, threshold: float = 0.88) -> Tuple[bool, Optional[Dict]]:
-        """Check if text is novel (not too similar to existing memories)."""
-        results = self.search(text, k=1)
+    def is_novel(
+        self,
+        text: str,
+        threshold: float = 0.88,
+        source_exact: Optional[str] = None,
+    ) -> Tuple[bool, Optional[Dict]]:
+        """Check if text is novel, optionally within one exact source."""
+        if source_exact is None:
+            # Preserve the legacy call shape for integrations that wrap or
+            # monkeypatch ``search`` without an exact-source parameter.
+            results = self.search(text, k=1)
+        else:
+            results = self.search(text, k=1, source_exact=source_exact)
         if not results:
             return True, None
         top_match = results[0]
+        if source_exact is not None and str(top_match.get("source", "")) != source_exact:
+            return True, None
         return top_match["similarity"] < threshold, top_match
 
     # ------------------------------------------------------------------
@@ -3098,7 +3186,21 @@ class MemoryEngine:
                 novel_meta.append(rec_meta)
                 continue
 
-            hits = self.search(text, k=1)
+            # Smart import may delete a borderline match when the imported
+            # record is newer.  Authenticated writes are scoped to the exact
+            # destination source so a match from another namespace can never
+            # be deleted as a replacement.  Legacy callers retain the
+            # historical global lookup, but cross-source matches are never
+            # mutated below.
+            search_kwargs = {"k": 1}
+            if trusted_authorship is not None:
+                search_kwargs["source_exact"] = source
+            hits = self.search(text, **search_kwargs)
+            if trusted_authorship is not None:
+                hits = [
+                    hit for hit in hits
+                    if str(hit.get("source", "")) == source
+                ]
 
             if not hits:
                 novel_texts.append(text)
@@ -3107,6 +3209,10 @@ class MemoryEngine:
                 continue
 
             best = hits[0]
+            cross_source_match = (
+                trusted_authorship is None
+                and str(best.get("source", "")) != source
+            )
             similarity = best.get("similarity", 0.0)
 
             if similarity >= _SKIP_THRESHOLD:
@@ -3123,11 +3229,17 @@ class MemoryEngine:
                 if import_created > existing_created:
                     # Import record is newer — replace old with new
                     match_id = best.get("id")
-                    if match_id is not None:
+                    if match_id is not None and not cross_source_match:
                         self.delete_memory(match_id)
                     novel_texts.append(text)
                     novel_sources.append(source)
                     novel_meta.append(rec_meta)
+                    if cross_source_match:
+                        # Legacy global lookup may still identify a
+                        # cross-source borderline match, but smart import must
+                        # never delete that record.  Keep the destination
+                        # record by importing it as new.
+                        continue
                     result["updated"] += 1
                 else:
                     # Existing is newer or same — skip
