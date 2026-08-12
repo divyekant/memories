@@ -44,6 +44,18 @@ PROJECT=$(_memories_resolve_project "${CWD:-}" 2>/dev/null || basename "${CWD:-}
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   PROJECT=""
 fi
+PROJECT_CONTEXT_JSON=$(_memories_project_context "${CWD:-}" 2>/dev/null || printf '{"active":false}')
+PROJECT_CONTEXT_ACTIVE=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')
+PROJECT_CONTEXT_ID=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.project_id // empty' 2>/dev/null || true)
+PROJECT_CONTEXT_PRINCIPAL=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.principal_id // empty' 2>/dev/null || true)
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  PROJECT="$PROJECT_CONTEXT_ID"
+  MEMORIES_SOURCE_PREFIXES=$(_memories_project_recall_prefixes "$PROJECT_CONTEXT_ID" "$PROJECT_CONTEXT_PRINCIPAL" "$MEMORIES_SOURCE_PREFIXES" | tr '\n' ',' | sed 's/,$//')
+fi
+PROJECT_SHARING_GUIDANCE=""
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  PROJECT_SHARING_GUIDANCE="Collaborative project memory: apply the durable-sharing test (another contributor will need this fact without the current session). Use memory_add exactly once with project/$PROJECT_CONTEXT_ID/<decisions|knowledge|state|operations> for deliberate shared facts. Automatic extraction remains private in person/$PROJECT_CONTEXT_PRINCIPAL/$PROJECT_CONTEXT_ID/knowledge; never infer project/... ."
+fi
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // .transcriptPath // empty')
 TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
 
@@ -203,14 +215,20 @@ queue_search() {
   local query="$1" prefix="$2" limit="$3" threshold="$4"
   local outfile="$SEARCH_TMPDIR/result_${SEARCH_INDEX}.json"
   SEARCH_INDEX=$((SEARCH_INDEX + 1))
-  (
+  if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
     search_memories "$query" "$prefix" "$limit" "$threshold" > "$outfile" || true
-  ) &
-  SEARCH_JOBS+=("$!")
+  else
+    (
+      search_memories "$query" "$prefix" "$limit" "$threshold" > "$outfile" || true
+    ) &
+    SEARCH_JOBS+=("$!")
+  fi
 }
 
 # Strategy A: enriched unscoped (cross-project, semantic)
-queue_search "$ENRICHED_QUERY" "" 6 0.30
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ]; then
+  queue_search "$ENRICHED_QUERY" "" 6 0.30
+fi
 
 # Strategy B: enriched prefix-scoped (project-specific precision across client families)
 SCOPED_PREFIX_LIST=""
@@ -226,15 +244,17 @@ if [ -n "$PROJECT" ]; then
 fi
 
 # Intent-based prefix biasing (additional search for fix/debug/setup prompts)
-if [ -n "$INTENT_PREFIXES" ] && [ -n "$PROJECT" ]; then
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ -n "$INTENT_PREFIXES" ] && [ -n "$PROJECT" ]; then
   for intent_prefix in $INTENT_PREFIXES; do
     queue_search "$ENRICHED_QUERY" "$intent_prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD"
   done
 fi
 
-for job in "${SEARCH_JOBS[@]}"; do
-  wait "$job" || true
-done
+if [ "${#SEARCH_JOBS[@]}" -gt 0 ]; then
+  for job in "${SEARCH_JOBS[@]}"; do
+    wait "$job" || true
+  done
+fi
 
 if ls "$SEARCH_TMPDIR"/result_*.json >/dev/null 2>&1; then
   RAW_RESPONSES=$(cat "$SEARCH_TMPDIR"/result_*.json 2>/dev/null || true)
@@ -242,19 +262,26 @@ fi
 rm -rf "$SEARCH_TMPDIR"
 
 # Merge, deduplicate, cap at 6
-RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr '
-  map(select(type == "object") | (.results // []))
-  | add
-  | if . == null then [] else . end
-  | unique_by(.id)
-  | sort_by(-(.similarity // .rrf_score // 0))
-  | .[0:6]
-' 2>/dev/null) || RESULTS_JSON="[]"
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | _memories_merge_search_results true 6 2>/dev/null) || RESULTS_JSON="[]"
+else
+  RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr '
+    map(select(type == "object") | (.results // []))
+    | add
+    | if . == null then [] else . end
+    | unique_by(.id)
+    | sort_by(-(.similarity // .rrf_score // 0))
+    | .[0:6]
+  ' 2>/dev/null) || RESULTS_JSON="[]"
+fi
 
 # Fallback if dual strategy returns empty
 if [ "$RESULTS_JSON" = "[]" ]; then
   FALLBACK_RESPONSE=$(search_memories "$QUERY_TEXT" "" "$MEMORIES_QUERY_FALLBACK_K" "$MEMORIES_QUERY_FALLBACK_THRESHOLD")
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
+fi
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  RESULTS_JSON=$(printf '%s' "$RESULTS_JSON" | _memories_label_project_results "$PROJECT_CONTEXT_ID" 2>/dev/null) || RESULTS_JSON="[]"
 fi
 
 if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
@@ -262,7 +289,7 @@ if [ "$ACTIVE_SEARCH_REQUIRED" = "1" ]; then
     if length == 0 then
       empty
     else
-      map("- candidate memory from \(.source): call memory_search with source_prefix=\"\(.source)\" before answering. Do not use memory_get as a substitute.") | join("\n")
+      map(("- candidate memory from \(.source)" + (if (.provenance_label // "") != "" then " " + .provenance_label else "" end) + ": call memory_search with source_prefix=\"\(.source)\" before answering. Do not use memory_get as a substitute.")) | join("\n")
     end
   ' 2>/dev/null) || true
 else
@@ -270,7 +297,7 @@ else
     if length == 0 then
       empty
     else
-      map("- [\(.source)] \(.text)") | join("\n")
+      map(("- [\(.source)]" + (if (.provenance_label // "") != "" then " " + .provenance_label else "" end) + " \(.text)")) | join("\n")
     end
   ' 2>/dev/null) || true
 fi
@@ -313,10 +340,10 @@ PLAYBOOK_MODE=$(_playbook_injection_mode "$PROMPT" "$CANDIDATE_COUNT")
 
 if [ "$PLAYBOOK_MODE" = "minimal" ]; then
   _log_info "Playbook gate: minimal reminder (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
-  jq -n --arg down "${MEMORIES_BACKEND_DOWN:-0}" '{
+  jq -n --arg down "${MEMORIES_BACKEND_DOWN:-0}" --arg sharing "$PROJECT_SHARING_GUIDANCE" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
-	  additionalContext: (if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first (load it with ToolSearch(\"+memory_search\") if needed)." end)
+	  additionalContext: (if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first (load it with ToolSearch(\"+memory_search\") if needed)." end) + (if ($sharing | length) > 0 then "\n\n" + $sharing else "" end)
 	}
 }'
   exit 0
@@ -330,12 +357,13 @@ if [ "$PLAYBOOK_MODE" = "memories" ]; then
   # This is where the per-prompt token cut actually comes from — on real
   # telemetry ~99% of prompts have >=1 keyword candidate.
   _log_info "Playbook gate: memories without mandate (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
-  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
+  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" --arg sharing "$PROJECT_SHARING_GUIDANCE" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
 	    "Memories from prior sessions matched this prompt (keyword retrieval; may be incomplete). Consider them; if this task turns out to depend on prior decisions or project history, verify with memory_search (load it with ToolSearch(\"+memory_search\") if needed) before relying on assumptions.\n\n## Retrieved Memories\n" + $memories +
-	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
+	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end) +
+	    (if ($sharing | length) > 0 then "\n\n" + $sharing else "" end)
 	  )
 	}
 }'
@@ -345,12 +373,13 @@ fi
 _log_info "Playbook gate: full mandate (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
 
 if [ -n "$RESULTS" ] && [ "$RESULTS" != "null" ]; then
-  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" '{
+  jq -n --arg memories "$RESULTS" --arg response_hint "$RESPONSE_HINT" --arg sharing "$PROJECT_SHARING_GUIDANCE" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
 	    "IMPORTANT: The following memories from prior sessions are relevant to this prompt. These represent prior decisions and context that MUST be considered before responding. Do not contradict stored decisions without explicitly acknowledging the change.\n\nActive search requirement: hook-injected memories are keyword-matched starting points, not a substitute for active search.\n\nMANDATORY FIRST ACTION: if this prompt asks about prior decisions, project history, deferred work, conventions, or continuation of prior work, load the tool if needed with ToolSearch(\"+memory_search\"), then MUST call memory_search before answering. Do not answer from injected memories alone. Do not use memory_get as a substitute for memory_search. Use exact source prefixes shown below before broad family prefixes or unscoped search.\n\n## Retrieved Memories\n" + $memories +
-	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
+	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end) +
+	    (if ($sharing | length) > 0 then "\n\n" + $sharing else "" end)
 	  )
 	}
 }'
@@ -358,14 +387,15 @@ else
   # Prior-work-shaped prompt with no candidate memories: keep the directive
   # mandate (directive strength is required to survive context dilution) but
   # without a Retrieved Memories block.
-  jq -n --arg response_hint "$RESPONSE_HINT" --arg prefixes "$SCOPED_PREFIX_LIST" '{
+  jq -n --arg response_hint "$RESPONSE_HINT" --arg prefixes "$SCOPED_PREFIX_LIST" --arg sharing "$PROJECT_SHARING_GUIDANCE" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
 	  additionalContext: (
 	    "IMPORTANT: This prompt references prior work, but hook keyword retrieval returned no candidate memories. Keyword retrieval is incomplete — stored decisions may still exist.\n\nActive search requirement: hook retrieval is a keyword-matched starting point, not a substitute for active search.\n\nMANDATORY FIRST ACTION: load the tool if needed with ToolSearch(\"+memory_search\"), then MUST call memory_search before answering. Do not answer from assumptions about prior work alone. Do not use memory_get as a substitute for memory_search. Use exact project-scoped source prefixes" +
 	    (if ($prefixes | length) > 0 then " (" + $prefixes + ")" else "" end) +
 	    " before broad family prefixes or unscoped search." +
-	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end)
+	    (if ($response_hint | length) > 0 then "\n\n" + $response_hint else "" end) +
+	    (if ($sharing | length) > 0 then "\n\n" + $sharing else "" end)
 	  )
 	}
 }'

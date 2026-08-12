@@ -50,6 +50,14 @@ PROJECT=$(_memories_resolve_project "$CWD" 2>/dev/null || basename "$CWD")
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   exit 0
 fi
+PROJECT_CONTEXT_JSON=$(_memories_project_context "$CWD" 2>/dev/null || printf '{"active":false}')
+PROJECT_CONTEXT_ACTIVE=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')
+PROJECT_CONTEXT_ID=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.project_id // empty' 2>/dev/null || true)
+PROJECT_CONTEXT_PRINCIPAL=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.principal_id // empty' 2>/dev/null || true)
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  PROJECT="$PROJECT_CONTEXT_ID"
+  MEMORIES_SOURCE_PREFIXES=$(_memories_project_recall_prefixes "$PROJECT_CONTEXT_ID" "$PROJECT_CONTEXT_PRINCIPAL" "$MEMORIES_SOURCE_PREFIXES" | tr '\n' ',' | sed 's/,$//')
+fi
 
 # Quick health check — don't block subagent spawn if service is down.
 # Probes the ROUTED search backend set, not backend #1 in raw declaration
@@ -114,13 +122,20 @@ for raw_prefix in "${prefix_templates[@]}"; do
   fi
 done
 
-RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$MEMORIES_SUBAGENT_RECALL_LIMIT" '
-  map(select(type == "object") | (.results // []))
-  | add
-  | unique_by(.id)
-  | sort_by(-(.similarity // .rrf_score // 0))
-  | .[0:$limit]
-' 2>/dev/null) || RESULTS_JSON="[]"
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | _memories_merge_search_results true "$MEMORIES_SUBAGENT_RECALL_LIMIT" 2>/dev/null) || RESULTS_JSON="[]"
+else
+  RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$MEMORIES_SUBAGENT_RECALL_LIMIT" '
+    map(select(type == "object") | (.results // []))
+    | add
+    | unique_by(.id)
+    | sort_by(-(.similarity // .rrf_score // 0))
+    | .[0:$limit]
+  ' 2>/dev/null) || RESULTS_JSON="[]"
+fi
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  RESULTS_JSON=$(printf '%s' "$RESULTS_JSON" | _memories_label_project_results "$PROJECT_CONTEXT_ID" 2>/dev/null) || RESULTS_JSON="[]"
+fi
 
 # Fallback to unscoped search if nothing found
 if [ "$RESULTS_JSON" = "[]" ]; then
@@ -137,7 +152,7 @@ RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
   if length == 0 then
     empty
   else
-    map("- [\(.source)] \(.text)") | join("\n")
+    map(("- [\(.source)]" + (if (.provenance_label // "") != "" then " " + .provenance_label else "" end) + " \(.text)")) | join("\n")
   end
 ' 2>/dev/null) || true
 

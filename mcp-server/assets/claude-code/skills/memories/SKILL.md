@@ -131,6 +131,19 @@ Pass the relevant conversation chunk as `messages` and the appropriate source pr
 The server extracts facts, searches for similar existing memories, and decides per-fact
 whether to add, update, delete, or skip.
 
+### Collaborative Project Sharing
+
+Apply the durable-sharing test before writing a shared project fact: **will another
+contributor need this fact without the current session?** If yes, call the existing
+`memory_add` tool exactly once with `project/{project}/{kind}`, where `{kind}` is one of
+`decisions`, `knowledge`, `state`, or `operations`. ACLs remain authoritative; a
+configured prefix is not proof that this caller can read or write it.
+
+Automatic extraction remains private. In collaborative mode, lifecycle hooks write
+only to `person/{principal}/{project}/knowledge`; they never infer or write
+`project/{project}/...`. Use the deliberate `memory_add` path above when a fact truly
+needs to be shared with other contributors.
+
 ### 3. Maintain — Lifecycle Management
 
 Memories aren't permanent records — they need maintenance as context evolves. Most

@@ -94,6 +94,7 @@ function timelineQueryVariants(query) {
 // from the authenticated backend.
 const PROJECT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 const PROJECT_DECLARATION_KEYS = new Set(["project_id", "shared_memory"]);
+const PROJECT_SOURCE_RE = /^project\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/(decisions|knowledge|state|operations)$/;
 
 function projectFailure(reason, diagnostic) {
   return { ok: false, reason, diagnostic };
@@ -781,10 +782,17 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
 
   server.tool(
     "memory_add",
-    "Store a new memory. Memories persist across sessions and are searchable by meaning. Use for decisions, patterns, learnings, bug fixes, preferences.",
+    "Store a new memory. Memories persist across sessions and are searchable by meaning. Use for decisions, patterns, learnings, bug fixes, preferences. For a deliberate collaborative project write, use this existing memory_add tool exactly once with source project/<project>/<kind>, where kind must be exactly decisions, knowledge, state, or operations; first apply the durable-sharing test (another contributor will need this fact without the current session). ACLs remain server-authoritative.",
     {
       text: z.string().min(1).describe("The memory content to store"),
-      source: z.string().min(1).describe("Source identifier (e.g. 'project/decisions.md', 'bug-fix/redis')"),
+      source: z.string().min(1).superRefine((value, ctx) => {
+        if (value.startsWith("project/") && !PROJECT_SOURCE_RE.test(value)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "project sources must be project/<project>/<decisions|knowledge|state|operations>",
+          });
+        }
+      }).describe("Source identifier (e.g. 'project/shared-demo/decisions', 'bug-fix/redis')"),
       deduplicate: z.boolean().default(true).describe("Legacy flag; ignored when on_duplicate is set"),
       on_duplicate: z.enum(["supersede", "skip", "add"]).default("supersede").describe("supersede (default): a colliding similar memory is replaced — the old version is archived with a supersedes link, so corrections like 'weight is now 79kg' update instead of being dropped as duplicates. skip: keep the existing memory and report which id blocked the write. add: store unconditionally."),
       document_at: z.string().optional().describe("ISO 8601 date for when the content was created (e.g. session date). Enables temporal search."),
@@ -1055,7 +1063,7 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
 
   server.tool(
     "memory_extract",
-    "Extract and store memories from conversation text using LLM-based AUDN (Add/Update/Delete/Noop/Conflict). Costs ~$0.001 per call. Use when decisions change, deferred work completes, or rich conversation contains multiple facts worth remembering. Returns what was added, updated, deleted, conflicted, or skipped.",
+    "Extract and store memories from conversation text using LLM-based AUDN (Add/Update/Delete/Noop/Conflict). Costs ~$0.001 per call. Use when decisions change, deferred work completes, or rich conversation contains multiple facts worth remembering. Automatic extraction remains private: in collaborative mode it writes only person/<principal>/<project>/knowledge and never infers project/.... For an intentional shared fact, use memory_add exactly once with one of the four project kinds after applying the durable-sharing test. Returns what was added, updated, deleted, conflicted, or skipped.",
     {
       messages: z.string().min(1).describe("Conversation text to extract memories from"),
       source: z.string().min(1).describe("Source identifier (e.g. 'claude-code/myapp')"),

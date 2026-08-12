@@ -279,6 +279,66 @@ test('buildServer threads ctx.client into the X-Memories-Client header via fetch
   }
 });
 
+test('memory_add documents and enforces one explicit project kind without a preflight write', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({ id: calls.length, action: 'added' }), { status: 200 });
+  };
+  const server = buildServer({ url: 'http://x', apiKey: 'secret', client: 'codex', fetchImpl });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const tools = await client.listTools();
+    const add = tools.tools.find((tool) => tool.name === 'memory_add');
+    assert.match(add.description, /exactly once/i);
+    assert.match(add.description, /decisions.*knowledge.*state.*operations/i);
+
+    const added = await client.callTool({
+      name: 'memory_add',
+      arguments: { text: 'Shared decision', source: 'project/shared-demo/decisions' },
+    });
+    assert.equal(added.isError, undefined);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].body, {
+      text: 'Shared decision',
+      source: 'project/shared-demo/decisions',
+      on_duplicate: 'supersede',
+    });
+
+    const invalid = await client.callTool({
+      name: 'memory_add',
+      arguments: { text: 'Bad namespace', source: 'project/shared-demo/other' },
+    });
+    assert.equal(invalid.isError, true);
+    assert.equal(calls.length, 1, 'invalid project source must not call the backend');
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('memory_extract guidance keeps automatic extraction private to the contributor namespace', async () => {
+  const server = buildServer({ url: 'http://x', apiKey: '', client: 'manual', fetchImpl: async () => {
+    throw new Error('not expected');
+  } });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const tools = await client.listTools();
+    const extract = tools.tools.find((tool) => tool.name === 'memory_extract');
+    assert.match(extract.description, /automatic extraction remains private/i);
+    assert.match(extract.description, /person\/<principal>\/<project>\/knowledge/i);
+    assert.match(extract.description, /memory_add exactly once/i);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // skipFileConfig — ctx wins over .memories/backends.yaml (item 3)
 // ---------------------------------------------------------------------------

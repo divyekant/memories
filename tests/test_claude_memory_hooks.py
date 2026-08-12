@@ -13,6 +13,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 
 HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "claude-code" / "hooks"
 CODEX_HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "codex" / "hooks"
@@ -1495,6 +1497,339 @@ def test_memory_extract_uses_codex_source_when_installed_under_codex(tmp_path: P
     assert calls
     body = calls[0]["body"]
     assert body["source"] == "codex/memories"
+
+
+@pytest.mark.parametrize(
+    ("script_name", "expected_legacy_source"),
+    [
+        ("memory-extract.sh", "claude-code/shared-demo"),
+        ("memory-extract.sh", "codex/shared-demo"),
+    ],
+)
+def test_collaborative_extraction_is_private_person_knowledge_for_both_clients(
+    tmp_path: Path, script_name: str, expected_legacy_source: str
+) -> None:
+    """Active project extraction never guesses a shared project namespace."""
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    transcript = project_dir / "transcript.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "user", "message": {"content": "Keep this durable."}})
+        + "\n"
+        + json.dumps({"type": "assistant", "message": {"content": "Decision captured."}})
+        + "\n"
+    )
+    script = (HOOKS_DIR if expected_legacy_source.startswith("claude") else CODEX_HOOKS_DIR) / script_name
+    payload = {"cwd": str(project_dir), "transcript_path": str(transcript)}
+    responses = [
+        {
+            "url_suffix": "/api/keys/me",
+            "response": {"type": "managed", "principal_id": "alice"},
+        }
+    ]
+
+    result, calls, _ = _run_hook(script, tmp_path, payload, responses)
+
+    assert result.returncode == 0, result.stderr
+    extract_calls = [call for call in calls if str(call["url"]).endswith("/memory/extract")]
+    assert len(extract_calls) == 1
+    source = extract_calls[0]["body"]["source"]
+    assert source == "person/alice/shared-demo/knowledge"
+    assert not source.startswith("project/")
+    assert source != expected_legacy_source
+
+
+@pytest.mark.parametrize(
+    ("script", "legacy_prefixes"),
+    [
+        (
+            RECALL_SCRIPT,
+            [
+                "claude-code/shared-demo",
+                "codex/shared-demo",
+                "learning/shared-demo",
+                "wip/shared-demo",
+            ],
+        ),
+        (
+            CODEX_HOOKS_DIR / "memory-recall.sh",
+            [
+                "codex/shared-demo",
+                "claude-code/shared-demo",
+                "learning/shared-demo",
+                "wip/shared-demo",
+            ],
+        ),
+    ],
+)
+def test_collaborative_recall_orders_shared_private_then_legacy_and_labels_provenance(
+    tmp_path: Path, script: Path, legacy_prefixes: list[str]
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    responses = [
+        {
+            "url_suffix": "/api/keys/me",
+            "response": {"type": "managed", "principal_id": "alice"},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "project/shared-demo",
+            "response": {
+                "results": [
+                    {
+                        "id": 101,
+                        "source": "project/shared-demo/knowledge",
+                        "text": "Shared project fact.",
+                        "author": "alice",
+                        "origin_client": "codex",
+                        "similarity": 0.8,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "person/alice/shared-demo",
+            "response": {
+                "results": [
+                    {
+                        "id": 102,
+                        "source": "person/alice/shared-demo/knowledge",
+                        "text": "Private contributor fact.",
+                        "similarity": 0.99,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+    for prefix in legacy_prefixes:
+        responses.append(
+            {
+                "url_suffix": "/search",
+                "source_prefix": prefix,
+                "response": {
+                    "results": [
+                        {
+                            "id": 200 + legacy_prefixes.index(prefix),
+                            "source": prefix,
+                            "text": f"Legacy result from {prefix}.",
+                            "similarity": 0.7,
+                        }
+                    ],
+                    "count": 1,
+                },
+            }
+        )
+
+    result, calls, _ = _run_hook(script, tmp_path, {"cwd": str(project_dir)}, responses)
+
+    assert result.returncode == 0, result.stderr
+    search_calls = [call for call in calls if str(call["url"]).endswith("/search")]
+    prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
+    first_seen = list(dict.fromkeys(prefixes))
+    assert first_seen[: 2 + len(legacy_prefixes)] == [
+        "project/shared-demo",
+        "person/alice/shared-demo",
+        *legacy_prefixes,
+    ]
+
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "Shared project fact." not in context
+    assert "candidate memory id=101" in context
+    assert "[author=alice, origin-client=codex]" in context
+    assert context.index("project/shared-demo") < context.index("person/alice/shared-demo")
+
+
+@pytest.mark.parametrize(
+    ("script", "legacy_prefixes"),
+    [
+        (
+            QUERY_SCRIPT,
+            [
+                "claude-code/shared-demo",
+                "codex/shared-demo",
+                "learning/shared-demo",
+                "wip/shared-demo",
+            ],
+        ),
+        (
+            CODEX_HOOKS_DIR / "memory-query.sh",
+            [
+                "codex/shared-demo",
+                "claude-code/shared-demo",
+                "learning/shared-demo",
+                "wip/shared-demo",
+            ],
+        ),
+    ],
+)
+def test_collaborative_query_keeps_project_sources_ahead_of_legacy_and_labels_them(
+    tmp_path: Path, script: Path, legacy_prefixes: list[str]
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    responses = [
+        {
+            "url_suffix": "/api/keys/me",
+            "response": {"type": "managed", "principal_id": "alice"},
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "project/shared-demo",
+            "response": {
+                "results": [
+                    {
+                        "id": 301,
+                        "source": "project/shared-demo/decisions",
+                        "text": "Project query result.",
+                        "author": "alice",
+                        "origin_client": "claude-code",
+                        "similarity": 0.5,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": "person/alice/shared-demo",
+            "response": {
+                "results": [
+                    {
+                        "id": 302,
+                        "source": "person/alice/shared-demo/state",
+                        "text": "Private query result.",
+                        "similarity": 0.99,
+                    }
+                ],
+                "count": 1,
+            },
+        },
+    ]
+    for prefix in legacy_prefixes:
+        responses.append(
+            {
+                "url_suffix": "/search",
+                "source_prefix": prefix,
+                "response": {
+                    "results": [
+                        {
+                            "id": 400 + legacy_prefixes.index(prefix),
+                            "source": prefix,
+                            "text": f"Legacy query result from {prefix}.",
+                            "similarity": 0.4,
+                        }
+                    ],
+                    "count": 1,
+                },
+            }
+        )
+
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        {"cwd": str(project_dir), "prompt": "Please explain the shared project architecture."},
+        responses,
+    )
+
+    assert result.returncode == 0, result.stderr
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "Project query result." in context
+    assert "[author=alice, origin-client=claude-code]" in context
+    assert context.index("project/shared-demo/decisions") < context.index("person/alice/shared-demo/state")
+
+
+def test_inactive_hooks_keep_legacy_prefixes_and_extraction_source(tmp_path: Path) -> None:
+    payload = {"cwd": "/Users/example/memories", "last_assistant_message": "Assistant: keep this."}
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-extract.sh", tmp_path, payload, responses=[]
+    )
+    assert result.returncode == 0, result.stderr
+    extract_calls = [call for call in calls if str(call["url"]).endswith("/memory/extract")]
+    assert extract_calls[0]["body"]["source"] == "codex/memories"
+
+    result, calls, _ = _run_hook(
+        RECALL_SCRIPT, tmp_path, {"cwd": "/Users/example/memories"}, responses=[]
+    )
+    assert result.returncode == 0, result.stderr
+    search_calls = [call for call in calls if str(call["url"]).endswith("/search")]
+    prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
+    assert "project/memories" not in prefixes
+    assert "person/alice/memories" not in prefixes
+
+
+@pytest.mark.parametrize("lib_name", ["claude-code", "codex"])
+def test_project_helpers_allowlist_prefixes_and_deduplicate_stable_records(
+    tmp_path: Path, lib_name: str
+) -> None:
+    lib = HOOKS_DIR / "_lib.sh" if lib_name == "claude-code" else CODEX_HOOKS_DIR / "_lib.sh"
+    prefix_result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; _memories_project_recall_prefixes demo alice "$2"',
+            "_",
+            str(lib),
+            "project/{project},person/{project},claude-code/{project},claude-code/{project},wip/{project}/,broad/*",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert prefix_result.returncode == 0, prefix_result.stderr
+    assert prefix_result.stdout.splitlines() == [
+        "project/demo",
+        "person/alice/demo",
+        "claude-code/demo",
+    ]
+
+    merge_input = "\n".join(
+        [
+            json.dumps(
+                {
+                    "results": [
+                        {"id": 1, "source": "project/demo", "text": "project"},
+                        {"source": "project/demo", "text": "no id"},
+                        {"source": "project/demo", "text": "no id"},
+                    ]
+                }
+            ),
+            json.dumps(
+                {
+                    "results": [
+                        {"id": 1, "source": "person/alice/demo", "text": "person"},
+                        {"source": "project/demo", "text": "no id"},
+                    ]
+                }
+            ),
+        ]
+    )
+    merge_result = subprocess.run(
+        ["bash", "-c", 'source "$1"; _memories_merge_search_results true 6', "_", str(lib)],
+        input=merge_input,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert merge_result.returncode == 0, merge_result.stderr
+    merged = json.loads(merge_result.stdout)
+    assert [(item.get("id"), item["source"]) for item in merged] == [
+        (1, "project/demo"),
+        (None, "project/demo"),
+        (1, "person/alice/demo"),
+    ]
 
 
 def test_build_keyword_bag_strips_filler_keeps_domain_terms(tmp_path: Path) -> None:

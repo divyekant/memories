@@ -47,6 +47,18 @@ if [ -z "$CWD" ]; then
 fi
 
 PROJECT=$(_memories_resolve_project "$CWD" 2>/dev/null || basename "$CWD")
+PROJECT_CONTEXT_JSON=$(_memories_project_context "$CWD" 2>/dev/null || printf '{"active":false}')
+PROJECT_CONTEXT_ACTIVE=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')
+PROJECT_CONTEXT_ID=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.project_id // empty' 2>/dev/null || true)
+PROJECT_CONTEXT_PRINCIPAL=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.principal_id // empty' 2>/dev/null || true)
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  PROJECT="$PROJECT_CONTEXT_ID"
+  MEMORIES_SOURCE_PREFIXES=$(_memories_project_recall_prefixes "$PROJECT_CONTEXT_ID" "$PROJECT_CONTEXT_PRINCIPAL" "$MEMORIES_SOURCE_PREFIXES" | tr '\n' ',' | sed 's/,$//')
+fi
+PROJECT_SHARING_GUIDANCE=""
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  PROJECT_SHARING_GUIDANCE="Collaborative project memory: apply the durable-sharing test (another contributor will need this fact without the current session). Use memory_add exactly once with project/$PROJECT_CONTEXT_ID/<decisions|knowledge|state|operations> for deliberate shared facts. Automatic extraction remains private in person/$PROJECT_CONTEXT_PRINCIPAL/$PROJECT_CONTEXT_ID/knowledge; never infer project/... ."
+fi
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   exit 0
 fi
@@ -118,13 +130,20 @@ for raw_prefix in "${prefix_templates[@]}"; do
   SCOPED_PREFIX_LIST="$SCOPED_PREFIX_LIST$prefix"
 done
 
-RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$RECALL_LIMIT" '
-  map(select(type == "object") | (.results // []))
-  | add
-  | unique_by(.id)
-  | sort_by(-(.similarity // .rrf_score // 0))
-  | .[0:$limit]
-' 2>/dev/null) || RESULTS_JSON="[]"
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | _memories_merge_search_results true "$RECALL_LIMIT" 2>/dev/null) || RESULTS_JSON="[]"
+else
+  RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$RECALL_LIMIT" '
+    map(select(type == "object") | (.results // []))
+    | add
+    | unique_by(.id)
+    | sort_by(-(.similarity // .rrf_score // 0))
+    | .[0:$limit]
+  ' 2>/dev/null) || RESULTS_JSON="[]"
+fi
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  RESULTS_JSON=$(printf '%s' "$RESULTS_JSON" | _memories_label_project_results "$PROJECT_CONTEXT_ID" 2>/dev/null) || RESULTS_JSON="[]"
+fi
 
 if [ "$RESULTS_JSON" = "[]" ]; then
   SEARCH_COUNT=$((SEARCH_COUNT + 1))
@@ -136,7 +155,7 @@ CONTEXT_RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
   if length == 0 then
     empty
   else
-    map("- [\(.source)] candidate memory id=\(.id // .memory_id // "unknown") found at session start; call memory_search with this source prefix before using it.") | join("\n")
+    map(("- [\(.source)]" + (if (.provenance_label // "") != "" then " " + .provenance_label else "" end) + " candidate memory id=\(.id // .memory_id // "unknown") found at session start; call memory_search with this source prefix before using it.")) | join("\n")
   end
 ' 2>/dev/null) || true
 
@@ -207,6 +226,11 @@ When memories show deferred/blocked work, say "not yet" or "deferred" directly.
 Preserve boundary conditions (until/unless/because) verbatim.
 Do not ask the user to reconfirm a remembered decision.
 EOF
+if [ -n "$PROJECT_SHARING_GUIDANCE" ]; then
+  PLAYBOOK="$PLAYBOOK
+
+$PROJECT_SHARING_GUIDANCE"
+fi
 
 # --- Output context for Codex ---
 jq -n --arg memories "$CONTEXT_RESULTS" --arg playbook "$PLAYBOOK" --arg health_warning "$HEALTH_WARNING" --arg deferred "$DEFERRED_SECTION" '{

@@ -35,15 +35,21 @@ SUMMARY=$(echo "$INPUT" | jq -r '.compact_summary // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 PROJECT=$(_memories_resolve_project "${CWD:-unknown}" 2>/dev/null || basename "${CWD:-unknown}")
 [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ] || [ -z "$PROJECT" ] && exit 0
+PREFIXES="${MEMORIES_SOURCE_PREFIXES:-$(_default_source_prefixes)}"
+PROJECT_CONTEXT_JSON=$(_memories_project_context "${CWD:-}" 2>/dev/null || printf '{"active":false}')
+PROJECT_CONTEXT_ACTIVE=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')
+PROJECT_CONTEXT_ID=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.project_id // empty' 2>/dev/null || true)
+PROJECT_CONTEXT_PRINCIPAL=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.principal_id // empty' 2>/dev/null || true)
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  PROJECT="$PROJECT_CONTEXT_ID"
+  PREFIXES=$(_memories_project_recall_prefixes "$PROJECT_CONTEXT_ID" "$PROJECT_CONTEXT_PRINCIPAL" "${MEMORIES_SOURCE_PREFIXES:-$(_default_source_prefixes)}" | tr '\n' ',' | sed 's/,$//')
+fi
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 # Truncate summary for use as query (max 500 chars)
 QUERY="${SUMMARY:0:500}"
-
-# Build source prefixes
-PREFIXES="${MEMORIES_SOURCE_PREFIXES:-$(_default_source_prefixes)}"
 
 # Search with the compact summary as query
 RESULTS=""
@@ -56,15 +62,23 @@ for tpl in $(echo "$PREFIXES" | tr ',' ' '); do
     # Negate the resolved score, not each candidate: `-.similarity // -.rrf_score`
     # negates before the alternative is considered, so a hybrid-search result
     # (rrf_score, no similarity) aborts the merge instead of falling through.
-    RESULTS=$(echo "$RESULTS $BATCH_RESULTS" | jq -s 'add | unique_by(.id) | sort_by(-(.similarity // .rrf_score // 0)) | .[0:6]')
+    if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+      RESULTS=$(printf '%s\n%s\n' "{\"results\":$RESULTS}" "{\"results\":$BATCH_RESULTS}" | _memories_merge_search_results true 6)
+    else
+      RESULTS=$(echo "$RESULTS $BATCH_RESULTS" | jq -s 'add | unique_by(.id) | sort_by(-(.similarity // .rrf_score // 0)) | .[0:6]')
+    fi
   else
     RESULTS="$BATCH_RESULTS"
   fi
 done
 
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ] && [ -n "$RESULTS" ] && [ "$RESULTS" != "[]" ]; then
+  RESULTS=$(printf '%s' "$RESULTS" | _memories_label_project_results "$PROJECT_CONTEXT_ID" 2>/dev/null) || RESULTS="[]"
+fi
+
 # Sync MEMORY.md with post-compaction pointers (same sync-marker approach as recall)
 if [ -n "$RESULTS" ] && [ "$RESULTS" != "[]" ] && [ "$RESULTS" != "null" ]; then
-  FORMATTED=$(echo "$RESULTS" | jq -r '.[] | "- [\(.source // "unknown")] candidate memory id=\(.id // .memory_id // "unknown"); call memory_search with this source prefix before using it."' 2>/dev/null)
+  FORMATTED=$(echo "$RESULTS" | jq -r '.[] | ("- [\(.source // "unknown")]" + (if (.provenance_label // "") != "" then " " + .provenance_label else "" end) + " candidate memory id=\(.id // .memory_id // "unknown"); call memory_search with this source prefix before using it.")' 2>/dev/null)
   if [ -n "$FORMATTED" ]; then
     SYNC_MARKER="<!-- SYNCED-FROM-MEMORIES-MCP -->"
     ENCODED_CWD=$(echo "$CWD" | sed 's|/|-|g; s|^-||')

@@ -555,6 +555,80 @@ _memories_principal_id() {
   _memories_project_context "${1:-${CWD:-$PWD}}" | jq -r '.principal_id // empty' 2>/dev/null
 }
 
+_memories_project_recall_prefixes() {
+  local project="${1:-}" principal="${2:-}" configured="${3:-}" raw prefix existing duplicate
+  local -a prefixes=() configured_prefixes=()
+  [ -n "$project" ] && prefixes+=("project/$project")
+  [ -n "$project" ] && [ -n "$principal" ] && prefixes+=("person/$principal/$project")
+  IFS=',' read -r -a configured_prefixes <<< "$configured"
+  for raw in "${configured_prefixes[@]}"; do
+    prefix=$(printf '%s' "$raw" | xargs)
+    [ -z "$prefix" ] && continue
+    prefix="${prefix//\{project\}/$project}"
+    # Collaborative mode owns the exact project and person namespaces.  A
+    # trailing slash is a legacy family prefix, not an exact-project prefix.
+    case "$prefix" in
+      project/*|person/*|*/|*\*) continue ;;
+    esac
+    duplicate=0
+    for existing in "${prefixes[@]}"; do
+      [ "$existing" = "$prefix" ] && duplicate=1 && break
+    done
+    [ "$duplicate" -eq 0 ] && prefixes+=("$prefix")
+  done
+  printf '%s\n' "${prefixes[@]}"
+}
+
+_memories_project_extract_source() {
+  local active="${1:-false}" project="${2:-}" principal="${3:-}"
+  [ "$active" = "true" ] || return 1
+  [ -n "$project" ] && [ -n "$principal" ] || return 1
+  printf 'person/%s/%s/knowledge\n' "$principal" "$project"
+}
+
+_memories_project_search_results() {
+  local query="${1:-}" project="${2:-}" principal="${3:-}" configured="${4:-}" limit="${5:-3}" threshold="${6:-0.35}" prefix response
+  while IFS= read -r prefix; do
+    [ -n "$prefix" ] || continue
+    response=$(_search_memories_multi "$query" "$prefix" "$limit" "$threshold" || true)
+    [ -n "$response" ] && printf '%s\n' "$response" | jq -c --arg requested_prefix "$prefix" '. + {_requested_prefix:$requested_prefix}'
+  done < <(_memories_project_recall_prefixes "$project" "$principal" "$configured")
+}
+
+_memories_merge_search_results() {
+  local ordered="${1:-false}" limit="${2:-6}"
+  if [ "$ordered" = "true" ]; then
+    jq -sr --argjson limit "$limit" '
+      def dedup_key:
+        if (.id? != null) then ["id", .id, (.source // "")]
+        else ["text", (.text // ""), "source", (.source // "")]
+        end;
+      map(select(type == "object") | (.results // [])) | add // []
+      | reduce .[] as $item ([];
+          if any(.[]; dedup_key == ($item | dedup_key)) then . else . + [$item] end
+        )
+      | .[0:$limit]
+    '
+  else
+    jq -sr --argjson limit "$limit" '
+      def dedup_key:
+        if (.id? != null) then ["id", .id, (.source // "")]
+        else ["text", (.text // ""), "source", (.source // "")]
+        end;
+      map(select(type == "object") | (.results // [])) | add // []
+      | reduce .[] as $item ([];
+          if any(.[]; dedup_key == ($item | dedup_key)) then . else . + [$item] end
+        )
+      | sort_by(-(.similarity // .rrf_score // 0)) | .[0:$limit]
+    '
+  fi
+}
+
+_memories_label_project_results() {
+  local project="${1:-}"
+  jq -c --arg project "$project" 'map(if ((.source // "") | startswith("project/" + $project + "/")) then . + {provenance_label: ([if (.author // "") != "" then "author=" + (.author|tostring) else empty end, if (.origin_client // "") != "" then "origin-client=" + (.origin_client|tostring) else empty end] | if length > 0 then "[" + join(", ") + "]" else "" end)} else . end)'
+}
+
 
 
 _memories_disabled() {
