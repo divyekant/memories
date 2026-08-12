@@ -450,6 +450,7 @@ export async function resolveProjectContext(options = {}) {
     backendConfig: suppliedBackendConfig,
     fetchImpl = globalThis.fetch,
     skipFileConfig = false,
+    principalTimeoutMs = 2000,
   } = options;
   const declaration = loadProjectDeclaration(cwd);
   if (!declaration.ok) return contextFailure(declaration.reason, declaration.diagnostic);
@@ -480,24 +481,47 @@ export async function resolveProjectContext(options = {}) {
   const backendKey = backend.apiKey ?? backend.api_key ?? "";
   if (backendKey) headers["X-API-Key"] = backendKey;
   let response;
-  try {
-    response = await fetchImpl(`${backendUrl}/api/keys/me`, {
-      method: "GET",
-      headers,
-      redirect: "manual",
-    });
-  } catch (error) {
-    return contextFailure("principal_unreachable", `authenticated principal lookup failed: ${error.message}`);
-  }
-  if (!response?.ok || [301, 302, 303, 307, 308].includes(response?.status)) {
-    return contextFailure("principal_unreachable", `authenticated principal lookup returned HTTP ${response?.status ?? "unknown"}`);
-  }
-
   let identity;
+  let lookupStage = "request";
+  const timeoutMs = Number.isFinite(principalTimeoutMs) && principalTimeoutMs > 0
+    ? principalTimeoutMs
+    : 2000;
+  const controller = new AbortController();
+  let timeout;
+  const deadline = new Promise((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error("principal lookup timeout"));
+    }, timeoutMs);
+  });
   try {
-    identity = await response.json();
+    response = await Promise.race([
+      fetchImpl(`${backendUrl}/api/keys/me`, {
+        method: "GET",
+        headers,
+        redirect: "manual",
+        signal: controller.signal,
+      }),
+      deadline,
+    ]);
+    if (!response?.ok || [301, 302, 303, 307, 308].includes(response?.status)) {
+      return contextFailure("principal_unreachable", `authenticated principal lookup returned HTTP ${response?.status ?? "unknown"}`);
+    }
+    lookupStage = "body";
+    identity = await Promise.race([response.json(), deadline]);
   } catch (error) {
-    return contextFailure("principal_unreachable", `authenticated principal lookup returned invalid JSON: ${error.message}`);
+    if (controller.signal.aborted) {
+      return contextFailure(
+        "principal_unreachable",
+        `authenticated principal lookup timed out after ${timeoutMs}ms`,
+      );
+    }
+    if (lookupStage === "body") {
+      return contextFailure("principal_unreachable", `authenticated principal lookup returned invalid JSON: ${error.message}`);
+    }
+    return contextFailure("principal_unreachable", `authenticated principal lookup failed: ${error.message}`);
+  } finally {
+    clearTimeout(timeout);
   }
   if (identity?.type !== "managed") {
     const reason = identity?.type === "env" || identity?.type === "none" ? "env_principal" : "invalid_principal_type";

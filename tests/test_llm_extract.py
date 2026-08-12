@@ -564,6 +564,36 @@ class TestExecuteActions:
         assert old.get("archived") is not True
         assert engine.qdrant_store.count() == 1
 
+    def test_execute_actions_preflights_every_project_write_before_batch_mutation(self, tmp_path):
+        from llm_extract import execute_actions
+        from memory_engine import MemoryEngine
+
+        engine = MemoryEngine(data_dir=str(tmp_path))
+        trusted = TrustedAuthorship.principal("alice", "codex")
+        facts = [
+            {"text": "safe shared decision", "category": "decision"},
+            {
+                "text": "Production token is ghp_abcdefghijklmnopqrstuvwxyz123456",
+                "category": "detail",
+            },
+        ]
+
+        with pytest.raises(ProjectMemoryPolicyError, match="credential-shaped"):
+            execute_actions(
+                engine,
+                [
+                    {"action": "ADD", "fact_index": 0},
+                    {"action": "ADD", "fact_index": 1},
+                ],
+                facts,
+                source="project/demo/knowledge",
+                novelty_gate=False,
+                trusted_authorship=trusted,
+            )
+
+        assert engine.qdrant_store.count() == 0
+        assert engine.metadata == []
+
     def test_execute_add_passes_category_metadata(self):
         from llm_extract import execute_actions
 
@@ -699,6 +729,7 @@ class TestExecuteActions:
             facts,
             source="project/acme/decisions",
             allowed_prefixes=["project/", "person/"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
         )
 
         assert result["stored_count"] == 0

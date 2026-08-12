@@ -697,6 +697,21 @@ def execute_actions(
     result_actions = []
     gate_active = novelty_gate and _novelty_gate_enabled()
 
+    # Project policy errors are terminal for extraction commits (the API
+    # returns 422), so validate every action that can create replacement text
+    # before executing any of them.  Without this pass, a later invalid action
+    # could reject the request only after earlier actions had already mutated
+    # storage.
+    for action in actions:
+        act = action.get("action", "").upper()
+        if act not in ("ADD", "FALLBACK_ADD", "UPDATE", "CONFLICT"):
+            continue
+        fi = action.get("fact_index", -1)
+        fact = facts[fi] if 0 <= fi < len(facts) else {"text": ""}
+        fact_text = fact.get("text", "") if isinstance(fact, dict) else str(fact)
+        candidate_text = action.get("new_text", fact_text) if act == "UPDATE" else fact_text
+        validate_project_write(candidate_text, source, trusted_authorship)
+
     for action in actions:
         act = action.get("action", "").upper()
         fi = action.get("fact_index", -1)

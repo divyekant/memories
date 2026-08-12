@@ -517,6 +517,33 @@ test('project context treats env, missing, invalid, and unreachable principals a
   assert.equal(unreachable.reason, 'principal_unreachable');
 });
 
+test('project context bounds a stalled authenticated principal lookup', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-principal-timeout-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const started = Date.now();
+  const context = await resolveProjectContext({
+    cwd: dir,
+    backends: [{ name: 'shared', url: 'http://backend.test', apiKey: 'secret' }],
+    principalTimeoutMs: 25,
+    fetchImpl: async (_url, options = {}) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(new Response(JSON.stringify({
+        type: 'managed',
+        principal_id: 'alice',
+      }), { status: 200 })), 200);
+      options.signal?.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(new Error('aborted'));
+      });
+    }),
+  });
+
+  assert.equal(context.active, false);
+  assert.equal(context.reason, 'principal_unreachable');
+  assert.match(context.diagnostic, /timed out/i);
+  assert.ok(Date.now() - started < 500);
+});
+
 test('project-aware tools retry an inactive principal resolution and cache recovery', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mem-project-retry-'));
   await mkdir(join(dir, '.memories'), { recursive: true });
