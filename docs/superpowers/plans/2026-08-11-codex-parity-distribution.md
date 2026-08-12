@@ -563,3 +563,53 @@ Expected: clean checks, no version changes, and only approved Codex integration/
 - [ ] **Step 5: Handle verification failures as a new exact task**
 
 If Steps 1-4 expose a regression, stop Task 6 and append a new numbered correction task to this plan before editing. That task must name the exact test and production files, capture the failing command, require the covering test to fail on the pre-fix commit, and provide its exact staging command. If no correction is required, do not create an empty commit.
+
+---
+
+### Task 7: Align the Deprecated Installer Contract with the Expanded Codex Manifest
+
+**Files:**
+- Modify: `tests/test_installer.py`
+
+**Failure captured:**
+
+```bash
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+```
+
+On commit `ed3faff`, `tests/test_installer.py::test_codex_install_writes_standalone_hooks_json`
+fails because it asserts that `PreCompact` is absent even though Task 2 made
+the shipped `integrations/codex/hooks/hooks.json` compatibility target the
+expanded ten-event manifest.
+
+- [ ] **Step 1: Re-run the exact failing test on the pre-fix commit**
+
+```bash
+uv run pytest -q tests/test_installer.py::test_codex_install_writes_standalone_hooks_json
+```
+
+Expected: failure at the stale `PreCompact`-absent assertion.
+
+- [ ] **Step 2: Update only the deprecated-installer test contract**
+
+Assert that the compatibility installer writes and reports all ten shipped
+Codex events, including the five new lifecycle scripts, while retaining the
+existing standalone `hooks.json`, MCP, permissions, and developer-instructions
+assertions. No production file changes are required.
+
+- [ ] **Step 3: Run focused and full verification**
+
+```bash
+uv run pytest -q tests/test_installer.py::test_codex_install_writes_standalone_hooks_json
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+uv run pytest -q
+```
+
+Expected: zero failures.
+
+- [ ] **Step 4: Stage and commit the exact correction**
+
+```bash
+git add tests/test_installer.py docs/superpowers/plans/2026-08-11-codex-parity-distribution.md
+git commit -m "test(codex): align legacy installer lifecycle coverage"
+```
