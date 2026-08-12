@@ -6,6 +6,20 @@ export function appendMarkedBlock(text, marker, body) {
   return `${text}\n${start}\n${body}\n# END ${marker}\n`;
 }
 
+// Replace only a complete block emitted by appendMarkedBlock. Lines outside
+// the exact begin/end markers are carried through unchanged, so unmanaged TOML
+// (including its whitespace and ordering) is not reformatted during updates.
+export function upsertMarkedBlock(text, marker, body) {
+  const start = `# BEGIN ${marker}`;
+  const end = `# END ${marker}`;
+  const lines = text.split('\n');
+  const startIndex = lines.findIndex((line) => line === start);
+  if (startIndex === -1) return appendMarkedBlock(text, marker, body);
+  const endIndex = lines.findIndex((line, index) => index > startIndex && line === end);
+  if (endIndex === -1) return appendMarkedBlock(text, marker, body);
+  return [...lines.slice(0, startIndex + 1), body, ...lines.slice(endIndex)].join('\n');
+}
+
 export function insertMarkedBlockAtRoot(text, marker, body) {
   const start = `# BEGIN ${marker}`;
   if (text.split('\n').some((l) => l === start)) return text;

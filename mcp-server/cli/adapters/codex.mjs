@@ -2,10 +2,10 @@ import { chmod, copyFile, mkdir, readFile, rm, writeFile, access } from 'node:fs
 import { execFile as nodeExecFile } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { readJson, writeJson, addPermissions, removePermissions, mergeHookSettings } from '../lib/json-file.mjs';
-import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS } from '../lib/hooks.mjs';
-import { installStatePath, recordPermissions, readRecordedPermissions, clearRecordedPermissions } from '../lib/install-state.mjs';
-import { appendMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../lib/toml.mjs';
+import { readJson, writeJson, removePermissions, mergeHookSettings } from '../lib/json-file.mjs';
+import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOL_NAMES } from '../lib/hooks.mjs';
+import { installStatePath, readRecordedPermissions, clearRecordedPermissions } from '../lib/install-state.mjs';
+import { upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, tomlEscape } from '../lib/toml.mjs';
 
 const MARKER_NOTIFY = 'Memories Codex notify';
 const MARKER_MCP = 'Memories Codex MCP';
@@ -120,8 +120,27 @@ const paths = (ctx) => ({
   config: join(ctx.home, '.codex/config.toml'),
 });
 
+function mcpBlock(ctx) {
+  const approvals = READONLY_MCP_TOOL_NAMES.map((tool) =>
+    `[mcp_servers.memories.tools.${tool}]\napproval_mode = "approve"`,
+  ).join('\n\n');
+  return `[mcp_servers.memories]
+command = "npx"
+args = ["-y", "memories-mcp"]
+default_tools_approval_mode = "prompt"
+
+[mcp_servers.memories.env]
+MEMORIES_URL = "${tomlEscape(ctx.url)}"
+MEMORIES_API_KEY = "${tomlEscape(ctx.apiKey)}"
+MEMORIES_CLIENT = "codex"
+
+${approvals}`;
+}
+
 export async function install(ctx) {
   const p = paths(ctx);
+  const statePath = installStatePath(ctx.home);
+  const recordedRules = await readRecordedPermissions(statePath, 'codex');
 
   const versionText = await detectCodexVersion(ctx);
   const profile = supportsExpandedHooks(versionText) ? 'expanded' : 'legacy';
@@ -140,42 +159,35 @@ export async function install(ctx) {
   const existingHooks = removeManagedHooks(await readJson(p.hooksJson), p.hooksDest);
   await writeJson(p.hooksJson, mergeHookSettings(existingHooks, rendered));
 
-  let settings = await readJson(p.settings);
-  // Record only rules we actually introduce — a rule the user already had is
-  // theirs, and uninstall must leave it behind.
-  const alreadyPresent = new Set(settings.permissions?.allow ?? []);
-  const addedRules = READONLY_MCP_TOOLS.filter((rule) => !alreadyPresent.has(rule));
-  settings = addPermissions(settings, READONLY_MCP_TOOLS);
-  await writeJson(p.settings, settings);
-  await recordPermissions(installStatePath(ctx.home), 'codex', addedRules);
-
   await mkdir(join(ctx.home, '.codex'), { recursive: true });
   let toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
-  if (!hasTomlSection(toml, 'mcp_servers.memories')) {
-    const mcpBlock = `[mcp_servers.memories]
-command = "npx"
-args = ["-y", "memories-mcp"]
-
-[mcp_servers.memories.env]
-MEMORIES_URL = "${tomlEscape(ctx.url)}"
-MEMORIES_API_KEY = "${tomlEscape(ctx.apiKey)}"
-MEMORIES_CLIENT = "codex"`;
-    toml = appendMarkedBlock(toml, MARKER_MCP, mcpBlock);
+  const ownsMcpBlock = toml.split('\n').some((line) => line === `# BEGIN ${MARKER_MCP}`);
+  // An existing MCP section without our marker belongs to the user. Refresh
+  // only a marked block, or create one when no Memories server exists yet.
+  if (ownsMcpBlock || !hasTomlSection(toml, 'mcp_servers.memories')) {
+    toml = upsertMarkedBlock(toml, MARKER_MCP, mcpBlock(ctx));
   }
-  toml = ensureTomlStringKey(toml, 'mcp_servers.memories.env', 'MEMORIES_CLIENT', 'codex');
 
   if (!hasTomlKey(toml, 'developer_instructions')) {
     toml = insertMarkedBlockAtRoot(toml, MARKER_DEV, DEVELOPER_INSTRUCTIONS);
   }
   await writeFile(p.config, toml);
 
+  // v5.12 wrote read-only Codex approvals to settings.json. Once the current
+  // TOML policy is durable, remove exactly the rules that install-state says
+  // that older run introduced, then clear provenance last for retry safety.
+  if (recordedRules !== null && await exists(p.settings)) {
+    const owned = new Set(recordedRules);
+    await writeJson(p.settings, removePermissions(await readJson(p.settings), (rule) => owned.has(rule)));
+  }
+  await clearRecordedPermissions(statePath, 'codex');
+
   ctx.log(`Codex wired (hooks: ${p.hooksDest}, hook profile: ${profile})`);
 }
 
 export async function uninstall(ctx) {
   const p = paths(ctx);
-  // Captured before the removal below erases the evidence.
-  const wasInstalled = await exists(p.hooksDest);
+  // Read before the removal below erases the evidence.
   const recordedRules = await readRecordedPermissions(installStatePath(ctx.home), 'codex');
   await rm(p.hooksDest, { recursive: true, force: true });
 
@@ -195,7 +207,7 @@ export async function uninstall(ctx) {
   if (await exists(p.settings)) {
     // Only rules this install recorded; see the claude-code adapter for why
     // shape-matching is unsafe here.
-    const owned = new Set(recordedRules ?? (wasInstalled ? READONLY_MCP_TOOLS : []));
+    const owned = new Set(recordedRules ?? []);
     await writeJson(p.settings, removePermissions(await readJson(p.settings), (rule) => owned.has(rule)));
   }
 

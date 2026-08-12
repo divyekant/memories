@@ -7,7 +7,7 @@ import { basename, join } from 'node:path';
 // nothing. So a server registered under a non-default name (a claude.ai
 // connector, or a manual rename) needs its own explicit rule set; there is
 // no single rule that covers an unknown name. See readonlyMcpTools().
-const READONLY_MCP_TOOL_NAMES = [
+export const READONLY_MCP_TOOL_NAMES = [
   'memory_search', 'memory_list', 'memory_count', 'memory_stats',
   'memory_is_novel', 'memory_is_useful', 'memory_conflicts',
 ];

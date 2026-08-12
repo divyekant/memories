@@ -6,6 +6,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as adapter from '../cli/adapters/codex.mjs';
 import { readJson, writeJson } from '../cli/lib/json-file.mjs';
+import { appendMarkedBlock } from '../cli/lib/toml.mjs';
+import { READONLY_MCP_TOOL_NAMES } from '../cli/lib/hooks.mjs';
 
 const assetsDir = join(dirname(fileURLToPath(import.meta.url)), '../assets');
 const exists = (p) => access(p).then(() => true, () => false);
@@ -21,7 +23,7 @@ function rootPrefix(toml) {
   return lines.slice(0, firstSection === -1 ? lines.length : firstSection).join('\n');
 }
 
-test('install writes hooks, hooks.json, settings perms, config.toml blocks', async () => {
+test('install writes hooks, hooks.json, current approvals, and config.toml blocks', async () => {
   const ctx = await freshCtx();
   await adapter.install(ctx);
   assert.ok(await exists(join(ctx.home, '.codex/hooks/memory/memory-recall.sh')));
@@ -30,11 +32,18 @@ test('install writes hooks, hooks.json, settings perms, config.toml blocks', asy
   const flat = JSON.stringify(hooksJson);
   assert.ok(flat.includes(join(ctx.home, '.codex/hooks/memory/')));
   const settings = await readJson(join(ctx.home, '.codex/settings.json'));
-  assert.ok(settings.permissions.allow.includes('mcp__memories__memory_search'));
+  assert.equal(settings.permissions, undefined);
   const toml = await readFile(join(ctx.home, '.codex/config.toml'), 'utf8');
   assert.ok(toml.includes('# BEGIN Memories Codex MCP'));
   assert.ok(toml.includes('command = "npx"'));
   assert.ok(toml.includes('MEMORIES_CLIENT = "codex"'));
+  assert.ok(toml.includes('default_tools_approval_mode = "prompt"'));
+  for (const tool of READONLY_MCP_TOOL_NAMES) {
+    assert.match(toml, new RegExp(`\\[mcp_servers\\.memories\\.tools\\.${tool}\\]\\napproval_mode = "approve"`));
+  }
+  for (const tool of ['memory_add', 'memory_delete', 'memory_delete_batch', 'memory_update', 'memory_extract']) {
+    assert.doesNotMatch(toml, new RegExp(`mcp_servers\\.memories\\.tools\\.${tool}`));
+  }
   assert.ok(toml.includes('# BEGIN Memories Codex developer instructions'));
   assert.ok(toml.includes('memory_search'));
   assert.ok(
@@ -181,16 +190,50 @@ test('install is idempotent on config.toml', async () => {
 test('install respects a pre-existing unmanaged [mcp_servers.memories]', async () => {
   const ctx = await freshCtx();
   await mkdir(join(ctx.home, '.codex'), { recursive: true });
-  await writeFile(join(ctx.home, '.codex/config.toml'), '[mcp_servers.memories]\ncommand = "node"\n');
+  const unmanaged = '[mcp_servers.memories]\ncommand = "node"\nenv = { KEEP = "byte-for-byte" }\n';
+  await writeFile(join(ctx.home, '.codex/config.toml'), unmanaged);
   await adapter.install(ctx);
   const toml = await readFile(join(ctx.home, '.codex/config.toml'), 'utf8');
   assert.ok(!toml.includes('# BEGIN Memories Codex MCP')); // no duplicate block
-  assert.ok(toml.includes('command = "node"'));
-  assert.ok(toml.includes('MEMORIES_CLIENT = "codex"')); // env key still ensured
+  assert.ok(toml.includes(unmanaged), 'unmanaged MCP section must remain byte-for-byte unchanged');
+  assert.doesNotMatch(toml, /MEMORIES_CLIENT = "codex"/);
   assert.ok(
     rootPrefix(toml).includes('developer_instructions'),
     'developer_instructions must land at root even when the file already starts with a [section] on line 1',
   );
+});
+
+test('install refreshes the owned MCP block and removes only recorded legacy settings permissions', async () => {
+  const ctx = await freshCtx();
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  const oldBody = `[mcp_servers.memories]\ncommand = "npx"\nargs = ["-y", "memories-mcp"]\n\n[mcp_servers.memories.env]\nMEMORIES_URL = "http://old.example"\nMEMORIES_API_KEY = "old"\nMEMORIES_CLIENT = "codex"`;
+  await writeFile(
+    join(ctx.home, '.codex/config.toml'),
+    appendMarkedBlock('model = "gpt-5.5"\n', 'Memories Codex MCP', oldBody),
+  );
+
+  const legacyRules = READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`);
+  const preservedRules = ['mcp__memories__memory_delete', 'mcp__other_memory_product__memory_search'];
+  await writeJson(join(ctx.home, '.codex/settings.json'), {
+    permissions: { allow: [...legacyRules, ...preservedRules] },
+  });
+  await writeJson(join(ctx.home, '.config/memories/install-state.json'), {
+    permissions: { codex: legacyRules },
+  });
+
+  await adapter.install(ctx);
+
+  const toml = await readFile(join(ctx.home, '.codex/config.toml'), 'utf8');
+  assert.doesNotMatch(toml, /http:\/\/old\.example/);
+  assert.match(toml, /MEMORIES_URL = "http:\/\/localhost:8900"/);
+  assert.match(toml, /default_tools_approval_mode = "prompt"/);
+  for (const tool of READONLY_MCP_TOOL_NAMES) {
+    assert.match(toml, new RegExp(`\\[mcp_servers\\.memories\\.tools\\.${tool}\\]\\napproval_mode = "approve"`));
+  }
+
+  const settings = await readJson(join(ctx.home, '.codex/settings.json'));
+  assert.deepEqual(settings.permissions.allow, preservedRules);
+  assert.equal((await readJson(join(ctx.home, '.config/memories/install-state.json'))).permissions, undefined);
 });
 
 test('uninstall removes blocks and hooks but keeps foreign toml', async () => {
@@ -205,11 +248,11 @@ test('uninstall removes blocks and hooks but keeps foreign toml', async () => {
   assert.ok(!toml.includes('Memories Codex'));
 });
 
-test('uninstall clears the read-only allowlist it wrote', async () => {
+test('uninstall leaves current MCP approvals in config and does not create legacy settings permissions', async () => {
   const ctx = await freshCtx();
   await adapter.install(ctx);
   const afterInstall = await readJson(join(ctx.home, '.codex/settings.json'));
-  assert.ok(afterInstall.permissions.allow.includes('mcp__memories__memory_search'));
+  assert.equal(afterInstall.permissions, undefined);
 
   await adapter.uninstall(ctx);
   const settings = await readJson(join(ctx.home, '.codex/settings.json'));
@@ -237,7 +280,7 @@ test('uninstall preserves an unrelated memory product rule and an unmanaged mach
   await adapter.uninstall(ctx);
   assert.deepEqual(
     (await readJson(join(ctx.home, '.codex/settings.json'))).permissions.allow,
-    foreignAllow, // both survive: one is a foreign server, one the user already had
+    foreignAllow, // both survive: neither was recorded as legacy installer state
   );
 });
 
@@ -246,6 +289,9 @@ test('a failed uninstall keeps its ownership record so a retry still cleans up',
   await mkdir(join(ctx.home, '.codex'), { recursive: true });
   await adapter.install(ctx);
   const statePath = join(ctx.home, '.config/memories/install-state.json');
+  const legacyRules = READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`);
+  await writeJson(join(ctx.home, '.codex/settings.json'), { permissions: { allow: legacyRules } });
+  await writeJson(statePath, { permissions: { codex: legacyRules } });
   assert.equal((await readJson(statePath)).permissions.codex.length, 7);
 
   // Make uninstall throw partway through, after the point where provenance

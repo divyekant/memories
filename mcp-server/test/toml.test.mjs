@@ -1,12 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../cli/lib/toml.mjs';
+import { appendMarkedBlock, upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../cli/lib/toml.mjs';
 
 test('appendMarkedBlock appends once, idempotent', () => {
   const once = appendMarkedBlock('a = 1\n', 'Memories Codex MCP', '[mcp_servers.memories]\ncommand = "npx"');
   assert.ok(once.includes('# BEGIN Memories Codex MCP'));
   assert.ok(once.includes('# END Memories Codex MCP'));
   assert.equal(appendMarkedBlock(once, 'Memories Codex MCP', 'anything'), once);
+});
+
+test('upsertMarkedBlock replaces only the owned block', () => {
+  const old = appendMarkedBlock('model = "x"\n', 'Owned', 'old = true');
+  const next = upsertMarkedBlock(old, 'Owned', 'new = true');
+  assert.match(next, /model = "x"/);
+  assert.doesNotMatch(next, /old = true/);
+  assert.match(next, /new = true/);
 });
 
 test('removeMarkedBlock strips block and markers, keeps rest', () => {
