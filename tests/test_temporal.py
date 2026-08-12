@@ -57,7 +57,7 @@ class TestVersionPreservation:
     def test_update_archives_old_memory(self):
         from llm_extract import execute_actions
         mock_engine = MagicMock()
-        mock_engine.get_memory.return_value = {"id": 42, "source": "test", "text": "old"}
+        mock_engine.get_memory.return_value = {"id": 42, "source": "test/proj", "text": "old"}
         mock_engine.add_memories.return_value = [101]
         mock_engine.add_link.return_value = {}
 
@@ -73,7 +73,7 @@ class TestVersionPreservation:
     def test_update_creates_supersedes_link(self):
         from llm_extract import execute_actions
         mock_engine = MagicMock()
-        mock_engine.get_memory.return_value = {"id": 42, "source": "test", "text": "old"}
+        mock_engine.get_memory.return_value = {"id": 42, "source": "test/proj", "text": "old"}
         mock_engine.add_memories.return_value = [101]
         mock_engine.add_link.return_value = {}
 
@@ -86,7 +86,7 @@ class TestVersionPreservation:
     def test_update_sets_is_latest_on_new_memory(self):
         from llm_extract import execute_actions
         mock_engine = MagicMock()
-        mock_engine.get_memory.return_value = {"id": 42, "source": "test", "text": "old"}
+        mock_engine.get_memory.return_value = {"id": 42, "source": "test/proj", "text": "old"}
         mock_engine.add_memories.return_value = [101]
         mock_engine.add_link.return_value = {}
 
