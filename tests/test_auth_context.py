@@ -230,13 +230,28 @@ class TestToMeResponse:
             key_type="managed",
             key_id="abc-123",
             key_name="My Key",
+            principal_id="person-a",
         )
         resp = ctx.to_me_response()
         assert resp["id"] == "abc-123"
         assert resp["name"] == "My Key"
+        assert resp["principal_id"] == "person-a"
+
+    def test_principal_id_is_optional_and_separate_from_display_name(self):
+        ctx = AuthContext(
+            role="read-write",
+            prefixes=["proj/*"],
+            key_type="managed",
+            key_name="Display Name",
+            principal_id="person-a",
+        )
+        resp = ctx.to_me_response()
+        assert resp["name"] == "Display Name"
+        assert resp["principal_id"] == "person-a"
 
     def test_no_id_or_name_when_not_set(self):
         ctx = AuthContext(role="admin", prefixes=None, key_type="env")
         resp = ctx.to_me_response()
         assert "id" not in resp
         assert "name" not in resp
+        assert "principal_id" not in resp

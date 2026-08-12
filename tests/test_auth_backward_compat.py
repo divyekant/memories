@@ -102,6 +102,7 @@ class TestSingleKeyBackwardCompat:
         body = resp.json()
         assert body["role"] == "admin"
         assert body["type"] == "env"
+        assert "principal_id" not in body
 
     def test_existing_key_can_access_usage(self, single_key_client):
         client, _ = single_key_client

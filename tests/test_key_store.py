@@ -1,12 +1,73 @@
 """Tests for key_store module — API key generation, hashing, and CRUD."""
 import hashlib
+import json
 import os
+import sqlite3
 import tempfile
 import time
 
 import pytest
 
 from key_store import KeyStore
+
+
+class TestPrincipalIdMigration:
+    def test_backfills_existing_rows_from_pre_feature_schema(self):
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "keys.db")
+        raw_key = "mem_" + "a" * 32
+        now = "2026-08-11T00:00:00Z"
+
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                key_hash TEXT UNIQUE NOT NULL,
+                key_prefix TEXT NOT NULL,
+                role TEXT NOT NULL,
+                prefixes TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                usage_count INTEGER DEFAULT 0,
+                revoked INTEGER DEFAULT 0
+            );
+            """
+        )
+        conn.execute(
+            """INSERT INTO api_keys
+               (id, name, key_hash, key_prefix, role, prefixes, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "legacy-id",
+                "legacy-key",
+                KeyStore.hash_key(raw_key),
+                raw_key[:8],
+                "admin",
+                json.dumps([]),
+                now,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        store = KeyStore(db_path)
+        listed = store.list_keys()
+        assert listed[0]["principal_id"] == "legacy-key"
+        looked_up = store.lookup(raw_key)
+        assert looked_up["principal_id"] == "legacy-key"
+
+        # A later startup must preserve an explicitly changed principal.
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "UPDATE api_keys SET principal_id = ? WHERE id = ?",
+            ("stable-principal", "legacy-id"),
+        )
+        conn.commit()
+        conn.close()
+        restarted = KeyStore(db_path)
+        assert restarted.list_keys()[0]["principal_id"] == "stable-principal"
 
 
 class TestKeyGeneration:
@@ -41,7 +102,28 @@ class TestCreateKey:
         assert result["name"] == "test-key"
         assert result["role"] == "read-only"
         assert result["prefixes"] == ["proj/"]
+        assert result["principal_id"] == "test-key"
         assert "created_at" in result
+
+    def test_accepts_explicit_principal_id(self):
+        result = self.ks.create_key(
+            "Display Name", "read-only", ["proj/"], principal_id="person-a"
+        )
+        assert result["principal_id"] == "person-a"
+        assert self.ks.list_keys()[0]["principal_id"] == "person-a"
+
+    def test_compatibility_default_preserves_display_name_exactly(self):
+        # Legacy callers may use arbitrary display names.  Do not silently
+        # normalize those identities; a later project write must fail closed
+        # until an administrator assigns an explicit valid principal slug.
+        result = self.ks.create_key("Legacy Display Name", "read-only", ["proj/"])
+        assert result["principal_id"] == "Legacy Display Name"
+
+    def test_rejects_invalid_explicit_principal_id(self):
+        with pytest.raises(ValueError, match="principal_id"):
+            self.ks.create_key(
+                "Display Name", "read-only", ["proj/"], principal_id="Person A"
+            )
 
     def test_admin_ignores_prefixes(self):
         result = self.ks.create_key("admin-key", "admin", ["should/", "be/", "ignored/"])
@@ -60,12 +142,15 @@ class TestLookupKey:
         self.ks = KeyStore(self.db_path)
 
     def test_finds_existing_key(self):
-        created = self.ks.create_key("lookup-test", "read-write", ["a/"])
+        created = self.ks.create_key(
+            "lookup-test", "read-write", ["a/"], principal_id="lookup-principal"
+        )
         raw_key = created["key"]
         found = self.ks.lookup(raw_key)
         assert found is not None
         assert found["id"] == created["id"]
         assert found["name"] == "lookup-test"
+        assert found["principal_id"] == "lookup-principal"
         assert found["role"] == "read-write"
         assert found["prefixes"] == ["a/"]
 
@@ -101,6 +186,18 @@ class TestUpdateKey:
         keys = self.ks.list_keys()
         match = [k for k in keys if k["id"] == created["id"]][0]
         assert match["name"] == "new-name"
+        assert match["principal_id"] == "old-name"
+
+    def test_updates_principal_id_explicitly(self):
+        created = self.ks.create_key("display-name", "read-only", [])
+        self.ks.update_key(created["id"], principal_id="stable-id")
+        match = [k for k in self.ks.list_keys() if k["id"] == created["id"]][0]
+        assert match["principal_id"] == "stable-id"
+
+    def test_rejects_invalid_principal_id_update(self):
+        created = self.ks.create_key("display-name", "read-only", [])
+        with pytest.raises(ValueError, match="principal_id"):
+            self.ks.update_key(created["id"], principal_id="Not A Slug")
 
     def test_updates_role(self):
         created = self.ks.create_key("role-test", "read-only", [])

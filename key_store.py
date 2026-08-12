@@ -13,6 +13,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from project_memory import is_valid_slug
+
 logger = logging.getLogger(__name__)
 
 VALID_ROLES = {"read-only", "read-write", "admin"}
@@ -29,6 +31,7 @@ class KeyStore:
             CREATE TABLE IF NOT EXISTS api_keys (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                principal_id TEXT,
                 key_hash TEXT UNIQUE NOT NULL,
                 key_prefix TEXT NOT NULL,
                 role TEXT NOT NULL,
@@ -40,6 +43,18 @@ class KeyStore:
             );
             CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
         """)
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(api_keys)").fetchall()
+        }
+        if "principal_id" not in columns:
+            # Existing installations have no principal identity column.  Keep
+            # the migration additive, then backfill from the immutable legacy
+            # display name below.
+            conn.execute("ALTER TABLE api_keys ADD COLUMN principal_id TEXT")
+        conn.execute(
+            "UPDATE api_keys SET principal_id = name WHERE principal_id IS NULL"
+        )
+        conn.commit()
         conn.close()
         logger.info("KeyStore initialized: %s", db_path)
 
@@ -66,10 +81,24 @@ class KeyStore:
         """SHA-256 hex digest of a raw API key."""
         return hashlib.sha256(raw_key.encode()).hexdigest()
 
-    def create_key(self, name: str, role: str, prefixes: list[str]) -> dict[str, Any]:
+    def create_key(
+        self,
+        name: str,
+        role: str,
+        prefixes: list[str],
+        principal_id: str | None = None,
+    ) -> dict[str, Any]:
         """Create a new API key. Returns dict including raw key (shown once)."""
         if role not in VALID_ROLES:
             raise ValueError(f"Invalid role '{role}'. Must be one of: {VALID_ROLES}")
+
+        # Keep the pre-principal API compatible: callers that omit the new
+        # field retain the key name as their identity.  Explicit identities
+        # are strict path-safe slugs because they are later used in namespace
+        # sources and trusted authorship.
+        effective_principal_id = name if principal_id is None else principal_id
+        if principal_id is not None and not is_valid_slug(principal_id):
+            raise ValueError("principal_id must be a valid lowercase slug")
 
         # Admin keys ignore prefix scoping
         if role == "admin":
@@ -84,9 +113,18 @@ class KeyStore:
 
         conn = self._get_conn()
         conn.execute(
-            "INSERT INTO api_keys (id, name, key_hash, key_prefix, role, prefixes, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (key_id, name, key_hash, key_prefix, role, prefixes_json, now),
+            "INSERT INTO api_keys (id, name, principal_id, key_hash, key_prefix, role, prefixes, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                key_id,
+                name,
+                effective_principal_id,
+                key_hash,
+                key_prefix,
+                role,
+                prefixes_json,
+                now,
+            ),
         )
         conn.commit()
 
@@ -95,6 +133,7 @@ class KeyStore:
             "key": raw_key,
             "key_prefix": key_prefix,
             "name": name,
+            "principal_id": effective_principal_id,
             "role": role,
             "prefixes": prefixes,
             "created_at": now,
@@ -114,7 +153,7 @@ class KeyStore:
         conn.commit()
 
         row = conn.execute(
-            "SELECT id, name, key_prefix, role, prefixes, created_at, last_used_at, "
+            "SELECT id, name, principal_id, key_prefix, role, prefixes, created_at, last_used_at, "
             "usage_count, revoked FROM api_keys WHERE key_hash = ? AND revoked = 0",
             (key_hash,),
         ).fetchone()
@@ -125,6 +164,7 @@ class KeyStore:
         return {
             "id": row["id"],
             "name": row["name"],
+            "principal_id": row["principal_id"],
             "key_prefix": row["key_prefix"],
             "role": row["role"],
             "prefixes": json.loads(row["prefixes"]),
@@ -139,13 +179,14 @@ class KeyStore:
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT id, name, key_prefix, role, prefixes, created_at, "
+                "SELECT id, name, principal_id, key_prefix, role, prefixes, created_at, "
                 "last_used_at, usage_count, revoked FROM api_keys ORDER BY created_at"
             ).fetchall()
             return [
                 {
                     "id": row["id"],
                     "name": row["name"],
+                    "principal_id": row["principal_id"],
                     "key_prefix": row["key_prefix"],
                     "role": row["role"],
                     "prefixes": json.loads(row["prefixes"]),
@@ -160,12 +201,14 @@ class KeyStore:
             conn.close()
 
     def update_key(self, key_id: str, **fields: Any) -> None:
-        """Update name, role, or prefixes on a non-revoked key."""
-        allowed = {"name", "role", "prefixes"}
+        """Update principal identity, name, role, or prefixes on a non-revoked key."""
+        allowed = {"name", "principal_id", "role", "prefixes"}
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
 
         if "role" in updates and updates["role"] not in VALID_ROLES:
             raise ValueError(f"Invalid role '{updates['role']}'. Must be one of: {VALID_ROLES}")
+        if "principal_id" in updates and not is_valid_slug(updates["principal_id"]):
+            raise ValueError("principal_id must be a valid lowercase slug")
 
         conn = self._get_conn()
         row = conn.execute(

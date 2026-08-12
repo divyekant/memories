@@ -69,12 +69,19 @@ class TestEnvKeyFallback:
 class TestManagedKeys:
     def test_managed_key_authenticates(self, app_with_keys):
         client, _, ks = app_with_keys
-        created = ks.create_key(name="test", role="read-write", prefixes=["test/*"])
+        created = ks.create_key(
+            name="Display Name",
+            role="read-write",
+            prefixes=["test/*"],
+            principal_id="person-a",
+        )
         resp = client.get("/api/keys/me", headers={"X-API-Key": created["key"]})
         assert resp.status_code == 200
         body = resp.json()
         assert body["role"] == "read-write"
         assert body["type"] == "managed"
+        assert body["name"] == "Display Name"
+        assert body["principal_id"] == "person-a"
 
     def test_revoked_key_returns_401(self, app_with_keys):
         client, _, ks = app_with_keys
@@ -203,14 +210,45 @@ class TestKeyManagementAPI:
         client, _, _ = app_with_keys
         resp = client.post(
             "/api/keys",
-            json={"name": "new-key", "role": "read-write", "prefixes": ["test/*"]},
+            json={
+                "name": "New Display Name",
+                "principal_id": "person-b",
+                "role": "read-write",
+                "prefixes": ["test/*"],
+            },
             headers={"X-API-Key": "admin-env-key"},
         )
         assert resp.status_code == 200
         body = resp.json()
         assert body["key"].startswith("mem_")
-        assert body["name"] == "new-key"
+        assert body["name"] == "New Display Name"
         assert body["role"] == "read-write"
+        assert body["principal_id"] == "person-b"
+
+    def test_key_name_update_does_not_change_principal_id(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(
+            name="Original Display Name",
+            role="read-write",
+            prefixes=["test/*"],
+            principal_id="person-c",
+        )
+        resp = client.patch(
+            f"/api/keys/{created['id']}",
+            json={"name": "Renamed Display Name"},
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert resp.status_code == 200
+        me = client.get("/api/keys/me", headers={"X-API-Key": created["key"]})
+        assert me.status_code == 200
+        assert me.json()["name"] == "Renamed Display Name"
+        assert me.json()["principal_id"] == "person-c"
+
+    def test_env_admin_has_no_principal_id(self, app_with_keys):
+        client, _, _ = app_with_keys
+        resp = client.get("/api/keys/me", headers={"X-API-Key": "admin-env-key"})
+        assert resp.status_code == 200
+        assert "principal_id" not in resp.json()
 
     def test_create_key_without_admin_returns_403(self, app_with_keys):
         client, _, key_store = app_with_keys

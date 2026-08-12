@@ -275,6 +275,7 @@ async def verify_api_key(request: Request):
                 key_type="managed",
                 key_id=record["id"],
                 key_name=record["name"],
+                principal_id=record["principal_id"],
             )
             return
 
@@ -1473,12 +1474,24 @@ class SupersedeRequest(BaseModel):
 
 class CreateKeyRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
+    principal_id: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=200,
+        pattern=r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+    )
     role: str = Field(..., pattern="^(read-only|read-write|admin)$")
     prefixes: List[str] = Field(default_factory=list)
 
 
 class UpdateKeyRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)
+    principal_id: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=200,
+        pattern=r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+    )
     role: Optional[str] = Field(None, pattern="^(read-only|read-write|admin)$")
     prefixes: Optional[List[str]] = None
 
@@ -1524,11 +1537,15 @@ async def create_key(request_body: CreateKeyRequest, request: Request):
     _require_admin(auth)
     if request_body.role != "admin" and not request_body.prefixes:
         raise HTTPException(status_code=400, detail="Non-admin keys must have at least one prefix")
-    result = key_store.create_key(
-        name=request_body.name,
-        role=request_body.role,
-        prefixes=request_body.prefixes,
-    )
+    try:
+        result = key_store.create_key(
+            name=request_body.name,
+            principal_id=request_body.principal_id,
+            role=request_body.role,
+            prefixes=request_body.prefixes,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     return result
 
 
@@ -1550,6 +1567,7 @@ async def update_key(key_id: str, request_body: UpdateKeyRequest, request: Reque
         key_store.update_key(
             key_id,
             name=request_body.name,
+            principal_id=request_body.principal_id,
             role=request_body.role,
             prefixes=request_body.prefixes,
         )
