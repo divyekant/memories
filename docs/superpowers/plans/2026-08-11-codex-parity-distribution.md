@@ -773,3 +773,44 @@ git add docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
   .superpowers/sdd/2026-08-11-codex-parity-distribution/task-10-report.md
 git commit -m "fix(codex): honor non-persistent API keys"
 ```
+
+---
+
+### Task 11: Keep Codex Query Output Portable Across jq Versions
+
+**Files:**
+- Modify: `mcp-server/assets/codex/hooks/memory-query.sh`
+- Modify: `integrations/codex/hooks/memory-query.sh`
+- Modify: `tests/test_claude_memory_hooks.py`
+- Modify: this plan
+- Create (forced-added): `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-11-report.md`
+- Modify only if required to prevent generated-hook drift: `scripts/render_project_hooks.py` or its tests
+
+**Observed CI failure:**
+
+Ubuntu CI job `94000510019` in workflow run `31560110060` uses an older jq parser and rejects the object field expression at line 410:
+`additionalContext: (if ... end) + (if ... end)` with `syntax error, unexpected '+', expecting '}'`.
+The local jq 1.8.1 parser accepts it. The four affected cases are the minimal reminder, named-backend 401, search reachability, and configured-default 401 tests; both shipped hook copies are currently byte-identical and contain the expression.
+
+- [ ] **Step 1: Add/execute a portable-jq regression and capture RED**
+
+Use TDD and systematic debugging to reproduce the parser failure with jq 1.6/1.7 (an Ubuntu 24.04/Linux container or another supported older jq environment). Add a regression at the narrowest existing hook-test boundary if feasible; otherwise record the exact parser command and the four failing test command/output in the Task 11 report before changing production hooks.
+
+- [ ] **Step 2: Identify the root cause and implement the minimal portable expression**
+
+Parenthesize or reshape only the `additionalContext` object value so jq 1.6/1.7 and jq 1.8 accept it without changing emitted JSON or reminder/credential/search wording. Keep `mcp-server/assets/codex/hooks/memory-query.sh` and `integrations/codex/hooks/memory-query.sh` synchronized; follow the repository generation mechanism if it defines a source of truth.
+
+- [ ] **Step 3: Verify all affected contracts**
+
+Run the four exact CI failures, relevant Codex query tests, the full Python suite, `bash -n` for both query hooks, the project hook render check, and `git diff --check`. Confirm the two shipped copies remain byte-identical and inspect status/diff.
+
+- [ ] **Step 4: Commit and push the exact owned files (do not merge)**
+
+```bash
+git add docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
+  mcp-server/assets/codex/hooks/memory-query.sh integrations/codex/hooks/memory-query.sh \
+  tests/test_claude_memory_hooks.py
+git add -f .superpowers/sdd/2026-08-11-codex-parity-distribution/task-11-report.md
+git commit -m "fix(codex): keep query output portable across jq versions"
+git push origin codex/codex-parity-distribution
+```

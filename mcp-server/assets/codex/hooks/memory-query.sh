@@ -407,7 +407,7 @@ if [ "$PLAYBOOK_MODE" = "minimal" ]; then
   jq -n --arg search_down "$SEARCH_BACKEND_DOWN" --arg credential_warning "$CREDENTIAL_WARNING" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
-	  additionalContext: (if ($credential_warning | length) > 0 then $credential_warning + "\n\n" else "" end) + (if $search_down == "true" then "Memories note: recall/search is unavailable for this prompt because all routed search backends are unreachable." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first." end)
+	  additionalContext: ((if ($credential_warning | length) > 0 then $credential_warning + "\n\n" else "" end) + (if $search_down == "true" then "Memories note: recall/search is unavailable for this prompt because all routed search backends are unreachable." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first." end))
 		}
 }'
   exit 0
