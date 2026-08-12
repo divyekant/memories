@@ -10,7 +10,20 @@ MEMORIES_HOOK_NAME="memory-recall"
 set -euo pipefail
 
 # Load from dedicated env file — avoids requiring shell profile changes
-[ -f "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}" ] && . "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
+# Load ~/.config/memories/env WITHOUT clobbering variables the environment
+# already set. A cloud environment supplies MEMORIES_URL/MEMORIES_API_KEY as
+# real env vars, while a setup script running `memories-mcp init` before those
+# vars exist writes the localhost DEFAULT into this file — sourcing it plainly
+# then overwrote the correct URL with a dead one, and the session reported the
+# backend unreachable. An explicitly-set environment variable wins.
+_memories_env_file="${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
+if [ -f "$_memories_env_file" ]; then
+  _memories_env_snapshot=$(export -p | grep 'MEMORIES_' || true)
+  . "$_memories_env_file"
+  eval "$_memories_env_snapshot"
+  unset _memories_env_snapshot
+fi
+unset _memories_env_file
 _LIB="$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 if [ -f "$_LIB" ]; then
   source "$_LIB"
@@ -155,6 +168,7 @@ SCOPED_PREFIX_LIST=""
 WIP_PREFIX="wip/$PROJECT"
 WIP_CONFIGURED=false
 WIP_SEARCHED=false
+WIP_INDEX=""
 WIP_RESULTS='{"results":[],"count":0}'
 if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
   IFS=',' read -r -a configured_wip_prefixes <<< "$MEMORIES_SOURCE_PREFIXES"
@@ -163,6 +177,7 @@ if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
     [ "$configured_wip_prefix" = "$WIP_PREFIX" ] && WIP_CONFIGURED=true
   done
 fi
+PREFIX_FANOUT_DIR=$(mktemp -d)
 IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
 prefix_idx=0
 for raw_prefix in "${prefix_templates[@]}"; do
@@ -170,11 +185,8 @@ for raw_prefix in "${prefix_templates[@]}"; do
   raw_prefix=$(echo "$raw_prefix" | xargs)
   [ -z "$raw_prefix" ] && continue
 
-  # End-to-end deadline: several sequential searches can sum past the
-  # hook's own budget even with nothing failing. Once there isn't enough
-  # left to justify another call, stop issuing them — partial context
-  # delivered on time beats complete context discarded when hooks.json
-  # kills the whole process at its own timeout.
+  # Deadline is checked ONCE, before the fan-out: every prefix search is
+  # issued together, so there is no "remaining" set to shed mid-loop.
   if [ "$(_hook_deadline_exhausted)" = "true" ]; then
     SKIPPED_PREFIXES=$(IFS=,; echo "${prefix_templates[*]:$((prefix_idx - 1))}")
     _log_warn "Hook budget exhausted — skipping remaining prefix searches: $SKIPPED_PREFIXES"
@@ -189,14 +201,18 @@ for raw_prefix in "${prefix_templates[@]}"; do
     learning/*|wip/*) limit=2 ;;
   esac
 
-  response=$(search_memories "$query" "$prefix" "$limit" "$MEMORIES_RECALL_SCOPED_THRESHOLD")
-  _note_auth_status "$response"
+  # Issue in parallel. Sequentially these summed past the hook budget on any
+  # non-local backend. Files are collected by numeric prefix index below so
+  # collaborative project/person/legacy ordering remains deterministic even
+  # though the HTTP requests run concurrently.
+  (
+    search_memories "$query" "$prefix" "$limit" "$MEMORIES_RECALL_SCOPED_THRESHOLD" \
+      > "$PREFIX_FANOUT_DIR/p_${prefix_idx}" 2>/dev/null
+  ) &
+
   if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ] && [ "$prefix" = "$WIP_PREFIX" ]; then
     WIP_SEARCHED=true
-    [ -n "$response" ] && WIP_RESULTS="$response"
-  fi
-  if [ -n "$response" ]; then
-    RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
+    WIP_INDEX="$prefix_idx"
   fi
 
   if [ -n "$SCOPED_PREFIX_LIST" ]; then
@@ -204,6 +220,24 @@ for raw_prefix in "${prefix_templates[@]}"; do
   fi
   SCOPED_PREFIX_LIST="$SCOPED_PREFIX_LIST$prefix"
 done
+
+# Collect after the fan-out. Numeric iteration preserves configured prefix
+# order (glob order would place p_10 before p_2). Auth status is read from the
+# response JSON so it survives the subshells that produced it.
+wait 2>/dev/null || true
+for ((fanout_idx = 1; fanout_idx <= prefix_idx; fanout_idx++)); do
+  _fanout_file="$PREFIX_FANOUT_DIR/p_${fanout_idx}"
+  [ -e "$_fanout_file" ] || continue
+  response=$(cat "$_fanout_file" 2>/dev/null) || response=""
+  _note_auth_status "$response"
+  if [ -n "$WIP_INDEX" ] && [ "$fanout_idx" = "$WIP_INDEX" ] && [ -n "$response" ]; then
+    WIP_RESULTS="$response"
+  fi
+  if [ -n "$response" ]; then
+    RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
+  fi
+done
+rm -rf "$PREFIX_FANOUT_DIR"
 
 if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
   RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | _memories_merge_search_results true "$RECALL_LIMIT" 2>/dev/null) || RESULTS_JSON="[]"

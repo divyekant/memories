@@ -9,7 +9,20 @@ MEMORIES_HOOK_NAME="memory-extract"
 
 set -euo pipefail
 
-[ -f "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}" ] && . "${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
+# Load ~/.config/memories/env WITHOUT clobbering variables the environment
+# already set. A cloud environment supplies MEMORIES_URL/MEMORIES_API_KEY as
+# real env vars, while a setup script running `memories-mcp init` before those
+# vars exist writes the localhost DEFAULT into this file — sourcing it plainly
+# then overwrote the correct URL with a dead one, and the session reported the
+# backend unreachable. An explicitly-set environment variable wins.
+_memories_env_file="${MEMORIES_ENV_FILE:-$HOME/.config/memories/env}"
+if [ -f "$_memories_env_file" ]; then
+  _memories_env_snapshot=$(export -p | grep 'MEMORIES_' || true)
+  . "$_memories_env_file"
+  eval "$_memories_env_snapshot"
+  unset _memories_env_snapshot
+fi
+unset _memories_env_file
 _LIB="$(dirname "$0")/_lib.sh"
 if [ -f "$_LIB" ]; then
   source "$_LIB"

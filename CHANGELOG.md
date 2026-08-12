@@ -1,5 +1,20 @@
 # Changelog
 
+## [5.13.0] - 2026-08-12
+
+### Fixed
+- **Cloud sessions ran no hooks at all.** A committed `.claude/settings.json` declaring `extraKnownMarketplaces` and `enabledPlugins` is not sufficient: the cloud container performs no marketplace fetch and no plugin install, so none of the plugin's 11 hook events register. Confirmed in a real container — `installed_plugins.json` was `{"plugins":{}}`, `~/.claude/plugins/marketplaces/` did not exist, and `hook.log` was never created. Not a network problem, and the hook scripts themselves work there. The repo now wires the same hooks directly at `${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/`, which needs no fetch and no bootstrap cooperation. The wiring is a strict fallback: every command routes through `repo-hook.sh`, which stands down when the plugin is installed, because Claude Code runs *all* matching hooks and an ungated wiring would double-fire locally — recall injected twice, telemetry double-counted, and two concurrent `Stop`/`SubagentStop` extractions racing to write the same memories. Commands are quoted so a checkout under a path containing whitespace does not word-split, and `ConfigChange` is deliberately not wired (its legacy guard checks only `~/.claude/settings.json` and would emit a false "hooks may be missing" warning). Note this also inverts an earlier assumption: in cloud the MCP path works and the hook path did not, rather than the reverse.
+
+### Changed
+- **SessionStart recall fans its prefix searches out in parallel.** They ran sequentially, so on any non-local backend they summed past the hook's own budget: measured 0.80-1.19s per call against a remote backend through a proxy, against 4.5s usable. The deadline then shed the tail searches every session — including the deferred-work (WIP) prefix, so blocked and deferred work was never surfaced at session start, which is one of the things recall exists for. Wall-clock is now one call rather than their sum. Benchmarked against a 1.0s/call backend: 4.48s with one budget-exhausted warning and the WIP search shed, versus 2.44s with neither.
+
+### Fixed
+- **`~/.config/memories/env` no longer clobbers environment-supplied config.** Hooks sourced that file unconditionally, so an explicitly-set `MEMORIES_URL`/`MEMORIES_API_KEY` was overwritten by whatever the file held. This broke the documented cloud setup: the environment supplies the real URL, but the setup script runs `memories-mcp init` *before* those variables exist, so the installer falls back to `http://localhost:8900` and writes it to the file — and every session then probed a dead localhost and reported the backend unreachable. Observed in a real cloud container. Variables already present in the environment now win; the file still fills in whatever the environment did not set.
+
+### Added
+- **`init --no-persist-api-key`** omits `MEMORIES_API_KEY` from the MCP entry it writes into `settings.json`. The server reads `process.env.MEMORIES_API_KEY`, so where the credential already exists as a real environment variable — a cloud environment's variable box — the second copy buys nothing and leaves a live credential in any config dump. The hooks still read it from `~/.config/memories/env`, so authentication is unaffected. Opt-in rather than default: a local install has no such variable and must persist it.
+- **`scripts/render_project_hooks.py`** generates the repo's hook wiring from the plugin's `hooks.json`, with `--check` for CI. Hand-copying 11 events would fork them from the plugin and drift silently the next time a hook is added or a timeout changes — disabling a hook in cloud while local sessions, which run the installed plugin, stay green. Two guards enforce it: the rendered block must match `hooks.json`, and every wired command must resolve inside the checkout and be executable.
+
 ## [5.12.0] - 2026-08-11
 
 ### Added

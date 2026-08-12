@@ -53,7 +53,13 @@ export function removePermissions(settings, predicate) {
   return out;
 }
 
-export function registerMcp(settings, { url, apiKey, extraEnv = {} }) {
+// `persistApiKey: false` omits MEMORIES_API_KEY from the written entry. The
+// server reads process.env.MEMORIES_API_KEY (mcp-server/index.js), so where the
+// credential already exists as a real environment variable — a cloud
+// environment's variable box — writing a second copy into settings.json buys
+// nothing and leaves a live credential in any config dump. Default stays true:
+// a local install has no such variable, so the key must be persisted there.
+export function registerMcp(settings, { url, apiKey, extraEnv = {}, persistApiKey = true }) {
   if (settings.mcpServers?.memories) return { settings, skipped: true };
   return {
     skipped: false,
@@ -64,7 +70,11 @@ export function registerMcp(settings, { url, apiKey, extraEnv = {} }) {
         memories: {
           command: 'npx',
           args: ['-y', 'memories-mcp'],
-          env: { MEMORIES_URL: url, MEMORIES_API_KEY: apiKey ?? '', ...extraEnv },
+          env: {
+            MEMORIES_URL: url,
+            ...(persistApiKey ? { MEMORIES_API_KEY: apiKey ?? '' } : {}),
+            ...extraEnv,
+          },
         },
       },
     },
