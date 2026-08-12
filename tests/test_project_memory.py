@@ -1,5 +1,7 @@
 """Policy and namespace tests for shared project memories."""
 
+from contextlib import contextmanager
+
 import pytest
 
 from memory_engine import MemoryEngine
@@ -210,6 +212,29 @@ def test_source_only_move_rejects_existing_credential_before_mutation(engine):
     assert engine.qdrant_store.count() == before_count
     assert engine._get_meta_by_id(memory_id)["source"] == "legacy/source"
     assert "author" not in engine._get_meta_by_id(memory_id)
+
+
+def test_project_transition_revalidates_locked_text_before_mutation(engine, monkeypatch):
+    secret = "Production token is ghp_abcdefghijklmnopqrstuvwxyz123456"
+    memory_id = engine.add_memories(["safe legacy fact"], ["legacy/source"])[0]
+    original_acquire = engine._entity_locks.acquire_many
+
+    @contextmanager
+    def racing_acquire(keys):
+        with original_acquire(keys):
+            engine._get_meta_by_id(memory_id)["text"] = secret
+            yield
+
+    monkeypatch.setattr(engine._entity_locks, "acquire_many", racing_acquire)
+
+    with pytest.raises(ProjectMemoryPolicyError, match="credential-shaped"):
+        engine.update_memory(
+            memory_id,
+            source="project/fplguru/knowledge",
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+        )
+
+    assert engine._get_meta_by_id(memory_id)["source"] == "legacy/source"
 
 
 def test_source_only_move_out_of_project_restamps_current_editor(engine):

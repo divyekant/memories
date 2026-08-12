@@ -742,6 +742,7 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       user_facts_only: z.boolean().default(false).describe("Keep only results containing user: transcript facts. Use for questions about what the user did, took, bought, visited, or decided."),
     },
     async ({ query, k = 20, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived, user_facts_only = false }) => {
+      const projectContext = await server.resolveProjectContext();
       const seen = new Set();
       const merged = [];
       const searches = timelineQueryVariants(query).map(async (variant) => {
@@ -756,10 +757,12 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
         if (reference_date) body.reference_date = reference_date;
         if (include_archived) body.include_archived = true;
 
-        const data = await memoriesRequest("/search", {
-          method: "POST",
-          body: JSON.stringify(body),
-        }, "search");
+        const data = projectContext.active && source_prefix === undefined
+          ? await projectSearchRequest(body, projectContext)
+          : await memoriesRequest("/search", {
+            method: "POST",
+            body: JSON.stringify(body),
+          }, "search");
         return data.results || [];
       });
       for (const results of await Promise.all(searches)) {
@@ -843,10 +846,30 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       if (reference_date) body.reference_date = reference_date;
       if (include_archived) body.include_archived = true;
 
-      const data = await memoriesRequest("/search/evidence", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, "search");
+      const projectContext = await server.resolveProjectContext();
+      let data;
+      if (projectContext.active && source_prefix === undefined) {
+        const scoped = await projectSearchRequest(body, projectContext);
+        const ordered = [...(scoped.results || [])].sort(
+          (a, b) => chronologicalValue(b) - chronologicalValue(a)
+        );
+        data = { evidence_packet: {
+          current_answer: ordered[0] || null,
+          older_evidence: ordered.slice(1, 6),
+          source_date_trail: ordered.map((item) => ({
+            relation: item === ordered[0] ? "current" : "older",
+            source: item.source,
+            date: memoryDate(item),
+          })),
+          confidence: { level: ordered.length ? "scoped" : "unknown", reasons: [] },
+          follow_up_queries: [],
+        } };
+      } else {
+        data = await memoriesRequest("/search/evidence", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }, "search");
+      }
 
       const packet = data.evidence_packet || {};
       const lines = [];

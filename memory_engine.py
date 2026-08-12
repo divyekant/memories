@@ -1469,6 +1469,33 @@ class MemoryEngine:
 
                 meta = self._get_meta_by_id(memory_id)
 
+                # The preflight above provides an early failure, but another
+                # writer may change this record while we wait for the lock.
+                # Recompute the policy inputs from the locked record before
+                # any mutation so project transitions cannot race validation.
+                locked_current_source = meta.get("source", "")
+                locked_target_source = source if source is not None else locked_current_source
+                locked_touches_project = (
+                    is_project_source(locked_current_source)
+                    or is_project_source(locked_target_source)
+                )
+                source_enters_project = (
+                    is_project_source(locked_target_source)
+                    and not is_project_source(locked_current_source)
+                )
+                if apply_trusted_authorship or (
+                    locked_touches_project and replaces_authored_content
+                ):
+                    if trusted_authorship is None:
+                        raise ProjectMemoryPolicyError(
+                            "project-namespace memories require trusted principal or system authorship"
+                        )
+                    if is_project_source(locked_target_source) and replaces_authored_content:
+                        locked_text = text if text is not None else meta.get("text", "")
+                        _validate_project_write(
+                            locked_text, locked_target_source, trusted_authorship
+                        )
+
                 if source_only:
                     meta["source"] = source
                     if apply_trusted_authorship or source_enters_project:

@@ -272,6 +272,20 @@ test('active memory_search routes project and private namespaces before authoriz
     assert.equal(text.includes('sibling private leak'), false);
     assert.equal(text.includes('sibling legacy leak'), false);
     assert.equal(text.includes('Confidence:'), false);
+
+    const beforeRecallTools = calls.length;
+    await client.callTool({
+      name: 'memory_timeline',
+      arguments: { query: 'shared timeline', k: 3 },
+    });
+    await client.callTool({
+      name: 'memory_evidence',
+      arguments: { query: 'shared evidence', k: 3 },
+    });
+    const recallCalls = calls.slice(beforeRecallTools).filter((call) => call.url.endsWith('/search'));
+    assert.ok(recallCalls.length > 0);
+    assert.equal(calls.slice(beforeRecallTools).some((call) => call.url.endsWith('/search/evidence')), false);
+    assert.equal(recallCalls.some((call) => !searchPrefixes.includes(call.body.source_prefix)), false);
   } finally {
     await client.close();
     await server.close();
