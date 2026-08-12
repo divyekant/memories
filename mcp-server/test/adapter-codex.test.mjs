@@ -413,7 +413,8 @@ test('install refreshes the owned MCP block and removes only recorded legacy set
 
   const settings = await readJson(join(ctx.home, '.codex/settings.json'));
   assert.deepEqual(settings.permissions.allow, preservedRules);
-  assert.equal((await readJson(join(ctx.home, '.config/memories/install-state.json'))).permissions, undefined);
+  const installState = await readJson(join(ctx.home, '.config/memories/install-state.json'));
+  assert.deepEqual(installState.permissions.codex, []);
 });
 
 test('pre-manifest Codex update removes exact legacy rules when hook ownership evidence exists', async () => {
@@ -473,6 +474,70 @@ test('pre-manifest Codex uninstall leaves legacy-looking rules untouched without
 
   const settings = await readJson(join(ctx.home, '.codex/settings.json'));
   assert.deepEqual(settings.permissions.allow, [...LEGACY_RULES, ...preserved]);
+});
+
+test('current Codex install retains an explicit empty provenance sentinel across updates', async () => {
+  const ctx = await freshCtx();
+  const statePath = join(ctx.home, '.config/memories/install-state.json');
+
+  await adapter.install(ctx);
+  assert.deepEqual((await readJson(statePath)).permissions.codex, []);
+
+  await adapter.install(ctx);
+  assert.deepEqual((await readJson(statePath)).permissions.codex, []);
+});
+
+test('current Codex provenance prevents uninstall from removing user-added legacy-looking rules', async () => {
+  const ctx = await freshCtx();
+  const statePath = join(ctx.home, '.config/memories/install-state.json');
+  const unrelatedState = { unrelated: 'preserve me' };
+
+  await adapter.install(ctx);
+  await adapter.install(ctx);
+  await writeJson(statePath, {
+    ...(await readJson(statePath)),
+    ...unrelatedState,
+  });
+
+  const unrelatedRules = ['mcp__memories__memory_delete', 'mcp__other_memory_product__memory_search'];
+  await writeJson(join(ctx.home, '.codex/settings.json'), {
+    permissions: { allow: [...LEGACY_RULES, ...unrelatedRules] },
+  });
+
+  await adapter.uninstall(ctx);
+
+  assert.deepEqual(
+    (await readJson(join(ctx.home, '.codex/settings.json'))).permissions.allow,
+    [...LEGACY_RULES, ...unrelatedRules],
+  );
+  const state = await readJson(statePath);
+  assert.equal(state.permissions, undefined);
+  assert.equal(state.unrelated, unrelatedState.unrelated);
+});
+
+test('pre-manifest migration establishes provenance for later updates and clears it only on uninstall', async () => {
+  const ctx = await freshCtx();
+  const hooksDir = join(ctx.home, '.codex/hooks/memory');
+  const statePath = join(ctx.home, '.config/memories/install-state.json');
+  await mkdir(hooksDir, { recursive: true });
+  for (const name of LEGACY_HOOK_ASSETS) await writeFile(join(hooksDir, name), '#!/bin/sh\n');
+  await writeJson(statePath, { unrelated: 'preserve me' });
+  const unrelatedRules = ['mcp__memories__memory_delete', 'mcp__other_memory_product__memory_search'];
+  await writeJson(join(ctx.home, '.codex/settings.json'), {
+    permissions: { allow: [...LEGACY_RULES, ...unrelatedRules] },
+  });
+
+  await adapter.install(ctx);
+  assert.deepEqual((await readJson(join(ctx.home, '.codex/settings.json'))).permissions.allow, unrelatedRules);
+  assert.deepEqual((await readJson(statePath)).permissions.codex, []);
+
+  await adapter.install(ctx);
+  assert.deepEqual((await readJson(statePath)).permissions.codex, []);
+
+  await adapter.uninstall(ctx);
+  const state = await readJson(statePath);
+  assert.equal(state.permissions, undefined);
+  assert.equal(state.unrelated, 'preserve me');
 });
 
 test('install fails closed on malformed owned blocks before any mutation', async () => {

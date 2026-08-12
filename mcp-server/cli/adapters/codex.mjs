@@ -292,15 +292,16 @@ export async function install(ctx) {
     const owned = new Set(cleanupRules);
     await writeJson(p.settings, removePermissions(await readJson(p.settings), (rule) => owned.has(rule)));
   }
-  if (recordedRules === null) {
-    const state = await readJson(statePath);
-    await writeJson(statePath, {
-      ...state,
-      permissions: { ...(state.permissions ?? {}), codex: [] },
-    });
-  } else {
-    await clearRecordedPermissions(statePath, 'codex');
-  }
+  // Keep a current-install provenance sentinel even when this run had no
+  // legacy rules to remove. A later uninstall must distinguish a current
+  // install (whose copied hook assets happen to include every legacy script)
+  // from a pre-manifest install, so it must not infer ownership from shape.
+  // Preserve every other target/field in install-state for retry safety.
+  const state = await readJson(statePath);
+  await writeJson(statePath, {
+    ...state,
+    permissions: { ...(state.permissions ?? {}), codex: [] },
+  });
 
   ctx.log(`Codex wired (hooks: ${p.hooksDest}, hook profile: ${profile})`);
 }

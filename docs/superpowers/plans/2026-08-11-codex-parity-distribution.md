@@ -910,3 +910,72 @@ git add -f .superpowers/sdd/2026-08-11-codex-parity-distribution/task-12-report.
 git commit -m "fix(codex): address integration review findings"
 git push origin codex/codex-parity-distribution
 ```
+
+### Task 13: Retain Current Codex Ownership Provenance
+
+**Files:**
+- Modify: `mcp-server/cli/adapters/codex.mjs`
+- Modify: `mcp-server/test/adapter-codex.test.mjs`
+- Modify: this plan
+- Create (forced-added): `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-13-report.md`
+
+**Failure captured on `464f575`:**
+
+The Task 12 migration writes `permissions.codex = []` only when no record was
+present, but clears a current empty record on the next successful install. A
+subsequent uninstall then sees no provenance, mistakes the current hook assets
+for a pre-manifest install, and removes user-added legacy-looking rules.
+
+**Step 1: Add failing provenance regressions and capture RED**
+
+Add tests that assert a fresh install writes `permissions.codex = []`, a second
+install/update retains that sentinel, and repeated current installs followed by
+user-added exact seven legacy-looking rules preserve those rules (and unrelated
+rules) on uninstall. Also cover a true pre-manifest evidence-gated migration:
+it removes exactly the seven legacy rules, establishes the empty sentinel for
+later updates, and only uninstall clears that sentinel after successful cleanup.
+Run before production edits:
+
+```bash
+node --test mcp-server/test/adapter-codex.test.mjs
+```
+
+Expected: RED on `464f575` because the second install clears the sentinel and
+the later uninstall invokes legacy fallback cleanup.
+
+**Step 2: Implement minimal provenance retention**
+
+After a successful current install and any migration cleanup, always write or
+reset only `permissions.codex` to an explicit empty array while preserving other
+install-state targets/fields. Do not clear this record from install/update.
+Uninstall continues to clear the record last, after all strict marker, hook,
+settings, and TOML cleanup succeeds; failures retain it for retry safety.
+
+**Step 3: Verify focused, package, and repository contracts**
+
+```bash
+node --test mcp-server/test/adapter-codex.test.mjs mcp-server/test/cli.test.mjs
+cd mcp-server && npm test
+cd ..
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+for f in mcp-server/assets/codex/hooks/*.sh integrations/codex/hooks/*.sh; do bash -n "$f"; done
+uv run python scripts/render_project_hooks.py --check
+cd mcp-server && npm pack --dry-run
+cd ..
+git diff --check
+git status --short
+```
+
+Review the diff for preservation of unrelated install-state data, exact legacy
+ownership gates, and failed-install retry behavior.
+
+**Exact staging and commit:**
+
+```bash
+git add -f docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
+  .superpowers/sdd/2026-08-11-codex-parity-distribution/task-13-report.md
+git add mcp-server/cli/adapters/codex.mjs mcp-server/test/adapter-codex.test.mjs
+git commit -m "fix(codex): retain current install provenance"
+git push origin codex/codex-parity-distribution
+```
