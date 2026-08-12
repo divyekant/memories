@@ -160,6 +160,38 @@ memories config show
 
 Config resolution: CLI flags > `~/.config/memories/config.json` > env vars > defaults.
 
+## Shared project memory (Phase 1)
+
+Two collaborators can share durable project knowledge through one configured
+Memories host while keeping their private memories separate. Commit only this
+declaration to the repository:
+
+```yaml
+# .memories/project.yaml
+project_id: fplguru
+shared_memory: true
+```
+
+The declaration is an identity signal, not an access grant: it contains no
+URL, API key, member list, or role. Collaborative mode requires exactly one
+backend and a server-issued managed key whose `GET /api/keys/me` response has
+`type: "managed"` and a stable `principal_id`. Use separate prefix scopes such
+as `person/dk/fplguru` plus `project/fplguru` and
+`person/darshan/fplguru` plus `project/fplguru`; both clients must point to the
+same host. Environment/admin keys and multi-backend configuration do not
+activate collaborative mode.
+
+Automatic extraction remains private at
+`person/<principal>/<project>/knowledge`. After applying the durable-sharing
+test (another contributor will need the fact without the current session),
+write one deliberate project fact with `memory_add` and a source of
+`project/<project>/<decisions|knowledge|state|operations>`. The server stamps
+the authenticated author and origin client; client metadata cannot impersonate
+either field. See the [shared project memory playbook](docs/memory-playbook.md)
+for exact administrator payloads, fresh-session isolation probes, narrowing
+and revocation, legacy-prefix migration, and the post-deployment manual seed
+step. No production memory is seeded by this implementation.
+
 ---
 
 ## Architecture
