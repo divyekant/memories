@@ -504,10 +504,13 @@ _parse_backends_yaml() {
     fi
 
     if [ "$current_section" = "backends" ]; then
-      # Backend name line (2-space indent, no further indent)
-      if printf '%s' "$line" | grep -qE '^  [a-zA-Z_][a-zA-Z0-9_-]*:'; then
+      # Backend name line (exactly two-space indent, unquoted key, and no
+      # colon/comment content after the key). YAML permits punctuation such as
+      # slash and question mark in unquoted keys, so keep only the structural
+      # boundaries here rather than imposing an identifier grammar.
+      if printf '%s' "$line" | grep -qE '^  [^:#[:space:]][^:]*:[[:space:]]*(#.*)?$'; then
         _flush_backend
-        current_name=$(printf '%s' "$line" | sed 's/^ *//;s/:.*//')
+        current_name=$(printf '%s' "$line" | sed -E 's/^  ([^:#[:space:]][^:]*):[[:space:]]*(#.*)?$/\1/' | sed 's/[[:space:]]*$//')
       fi
       # Properties (4-space indent)
       if printf '%s' "$line" | grep -qE '^    url:'; then
@@ -726,7 +729,7 @@ _search_memories_multi() {
 
   if [ "$count" -eq 0 ]; then
     MEMORIES_BACKEND_DOWN=1
-    echo '{"results":[],"count":0}'
+    echo '{"results":[],"count":0,"backend_down":true}'
     return
   fi
 
@@ -752,14 +755,14 @@ _search_memories_multi() {
 
     if _breaker_open "$name"; then
       MEMORIES_BACKEND_DOWN=1
-      echo '{"results":[],"count":0}'
+      echo '{"results":[],"count":0,"backend_down":true}'
       return
     fi
 
     local call_budget
     if ! call_budget=$(_hook_call_budget 4); then
       MEMORIES_BACKEND_DOWN=1
-      echo '{"results":[],"count":0}'
+      echo '{"results":[],"count":0,"backend_down":true}'
       return
     fi
 
@@ -780,18 +783,19 @@ _search_memories_multi() {
       case "$status" in
         2??)
           _breaker_reset "$name"
-          printf '%s' "$out"
+          MEMORIES_BACKEND_DOWN=0
+          printf '%s' "$out" | jq -c '. + {backend_down: false}' 2>/dev/null || printf '%s' "$out"
           ;;
         401)
           _breaker_reset "$name"
           MEMORIES_AUTH_FAILED=1
           jq -nc --arg name "$name" --arg url "$url" --arg api_key_env "$api_key_env" --argjson env_backed "$env_backed" \
-            '{results: [], count: 0, auth_failed: true, auth_failed_backends: [{name: $name, url: $url, api_key_env: $api_key_env, env_backed: $env_backed}]}'
+            '{results: [], count: 0, backend_down: false, auth_failed: true, auth_failed_backends: [{name: $name, url: $url, api_key_env: $api_key_env, env_backed: $env_backed}]}'
           ;;
         *)
           _breaker_trip "$name"
           MEMORIES_BACKEND_DOWN=1
-          echo '{"results":[],"count":0}'
+          echo '{"results":[],"count":0,"backend_down":true}'
           ;;
       esac
     else
@@ -799,7 +803,7 @@ _search_memories_multi() {
         _breaker_trip "$name"
       fi
       MEMORIES_BACKEND_DOWN=1
-      echo '{"results":[],"count":0}'
+      echo '{"results":[],"count":0,"backend_down":true}'
     fi
     return
   fi
@@ -809,7 +813,7 @@ _search_memories_multi() {
   local call_budget
   if ! call_budget=$(_hook_call_budget 4); then
     MEMORIES_BACKEND_DOWN=1
-    echo '{"results":[],"count":0}'
+    echo '{"results":[],"count":0,"backend_down":true}'
     return
   fi
 
@@ -845,10 +849,12 @@ _search_memories_multi() {
         case "$status" in
           2??)
             _breaker_reset "$name"
+            touch "$tmpdir/reachable_${output_id}.marker"
             echo "$result" | jq -c --arg b "$name" '.results[] | . + {_backend: $b}' > "$tmpdir/result_${output_id}.jsonl"
             ;;
           401)
             _breaker_reset "$name"
+            touch "$tmpdir/reachable_${output_id}.marker"
             jq -nc --arg name "$name" --arg url "$url" --arg api_key_env "$api_key_env" --argjson env_backed "$env_backed" \
               '{name: $name, url: $url, api_key_env: $api_key_env, env_backed: $env_backed}' > "$tmpdir/auth_failed_${output_id}.json"
             ;;
@@ -866,7 +872,7 @@ _search_memories_multi() {
   if [ "$attempted" -eq 0 ]; then
     rm -rf "$tmpdir"
     MEMORIES_BACKEND_DOWN=1
-    echo '{"results":[],"count":0}'
+    echo '{"results":[],"count":0,"backend_down":true}'
     return
   fi
 
@@ -885,15 +891,21 @@ _search_memories_multi() {
   ' | jq -c '{results: ., count: length}')
   local auth_backends='[]'
   local auth_file
+  local reachable_count=0 reachable_file backend_down=false
+  for reachable_file in "$tmpdir"/reachable_*.marker; do
+    [ -e "$reachable_file" ] || continue
+    reachable_count=$((reachable_count + 1))
+  done
+  [ "$reachable_count" -gt 0 ] || backend_down=true
   for auth_file in "$tmpdir"/auth_failed_*.json; do
     [ -e "$auth_file" ] || continue
     auth_backends=$(cat "$auth_file" | jq -c --argjson existing "$auth_backends" '$existing + [.] | unique_by((.name // "") + "|" + (.url // ""))')
   done
   if [ "$auth_backends" != "[]" ]; then
-    printf '%s' "$merged" | jq -c --argjson auth_backends "$auth_backends" \
-      '. + {auth_failed: true, auth_failed_backends: $auth_backends}'
+    printf '%s' "$merged" | jq -c --argjson auth_backends "$auth_backends" --argjson backend_down "$backend_down" \
+      '. + {backend_down: $backend_down, auth_failed: true, auth_failed_backends: $auth_backends}'
   else
-    printf '%s' "$merged"
+    printf '%s' "$merged" | jq -c --argjson backend_down "$backend_down" '. + {backend_down: $backend_down}'
   fi
 
   rm -rf "$tmpdir"

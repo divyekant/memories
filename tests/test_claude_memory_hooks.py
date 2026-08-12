@@ -2133,6 +2133,46 @@ def test_codex_memory_query_named_backend_401_guidance_uses_backend_config(tmp_p
     assert "MEMORIES_API_KEY" not in ctx
 
 
+def test_codex_memory_query_search_reachability_is_independent_of_extract_routing(tmp_path: Path) -> None:
+    project_dir = tmp_path / "split-routing"
+    project_dir.mkdir()
+    backends_file = tmp_path / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  search_dead:\n"
+        "    url: https://search-dead.example\n"
+        "    api_key: test-key\n"
+        "  extract_healthy:\n"
+        "    url: https://extract-healthy.example\n"
+        "    api_key: test-key\n"
+        "routing:\n"
+        "  search: [search_dead]\n"
+        "  extract: [extract_healthy]\n"
+    )
+    responses = [
+        {"url_contains": "search-dead.example", "url_suffix": "/search", "fail": True},
+    ]
+
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-query.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "prompt": "hello"},
+        responses=responses,
+        extra_env={
+            "MEMORIES_URL": "",
+            "MEMORIES_BACKENDS_FILE": str(backends_file),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert any("search-dead.example/search" in str(call["url"]) for call in calls)
+    assert not any("extract-healthy.example" in str(call["url"]) for call in calls)
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "recall/search is unavailable" in ctx.lower()
+    assert "capture" not in ctx.lower()
+    assert "extraction" not in ctx.lower()
+
+
 def test_codex_memory_recall_configured_default_401_guidance_uses_custom_env(tmp_path: Path) -> None:
     project_dir = tmp_path / "configured-default-recall"
     project_dir.mkdir()
@@ -3609,6 +3649,24 @@ def test_codex_breaker_names_with_punctuation_are_collision_free() -> None:
         "_breaker_trip 'foo/bar'; "
         "if [ \"$a\" != \"$b\" ] && _breaker_open 'foo/bar' && ! _breaker_open 'foo?bar' "
         "&& [ \"$(_breaker_file_for default)\" = \"$tmp/backend-down\" ]; then echo PASS; fi"
+    )
+    assert result.stdout.strip() == "PASS", result.stderr
+
+
+def test_codex_fallback_parser_accepts_punctuation_backend_keys_and_routes_breakers() -> None:
+    result = _codex_lib_eval(
+        "tmp=$(mktemp -d); "
+        "printf '%s\\n' 'backends:' '  foo/bar:' '    url: https://slash.example' '    api_key: test-key' "
+        "'  foo?bar:' '    url: https://question.example' '    api_key: test-key' "
+        "'routing:' '  search: [foo/bar, foo?bar]' > \"$tmp/backends.yaml\"; "
+        "parsed=$(_parse_backends_yaml \"$tmp/backends.yaml\"); "
+        "_BACKENDS_CACHE=\"$parsed\"; "
+        "routed=$(_get_backends_for_op search | jq -r 'map(.name) | join(\",\")'); "
+        "_MEMORIES_BREAKER_FILE=\"$tmp/backend-down\"; "
+        "a=$(_breaker_file_for 'foo/bar'); b=$(_breaker_file_for 'foo?bar'); "
+        "_breaker_trip 'foo/bar'; "
+        "if [ \"$routed\" = 'foo/bar,foo?bar' ] && [ \"$a\" != \"$b\" ] "
+        "&& _breaker_open 'foo/bar' && ! _breaker_open 'foo?bar'; then echo PASS; fi"
     )
     assert result.stdout.strip() == "PASS", result.stderr
 

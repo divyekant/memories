@@ -93,3 +93,17 @@ diagnostics, and the missing fair-timeout decision helper.
 - Configured backend objects retain `env_backed: false` and referenced key
   variable names; only the synthesized `MEMORIES_URL` fallback carries
   `env_backed: true` and `MEMORIES_API_KEY` guidance.
+
+## Follow-up search reachability and fallback parser correction
+
+- Follow-up base: `443a4102906a533429ac6fee77ac485e3cc74c83`.
+- RED command: `uv run pytest -q tests/test_claude_memory_hooks.py -k 'codex and (search_reachability or fallback_parser)'`.
+- RED result: `2 failed, 87 deselected` (query lost child search-down state,
+  and the pure-shell parser rejected punctuation backend keys).
+- GREEN selector: `2 passed, 87 deselected`.
+- GREEN broader suite: `uv run pytest -q tests/test_claude_memory_hooks.py -k 'codex or memory_hooks'` -> `89 passed in 63.02s`.
+- GREEN full suite: `uv run pytest -q tests/test_claude_memory_hooks.py tests/test_codex_notify_hook.py` -> `95 passed in 64.55s`.
+- `bash -n` on all three Codex hook scripts and `git diff --check`: passed.
+- Resulting follow-up commit: this report is included in the commit carrying
+  `fix(codex): propagate search reachability state` (inspect `git log -1` for
+  its hash).

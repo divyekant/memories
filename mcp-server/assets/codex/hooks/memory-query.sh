@@ -228,9 +228,20 @@ if [ -z "$ENRICHED_QUERY" ] && [ -z "$QUERY_TEXT" ]; then
 fi
 # --- Dual search strategy ---
 RAW_RESPONSES=""
+SEARCH_RESPONSES_SEEN=0
+SEARCH_REACHABLE_RESPONSES=0
 SEARCH_TMPDIR=$(mktemp -d 2>/dev/null || mktemp -d -t memories-query)
 SEARCH_JOBS=()
 SEARCH_INDEX=0
+
+_note_search_reachability() {
+  local response="$1"
+  [ -n "$response" ] || return 0
+  SEARCH_RESPONSES_SEEN=$((SEARCH_RESPONSES_SEEN + 1))
+  if printf '%s' "$response" | jq -e '(.backend_down // false) == false' >/dev/null 2>&1; then
+    SEARCH_REACHABLE_RESPONSES=$((SEARCH_REACHABLE_RESPONSES + 1))
+  fi
+}
 
 queue_search() {
   local query="$1" prefix="$2" limit="$3" threshold="$4"
@@ -275,6 +286,9 @@ fi
 rm -rf "$SEARCH_TMPDIR"
 
 if [ -n "$RAW_RESPONSES" ]; then
+  while IFS= read -r response; do
+    _note_search_reachability "$response"
+  done <<< "$RAW_RESPONSES"
   AUTH_FAILED_BACKENDS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sc \
     '[.[].auth_failed_backends[]?] | unique_by((.name // "") + "|" + (.url // ""))' \
     2>/dev/null) || AUTH_FAILED_BACKENDS_JSON='[]'
@@ -297,8 +311,14 @@ RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr '
 if [ "$RESULTS_JSON" = "[]" ]; then
   SEARCH_INDEX=$((SEARCH_INDEX + 1))
   FALLBACK_RESPONSE=$(search_memories "$QUERY_TEXT" "" "$MEMORIES_QUERY_FALLBACK_K" "$MEMORIES_QUERY_FALLBACK_THRESHOLD")
+  _note_search_reachability "$FALLBACK_RESPONSE"
   _note_auth_status "$FALLBACK_RESPONSE"
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
+fi
+
+SEARCH_BACKEND_DOWN=false
+if [ "$SEARCH_RESPONSES_SEEN" -gt 0 ] && [ "$SEARCH_REACHABLE_RESPONSES" -eq 0 ]; then
+  SEARCH_BACKEND_DOWN=true
 fi
 
 CREDENTIAL_WARNING=""
@@ -371,10 +391,10 @@ PLAYBOOK_MODE=$(_playbook_injection_mode "$PROMPT" "$CANDIDATE_COUNT")
 
 if [ "$PLAYBOOK_MODE" = "minimal" ]; then
   _log_info "Playbook gate: minimal reminder (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
-  jq -n --arg down "${MEMORIES_BACKEND_DOWN:-0}" --arg credential_warning "$CREDENTIAL_WARNING" '{
+  jq -n --arg search_down "$SEARCH_BACKEND_DOWN" --arg credential_warning "$CREDENTIAL_WARNING" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
-	  additionalContext: (if ($credential_warning | length) > 0 then $credential_warning + "\n\n" else "" end) + (if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first." end)
+	  additionalContext: (if ($credential_warning | length) > 0 then $credential_warning + "\n\n" else "" end) + (if $search_down == "true" then "Memories note: recall/search is unavailable for this prompt because all routed search backends are unreachable." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first." end)
 		}
 }'
   exit 0
