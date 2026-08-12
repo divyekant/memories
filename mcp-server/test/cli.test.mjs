@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, symlink, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, symlink, access, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,6 +84,71 @@ test('remote MCP options are validated before dry-run or backend checks', async 
     /--mcp-url is only supported with --codex/,
   );
   assert.equal(healthCalls, 0);
+});
+
+async function snapshotRemoteSetupPaths(home) {
+  const paths = [
+    join(home, '.codex'),
+    join(home, '.codex/config.toml'),
+    join(home, '.codex/hooks.json'),
+    join(home, '.codex/hooks/memory'),
+    join(home, '.codex/hooks/memory/foreign.sh'),
+    join(home, '.config/memories'),
+    join(home, '.config/memories/state.json'),
+  ];
+  const snapshot = {};
+  for (const path of paths) {
+    try {
+      snapshot[path] = { type: 'file', value: await readFile(path, 'utf8') };
+    } catch (error) {
+      if (error.code === 'EISDIR') {
+        snapshot[path] = { type: 'directory', value: await readdir(path) };
+      } else {
+        snapshot[path] = { type: 'missing', value: error.code };
+      }
+    }
+  }
+  return snapshot;
+}
+
+test('invalid remote MCP URLs fail atomically before prompts, logs, health, or setup writes', async () => {
+  const cases = [
+    ['https://memory.example/mcp\nmalicious = true', /control character/i],
+    ['https://memory.example/mcp\u0000malicious', /control character/i],
+    ['memory.example/mcp', /absolute HTTPS URL/i],
+    ['http://memory.example/mcp', /HTTPS/i],
+    ['https://user:pass@memory.example/mcp', /credentials/i],
+    ['https://memory.example/mcp#fragment', /fragment/i],
+  ];
+
+  for (const [mcpUrl, expectedError] of cases) {
+    const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+    await mkdir(join(home, '.codex/hooks/memory'), { recursive: true });
+    await mkdir(join(home, '.config/memories'), { recursive: true });
+    await writeFile(join(home, '.codex/config.toml'), 'model = "gpt-5.5"\n');
+    await writeFile(join(home, '.codex/hooks.json'), '{"foreign":true}\n');
+    await writeFile(join(home, '.codex/hooks/memory/foreign.sh'), '#!/bin/sh\n');
+    await writeFile(join(home, '.config/memories/state.json'), '{"installedTargets":["foreign"]}\n');
+    const before = await snapshotRemoteSetupPaths(home);
+    const logs = [];
+    let healthCalls = 0;
+    let promptCalls = 0;
+
+    await assert.rejects(
+      () => run(['init', '--codex', '--mcp-url', mcpUrl, '--yes'], {
+        home,
+        log: (message) => logs.push(message),
+        askImpl: async () => { promptCalls += 1; return ''; },
+        fetchImpl: async () => { healthCalls += 1; throw new Error('health should not run'); },
+      }),
+      expectedError,
+    );
+
+    assert.deepEqual(await snapshotRemoteSetupPaths(home), before, `setup artifacts changed for ${JSON.stringify(mcpUrl)}`);
+    assert.deepEqual(logs, [], `logs should stay empty for ${JSON.stringify(mcpUrl)}`);
+    assert.equal(promptCalls, 0, `prompts should stay untouched for ${JSON.stringify(mcpUrl)}`);
+    assert.equal(healthCalls, 0, `health should stay untouched for ${JSON.stringify(mcpUrl)}`);
+  }
 });
 
 test('parseArgs collects repeatable --mcp-name into mcpNames', () => {

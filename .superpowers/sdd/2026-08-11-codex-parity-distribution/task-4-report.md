@@ -61,3 +61,42 @@ Result: **234 passed, 0 failed**.
 
 Only the six Task 4 implementation/test files and this report are changed.
 No push, merge, release, deployment, or service mutation was performed.
+
+## Follow-up safety correction: validate remote MCP URLs before setup
+
+Review reproduced that a raw newline in `--mcp-url` was accepted and emitted
+an invalid TOML string after hooks, config, and install state had already been
+written. The follow-up validates absolute HTTPS URLs before any prompts, logs,
+health/bootstrap calls, adapter calls, or filesystem mutation. Whitespace and
+control characters, malformed/non-absolute URLs, non-HTTPS schemes,
+credentials, and fragments are rejected; no localhost HTTP exception is
+allowed for direct remote OAuth setup.
+
+RED command:
+
+```text
+node --test mcp-server/test/cli.test.mjs
+```
+
+RED result: **22 passed, 1 failed**. The first newline/control case reached
+setup instead of rejecting, so the matrix stopped at that assertion; the
+failure demonstrated the missing preflight guard. The reproduction also
+showed hooks, `config.toml`, and `state.json` were created for the malformed
+URL; the remaining malformed/non-HTTPS/credential/fragment cases are covered
+by the same matrix once the preflight is present.
+
+GREEN verification:
+
+```text
+node --test mcp-server/test/cli.test.mjs mcp-server/test/adapter-codex.test.mjs mcp-server/test/remote-server.test.mjs
+```
+
+Result: **85 passed, 0 failed**.
+
+```text
+cd mcp-server && node --test
+```
+
+Result: **235 passed, 0 failed**.
+
+`git diff --check`: passed.

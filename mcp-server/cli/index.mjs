@@ -109,6 +109,37 @@ function validateRemoteMcpOptions(parsed, targets) {
   if (!targets.length || targets.some((target) => target !== 'codex')) {
     throw new Error('--mcp-url is only supported with --codex');
   }
+  validateRemoteMcpUrl(parsed.mcpUrl);
+}
+
+function validateRemoteMcpUrl(value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('--mcp-url must be an absolute HTTPS URL');
+  }
+  // Raw whitespace/control characters can break the TOML basic string even
+  // though URL() may accept and normalize some of them. Reject before any
+  // prompt, log, health check, or installer mutation can occur.
+  if (/\s|[\u0000-\u001f\u007f-\u009f]/u.test(value)) {
+    throw new Error('--mcp-url must not contain whitespace or control characters');
+  }
+
+  let remoteUrl;
+  try {
+    remoteUrl = new URL(value);
+  } catch {
+    throw new Error('--mcp-url must be an absolute HTTPS URL');
+  }
+  if (remoteUrl.protocol !== 'https:') {
+    throw new Error('--mcp-url must use https:// for remote OAuth MCP');
+  }
+  if (remoteUrl.username || remoteUrl.password) {
+    throw new Error('--mcp-url must not include credentials');
+  }
+  // URL.hash is empty for a bare trailing '#', so inspect the original input
+  // as well as the parsed URL to reject all fragments.
+  if (remoteUrl.hash || value.includes('#')) {
+    throw new Error('--mcp-url must not include a fragment');
+  }
 }
 
 async function autoDetectTargets(home) {
