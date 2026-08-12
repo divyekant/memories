@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.13.0] - 2026-08-12
 
 ### Fixed
 - **Cloud sessions ran no hooks at all.** A committed `.claude/settings.json` declaring `extraKnownMarketplaces` and `enabledPlugins` is not sufficient: the cloud container performs no marketplace fetch and no plugin install, so none of the plugin's 11 hook events register. Confirmed in a real container — `installed_plugins.json` was `{"plugins":{}}`, `~/.claude/plugins/marketplaces/` did not exist, and `hook.log` was never created. Not a network problem, and the hook scripts themselves work there. The repo now wires the same hooks directly at `${CLAUDE_PROJECT_DIR}/mcp-server/assets/claude-code/hooks/`, which needs no fetch and no bootstrap cooperation. The wiring is a strict fallback: every command routes through `repo-hook.sh`, which stands down when the plugin is installed, because Claude Code runs *all* matching hooks and an ungated wiring would double-fire locally — recall injected twice, telemetry double-counted, and two concurrent `Stop`/`SubagentStop` extractions racing to write the same memories. Commands are quoted so a checkout under a path containing whitespace does not word-split, and `ConfigChange` is deliberately not wired (its legacy guard checks only `~/.claude/settings.json` and would emit a false "hooks may be missing" warning). Note this also inverts an earlier assumption: in cloud the MCP path works and the hook path did not, rather than the reverse.
