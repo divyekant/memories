@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -45,3 +46,26 @@ def test_codex_plugin_skills_include_memory_discipline_and_codex_bootstrap() -> 
     assert "./integrations/claude-code/install.sh --codex" in setup_text
     assert "mcp-server/index.js" in setup_text
     assert "~/.codex/hooks.json" in setup_text
+
+
+def test_codex_packaged_hook_exposes_project_context_without_granting_access(tmp_path: Path) -> None:
+    lib = REPO_ROOT / "integrations" / "codex" / "hooks" / "_lib.sh"
+    declaration = tmp_path / "project.yaml"
+    declaration.write_text("project_id: shared-demo\nshared_memory: true\n")
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source "{lib}" 2>/dev/null; _memories_parse_project_yaml "$1"',
+            "_",
+            str(declaration),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["ok"] is True
+    assert parsed["project_id"] == "shared-demo"
+    assert "_memories_project_context" in lib.read_text()

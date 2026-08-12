@@ -23,6 +23,45 @@ EXTRACT_SCRIPT = HOOKS_DIR / "memory-extract.sh"
 OBSERVE_SCRIPT = HOOKS_DIR / "memory-observe.sh"
 
 
+def _parse_project_declaration(lib: Path, declaration: Path) -> dict[str, object]:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source "{lib}" 2>/dev/null; _memories_parse_project_yaml "$1"',
+            "_",
+            str(declaration),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_packaged_claude_and_codex_project_declaration_contracts_match(tmp_path: Path) -> None:
+    fixtures = {
+        "valid": "project_id: shared-demo\nshared_memory: true\n",
+        "missing": "project_id: shared-demo\n",
+        "malformed": "project_id: [shared-demo\nshared_memory: true\n",
+        "unknown": "project_id: shared-demo\nshared_memory: true\npromotion: true\n",
+        "false": "project_id: shared-demo\nshared_memory: false\n",
+        "invalid_slug": "project_id: Shared Demo\nshared_memory: true\n",
+    }
+    for name, contents in fixtures.items():
+        declaration = tmp_path / f"{name}.yaml"
+        declaration.write_text(contents)
+        claude = _parse_project_declaration(HOOKS_DIR / "_lib.sh", declaration)
+        codex = _parse_project_declaration(CODEX_HOOKS_DIR / "_lib.sh", declaration)
+        assert claude == codex, name
+        if name == "valid":
+            assert claude["ok"] is True
+            assert claude["project_id"] == "shared-demo"
+        else:
+            assert claude["ok"] is False
+
+
 def _write_fake_curl(bin_dir: Path) -> Path:
     script = bin_dir / "curl"
     script.write_text(

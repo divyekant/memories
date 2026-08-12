@@ -11,6 +11,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { execFileSync } from "node:child_process";
 import fs from "fs";
 import path from "path";
 import yaml from "js-yaml";
@@ -85,66 +86,246 @@ function timelineQueryVariants(query) {
   return [...new Set(variants.filter(Boolean))];
 }
 
+// -- Collaborative project context ------------------------------------------
+
+// Keep the client-side declaration deliberately smaller than the server's
+// namespace policy.  A repository can opt in to the shared namespace, but it
+// cannot grant itself access or choose a principal; both are resolved below
+// from the authenticated backend.
+const PROJECT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+const PROJECT_DECLARATION_KEYS = new Set(["project_id", "shared_memory"]);
+
+function projectFailure(reason, diagnostic) {
+  return { ok: false, reason, diagnostic };
+}
+
+/**
+ * Parse the strict `.memories/project.yaml` declaration.
+ *
+ * This is intentionally a pure helper so hooks and future MCP tool routing
+ * can share the same contract.  Only the two currently implemented fields are
+ * accepted; an apparently useful future field must not silently activate a
+ * mode whose behavior is not implemented yet.
+ */
+export function parseProjectDeclaration(source) {
+  let value;
+  try {
+    value = yaml.load(String(source ?? ""));
+  } catch (error) {
+    return projectFailure("malformed", `project declaration is not valid YAML: ${error.message}`);
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return projectFailure("malformed", "project declaration must be a YAML mapping");
+  }
+
+  const keys = Object.keys(value);
+  const unknown = keys.filter((key) => !PROJECT_DECLARATION_KEYS.has(key));
+  if (unknown.length) {
+    return projectFailure("unknown_field", `unknown project declaration field: ${unknown.sort().join(", ")}`);
+  }
+  const missing = [...PROJECT_DECLARATION_KEYS].filter((key) => !Object.prototype.hasOwnProperty.call(value, key));
+  if (missing.length) {
+    return projectFailure("missing_field", `missing project declaration field: ${missing.sort().join(", ")}`);
+  }
+  if (typeof value.project_id !== "string" || !PROJECT_SLUG_RE.test(value.project_id)) {
+    return projectFailure("invalid_project_id", "project_id must be a lowercase path-safe slug");
+  }
+  if (value.shared_memory !== true) {
+    return projectFailure("shared_memory_not_true", "shared_memory must be the YAML boolean true");
+  }
+
+  return { ok: true, projectId: value.project_id, sharedMemory: true };
+}
+
+/**
+ * Resolve a checkout's main repository root.  `git rev-parse
+ * --git-common-dir` points worktrees back at the main repository's `.git`, so
+ * the declaration remains shared by the main checkout and every worktree.
+ */
+export function resolveProjectRoot(cwd = process.cwd()) {
+  const candidate = path.resolve(String(cwd || process.cwd()));
+  try {
+    const common = execFileSync("git", ["-C", candidate, "rev-parse", "--git-common-dir"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (common) {
+      const commonPath = path.isAbsolute(common) ? common : path.resolve(candidate, common);
+      if (path.basename(commonPath) === ".git") {
+        const root = path.dirname(commonPath);
+        if (root && root !== path.parse(root).root) return root;
+      }
+    }
+  } catch {
+    // A non-git checkout keeps the current directory boundary.  Missing git
+    // metadata must never make an unrelated parent declaration authoritative.
+  }
+  return candidate;
+}
+
+export function projectDeclarationPath(cwd = process.cwd()) {
+  const root = resolveProjectRoot(cwd);
+  const declaration = path.join(root, ".memories", "project.yaml");
+  return fs.existsSync(declaration) ? declaration : null;
+}
+
+/** Load and strictly parse the declaration at a checkout boundary. */
+export function loadProjectDeclaration(options = {}) {
+  const cwd = typeof options === "string" ? options : options?.cwd || process.cwd();
+  const declaration = projectDeclarationPath(cwd);
+  if (!declaration) return projectFailure("missing", "no .memories/project.yaml at the repository boundary");
+  try {
+    return parseProjectDeclaration(fs.readFileSync(declaration, "utf8"));
+  } catch (error) {
+    return projectFailure("unreadable", `cannot read project declaration: ${error.message}`);
+  }
+}
+
+function interpolateConfigValue(value) {
+  const text = value || "";
+  const match = text.match(/\$\{(\w+)\}/);
+  return match ? (process.env[match[1]] || text) : text;
+}
+
+/**
+ * Load backend configuration using the same precedence as buildServer's
+ * legacy routing.  Keeping this as a helper lets project activation count the
+ * configured backends without changing fan-out or scenario routing itself.
+ */
+export function loadBackendConfig({ cwd = process.cwd(), url, apiKey, skipFileConfig = false } = {}) {
+  if (skipFileConfig) {
+    return {
+      backends: [{ name: "default", url: url || "http://localhost:8900", apiKey: apiKey || "", scenario: "" }],
+      routing: {},
+    };
+  }
+
+  const explicitFile = process.env.MEMORIES_BACKENDS_FILE;
+  const configPaths = explicitFile
+    ? [explicitFile]
+    : [
+        path.join(cwd, ".memories", "backends.yaml"),
+        path.join(process.env.HOME || "", ".config", "memories", "backends.yaml"),
+      ];
+
+  for (const configPath of configPaths) {
+    if (!fs.existsSync(configPath)) continue;
+    const raw = yaml.load(fs.readFileSync(configPath, "utf8"));
+    const backends = Object.entries(raw.backends || {}).map(([name, cfg]) => ({
+      name,
+      url: interpolateConfigValue(cfg.url || ""),
+      apiKey: interpolateConfigValue(cfg.api_key || ""),
+      scenario: cfg.scenario || "",
+    }));
+    return { backends, routing: raw.routing || {} };
+  }
+
+  return {
+    backends: [{ name: "default", url: url || "http://localhost:8900", apiKey: apiKey || "", scenario: "" }],
+    routing: {},
+  };
+}
+
+function contextFailure(reason, diagnostic) {
+  return {
+    active: false,
+    reason,
+    diagnostic,
+  };
+}
+
+/**
+ * Resolve collaborative mode for a checkout and one authenticated backend.
+ * The `/api/keys/me` request is deliberately last: invalid declarations and
+ * ambiguous backend sets must not probe a host or accidentally turn a
+ * repository declaration into authorization.
+ */
+export async function resolveProjectContext(options = {}) {
+  const {
+    cwd = process.cwd(),
+    url,
+    apiKey,
+    backends: suppliedBackends,
+    fetchImpl = globalThis.fetch,
+    skipFileConfig = false,
+  } = options;
+  const declaration = loadProjectDeclaration(cwd);
+  if (!declaration.ok) return contextFailure(declaration.reason, declaration.diagnostic);
+
+  const config = suppliedBackends
+    ? { backends: suppliedBackends }
+    : loadBackendConfig({ cwd: resolveProjectRoot(cwd), url, apiKey, skipFileConfig });
+  const backends = Array.isArray(config.backends) ? config.backends : [];
+  if (backends.length !== 1) {
+    return contextFailure(
+      "multiple_backends",
+      `collaborative project mode requires exactly one configured backend (found ${backends.length})`,
+    );
+  }
+
+  const backend = backends[0] || {};
+  const backendUrl = String(backend.url || "").replace(/\/+$/, "");
+  if (!backendUrl || typeof fetchImpl !== "function") {
+    return contextFailure("principal_unreachable", "the configured backend cannot be reached");
+  }
+
+  const headers = {};
+  const backendKey = backend.apiKey ?? backend.api_key ?? "";
+  if (backendKey) headers["X-API-Key"] = backendKey;
+  let response;
+  try {
+    response = await fetchImpl(`${backendUrl}/api/keys/me`, {
+      method: "GET",
+      headers,
+      redirect: "manual",
+    });
+  } catch (error) {
+    return contextFailure("principal_unreachable", `authenticated principal lookup failed: ${error.message}`);
+  }
+  if (!response?.ok || [301, 302, 303, 307, 308].includes(response?.status)) {
+    return contextFailure("principal_unreachable", `authenticated principal lookup returned HTTP ${response?.status ?? "unknown"}`);
+  }
+
+  let identity;
+  try {
+    identity = await response.json();
+  } catch (error) {
+    return contextFailure("principal_unreachable", `authenticated principal lookup returned invalid JSON: ${error.message}`);
+  }
+  if (identity?.type === "env" || identity?.type === "none") {
+    return contextFailure("env_principal", "environment or unconfigured admin identity cannot activate collaborative mode");
+  }
+  const principalId = identity?.principal_id;
+  if (!principalId) {
+    return contextFailure("missing_principal", "authenticated backend response did not include principal_id");
+  }
+  if (typeof principalId !== "string" || !PROJECT_SLUG_RE.test(principalId)) {
+    return contextFailure("invalid_principal", "authenticated principal_id must be a lowercase path-safe slug");
+  }
+
+  return {
+    active: true,
+    reason: "active",
+    projectId: declaration.projectId,
+    project_id: declaration.projectId,
+    principalId,
+    principal_id: principalId,
+    sharedMemory: true,
+    shared_memory: true,
+    backend: backend.name || "default",
+  };
+}
+
 // -- Server factory -----------------------------------------------------------
 
-export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = false, version } = {}) {
+export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = false, version, cwd = process.cwd() } = {}) {
   const fetchFn = fetchImpl || fetch;
 
   // -- Config Loading ----------------------------------------------------------
 
   function loadBackends() {
-    // skipFileConfig: true means this caller's url/apiKey are the whole
-    // story — never touch .memories/backends.yaml or
-    // ~/.config/memories/backends.yaml, even if they exist on the host. This
-    // is for entry points (e.g. remote/server.mjs) whose backend is fully
-    // specified by their own config/env and must never be silently
-    // overridden by a file that happens to be lying around on disk.
-    if (skipFileConfig) {
-      return {
-        backends: [{
-          name: "default",
-          url: url || "http://localhost:8900",
-          apiKey: apiKey || "",
-          scenario: "",
-        }],
-        routing: {},
-      };
-    }
-
-    // Resolution: MEMORIES_BACKENDS_FILE -> project -> global -> ctx fallback
-    // If MEMORIES_BACKENDS_FILE is explicitly set (even to a nonexistent path),
-    // skip project/global config resolution — this allows callers (like the eval
-    // harness) to force single-backend mode by setting the env var.
-    const explicitFile = process.env.MEMORIES_BACKENDS_FILE;
-    const configPaths = explicitFile
-      ? [explicitFile]  // Only check the explicit path, skip project/global
-      : [
-          path.join(process.cwd(), ".memories", "backends.yaml"),
-          path.join(process.env.HOME || "", ".config", "memories", "backends.yaml"),
-        ];
-
-    for (const p of configPaths) {
-      if (fs.existsSync(p)) {
-        const raw = yaml.load(fs.readFileSync(p, "utf8"));
-        const interp = (v) => { const m = (v || "").match(/\$\{(\w+)\}/); return m ? (process.env[m[1]] || v) : v; };
-        const backends = Object.entries(raw.backends || {}).map(([name, cfg]) => {
-          return { name, url: interp(cfg.url || ""), apiKey: interp(cfg.api_key || ""), scenario: cfg.scenario || "" };
-        });
-        const routing = raw.routing || {};
-        return { backends, routing };
-      }
-    }
-
-    // Fallback to ctx args
-    return {
-      backends: [{
-        name: "default",
-        url: url || "http://localhost:8900",
-        apiKey: apiKey || "",
-        scenario: "",
-      }],
-      routing: {},
-    };
+    return loadBackendConfig({ cwd, url, apiKey, skipFileConfig });
   }
 
   const config = loadBackends();
@@ -257,6 +438,24 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     name: "memories",
     version: version || PKG_VERSION,
   });
+
+  // Expose a lazy, memoized context lookup for project-aware tool behavior.
+  // Task 4 only resolves and validates the context; source routing remains
+  // unchanged until a later task opts into this helper.  Keeping the lookup
+  // lazy means legacy callers never incur a `/api/keys/me` request.
+  let projectContextPromise;
+  server.resolveProjectContext = () => {
+    if (!projectContextPromise) {
+      projectContextPromise = resolveProjectContext({
+        cwd,
+        url,
+        apiKey,
+        fetchImpl: fetchFn,
+        skipFileConfig,
+      });
+    }
+    return projectContextPromise;
+  };
 
   // -- Tools -------------------------------------------------------------------
 

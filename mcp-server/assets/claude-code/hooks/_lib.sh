@@ -145,20 +145,54 @@ _memory_ids_for_metrics() {
   jq -nc --argjson a "$input_ids" --argjson b "$response_ids" '$a + $b | unique | .[0:50]' 2>/dev/null || echo '[]'
 }
 
-# Resolve the project name for a cwd. Git worktree checkouts (e.g. Claude
-# Code's .claude/worktrees/<name>) resolve to the MAIN repo's directory name,
-# not the worktree directory, so worktree sessions share the project's
-# memories instead of scoping recall/capture to a throwaway name.
+# Resolve the main repository boundary for a cwd. Git worktrees have their
+# own checkout root but share the main repository's git-common-dir; using that
+# shared directory keeps the committed project declaration authoritative for
+# both the main checkout and every worktree.
+_memories_resolve_repo_root() {
+  local cwd="${1:-}"
+  [ -n "$cwd" ] || return 1
+  local resolved
+  resolved=$(CDPATH= cd -P "$cwd" 2>/dev/null && pwd -P) || return 1
+  if ! command -v git >/dev/null 2>&1; then
+    printf '%s' "$resolved"
+    return 0
+  fi
+  local common
+  common=$(git -C "$resolved" rev-parse --git-common-dir 2>/dev/null) || {
+    printf '%s' "$resolved"
+    return 0
+  }
+  [ -z "$common" ] && { printf '%s' "$resolved"; return 0; }
+  case "$common" in
+    /*) ;;
+    *) common="$resolved/$common" ;;
+  esac
+  if [ "$(basename "$common")" = ".git" ]; then
+    local root
+    root=$(CDPATH= cd -P "$(dirname "$common")" 2>/dev/null && pwd -P)
+    if [ -n "$root" ] && [ "$root" != "/" ]; then
+      printf '%s' "$root"
+      return 0
+    fi
+  fi
+  printf '%s' "$resolved"
+}
+
+# Resolve the project name for a cwd while preserving the historical basename
+# fallback for non-git directories and empty input.
 _memories_resolve_project() {
   local cwd="${1:-}"
   local fallback
   fallback=$(basename "${cwd:-unknown}")
-  if [ -z "$cwd" ] || ! command -v git >/dev/null 2>&1; then
-    printf '%s' "$fallback"; return 0
-  fi
+  [ -n "$cwd" ] || { printf '%s' "$fallback"; return 0; }
+  command -v git >/dev/null 2>&1 || { printf '%s' "$fallback"; return 0; }
   local common
-  common=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null) || { printf '%s' "$fallback"; return 0; }
-  [ -z "$common" ] && { printf '%s' "$fallback"; return 0; }
+  common=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null) || {
+    printf '%s' "$fallback"
+    return 0
+  }
+  [ -n "$common" ] || { printf '%s' "$fallback"; return 0; }
   case "$common" in
     /*) ;;
     *) common="$cwd/$common" ;;
@@ -167,10 +201,203 @@ _memories_resolve_project() {
     local root
     root=$(CDPATH= cd "$(dirname "$common")" 2>/dev/null && pwd)
     if [ -n "$root" ] && [ "$root" != "/" ]; then
-      printf '%s' "$(basename "$root")"; return 0
+      printf '%s' "$(basename "$root")"
+      return 0
     fi
   fi
   printf '%s' "$fallback"
+}
+
+# -- Collaborative project declaration ---------------------------------------
+#
+# A repository declaration is an opt-in hint only.  It never grants access;
+# the authenticated backend principal below is still required.  Keep this
+# parser deliberately small and dependency-free because packaged hooks may be
+# copied away from the MCP npm install (and therefore cannot assume Node or
+# js-yaml is present).
+_memories_parse_project_yaml() {
+  local file="$1"
+  [ -f "$file" ] || {
+    jq -nc '{ok:false,reason:"missing",diagnostic:"no .memories/project.yaml at the repository boundary"}'
+    return 0
+  }
+
+  local project_id="" shared_memory="" seen_project=0 seen_shared=0 seen_any=0
+  local raw line key value
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    line="${raw%$'\r'}"
+    line=$(printf '%s' "$line" | sed 's/[[:space:]]*$//')
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    # Top-level scalar mappings only; nested YAML is not part of the contract.
+    case "$line" in
+      [[:space:]]*)
+        jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration must contain only top-level fields"}'
+        return 0
+        ;;
+    esac
+    if ! printf '%s' "$line" | grep -qE '^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*[^:]*([[:space:]]+#.*)?$'; then
+      jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration contains malformed YAML"}'
+      return 0
+    fi
+    key=$(printf '%s' "$line" | sed 's/:.*//')
+    value=$(printf '%s' "$line" | sed 's/^[^:]*:[[:space:]]*//;s/[[:space:]]*#.*$//;s/[[:space:]]*$//')
+    seen_any=1
+    case "$key" in
+      project_id)
+        [ "$seen_project" -eq 0 ] || {
+          jq -nc '{ok:false,reason:"malformed",diagnostic:"project_id is declared more than once"}'
+          return 0
+        }
+        seen_project=1
+        project_id="$value"
+        ;;
+      shared_memory)
+        [ "$seen_shared" -eq 0 ] || {
+          jq -nc '{ok:false,reason:"malformed",diagnostic:"shared_memory is declared more than once"}'
+          return 0
+        }
+        seen_shared=1
+        shared_memory="$value"
+        ;;
+      *)
+        jq -nc --arg key "$key" '{ok:false,reason:"unknown_field",diagnostic:("unknown project declaration field: " + $key)}'
+        return 0
+        ;;
+    esac
+  done < "$file"
+
+  [ "$seen_any" -eq 1 ] || {
+    jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration must be a YAML mapping"}'
+    return 0
+  }
+  if [ "$seen_project" -eq 0 ] || [ "$seen_shared" -eq 0 ]; then
+    jq -nc --arg missing "$( [ "$seen_project" -eq 0 ] && printf 'project_id' || true; [ "$seen_shared" -eq 0 ] && { [ "$seen_project" -eq 0 ] && printf ', '; printf 'shared_memory'; } )" \
+      '{ok:false,reason:"missing_field",diagnostic:("missing project declaration field: " + $missing)}'
+    return 0
+  fi
+  local project_quoted=0
+  case "$project_id" in
+    \"*\"|\'*\') project_quoted=1; project_id="${project_id:1:${#project_id}-2}" ;;
+  esac
+  case "$project_id" in
+    \[*|\{*)
+      jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration contains malformed YAML"}'
+      return 0
+      ;;
+  esac
+  if [ "$project_quoted" -eq 0 ] && {
+    case "$project_id" in
+      true|True|TRUE|false|False|FALSE|null|Null|NULL|~) true ;;
+      *) printf '%s' "$project_id" | grep -qE '^[0-9]+$' ;;
+    esac
+  }; then
+    jq -nc '{ok:false,reason:"invalid_project_id",diagnostic:"project_id must be a lowercase path-safe slug"}'
+    return 0
+  fi
+  if ! printf '%s' "$project_id" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'; then
+    jq -nc '{ok:false,reason:"invalid_project_id",diagnostic:"project_id must be a lowercase path-safe slug"}'
+    return 0
+  fi
+  case "$shared_memory" in
+    true|True|TRUE|'!!bool true'|'!!bool True'|'!!bool TRUE') ;;
+    *)
+    jq -nc '{ok:false,reason:"shared_memory_not_true",diagnostic:"shared_memory must be the YAML boolean true"}'
+    return 0
+    ;;
+  esac
+  jq -nc --arg id "$project_id" '{ok:true,projectId:$id,project_id:$id,sharedMemory:true,shared_memory:true}'
+}
+
+_memories_project_file() {
+  local cwd="${1:-}"
+  local root
+  root=$(_memories_resolve_repo_root "$cwd" 2>/dev/null) || return 1
+  local file="$root/.memories/project.yaml"
+  [ -f "$file" ] || return 1
+  printf '%s' "$file"
+}
+
+_memories_project_context() {
+  local cwd="${1:-${CWD:-$PWD}}"
+  local file parsed
+  file=$(_memories_project_file "$cwd" 2>/dev/null) || {
+    jq -nc '{active:false,reason:"missing",diagnostic:"no .memories/project.yaml at the repository boundary"}'
+    return 0
+  }
+  parsed=$(_memories_parse_project_yaml "$file")
+  if [ "$(printf '%s' "$parsed" | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
+    printf '%s' "$parsed" | jq -c '{active:false,reason:(.reason // "malformed"),diagnostic:(.diagnostic // "invalid project declaration")}'
+    return 0
+  fi
+
+  # Load exactly the backend set the hooks already use, but anchor project
+  # resolution at the main repository root for worktrees.  This function runs
+  # in command-substitution scope, so its temporary CWD/cache cannot alter the
+  # caller's legacy routing state.
+  local root backends count backend url key response http_status body identity principal
+  root=$(_memories_resolve_repo_root "$cwd" 2>/dev/null) || root="$cwd"
+  CWD="$root" _BACKENDS_CACHE="" backends=$(_load_backends 2>/dev/null) || backends="[]"
+  count=$(printf '%s' "$backends" | jq 'length' 2>/dev/null) || count=0
+  if [ "$count" -ne 1 ]; then
+    jq -nc --arg diag "collaborative project mode requires exactly one configured backend (found $count)" \
+      '{active:false,reason:"multiple_backends",diagnostic:$diag}'
+    return 0
+  fi
+  backend=$(printf '%s' "$backends" | jq -c '.[0]')
+  url=$(printf '%s' "$backend" | jq -r '.url // empty')
+  key=$(printf '%s' "$backend" | jq -r '.api_key // .apiKey // empty')
+  [ -n "$url" ] || {
+    jq -nc '{active:false,reason:"principal_unreachable",diagnostic:"the configured backend cannot be reached"}'
+    return 0
+  }
+
+  if [ -n "$key" ]; then
+    response=$(curl -sS --max-time 2 -H "X-API-Key: $key" -w $'\n%{http_code}' "${url%/}/api/keys/me" 2>/dev/null) || response=""
+  else
+    response=$(curl -sS --max-time 2 -w $'\n%{http_code}' "${url%/}/api/keys/me" 2>/dev/null) || response=""
+  fi
+  http_status=$(printf '%s\n' "$response" | tail -n 1)
+  body=$(printf '%s\n' "$response" | sed '$d')
+  case "$http_status" in
+    2??) ;;
+    *) jq -nc --arg diag "authenticated principal lookup returned HTTP ${http_status:-unknown}" '{active:false,reason:"principal_unreachable",diagnostic:$diag}'; return 0 ;;
+  esac
+  identity=$(printf '%s' "$body" | jq -c . 2>/dev/null) || {
+    jq -nc '{active:false,reason:"principal_unreachable",diagnostic:"authenticated principal lookup returned invalid JSON"}'
+    return 0
+  }
+  case "$(printf '%s' "$identity" | jq -r '.type // empty')" in
+    env|none) jq -nc '{active:false,reason:"env_principal",diagnostic:"environment or unconfigured admin identity cannot activate collaborative mode"}'; return 0 ;;
+  esac
+  principal=$(printf '%s' "$identity" | jq -r '.principal_id // empty')
+  if [ -z "$principal" ]; then
+    jq -nc '{active:false,reason:"missing_principal",diagnostic:"authenticated backend response did not include principal_id"}'
+    return 0
+  fi
+  if ! printf '%s' "$principal" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'; then
+    jq -nc '{active:false,reason:"invalid_principal",diagnostic:"authenticated principal_id must be a lowercase path-safe slug"}'
+    return 0
+  fi
+  local project_id
+  project_id=$(printf '%s' "$parsed" | jq -r '.project_id')
+  local backend_name
+  backend_name=$(printf '%s' "$backend" | jq -r '.name // "default"')
+  jq -nc --arg project "$project_id" --arg principal "$principal" --arg backend "$backend_name" \
+    '{active:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,backend:$backend}'
+}
+
+_memories_project_active() {
+  [ "$( _memories_project_context "${1:-${CWD:-$PWD}}" | jq -r '.active // false' 2>/dev/null )" = "true" ]
+}
+
+_memories_project_id() {
+  _memories_project_context "${1:-${CWD:-$PWD}}" | jq -r '.project_id // empty' 2>/dev/null
+}
+
+_memories_principal_id() {
+  _memories_project_context "${1:-${CWD:-$PWD}}" | jq -r '.principal_id // empty' 2>/dev/null
 }
 
 _memories_disabled() {
