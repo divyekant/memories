@@ -7,6 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from auth_context import AuthContext
+from project_memory import ProjectMemoryPolicyError
+
 
 @pytest.fixture
 def client():
@@ -142,6 +145,94 @@ def test_upsert_memory(client):
     )
 
 
+def test_managed_principal_authorship_reaches_add_boundary(client, monkeypatch):
+    test_client, mock_engine = client
+    import app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "_get_auth",
+        lambda request: AuthContext(
+            role="read-write",
+            prefixes=["project/demo/"],
+            key_type="managed",
+            key_id="key-1",
+            principal_id="alice",
+        ),
+    )
+    response = test_client.post(
+        "/memory/add",
+        json={
+            "text": "a project decision",
+            "source": "project/demo/decisions",
+            "metadata": {
+                "author": "mallory",
+                "contributors": ["mallory"],
+                "origin_client": "spoofed",
+                "source_memory_ids": [999],
+            },
+        },
+        headers={"X-API-Key": "test-key", "X-Memories-Client": "  Claude-Code "},
+    )
+
+    assert response.status_code == 200
+    trusted = mock_engine.add_memories.call_args.kwargs["trusted_authorship"]
+    assert trusted.author == "alice"
+    assert trusted.origin_client == "claude-code"
+
+
+def test_managed_principal_authorship_reaches_batch_add_boundary(client, monkeypatch):
+    test_client, mock_engine = client
+    import app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "_get_auth",
+        lambda request: AuthContext(
+            role="read-write",
+            prefixes=["project/demo/"],
+            key_type="managed",
+            principal_id="alice",
+        ),
+    )
+    response = test_client.post(
+        "/memory/add-batch",
+        json={
+            "memories": [
+                {
+                    "text": "first",
+                    "source": "project/demo/decisions",
+                    "metadata": {"author": "mallory"},
+                },
+                {
+                    "text": "second",
+                    "source": "project/demo/knowledge",
+                    "metadata": {"origin_client": "mallory"},
+                },
+            ]
+        },
+        headers={"X-API-Key": "test-key", "X-Memories-Client": "hook"},
+    )
+
+    assert response.status_code == 200
+    trusted = mock_engine.add_memories.call_args.kwargs["trusted_authorship"]
+    assert trusted.author == "alice"
+    assert trusted.origin_client == "hook"
+
+
+def test_project_policy_error_is_stable_422_for_add(client):
+    test_client, mock_engine = client
+    mock_engine.add_memories.side_effect = ProjectMemoryPolicyError("project policy")
+    response = test_client.post(
+        "/memory/add",
+        json={"text": "shared", "source": "project/demo/decisions"},
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "project policy"
+
+
 def test_upsert_batch_memory(client):
     test_client, mock_engine = client
     response = test_client.post(
@@ -160,6 +251,52 @@ def test_upsert_batch_memory(client):
     assert body["created"] == 1
     assert body["updated"] == 1
     mock_engine.upsert_memories.assert_called_once()
+
+
+def test_managed_principal_authorship_reaches_upsert_paths(client, monkeypatch):
+    test_client, mock_engine = client
+    import app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "_get_auth",
+        lambda request: AuthContext(
+            role="read-write",
+            prefixes=["project/demo/"],
+            key_type="managed",
+            principal_id="alice",
+        ),
+    )
+
+    one = test_client.post(
+        "/memory/upsert",
+        json={
+            "text": "replacement",
+            "source": "project/demo/decisions",
+            "key": "decision-1",
+            "metadata": {"author": "mallory"},
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+    many = test_client.post(
+        "/memory/upsert-batch",
+        json={
+            "memories": [
+                {
+                    "text": "replacement 2",
+                    "source": "project/demo/decisions",
+                    "key": "decision-2",
+                    "metadata": {"origin_client": "mallory"},
+                }
+            ]
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert one.status_code == 200
+    assert many.status_code == 200
+    assert mock_engine.upsert_memory.call_args.kwargs["trusted_authorship"].author == "alice"
+    assert mock_engine.upsert_memories.call_args.kwargs["trusted_authorship"].author == "alice"
 
 
 def test_search_batch(client):

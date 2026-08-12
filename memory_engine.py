@@ -27,6 +27,7 @@ from event_bus import event_bus
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
+from transcript_hygiene import redact_secrets
 from project_memory import (
     RESERVED_METADATA_FIELDS,
     ProjectMemoryPolicyError,
@@ -61,6 +62,41 @@ GRAPH_RESERVED_SLOTS = int(os.environ.get(
     "SEARCH_GRAPH_RESERVED_SLOTS",
     os.environ.get("SEARCH_GRAPH_MAX_NEIGHBORS", "2")
 ))
+
+
+def _validate_trusted_authorship(value: Optional[TrustedAuthorship]) -> None:
+    if value is not None and not isinstance(value, TrustedAuthorship):
+        raise ProjectMemoryPolicyError(
+            "trusted_authorship must be a TrustedAuthorship value"
+        )
+
+
+def _with_trusted_authorship(
+    kwargs: Dict[str, Any], trusted_authorship: Optional[TrustedAuthorship]
+) -> Dict[str, Any]:
+    """Add trusted authorship only when a caller supplied an authenticated value."""
+    if trusted_authorship is not None:
+        kwargs["trusted_authorship"] = trusted_authorship
+    return kwargs
+
+
+def _validate_project_write(
+    text: Any,
+    source: Any,
+    trusted_authorship: Optional[TrustedAuthorship],
+) -> None:
+    """Enforce exact project write policy before any embedding/storage work."""
+    if not is_project_source(source):
+        return
+    if trusted_authorship is None:
+        raise ProjectMemoryPolicyError(
+            "project-namespace memories require trusted principal or system authorship"
+        )
+    _, redacted_types = redact_secrets(str(text or ""))
+    if redacted_types:
+        raise ProjectMemoryPolicyError(
+            "project-namespace memories cannot contain credential-shaped values"
+        )
 
 
 def annotate_relative_scores(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -671,15 +707,9 @@ class MemoryEngine:
         if not texts:
             return []
 
-        if trusted_authorship is not None and not isinstance(
-            trusted_authorship, TrustedAuthorship
-        ):
-            raise ProjectMemoryPolicyError("trusted_authorship must be a TrustedAuthorship value")
-
-        if any(is_project_source(source) for source in sources) and trusted_authorship is None:
-            raise ProjectMemoryPolicyError(
-                "project-namespace memories require trusted principal or system authorship"
-            )
+        _validate_trusted_authorship(trusted_authorship)
+        for text, source in zip(texts, sources):
+            _validate_project_write(text, source, trusted_authorship)
 
         keys = [self._entity_key(source) for source in sources]
         with self._entity_locks.acquire_many(keys):
@@ -877,7 +907,14 @@ class MemoryEngine:
             "missing_ids": missing,
         }
 
-    def supersede(self, old_id: int, new_text: str, source: str = "", metadata: Optional[Dict] = None) -> dict:
+    def supersede(
+        self,
+        old_id: int,
+        new_text: str,
+        source: str = "",
+        metadata: Optional[Dict] = None,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
+    ) -> dict:
         """Replace a memory with an updated version, preserving history.
 
         The new memory is added FIRST; the old memory is then ARCHIVED (not
@@ -892,12 +929,18 @@ class MemoryEngine:
         old_meta = self._get_meta_by_id(old_id)
         previous_text = old_meta.get("text", "")
         use_source = source or old_meta.get("source", "")
+        if is_project_source(old_meta.get("source", "")):
+            _validate_project_write(new_text, old_meta.get("source", ""), trusted_authorship)
+        _validate_project_write(new_text, use_source, trusted_authorship)
 
+        add_kwargs = {
+            "texts": [new_text],
+            "sources": [use_source],
+            "metadata_list": [metadata] if metadata else None,
+            "deduplicate": False,
+        }
         added_ids = self.add_memories(
-            texts=[new_text],
-            sources=[use_source],
-            metadata_list=[metadata] if metadata else None,
-            deduplicate=False,
+            **_with_trusted_authorship(add_kwargs, trusted_authorship)
         )
         new_id = added_ids[0] if added_ids else None
         if new_id is None or not self._id_exists(new_id):
@@ -924,6 +967,7 @@ class MemoryEngine:
         on_duplicate: str = "supersede",
         dedup_threshold: float = 0.90,
         identical_threshold: Optional[float] = None,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> Dict[str, Any]:
         """Single-memory write with update-on-collision semantics.
 
@@ -940,6 +984,8 @@ class MemoryEngine:
         on_duplicate: "supersede" (default) | "skip" (legacy dedup behavior,
         but with the blocker surfaced) | "add" (no collision check).
         """
+        _validate_trusted_authorship(trusted_authorship)
+        _validate_project_write(text, source, trusted_authorship)
         if on_duplicate not in ("add", "skip", "supersede"):
             raise ValueError(f"on_duplicate must be add|skip|supersede, got {on_duplicate!r}")
         if identical_threshold is None:
@@ -967,7 +1013,13 @@ class MemoryEngine:
                         "similarity": round(sim, 4),
                         "hint": f"memory {top_id} already covers this; supersede it to replace the content",
                     }
-                result = self.supersede(top_id, text, source, metadata=metadata)
+                supersede_kwargs = {"metadata": metadata}
+                result = self.supersede(
+                    top_id,
+                    text,
+                    source,
+                    **_with_trusted_authorship(supersede_kwargs, trusted_authorship),
+                )
                 return {
                     "action": "superseded",
                     "id": result["new_id"],
@@ -976,11 +1028,14 @@ class MemoryEngine:
                     "previous_text": result["previous_text"],
                 }
 
+        add_kwargs = {
+            "texts": [text],
+            "sources": [source],
+            "metadata_list": [metadata] if metadata else None,
+            "deduplicate": False,
+        }
         ids = self.add_memories(
-            texts=[text],
-            sources=[source],
-            metadata_list=[metadata] if metadata else None,
-            deduplicate=False,
+            **_with_trusted_authorship(add_kwargs, trusted_authorship)
         )
         return {"action": "added", "id": ids[0] if ids else None}
 
@@ -1088,7 +1143,13 @@ class MemoryEngine:
             "orphaned_count": len(orphaned),
         }
 
-    def merge_memories(self, ids: List[int], merged_text: str, source: str) -> Dict[str, Any]:
+    def merge_memories(
+        self,
+        ids: List[int],
+        merged_text: str,
+        source: str,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
+    ) -> Dict[str, Any]:
         """Merge multiple memories into one, archiving originals and linking via supersedes."""
         if len(ids) < 2:
             raise ValueError("merge_memories requires at least 2 IDs")
@@ -1096,7 +1157,20 @@ class MemoryEngine:
             if not self._id_exists(mid):
                 raise ValueError(f"Memory {mid} not found")
 
-        added_ids = self.add_memories(texts=[merged_text], sources=[source], deduplicate=False)
+        for mid in ids:
+            source_value = self._get_meta_by_id(mid).get("source", "")
+            if is_project_source(source_value):
+                _validate_project_write(merged_text, source_value, trusted_authorship)
+        _validate_project_write(merged_text, source, trusted_authorship)
+
+        add_kwargs = {
+            "texts": [merged_text],
+            "sources": [source],
+            "deduplicate": False,
+        }
+        added_ids = self.add_memories(
+            **_with_trusted_authorship(add_kwargs, trusted_authorship)
+        )
         new_id = added_ids[0]
 
         for mid in ids:
@@ -1334,14 +1408,31 @@ class MemoryEngine:
         metadata_patch: Optional[Dict[str, Any]] = None,
         pinned: Optional[bool] = None,
         archived: Optional[bool] = None,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
+        apply_trusted_authorship: bool = False,
     ) -> Dict[str, Any]:
         """Update fields on an existing memory without changing its ID."""
         if not self._id_exists(memory_id):
             raise ValueError(f"Memory ID {memory_id} not found")
 
+        _validate_trusted_authorship(trusted_authorship)
+
         current = self._get_meta_by_id(memory_id)
         old_key = self._entity_key(current.get("source", ""))
-        new_key = self._entity_key(source if source is not None else current.get("source", ""))
+        target_source = source if source is not None else current.get("source", "")
+        new_key = self._entity_key(target_source)
+        current_source = current.get("source", "")
+        current_is_project = is_project_source(current_source)
+        target_is_project = is_project_source(target_source)
+        touches_project = current_is_project or target_is_project
+        source_enters_project = target_is_project and not current_is_project
+        if touches_project:
+            if trusted_authorship is None:
+                raise ProjectMemoryPolicyError(
+                    "project-namespace memories require trusted principal or system authorship"
+                )
+            if text is not None:
+                _validate_project_write(text, target_source, trusted_authorship)
         updated_fields: List[str] = []
 
         # Fast path: source-only change skips backup + re-embed
@@ -1363,6 +1454,14 @@ class MemoryEngine:
 
                 if source_only:
                     meta["source"] = source
+                    if target_is_project:
+                        # A source transition into a project namespace must
+                        # carry current trusted authorship. Remove stale
+                        # server-owned fields first (e.g. a prior system
+                        # consolidation provenance).
+                        for reserved in RESERVED_METADATA_FIELDS:
+                            meta.pop(reserved, None)
+                        meta.update(trusted_authorship.as_metadata())
                     meta["updated_at"] = datetime.now(timezone.utc).isoformat()
                     # Don't touch created_at or timestamp
                     self.qdrant_store.set_payload(memory_id, self._point_payload(meta))
@@ -1381,12 +1480,24 @@ class MemoryEngine:
                     updated_fields.append("source")
 
                 if metadata_patch:
-                    _reserved = {"id", "text", "source", "timestamp", "created_at", "updated_at", "entity_key"}
+                    _reserved = {
+                        "id", "text", "source", "timestamp", "created_at", "updated_at",
+                        "entity_key", *RESERVED_METADATA_FIELDS,
+                    }
                     for key, value in metadata_patch.items():
                         if key in _reserved or key.startswith("_policy_"):
                             continue
                         meta[key] = value
                     updated_fields.append("metadata")
+
+                if apply_trusted_authorship or source_enters_project:
+                    if trusted_authorship is None:
+                        raise ProjectMemoryPolicyError(
+                            "trusted authorship is required for replacement updates"
+                        )
+                    for reserved in RESERVED_METADATA_FIELDS:
+                        meta.pop(reserved, None)
+                    meta.update(trusted_authorship.as_metadata())
 
                 if pinned is not None:
                     meta["pinned"] = pinned
@@ -1601,8 +1712,10 @@ class MemoryEngine:
         source: str,
         key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> Dict[str, Any]:
         """Upsert a memory by stable entity key + source."""
+        _validate_trusted_authorship(trusted_authorship)
         metadata = dict(metadata or {})
         metadata["entity_key"] = key
 
@@ -1613,24 +1726,41 @@ class MemoryEngine:
                 break
 
         if existing_id is None:
+            add_kwargs = {
+                "texts": [text],
+                "sources": [source],
+                "metadata_list": [metadata],
+                "deduplicate": False,
+            }
             ids = self.add_memories(
-                texts=[text],
-                sources=[source],
-                metadata_list=[metadata],
-                deduplicate=False,
+                **_with_trusted_authorship(add_kwargs, trusted_authorship)
             )
             return {"id": ids[0], "action": "created"}
 
+        update_kwargs = {
+            "memory_id": existing_id,
+            "text": text,
+            "source": source,
+            "metadata_patch": metadata,
+        }
+        if trusted_authorship is not None:
+            update_kwargs["apply_trusted_authorship"] = True
         result = self.update_memory(
-            memory_id=existing_id,
-            text=text,
-            source=source,
-            metadata_patch=metadata,
+            **_with_trusted_authorship(update_kwargs, trusted_authorship)
         )
         return {"id": result["id"], "action": "updated"}
 
-    def upsert_memories(self, entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def upsert_memories(
+        self,
+        entries: List[Dict[str, Any]],
+        trusted_authorship: Optional[TrustedAuthorship] = None,
+    ) -> Dict[str, Any]:
         """Upsert multiple memories by stable keys."""
+        _validate_trusted_authorship(trusted_authorship)
+        for entry in entries:
+            _validate_project_write(
+                entry.get("text", ""), entry.get("source", ""), trusted_authorship
+            )
         created = 0
         updated = 0
         errors = 0
@@ -1638,11 +1768,14 @@ class MemoryEngine:
 
         for entry in entries:
             try:
+                upsert_kwargs = {
+                    "text": entry["text"],
+                    "source": entry["source"],
+                    "key": entry["key"],
+                    "metadata": entry.get("metadata"),
+                }
                 result = self.upsert_memory(
-                    text=entry["text"],
-                    source=entry["source"],
-                    key=entry["key"],
-                    metadata=entry.get("metadata"),
+                    **_with_trusted_authorship(upsert_kwargs, trusted_authorship)
                 )
                 results.append(result)
                 if result["action"] == "created":
@@ -2799,6 +2932,7 @@ class MemoryEngine:
         strategy: str = "add",
         source_remap: Optional[Tuple[str, str]] = None,
         create_backup: bool = True,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> Dict[str, Any]:
         """Import memories from NDJSON lines produced by :meth:`export_memories`.
 
@@ -2830,6 +2964,7 @@ class MemoryEngine:
             "errors": [],
             "backup": None,
         }
+        _validate_trusted_authorship(trusted_authorship)
 
         if not lines:
             result["errors"].append({"line": 1, "error": "Missing header: first line must contain _header: true"})
@@ -2845,13 +2980,6 @@ class MemoryEngine:
         if not header.get("_header"):
             result["errors"].append({"line": 1, "error": "Missing header: first line must contain _header: true"})
             return result
-
-        # --- backup ---
-        backup_name: Optional[str] = None
-        if create_backup and self.metadata:
-            backup_path = self._backup(prefix="pre-import")
-            backup_name = backup_path.name
-            result["backup"] = backup_name
 
         # --- parse records ---
         parsed: List[Dict[str, Any]] = []
@@ -2881,11 +3009,34 @@ class MemoryEngine:
                 entry["custom_fields"] = custom
             parsed.append(entry)
 
+        # Validate every exact project record before any strategy can delete,
+        # replace, or add data.  The common add boundary repeats this check,
+        # but this preflight keeps smart imports fail-closed before mutation.
+        for entry in parsed:
+            _validate_project_write(
+                entry["text"], entry["source"], trusted_authorship
+            )
+
+        # --- backup ---
+        backup_name: Optional[str] = None
+        if create_backup and self.metadata:
+            backup_path = self._backup(prefix="pre-import")
+            backup_name = backup_path.name
+            result["backup"] = backup_name
+
         # --- dispatch by strategy ---
         if strategy == "add":
-            self._import_add(parsed, result)
+            self._import_add(
+                parsed,
+                result,
+                **_with_trusted_authorship({}, trusted_authorship),
+            )
         elif strategy in ("smart", "smart+extract"):
-            self._import_smart(parsed, result)
+            self._import_smart(
+                parsed,
+                result,
+                **_with_trusted_authorship({}, trusted_authorship),
+            )
         else:
             result["errors"].append({"line": 0, "error": f"Unknown strategy: {strategy}"})
 
@@ -2896,7 +3047,10 @@ class MemoryEngine:
     # ------------------------------------------------------------------
 
     def _import_add(
-        self, parsed: List[Dict[str, Any]], result: Dict[str, Any]
+        self,
+        parsed: List[Dict[str, Any]],
+        result: Dict[str, Any],
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> None:
         """Bulk-add all parsed records without novelty checking."""
         if not parsed:
@@ -2907,11 +3061,22 @@ class MemoryEngine:
             {"imported": True, "import_source": r["source"], **r.get("custom_fields", {})}
             for r in parsed
         ]
-        self.add_memories(texts=texts, sources=sources, metadata_list=metadata_list, deduplicate=False)
+        add_kwargs = {
+            "texts": texts,
+            "sources": sources,
+            "metadata_list": metadata_list,
+            "deduplicate": False,
+        }
+        self.add_memories(
+            **_with_trusted_authorship(add_kwargs, trusted_authorship)
+        )
         result["imported"] = len(texts)
 
     def _import_smart(
-        self, parsed: List[Dict[str, Any]], result: Dict[str, Any]
+        self,
+        parsed: List[Dict[str, Any]],
+        result: Dict[str, Any],
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> None:
         """Add records with similarity-based novelty checking.
 
@@ -2979,9 +3144,14 @@ class MemoryEngine:
 
         # Batch-add all novel records at once
         if novel_texts:
+            add_kwargs = {
+                "texts": novel_texts,
+                "sources": novel_sources,
+                "metadata_list": novel_meta,
+                "deduplicate": False,
+            }
             self.add_memories(
-                texts=novel_texts, sources=novel_sources,
-                metadata_list=novel_meta, deduplicate=False,
+                **_with_trusted_authorship(add_kwargs, trusted_authorship)
             )
             result["imported"] = len(novel_texts)
 

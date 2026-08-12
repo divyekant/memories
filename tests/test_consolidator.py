@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, call
 
 from llm_provider import CompletionResult
+from project_memory import TrustedAuthorship
 
 
 def _cr(text, input_tokens=10, output_tokens=5):
@@ -152,6 +153,10 @@ class TestConsolidation:
         meta = add_call[1]["metadata_list"][0]
         assert meta["category"] == "decision"  # dominant category
         assert set(meta["consolidated_from"]) == {0, 1, 2}
+        trusted = add_call[1]["trusted_authorship"]
+        assert isinstance(trusted, TrustedAuthorship)
+        assert trusted.author == "system"
+        assert set(trusted.source_memory_ids) == {0, 1, 2}
 
     def test_dry_run_does_not_mutate(self):
         from consolidator import consolidate_cluster

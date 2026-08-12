@@ -18,11 +18,21 @@ from typing import Optional, List
 from auth_context import source_matches_prefixes
 from shadow_runner import build_shadow_providers, fanout_shadow_async
 from transcript_hygiene import clean_transcript, redact_secrets
+from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
 
 logger = logging.getLogger(__name__)
 
 TRAINING_DATA_DIR = os.environ.get("EXTRACT_TRAINING_DATA_DIR", "").strip()
 _TRAINING_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50MB rotation threshold
+
+
+def _with_trusted_authorship(
+    kwargs: dict, trusted_authorship: Optional[TrustedAuthorship]
+) -> dict:
+    """Preserve legacy engine call shapes when no request identity is present."""
+    if trusted_authorship is not None:
+        kwargs["trusted_authorship"] = trusted_authorship
+    return kwargs
 
 
 def _training_output_path(out_dir: Path, now: datetime) -> Path:
@@ -633,6 +643,7 @@ def execute_actions(
     job_id: Optional[str] = None,
     document_at: Optional[str] = None,
     novelty_gate: bool = True,
+    trusted_authorship: Optional[TrustedAuthorship] = None,
 ) -> dict:
     """Execute AUDN decisions against the memory engine.
 
@@ -684,11 +695,14 @@ def execute_actions(
                     fact_meta["extract_source"] = source
                 if document_at:
                     fact_meta["document_at"] = document_at
+                add_kwargs = {
+                    "texts": [fact_text],
+                    "sources": [source],
+                    "metadata_list": [fact_meta],
+                    "deduplicate": True,
+                }
                 added_ids = engine.add_memories(
-                    texts=[fact_text],
-                    sources=[source],
-                    metadata_list=[fact_meta],
-                    deduplicate=True,
+                    **_with_trusted_authorship(add_kwargs, trusted_authorship)
                 )
                 new_id = added_ids[0] if added_ids else None
                 result_actions.append({"action": "fallback_add" if act == "FALLBACK_ADD" else "add", "text": fact_text, "id": new_id})
@@ -713,18 +727,28 @@ def execute_actions(
                     raise PermissionError(f"source not authorized for update: {source}")
                 if old_id is not None:
                     # Archive old memory instead of deleting (version preservation)
-                    engine.update_memory(old_id, archived=True, metadata_patch={"is_latest": False})
+                    archive_kwargs = {
+                        "archived": True,
+                        "metadata_patch": {"is_latest": False},
+                    }
+                    engine.update_memory(
+                        old_id,
+                        **_with_trusted_authorship(archive_kwargs, trusted_authorship),
+                    )
                 fact_meta = {"category": fact.get("category", "detail"), "supersedes": old_id, "is_latest": True} if isinstance(fact, dict) else {"supersedes": old_id, "is_latest": True}
                 if job_id:
                     fact_meta["extraction_job_id"] = job_id
                     fact_meta["extract_source"] = source
                 if document_at:
                     fact_meta["document_at"] = document_at
+                add_kwargs = {
+                    "texts": [new_text],
+                    "sources": [source],
+                    "metadata_list": [fact_meta],
+                    "deduplicate": False,
+                }
                 added_ids = engine.add_memories(
-                    texts=[new_text],
-                    sources=[source],
-                    metadata_list=[fact_meta],
-                    deduplicate=False,
+                    **_with_trusted_authorship(add_kwargs, trusted_authorship)
                 )
                 new_id = added_ids[0] if added_ids else None
                 # Create supersedes link from new → old
@@ -770,11 +794,14 @@ def execute_actions(
                         if not source_matches_prefixes(existing_source, allowed_prefixes):
                             raise PermissionError(f"old_id not authorized for conflict: {old_id}")
                     fact_meta["conflicts_with"] = old_id
+                add_kwargs = {
+                    "texts": [fact_text],
+                    "sources": [source],
+                    "metadata_list": [fact_meta],
+                    "deduplicate": False,
+                }
                 added_ids = engine.add_memories(
-                    texts=[fact_text],
-                    sources=[source],
-                    metadata_list=[fact_meta],
-                    deduplicate=False,
+                    **_with_trusted_authorship(add_kwargs, trusted_authorship)
                 )
                 new_id = added_ids[0] if added_ids else None
                 result_actions.append({
@@ -790,6 +817,8 @@ def execute_actions(
                 existing_id = action.get("existing_id")
                 result_actions.append({"action": "noop", "text": fact_text, "existing_id": existing_id})
 
+        except ProjectMemoryPolicyError:
+            raise
         except Exception as e:
             logger.error("Failed to execute %s for fact '%s': %s", act, fact_text[:50], e)
             result_actions.append({"action": "error", "text": fact_text, "error": str(e)})
@@ -942,6 +971,7 @@ def run_extraction(
     debug: bool = False,
     profile: dict | None = None,
     document_at: Optional[str] = None,
+    trusted_authorship: Optional[TrustedAuthorship] = None,
 ) -> dict:
     """Full extraction pipeline: extract facts -> AUDN -> execute.
 
@@ -1007,7 +1037,17 @@ def run_extraction(
         )
         facts = [{"text": a.get("text", ""), "category": a.get("category", "detail")}
                  for a in actions]
-        result = execute_actions(engine, actions, facts, source, allowed_prefixes, job_id=job_id, document_at=document_at)
+        result = execute_actions(
+            engine,
+            actions,
+            facts,
+            source,
+            allowed_prefixes,
+            **_with_trusted_authorship(
+                {"job_id": job_id, "document_at": document_at},
+                trusted_authorship,
+            ),
+        )
         result["tokens"] = {"single_call": usage}
         result["job_id"] = job_id
         result["links_created"] = []
@@ -1109,9 +1149,14 @@ def run_extraction(
         decisions,
         facts,
         source,
-        allowed_prefixes=allowed_prefixes,
-        job_id=job_id,
-        document_at=document_at,
+        **_with_trusted_authorship(
+            {
+                "allowed_prefixes": allowed_prefixes,
+                "job_id": job_id,
+                "document_at": document_at,
+            },
+            trusted_authorship,
+        ),
     )
     result["extracted_count"] = len(facts)
     result["tokens"] = {"extract": extract_tokens, "audn": audn_tokens}

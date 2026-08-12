@@ -35,6 +35,7 @@ from audit_log import AuditLog, NullAuditLog
 from usage_tracker import UsageTracker, NullTracker
 from extraction_profiles import ExtractionProfiles
 from transcript_hygiene import clean_transcript
+from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
 
 # -- Logging ------------------------------------------------------------------
 
@@ -286,6 +287,36 @@ async def verify_api_key(request: Request):
 
 def _get_auth(request: Request) -> AuthContext:
     return getattr(request.state, "auth", AuthContext.unrestricted())
+
+
+def _trusted_authorship(request: Request) -> Optional[TrustedAuthorship]:
+    """Build request-bound authorship for a managed key with a valid principal.
+
+    Environment/unconfigured admin contexts intentionally return ``None`` so
+    legacy writes retain their historical behavior while exact project writes
+    fail closed at the engine boundary.
+    """
+    auth = _get_auth(request)
+    if auth.key_type != "managed" or not auth.principal_id:
+        return None
+    try:
+        return TrustedAuthorship.principal(
+            auth.principal_id,
+            request.headers.get("X-Memories-Client", ""),
+        )
+    except (ProjectMemoryPolicyError, ValueError, TypeError):
+        # Invalid managed identities are not trusted authorship.  The engine
+        # still enforces exact project policy and fails closed.
+        return None
+
+
+def _with_trusted_authorship(
+    kwargs: Dict[str, Any], trusted_authorship: Optional[TrustedAuthorship]
+) -> Dict[str, Any]:
+    """Add request-bound authorship without changing legacy call shapes."""
+    if trusted_authorship is not None:
+        kwargs["trusted_authorship"] = trusted_authorship
+    return kwargs
 
 
 def _audit(request: Request, action: str, resource_id: str = "", source: str = "") -> None:
@@ -614,6 +645,7 @@ def _run_fallback_extraction(
     source: str,
     context: str,
     allowed_prefixes: Optional[List[str]] = None,
+    trusted_authorship: Optional[TrustedAuthorship] = None,
 ) -> Dict[str, Any]:
     """Fallback add-only extraction path for disabled or runtime-failed providers."""
     # Transcript hygiene: never re-ingest hook-injected recalled memories.
@@ -655,11 +687,14 @@ def _run_fallback_extraction(
     for fact in facts:
         is_new, similar = memory.is_novel(fact, threshold=EXTRACT_FALLBACK_NOVELTY_THRESHOLD)
         if is_new:
+            add_kwargs = {
+                "texts": [fact],
+                "sources": [source_value],
+                "metadata_list": [{"extraction_mode": "fallback_add", "context": context}],
+                "deduplicate": False,
+            }
             ids = memory.add_memories(
-                texts=[fact],
-                sources=[source_value],
-                metadata_list=[{"extraction_mode": "fallback_add", "context": context}],
-                deduplicate=False,
+                **_with_trusted_authorship(add_kwargs, trusted_authorship)
             )
             if ids:
                 stored_count += 1
@@ -759,6 +794,7 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data.get("debug", False),
                 request_data.get("profile"),
                 request_data.get("document_at"),
+                **_with_trusted_authorship({}, request_data.get("trusted_authorship")),
             )
             is_dry_run = request_data.get("profile", {}).get("dry_run", False)
             if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result) and not is_dry_run:
@@ -768,6 +804,7 @@ async def _extract_worker(worker_id: int) -> None:
                     request_data["source"],
                     request_data["context"],
                     request_data.get("allowed_prefixes"),
+                    **_with_trusted_authorship({}, request_data.get("trusted_authorship")),
                 )
                 result = _merge_runtime_fallback_result(result, fallback_result)
                 logger.info(
@@ -824,6 +861,8 @@ async def _extract_worker(worker_id: int) -> None:
                 job_state["status"] = "failed"
                 job_state["completed_at"] = _utc_now_iso()
                 job_state["error"] = str(e)
+                if isinstance(e, ProjectMemoryPolicyError):
+                    job_state["result"] = {"error": "project_policy", "detail": str(e)}
         finally:
             trim_result = memory_trimmer.maybe_trim(reason=f"extract:{request_data['context']}")
             if trim_result.get("trimmed"):
@@ -1964,11 +2003,14 @@ async def consolidate(
     from consolidator import find_clusters, consolidate_cluster
     clusters = find_clusters(memory, source_prefix=source_prefix)
     results = []
-    for cluster in clusters:
-        r = await run_in_threadpool(
-            consolidate_cluster, extract_provider, memory, cluster, dry_run=dry_run,
-        )
-        results.append(r)
+    try:
+        for cluster in clusters:
+            r = await run_in_threadpool(
+                consolidate_cluster, extract_provider, memory, cluster, dry_run=dry_run,
+            )
+            results.append(r)
+    except ProjectMemoryPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     if not dry_run:
         _audit(request, "memory.consolidated", resource_id="", source=f"maintenance:count={len(results)}")
     return {"clusters_found": len(clusters), "results": results, "dry_run": dry_run}
@@ -2291,17 +2333,21 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
     """Add a new memory"""
     auth = _get_auth(request)
     _require_write(auth, request_body.source)
+    trusted_authorship = _trusted_authorship(request)
     logger.info(
         "Add memory: source=%s len=%d on_duplicate=%s",
         request_body.source, len(request_body.text), request_body.on_duplicate,
     )
     try:
         if request_body.on_duplicate:
+            doctrine_kwargs = {
+                "text": request_body.text,
+                "source": request_body.source,
+                "metadata": request_body.metadata,
+                "on_duplicate": request_body.on_duplicate,
+            }
             result = memory.add_with_doctrine(
-                text=request_body.text,
-                source=request_body.source,
-                metadata=request_body.metadata,
-                on_duplicate=request_body.on_duplicate,
+                **_with_trusted_authorship(doctrine_kwargs, trusted_authorship),
             )
             _log_usage_event(request, "add", request_body.source)
             audit_action = {
@@ -2312,11 +2358,14 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
             _audit(request, audit_action, resource_id=str(result.get("id") or result.get("blocked_by") or ""), source=request_body.source)
             return {"success": True, **result}
 
+        add_kwargs = {
+            "texts": [request_body.text],
+            "sources": [request_body.source],
+            "metadata_list": [request_body.metadata] if request_body.metadata else None,
+            "deduplicate": request_body.deduplicate,
+        }
         ids = memory.add_memories(
-            texts=[request_body.text],
-            sources=[request_body.source],
-            metadata_list=[request_body.metadata] if request_body.metadata else None,
-            deduplicate=request_body.deduplicate,
+            **_with_trusted_authorship(add_kwargs, trusted_authorship)
         )
         _log_usage_event(request, "add", request_body.source)
         result_id = ids[0] if ids else None
@@ -2338,6 +2387,8 @@ async def add_memory(request_body: AddMemoryRequest, request: Request):
                 )
         _audit(request, "memory.created", resource_id=str(result_id or ""), source=request_body.source)
         return response
+    except ProjectMemoryPolicyError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.exception("Add memory failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2349,6 +2400,7 @@ async def add_batch(request_body: AddBatchRequest, request: Request):
     auth = _get_auth(request)
     for m in request_body.memories:
         _require_write(auth, m.source)
+    trusted_authorship = _trusted_authorship(request)
     logger.info("Add batch: count=%d", len(request_body.memories))
     try:
         texts = [m.text for m in request_body.memories]
@@ -2358,11 +2410,14 @@ async def add_batch(request_body: AddBatchRequest, request: Request):
         if not any(metadata_list):
             metadata_list = None
 
+        add_kwargs = {
+            "texts": texts,
+            "sources": sources,
+            "metadata_list": metadata_list,
+            "deduplicate": request_body.deduplicate,
+        }
         ids = memory.add_memories(
-            texts=texts,
-            sources=sources,
-            metadata_list=metadata_list,
-            deduplicate=request_body.deduplicate,
+            **_with_trusted_authorship(add_kwargs, trusted_authorship)
         )
         _log_usage_event(request, "add", count=len(request_body.memories))
         return {
@@ -2371,6 +2426,8 @@ async def add_batch(request_body: AddBatchRequest, request: Request):
             "count": len(ids),
             "message": f"Added {len(ids)} memories",
         }
+    except ProjectMemoryPolicyError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.exception("Add batch failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2386,6 +2443,7 @@ class SupersedeByIdRequest(BaseModel):
 async def supersede_memory_by_id(memory_id: int, request_body: SupersedeByIdRequest, request: Request):
     """Replace a memory with an updated version. The original is archived with a supersedes link."""
     auth = _get_auth(request)
+    trusted_authorship = _trusted_authorship(request)
     if auth.role == "read-only":
         raise HTTPException(status_code=403, detail="Read-only keys cannot supersede memories")
     try:
@@ -2399,15 +2457,20 @@ async def supersede_memory_by_id(memory_id: int, request_body: SupersedeByIdRequ
         raise HTTPException(status_code=409, detail=f"Memory ID {memory_id} is pinned; unpin it before superseding")
     logger.info("Supersede memory: id=%d", memory_id)
     try:
+        supersede_kwargs = {
+            "source": request_body.source or "",
+            "metadata": request_body.metadata,
+        }
         result = memory.supersede(
             memory_id,
             request_body.text,
-            source=request_body.source or "",
-            metadata=request_body.metadata,
+            **_with_trusted_authorship(supersede_kwargs, trusted_authorship),
         )
         _log_usage_event(request, "supersede", existing.get("source", ""))
         _audit(request, "memory.superseded", resource_id=str(result.get("new_id") or ""), source=existing.get("source", ""))
         return {"success": True, **result}
+    except ProjectMemoryPolicyError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception:
@@ -2693,6 +2756,7 @@ async def restore_snapshot(name: str, request: Request):
 async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request: Request):
     """Patch selected fields on an existing memory."""
     auth = _get_auth(request)
+    trusted_authorship = _trusted_authorship(request)
     if (
         request_body.text is None
         and request_body.source is None
@@ -2707,13 +2771,16 @@ async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request
             _require_write(auth, existing.get("source", ""))
             if request_body.source is not None:
                 _require_write(auth, request_body.source)
+        update_kwargs = {
+            "memory_id": memory_id,
+            "text": request_body.text,
+            "source": request_body.source,
+            "metadata_patch": request_body.metadata_patch,
+            "pinned": request_body.pinned,
+            "archived": request_body.archived,
+        }
         result = memory.update_memory(
-            memory_id=memory_id,
-            text=request_body.text,
-            source=request_body.source,
-            metadata_patch=request_body.metadata_patch,
-            pinned=request_body.pinned,
-            archived=request_body.archived,
+            **_with_trusted_authorship(update_kwargs, trusted_authorship)
         )
         if request_body.text is not None or request_body.source is not None or request_body.metadata_patch:
             _audit(request, "memory.updated", resource_id=str(memory_id))
@@ -2724,6 +2791,8 @@ async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request
             action = "memory.archived" if request_body.archived else "memory.unarchived"
             _audit(request, action, resource_id=str(memory_id))
         return result
+    except ProjectMemoryPolicyError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -2735,14 +2804,21 @@ async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request
 async def archive_batch(request_body: ArchiveBatchRequest, request: Request):
     """Archive multiple memories in a single call."""
     auth = _get_auth(request)
+    trusted_authorship = _trusted_authorship(request)
     archived = 0
     for mid in request_body.ids:
         try:
             existing = memory.get_memory(mid)
             _require_write(auth, existing.get("source", ""))
-            memory.update_memory(mid, archived=True)
+            update_kwargs = {"archived": True}
+            memory.update_memory(
+                mid,
+                **_with_trusted_authorship(update_kwargs, trusted_authorship)
+            )
             _audit(request, "memory.archived", resource_id=str(mid))
             archived += 1
+        except ProjectMemoryPolicyError as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except (ValueError, PermissionError):
             continue
     return {"archived_count": archived}
@@ -2753,14 +2829,20 @@ async def upsert_memory(request_body: UpsertMemoryRequest, request: Request):
     """Upsert a memory by stable key + source."""
     auth = _get_auth(request)
     _require_write(auth, request_body.source)
+    trusted_authorship = _trusted_authorship(request)
     try:
+        upsert_kwargs = {
+            "text": request_body.text,
+            "source": request_body.source,
+            "key": request_body.key,
+            "metadata": request_body.metadata,
+        }
         result = memory.upsert_memory(
-            text=request_body.text,
-            source=request_body.source,
-            key=request_body.key,
-            metadata=request_body.metadata,
+            **_with_trusted_authorship(upsert_kwargs, trusted_authorship)
         )
         return {"success": True, **result}
+    except ProjectMemoryPolicyError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.exception("Upsert memory failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2770,6 +2852,7 @@ async def upsert_memory(request_body: UpsertMemoryRequest, request: Request):
 async def upsert_memory_batch(request_body: UpsertBatchRequest, request: Request):
     """Bulk upsert memories by stable keys."""
     auth = _get_auth(request)
+    trusted_authorship = _trusted_authorship(request)
     for item in request_body.memories:
         _require_write(auth, item.source)
     try:
@@ -2782,8 +2865,12 @@ async def upsert_memory_batch(request_body: UpsertBatchRequest, request: Request
             }
             for item in request_body.memories
         ]
-        result = memory.upsert_memories(entries)
+        result = memory.upsert_memories(
+            entries, **_with_trusted_authorship({}, trusted_authorship)
+        )
         return {"success": True, **result}
+    except ProjectMemoryPolicyError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.exception("Upsert batch failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2872,6 +2959,7 @@ async def rename_folder(request_body: RenameFolderRequest, request: Request):
     """Batch-rename a folder by updating the source prefix on all matching memories."""
     auth = _get_auth(request)
     _require_admin(auth)
+    trusted_authorship = _trusted_authorship(request)
     old_prefix = request_body.old_name
     new_prefix = request_body.new_name
 
@@ -2890,8 +2978,13 @@ async def rename_folder(request_body: RenameFolderRequest, request: Request):
     errors = 0
     for memory_id, new_source in targets:
         try:
-            memory.update_memory(memory_id=memory_id, source=new_source)
+            update_kwargs = {"memory_id": memory_id, "source": new_source}
+            memory.update_memory(
+                **_with_trusted_authorship(update_kwargs, trusted_authorship)
+            )
             updated += 1
+        except ProjectMemoryPolicyError as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except ValueError as e:
             logger.warning("Folder rename skip id=%d: %s", memory_id, e)
             errors += 1
@@ -3203,6 +3296,7 @@ async def import_memories_endpoint(
 ):
     """Import memories from NDJSON body."""
     auth = _get_auth(request)
+    trusted_authorship = _trusted_authorship(request)
 
     # Validate strategy
     valid_strategies = {"add", "smart", "smart+extract"}
@@ -3235,15 +3329,20 @@ async def import_memories_endpoint(
             filtered_lines.append(line)  # let engine handle bad JSON
 
     try:
+        import_kwargs = {
+            "strategy": strategy,
+            "source_remap": remap_tuple,
+            "create_backup": not no_backup,
+        }
         result = await run_in_threadpool(
             memory.import_memories,
             filtered_lines,
-            strategy=strategy,
-            source_remap=remap_tuple,
-            create_backup=not no_backup,
+            **_with_trusted_authorship(import_kwargs, trusted_authorship),
         )
         result["errors"].extend(auth_errors)
         return result
+    except ProjectMemoryPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         logger.error("Import failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -3255,6 +3354,7 @@ async def import_memories_endpoint(
 async def memory_extract(request_body: ExtractRequest, request: Request):
     """Queue extraction and return immediately."""
     auth = _get_auth(request)
+    trusted_authorship = _trusted_authorship(request)
     if request_body.source:
         _require_write(auth, request_body.source)
     else:
@@ -3279,6 +3379,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
             "started_at": _utc_now_iso(),
             "mode": "fallback_add",
             "auth_key_id": auth.key_id,
+            "trusted_authorship": trusted_authorship,
         }
         try:
             result = await run_in_threadpool(
@@ -3287,6 +3388,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
                 request_body.source,
                 request_body.context,
                 auth.prefixes,
+                **_with_trusted_authorship({}, trusted_authorship),
             )
             extract_jobs[job_id]["status"] = "completed"
             extract_jobs[job_id]["completed_at"] = _utc_now_iso()
@@ -3323,6 +3425,11 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
             extract_jobs[job_id]["status"] = "failed"
             extract_jobs[job_id]["completed_at"] = _utc_now_iso()
             extract_jobs[job_id]["error"] = str(e)
+            if isinstance(e, ProjectMemoryPolicyError):
+                extract_jobs[job_id]["result"] = {
+                    "error": "project_policy",
+                    "detail": str(e),
+                }
         finally:
             _trim_finished_extract_jobs()
 
@@ -3350,6 +3457,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
         "message_length": len(request_body.messages),
         "created_at": _utc_now_iso(),
         "auth_key_id": auth.key_id,
+        "trusted_authorship": trusted_authorship,
     }
     try:
         extract_queue.put_nowait(
@@ -3363,6 +3471,7 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
                     "debug": request_body.debug,
                     "profile": profile,
                     "document_at": request_body.document_at,
+                    "trusted_authorship": trusted_authorship,
                 },
             }
         )
@@ -3419,6 +3528,7 @@ async def memory_extract_job(job_id: str, request: Request):
 async def extract_commit(request_body: ExtractCommitRequest, request: Request):
     """Execute a subset of pre-extracted AUDN actions (from dry-run)."""
     auth = _get_auth(request)
+    trusted_authorship = _trusted_authorship(request)
     _require_write(auth, request_body.source)
 
     approved = [a for a in request_body.actions if a.get("approved")]
@@ -3434,16 +3544,22 @@ async def extract_commit(request_body: ExtractCommitRequest, request: Request):
         action["fact_index"] = i  # renumber to match dense facts list
 
     from llm_extract import execute_actions
-    result = execute_actions(
-        engine=memory,
-        actions=approved,
-        facts=facts,
-        source=request_body.source,
-        allowed_prefixes=auth.prefixes,
+    execute_kwargs = {
+        "engine": memory,
+        "actions": approved,
+        "facts": facts,
+        "source": request_body.source,
+        "allowed_prefixes": auth.prefixes,
         # Human-approved actions from a dry run bypass the novelty gate;
         # engine-side dedup remains the backstop.
-        novelty_gate=False,
-    )
+        "novelty_gate": False,
+    }
+    try:
+        result = execute_actions(
+            **_with_trusted_authorship(execute_kwargs, trusted_authorship)
+        )
+    except ProjectMemoryPolicyError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     return result
 
 
@@ -3451,18 +3567,24 @@ async def extract_commit(request_body: ExtractCommitRequest, request: Request):
 async def memory_supersede(request_body: SupersedeRequest, request: Request):
     """Replace a memory with an updated version (audit trail preserved)."""
     auth = _get_auth(request)
+    trusted_authorship = _trusted_authorship(request)
     _require_write(auth, request_body.source)
     if auth.prefixes is not None:
         existing = memory.get_memory(request_body.old_id)
         _require_write(auth, existing.get("source", ""))
     logger.info("Supersede: old_id=%d, source=%s", request_body.old_id, request_body.source)
     try:
+        supersede_kwargs = {
+            "old_id": request_body.old_id,
+            "new_text": request_body.new_text,
+            "source": request_body.source,
+        }
         result = memory.supersede(
-            old_id=request_body.old_id,
-            new_text=request_body.new_text,
-            source=request_body.source,
+            **_with_trusted_authorship(supersede_kwargs, trusted_authorship)
         )
         return {"success": True, **result}
+    except ProjectMemoryPolicyError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -3480,18 +3602,24 @@ class MergeRequest(BaseModel):
 async def merge_memories(request_body: MergeRequest, request: Request):
     """Merge multiple memories into one combined memory, archiving originals."""
     auth = _get_auth(request)
+    trusted_authorship = _trusted_authorship(request)
     for mid in request_body.ids:
         existing = memory.get_memory(mid)
         _require_write(auth, existing.get("source", ""))
     _require_write(auth, request_body.source)  # validate destination source
     try:
+        merge_kwargs = {
+            "ids": request_body.ids,
+            "merged_text": request_body.merged_text,
+            "source": request_body.source,
+        }
         result = memory.merge_memories(
-            ids=request_body.ids,
-            merged_text=request_body.merged_text,
-            source=request_body.source,
+            **_with_trusted_authorship(merge_kwargs, trusted_authorship)
         )
         _audit(request, "memory.merged", resource_id=str(result["id"]), source=request_body.source)
         return result
+    except ProjectMemoryPolicyError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -3666,16 +3794,23 @@ async def missed_memory(request_body: MissedMemoryRequest, request: Request):
     """Flag a memory that should have been captured by extraction."""
     auth = _get_auth(request)
     _require_write(auth, request_body.source)
+    trusted_authorship = _trusted_authorship(request)
 
     metadata: Dict[str, Any] = {"origin": "missed_capture"}
     if request_body.context:
         metadata["capture_context"] = request_body.context
 
-    ids = memory.add_memories(
-        texts=[request_body.text],
-        sources=[request_body.source],
-        metadata_list=[metadata],
-    )
+    add_kwargs = {
+        "texts": [request_body.text],
+        "sources": [request_body.source],
+        "metadata_list": [metadata],
+    }
+    try:
+        ids = memory.add_memories(
+            **_with_trusted_authorship(add_kwargs, trusted_authorship)
+        )
+    except ProjectMemoryPolicyError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     _missed_counts[request_body.source] = _missed_counts.get(request_body.source, 0) + 1
     _audit(request, "memory.missed", resource_id=str(ids[0]), source=request_body.source)

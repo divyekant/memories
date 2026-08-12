@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from auth_context import AuthContext
 
 
 @pytest.fixture
@@ -57,6 +58,34 @@ class TestSupersedeEndpoint:
         resp = tc.post("/memory/5/supersede", json={"text": "new fact"})
 
         assert resp.status_code == 404
+
+    def test_managed_supersede_passes_trusted_authorship(self, client, monkeypatch):
+        tc, mock = client
+        import app as app_module
+
+        mock.get_memory.return_value = {"id": 5, "text": "old", "source": "project/demo/decisions"}
+        mock.supersede.return_value = {
+            "old_id": 5, "new_id": 9, "previous_text": "old", "archived_old": True,
+        }
+        monkeypatch.setattr(
+            app_module,
+            "_get_auth",
+            lambda request: AuthContext(
+                role="read-write",
+                prefixes=["project/demo/"],
+                key_type="managed",
+                principal_id="alice",
+            ),
+        )
+
+        response = tc.post(
+            "/memory/5/supersede",
+            json={"text": "new fact", "source": "project/demo/decisions"},
+            headers={"X-Memories-Client": "codex"},
+        )
+
+        assert response.status_code == 200
+        assert mock.supersede.call_args.kwargs["trusted_authorship"].author == "alice"
 
 
 class TestConflictsPagination:

@@ -11,6 +11,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+from project_memory import TrustedAuthorship
+
 logger = logging.getLogger(__name__)
 
 CONSOLIDATION_PROMPT = """These {n} memories are about the same topic in the {project} project.
@@ -232,10 +234,23 @@ def consolidate_cluster(
             {"category": category, "consolidated_from": old_ids}
             for _ in new_texts
         ]
+        contributors: list[str] = []
+        for memory in cluster:
+            author = memory.get("author")
+            if isinstance(author, str) and author != "system":
+                contributors.append(author)
+            for contributor in memory.get("contributors", []) or []:
+                if isinstance(contributor, str):
+                    contributors.append(contributor)
+        trusted_authorship = TrustedAuthorship.system(
+            contributors=contributors,
+            source_memory_ids=old_ids,
+        )
         added = engine.add_memories(
             texts=new_texts,
             sources=[source] * len(new_texts),
             metadata_list=metadata_list,
+            trusted_authorship=trusted_authorship,
         )
         if not added:
             return {

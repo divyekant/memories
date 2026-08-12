@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from llm_provider import CompletionResult
+from project_memory import TrustedAuthorship
 
 
 def _cr(text, input_tokens=10, output_tokens=5):
@@ -474,6 +475,24 @@ class TestExecuteActions:
         # Verify API contract: sources must be a list, metadata includes category
         call_kwargs = mock_engine.add_memories.call_args
         assert call_kwargs.kwargs.get("metadata_list") == [{"category": "decision"}]
+
+    def test_execute_add_passes_trusted_authorship(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [100]
+        trusted = TrustedAuthorship.principal("alice", "codex")
+
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{"text": "project fact", "category": "decision"}],
+            source="project/demo/decisions",
+            trusted_authorship=trusted,
+        )
+
+        assert result["stored_count"] == 1
+        assert mock_engine.add_memories.call_args.kwargs["trusted_authorship"] == trusted
 
     def test_execute_add_passes_category_metadata(self):
         from llm_extract import execute_actions
