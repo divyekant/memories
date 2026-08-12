@@ -36,7 +36,8 @@ export async function install(ctx) {
   const alreadyPresent = new Set(settings.permissions?.allow ?? []);
   const addedRules = desiredRules.filter((rule) => !alreadyPresent.has(rule));
   settings = addPermissions(settings, desiredRules);
-  const { settings: withMcp, skipped } = registerMcp(settings, { url: ctx.url, apiKey: ctx.apiKey });
+  const { settings: withMcp, skipped } = registerMcp(settings, {
+    url: ctx.url, apiKey: ctx.apiKey, persistApiKey: ctx.persistApiKey !== false });
   await writeJson(p.settings, withMcp);
   if (skipped) ctx.log('MCP entry "memories" already present — left untouched');
 

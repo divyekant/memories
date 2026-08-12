@@ -6,15 +6,18 @@ import http.server
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
 
-HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "claude-code" / "hooks"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+HOOKS_DIR = REPO_ROOT / "integrations" / "claude-code" / "hooks"
 CODEX_HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "codex" / "hooks"
 QUERY_SCRIPT = HOOKS_DIR / "memory-query.sh"
 RECALL_SCRIPT = HOOKS_DIR / "memory-recall.sh"
@@ -3027,3 +3030,171 @@ def test_codex_memory_observe_nested_exec_reads_every_bracket_spelling(tmp_path:
         "mcp__Remote_Memories__memory_search",
         "mcp__memories__memory_count",
     ]
+
+
+def test_repo_settings_hooks_match_the_plugin_hooks_json() -> None:
+    """The repo wires the hooks itself for cloud sessions, which never install
+    the plugin — but that wiring is generated, not hand-maintained.
+
+    A cloud container starts from a fresh clone and performs no marketplace
+    fetch and no plugin install, even with `extraKnownMarketplaces` and
+    `enabledPlugins` committed, so none of the plugin's hook events register.
+    `.claude/settings.json` therefore points at the in-repo hook scripts via
+    $CLAUDE_PROJECT_DIR. Hand-copying 11 events would fork them from
+    hooks.json and drift the next time one is added or a timeout changes —
+    silently disabling a hook in cloud while local sessions, which run the
+    installed plugin, stay fine. This asserts the two agree.
+    """
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "render_project_hooks.py"), "--check"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_repo_settings_hook_commands_exist_and_are_executable() -> None:
+    """Every wired command must resolve inside the checkout and be runnable,
+    and must be QUOTED: a checkout under a path with whitespace would otherwise
+    word-split and every hook would fail with command-not-found. Parsing with
+    shlex is what makes the quoting observable — comparing the raw literal to a
+    Path cannot detect it.
+    """
+    settings = json.loads((REPO_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    commands = [
+        hook["command"]
+        for entries in settings["hooks"].values()
+        for entry in entries
+        for hook in entry.get("hooks", [])
+    ]
+    assert commands, "no hook commands wired"
+
+    for command in commands:
+        assert command.startswith('"${CLAUDE_PROJECT_DIR}/'), f"unquoted path: {command}"
+        argv = shlex.split(command)
+        assert len(argv) == 2, f"expected launcher + hook name: {command}"
+        launcher, hook_name = argv
+        path = REPO_ROOT / launcher.replace("${CLAUDE_PROJECT_DIR}/", "")
+        assert path.is_file() and os.access(path, os.X_OK), f"bad launcher: {launcher}"
+        target = path.parent / hook_name
+        assert target.is_file() and os.access(target, os.X_OK), f"bad hook: {hook_name}"
+
+
+def test_repo_hooks_stand_down_when_the_plugin_is_installed(tmp_path: Path) -> None:
+    """Claude Code runs ALL matching hooks. Locally the plugin is installed and
+    already registers these, so an ungated repo wiring fires everything twice:
+    recall injected twice, telemetry double-counted, and two concurrent
+    Stop/SubagentStop extractions racing to write the same memories. The hook
+    scripts have no invocation-level locking, so the launcher must gate.
+    """
+    launcher = REPO_ROOT / "mcp-server" / "assets" / "claude-code" / "hooks" / "repo-hook.sh"
+    payload = json.dumps({"cwd": str(REPO_ROOT), "session_id": "gate"})
+
+    config = tmp_path / "claude"
+    (config / "plugins").mkdir(parents=True)
+    (config / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {"memories@dk-marketplace": [{"scope": "user"}]}}),
+        encoding="utf-8",
+    )
+
+    installed = subprocess.run(
+        ["bash", str(launcher), "memory-recall.sh"],
+        input=payload, capture_output=True, text=True,
+        env={**os.environ, "CLAUDE_CONFIG_DIR": str(config), "MEMORIES_ENABLED": "1"},
+    )
+    assert installed.returncode == 0, installed.stderr
+    assert installed.stdout.strip() == "", "stood down but still produced output"
+
+    # Same launcher, no plugin manifest -> it must actually run the hook.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    absent = subprocess.run(
+        ["bash", str(launcher), "memory-recall.sh"],
+        input=payload, capture_output=True, text=True,
+        env={**os.environ, "CLAUDE_CONFIG_DIR": str(empty), "MEMORIES_ENABLED": "1",
+             "MEMORIES_URL": "http://127.0.0.1:1", "MEMORIES_API_KEY": "x"},
+    )
+    assert absent.returncode == 0, absent.stderr
+    assert "hookSpecificOutput" in absent.stdout, "gate blocked the hook when no plugin present"
+
+
+def test_repo_hooks_stand_down_for_installer_written_hooks_too(tmp_path: Path) -> None:
+    """The gate must key on "these hooks are already registered", not "the
+    plugin is installed".
+
+    A cloud environment's setup script would wire them with
+    `memories-mcp init`, which writes user-scope hooks into
+    ~/.claude/settings.json and ~/.claude/hooks/memory/ — a different location
+    from the plugin registry. Checking only the registry would let the repo
+    wiring double-fire alongside an installer-provisioned container, which is
+    the very environment this wiring exists to serve.
+    """
+    launcher = REPO_ROOT / "mcp-server" / "assets" / "claude-code" / "hooks" / "repo-hook.sh"
+    payload = json.dumps({"cwd": str(REPO_ROOT), "session_id": "gate"})
+
+    def run(config: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", str(launcher), "memory-recall.sh"],
+            input=payload, capture_output=True, text=True,
+            env={**os.environ, "CLAUDE_CONFIG_DIR": str(config), "MEMORIES_ENABLED": "1",
+                 "MEMORIES_URL": "http://127.0.0.1:1", "MEMORIES_API_KEY": "x"},
+        )
+
+    installer = tmp_path / "installer"
+    installer.mkdir()
+    (installer / "settings.json").write_text(json.dumps({"hooks": {"SessionStart": [
+        {"matcher": "", "hooks": [{"type": "command",
+                                   "command": "/root/.claude/hooks/memory/memory-recall.sh"}]}]}}),
+        encoding="utf-8")
+    assert run(installer).stdout.strip() == "", "did not stand down for installer-written hooks"
+
+    # Must not over-detect: someone else's hooks are not ours.
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    (foreign / "settings.json").write_text(json.dumps({"hooks": {"Stop": [
+        {"matcher": "", "hooks": [{"type": "command", "command": "/usr/local/bin/other.sh"}]}]}}),
+        encoding="utf-8")
+    assert "hookSpecificOutput" in run(foreign).stdout, "stood down for unrelated hooks"
+
+
+def test_repo_wiring_omits_the_config_guard() -> None:
+    """memory-config-guard.sh runs without CLAUDE_PLUGIN_ROOT under repo wiring,
+    takes its legacy path, and checks only ~/.claude/settings.json for the hook
+    names — which now live in the PROJECT settings. Wiring it would emit a false
+    "hooks may be missing" warning telling the user to rerun the installer.
+    """
+    settings = json.loads((REPO_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert "ConfigChange" not in settings["hooks"]
+    plugin_hooks = json.loads(
+        (REPO_ROOT / "mcp-server" / "assets" / "claude-code" / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )["hooks"]
+    assert "ConfigChange" in plugin_hooks, "exclusion is only meaningful while the plugin wires it"
+
+
+def test_env_file_does_not_clobber_environment_supplied_url(tmp_path: Path) -> None:
+    """An explicitly-set MEMORIES_URL must beat ~/.config/memories/env.
+
+    A cloud environment supplies MEMORIES_URL as a real env var, but its setup
+    script runs `memories-mcp init` BEFORE those vars exist, so the installer
+    falls back to the localhost default and writes it into the env file.
+    Sourcing that file plainly overwrote the correct URL with a dead one and
+    the session reported the backend unreachable — observed in a real cloud
+    container. Two distinct dead ports make it unambiguous which one won.
+    """
+    home = tmp_path / "home"
+    (home / ".config" / "memories").mkdir(parents=True)
+    (home / ".config" / "memories" / "env").write_text(
+        'MEMORIES_URL="http://127.0.0.1:9102"\n', encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        ["bash", str(HOOKS_DIR / "memory-recall.sh")],
+        input=json.dumps({"cwd": "/tmp/proj", "session_id": "prec"}),
+        capture_output=True, text=True,
+        env={**os.environ, "HOME": str(home), "MEMORIES_URL": "http://127.0.0.1:9101",
+             "MEMORIES_ENABLED": "1", "MEMORIES_HOOK_BUDGET_MS": "3000"},
+    )
+    assert result.returncode == 0, result.stderr
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "9101" in context, f"env-supplied URL lost to the file: {context[:200]}"
+    assert "9102" not in context, "env file clobbered the environment"
