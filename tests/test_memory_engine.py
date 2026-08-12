@@ -7,6 +7,7 @@ import pytest
 from pathlib import Path
 
 from memory_engine import MemoryEngine
+from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
 
 
 @pytest.fixture
@@ -68,6 +69,68 @@ class TestAddAndSearch:
         # Backward compat alias
         assert "timestamp" in meta
         assert meta["timestamp"] == meta["created_at"]
+
+    def test_project_source_requires_trusted_authorship(self, engine):
+        with pytest.raises(ProjectMemoryPolicyError):
+            engine.add_memories(
+                texts=["shared fact"],
+                sources=["project/fplguru/knowledge"],
+            )
+
+        assert engine.metadata == []
+        assert engine.qdrant_store.count() == 0
+
+    def test_client_cannot_override_trusted_authorship_metadata(self, engine):
+        ids = engine.add_memories(
+            texts=["shared fact"],
+            sources=["project/fplguru/knowledge"],
+            metadata_list=[
+                {
+                    "author": "mallory",
+                    "contributors": ["mallory"],
+                    "origin_client": "  spoofed-client ",
+                    "custom": "kept",
+                }
+            ],
+            trusted_authorship=TrustedAuthorship.principal("alice", " Codex "),
+        )
+
+        meta = engine.metadata[ids[0]]
+        assert meta["author"] == "alice"
+        assert meta["origin_client"] == "codex"
+        assert "contributors" not in meta
+        assert meta["custom"] == "kept"
+
+    def test_system_authorship_stamps_contributors_and_source_memory_ids(self, engine):
+        ids = engine.add_memories(
+            texts=["derived shared fact"],
+            sources=["project/fplguru/knowledge"],
+            metadata_list=[{"author": "mallory", "origin_client": "bad"}],
+            trusted_authorship=TrustedAuthorship.system(
+                contributors=["alice", "bob"],
+                source_memory_ids=[11, 12],
+                origin_client="hook",
+            ),
+        )
+
+        meta = engine.metadata[ids[0]]
+        assert meta["author"] == "system"
+        assert meta["contributors"] == ["alice", "bob"]
+        assert meta["source_memory_ids"] == [11, 12]
+        assert meta["origin_client"] == "hook"
+
+    def test_legacy_source_keeps_legacy_write_behavior(self, engine):
+        ids = engine.add_memories(
+            texts=["legacy-looking fact"],
+            sources=["project/fplguru/custom"],
+            metadata_list=[{"origin_client": "  unknown-client "}],
+        )
+
+        meta = engine.metadata[ids[0]]
+        assert meta["source"] == "project/fplguru/custom"
+        assert meta["origin_client"] == "other"
+        assert "author" not in meta
+        assert "contributors" not in meta
 
 
 class TestHybridSearch:

@@ -27,6 +27,13 @@ from event_bus import event_bus
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
+from project_memory import (
+    RESERVED_METADATA_FIELDS,
+    ProjectMemoryPolicyError,
+    TrustedAuthorship,
+    is_project_source,
+    normalize_origin_client,
+)
 
 logger = logging.getLogger("memories")
 
@@ -654,6 +661,7 @@ class MemoryEngine:
         deduplicate: bool = False,
         dedup_threshold: float = 0.90,
         _chunk_size: int = 100,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> List[int]:
         """Add new memories to Qdrant + metadata (thread-safe).
 
@@ -662,6 +670,16 @@ class MemoryEngine:
         """
         if not texts:
             return []
+
+        if trusted_authorship is not None and not isinstance(
+            trusted_authorship, TrustedAuthorship
+        ):
+            raise ProjectMemoryPolicyError("trusted_authorship must be a TrustedAuthorship value")
+
+        if any(is_project_source(source) for source in sources) and trusted_authorship is None:
+            raise ProjectMemoryPolicyError(
+                "project-namespace memories require trusted principal or system authorship"
+            )
 
         keys = [self._entity_key(source) for source in sources]
         with self._entity_locks.acquire_many(keys):
@@ -702,7 +720,18 @@ class MemoryEngine:
 
                 start_id = self._next_id
                 added_ids = []
-                _reserved_add = {"id", "text", "source", "timestamp", "created_at", "updated_at"}
+                _reserved_add = {
+                    "id",
+                    "text",
+                    "source",
+                    "timestamp",
+                    "created_at",
+                    "updated_at",
+                    *RESERVED_METADATA_FIELDS,
+                }
+                trusted_metadata = (
+                    trusted_authorship.as_metadata() if trusted_authorship else {}
+                )
 
                 # Build metadata + points in chunks and upsert per chunk
                 for chunk_start in range(0, len(texts), _chunk_size):
@@ -713,6 +742,10 @@ class MemoryEngine:
                         now = datetime.now(timezone.utc).isoformat()
                         extra = metadata_list[i] if metadata_list and i < len(metadata_list) else {}
                         filtered_extra = {k: v for k, v in extra.items() if k not in _reserved_add}
+                        if trusted_authorship is None and "origin_client" in extra:
+                            filtered_extra["origin_client"] = normalize_origin_client(
+                                extra.get("origin_client")
+                            )
                         meta = {
                             "id": mem_id,
                             "text": texts[i],
@@ -721,6 +754,7 @@ class MemoryEngine:
                             "updated_at": now,
                             "timestamp": now,  # backward compat alias
                             **filtered_extra,
+                            **trusted_metadata,
                         }
                         self.metadata.append(meta)
                         points.append(
