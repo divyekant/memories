@@ -1429,8 +1429,13 @@ _search_memories_multi() {
 
   local body
   if [ -n "$prefix" ]; then
-    body=$(jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
-      '{query: $q, source_prefix: $p, k: $k, hybrid: true, threshold: $t}')
+    if [ "${PROJECT_CONTEXT_ACTIVE:-false}" = "true" ]; then
+      body=$(jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
+        '{query: $q, source_prefix: $p, source_boundary: true, k: $k, hybrid: true, threshold: $t}')
+    else
+      body=$(jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
+        '{query: $q, source_prefix: $p, k: $k, hybrid: true, threshold: $t}')
+    fi
   else
     body=$(jq -nc --arg q "$query" --argjson k "$limit" --argjson t "$threshold" \
       '{query: $q, k: $k, hybrid: true, threshold: $t}')

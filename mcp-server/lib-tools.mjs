@@ -679,7 +679,7 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       ...(projectContext.legacySourcePrefixes || []),
     ];
     const responses = await Promise.all(prefixes.map(async (prefix) => {
-      const scopedBody = { ...body, source_prefix: prefix };
+      const scopedBody = { ...body, source_prefix: prefix, source_boundary: true };
       const data = await memoriesRequest("/search", {
         method: "POST",
         body: JSON.stringify(scopedBody),

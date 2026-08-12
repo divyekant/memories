@@ -213,6 +213,32 @@ class TestConsolidation:
         engine.delete_memory.assert_not_called()
         engine.add_memories.assert_not_called()
 
+    def test_consolidate_omits_unverified_legacy_provenance(self):
+        from consolidator import consolidate_cluster
+
+        cluster = [
+            {
+                **_make_memory(0, "Legacy fact A", source="codex/acme"),
+                "author": "mallory",
+                "contributors": ["mallory", "alice"],
+            },
+            {
+                **_make_memory(1, "Legacy fact B", source="codex/acme"),
+                "author": "alice",
+            },
+        ]
+        provider = MagicMock()
+        provider.complete.return_value = _cr(json.dumps(["Merged legacy fact"]))
+        engine = MagicMock()
+        engine.add_memories.return_value = [100]
+
+        consolidate_cluster(provider, engine, cluster, dry_run=False)
+
+        trusted = engine.add_memories.call_args.kwargs["trusted_authorship"]
+        assert trusted.author == "system"
+        assert trusted.contributors == ()
+        assert trusted.source_memory_ids == (0, 1)
+
     def test_mixed_source_cluster_is_rejected_before_mutation(self):
         from consolidator import consolidate_cluster
 

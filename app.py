@@ -1350,6 +1350,10 @@ class SearchRequest(BaseModel):
         max_length=500,
         description="Optional source path prefix filter",
     )
+    source_boundary: bool = Field(
+        False,
+        description="Match source_prefix only at an exact path boundary",
+    )
     recency_weight: float = Field(
         0.0,
         ge=0.0,
@@ -2101,7 +2105,7 @@ async def search(request_body: SearchRequest, request: Request):
                 [m["id"] for m in getattr(memory, "metadata", [])]
             )
         if request_body.hybrid:
-            results = memory.hybrid_search(
+            search_kwargs = dict(
                 query=request_body.query,
                 k=request_body.k,
                 threshold=request_body.threshold,
@@ -2117,8 +2121,11 @@ async def search(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
+            if request_body.source_boundary:
+                search_kwargs["source_boundary"] = True
+            results = memory.hybrid_search(**search_kwargs)
         else:
-            results = memory.search(
+            search_kwargs = dict(
                 query=request_body.query,
                 k=request_body.k,
                 threshold=request_body.threshold,
@@ -2127,6 +2134,9 @@ async def search(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
+            if request_body.source_boundary:
+                search_kwargs["source_boundary"] = True
+            results = memory.search(**search_kwargs)
         results = annotate_relative_scores(auth.filter_results(results))
         result_count = len(results)
         _log_usage_event(request, "search", request_body.source)
@@ -2175,7 +2185,7 @@ async def search_explain(request_body: SearchRequest, request: Request):
             fb_scores = usage_tracker.get_feedback_scores(
                 [m["id"] for m in getattr(memory, "metadata", [])]
             )
-        explain_result = memory.hybrid_search_explain(
+        search_kwargs = dict(
             query=request_body.query,
             k=request_body.k,
             threshold=request_body.threshold,
@@ -2191,6 +2201,9 @@ async def search_explain(request_body: SearchRequest, request: Request):
             since=request_body.since,
             until=request_body.until,
         )
+        if request_body.source_boundary:
+            search_kwargs["source_boundary"] = True
+        explain_result = memory.hybrid_search_explain(**search_kwargs)
         # Apply auth filtering to results and track how many were removed
         raw_results = explain_result["results"]
         filtered_results = annotate_relative_scores(auth.filter_results(raw_results))
@@ -2240,7 +2253,7 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 [m["id"] for m in getattr(memory, "metadata", [])]
             )
         if request_body.hybrid:
-            results = memory.hybrid_search(
+            search_kwargs = dict(
                 query=request_body.query,
                 k=request_body.k,
                 threshold=request_body.threshold,
@@ -2256,8 +2269,11 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
+            if request_body.source_boundary:
+                search_kwargs["source_boundary"] = True
+            results = memory.hybrid_search(**search_kwargs)
         else:
-            results = memory.search(
+            search_kwargs = dict(
                 query=request_body.query,
                 k=request_body.k,
                 threshold=request_body.threshold,
@@ -2266,6 +2282,9 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
+            if request_body.source_boundary:
+                search_kwargs["source_boundary"] = True
+            results = memory.search(**search_kwargs)
         results = annotate_relative_scores(auth.filter_results(results))
         from evidence_packet import build_evidence_packet
 
@@ -2290,7 +2309,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
         outputs = []
         for item in request_body.queries:
             if item.hybrid:
-                results = memory.hybrid_search(
+                search_kwargs = dict(
                     query=item.query,
                     k=item.k,
                     threshold=item.threshold,
@@ -2303,8 +2322,11 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     since=item.since,
                     until=item.until,
                 )
+                if item.source_boundary:
+                    search_kwargs["source_boundary"] = True
+                results = memory.hybrid_search(**search_kwargs)
             else:
-                results = memory.search(
+                search_kwargs = dict(
                     query=item.query,
                     k=item.k,
                     threshold=item.threshold,
@@ -2312,6 +2334,9 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     since=item.since,
                     until=item.until,
                 )
+                if item.source_boundary:
+                    search_kwargs["source_boundary"] = True
+                results = memory.search(**search_kwargs)
             results = annotate_relative_scores(auth.filter_results(results))
             batch_result_count = len(results)
             for rank, r in enumerate(results, 1):

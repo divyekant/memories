@@ -62,6 +62,24 @@ def test_search_accepts_source_prefix_and_passes_to_engine(client):
     )
 
 
+def test_search_passes_opt_in_source_boundary_to_engine(client):
+    test_client, mock_engine = client
+    response = test_client.post(
+        "/search",
+        json={
+            "query": "shared",
+            "k": 3,
+            "hybrid": False,
+            "source_prefix": "project/acme",
+            "source_boundary": True,
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert mock_engine.search.call_args.kwargs["source_boundary"] is True
+
+
 def test_delete_batch_endpoint_deletes_multiple_ids(client):
     test_client, _ = client
     response = test_client.post(

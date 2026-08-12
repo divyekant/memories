@@ -271,3 +271,33 @@ class TestMaintenanceDeduplicationIsolation:
         assert engine._id_exists(project_id)
         assert engine._id_exists(private_id)
         assert not engine._id_exists(private_duplicate_id)
+
+
+class TestBoundaryScopedSearch:
+    def test_boundary_scope_fetches_valid_project_after_higher_ranked_sibling(self, engine):
+        trusted = TrustedAuthorship.principal("alice")
+        sibling_id, project_id = engine.add_memories(
+            [T78, T79],
+            ["project/acme-extra/knowledge", "project/acme/knowledge"],
+            deduplicate=False,
+            trusted_authorship=trusted,
+        )
+
+        vector = engine.search(
+            T78,
+            k=1,
+            source_prefix="project/acme",
+            source_boundary=True,
+        )
+        assert [item["id"] for item in vector] == [project_id]
+
+        hybrid = engine.hybrid_search(
+            T78,
+            k=2,
+            source_prefix="project/acme",
+            source_boundary=True,
+            graph_weight=0,
+        )
+        assert hybrid
+        assert {item["source"] for item in hybrid} == {"project/acme/knowledge"}
+        assert sibling_id not in {item["id"] for item in hybrid}

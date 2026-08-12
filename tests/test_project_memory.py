@@ -77,7 +77,11 @@ def test_trusted_principal_authorship_stamps_server_identity():
 
     assert trusted.author == "alice"
     assert trusted.origin_client == "codex"
-    assert trusted.as_metadata() == {"author": "alice", "origin_client": "codex"}
+    assert trusted.as_metadata() == {
+        "author": "alice",
+        "origin_client": "codex",
+        "authorship_verified": True,
+    }
 
 
 def test_trusted_system_authorship_normalizes_contributors_and_source_ids():
@@ -94,6 +98,7 @@ def test_trusted_system_authorship_normalizes_contributors_and_source_ids():
         "contributors": ["alice", "bob"],
         "source_memory_ids": [7, 9],
         "origin_client": "other",
+        "authorship_verified": True,
     }
 
 

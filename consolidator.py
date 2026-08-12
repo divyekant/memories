@@ -255,6 +255,11 @@ def consolidate_cluster(
         ]
         contributors: list[str] = []
         for memory in cluster:
+            # Pre-upgrade authorship fields were caller-controlled. Only
+            # provenance stamped by the trusted write boundary may flow into
+            # a new server-authored consolidated record.
+            if memory.get("authorship_verified") is not True:
+                continue
             author = memory.get("author")
             if isinstance(author, str) and author != "system":
                 contributors.append(author)

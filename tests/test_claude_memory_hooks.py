@@ -1919,6 +1919,11 @@ def test_active_project_hooks_use_only_authenticated_legacy_prefixes(
         "person/alice/shared-demo",
         "codex/shared-demo",
     ]
+    assert all(
+        call["body"].get("source_boundary") is True
+        for call in calls
+        if str(call["url"]).endswith("/search")
+    )
     assert "claude-code/shared-demo" not in search_prefixes
     assert "learning/shared-demo" not in search_prefixes
     assert "wip/shared-demo" not in search_prefixes

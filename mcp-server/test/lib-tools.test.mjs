@@ -247,7 +247,9 @@ test('active memory_search routes project and private namespaces before authoriz
     activeSearches += 1;
     maxActiveSearches = Math.max(maxActiveSearches, activeSearches);
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const result = responses[body.source_prefix] || [];
+    const result = body.source_prefix === 'project/shared-demo' && body.source_boundary !== true
+      ? responses['project/shared-demo'].filter((item) => item.source.includes('shared-demo-extra'))
+      : (responses[body.source_prefix] || []);
     activeSearches -= 1;
     return new Response(JSON.stringify({ results: result, count: result.length }), { status: 200 });
   };
@@ -268,6 +270,10 @@ test('active memory_search routes project and private namespaces before authoriz
       'codex/shared-demo',
       'claude-code/shared-demo',
     ]);
+    assert.equal(
+      calls.filter((call) => call.url.endsWith('/search')).every((call) => call.body.source_boundary === true),
+      true,
+    );
     assert.ok(maxActiveSearches > 1, 'project prefix requests must run concurrently');
     assert.equal(searchPrefixes.includes(''), false);
     const text = result.content.map((item) => item.text || '').join('\n');

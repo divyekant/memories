@@ -1860,12 +1860,19 @@ class MemoryEngine:
         """Return sorted list of unique source values across all memories."""
         return sorted({str(m.get("source", "")) for m in self.metadata})
 
+    @staticmethod
+    def _source_matches_scope(source: str, prefix: str, boundary: bool = False) -> bool:
+        if boundary:
+            return source == prefix or source.startswith(prefix + "/")
+        return source.startswith(prefix)
+
     def _build_source_filter(
         self,
         source_prefix: Optional[str] = None,
         allowed_prefixes: Optional[List[str]] = None,
         include_archived: bool = False,
         source_exact: Optional[str] = None,
+        source_boundary: bool = False,
     ) -> Optional[qdrant_models.Filter]:
         """Build a Qdrant filter from source prefix, auth prefixes, and archive state.
 
@@ -1885,7 +1892,10 @@ class MemoryEngine:
                     candidates = [s for s in candidates if s.startswith(source_prefix)]
             elif source_prefix:
                 # Narrow by source_prefix first
-                candidates = [s for s in all_sources if s.startswith(source_prefix)]
+                candidates = [
+                    s for s in all_sources
+                    if self._source_matches_scope(s, source_prefix, source_boundary)
+                ]
             else:
                 candidates = all_sources
 
@@ -1938,6 +1948,7 @@ class MemoryEngine:
         since: Optional[str] = None,
         until: Optional[str] = None,
         source_exact: Optional[str] = None,
+        source_boundary: bool = False,
     ) -> List[Dict[str, Any]]:
         """Vector-only search for similar memories."""
         if not self.metadata:
@@ -1956,6 +1967,7 @@ class MemoryEngine:
         query_filter = self._build_source_filter(
             source_prefix=source_prefix,
             source_exact=source_exact,
+            source_boundary=source_boundary,
             include_archived=include_archived,
         )
 
@@ -1976,7 +1988,7 @@ class MemoryEngine:
             meta = self._get_meta_by_id(mem_id)
             source = str(meta.get("source", ""))
             # Defense-in-depth: still verify source prefix in Python
-            if source_prefix and not source.startswith(source_prefix):
+            if source_prefix and not self._source_matches_scope(source, source_prefix, source_boundary):
                 continue
             if source_exact is not None and source != source_exact:
                 continue
@@ -2069,6 +2081,7 @@ class MemoryEngine:
         source_prefix: Optional[str],
         include_archived: bool,
         source_exact: Optional[str] = None,
+        source_boundary: bool = False,
     ) -> Dict[int, Set[int]]:
         """Filter adjacency to visible subgraph.
 
@@ -2080,7 +2093,9 @@ class MemoryEngine:
 
         visible = set()
         for m in self.metadata:
-            if source_prefix and not m.get("source", "").startswith(source_prefix):
+            if source_prefix and not self._source_matches_scope(
+                str(m.get("source", "")), source_prefix, source_boundary
+            ):
                 continue
             if source_exact is not None and m.get("source", "") != source_exact:
                 continue
@@ -2104,6 +2119,7 @@ class MemoryEngine:
         source_prefix: Optional[str],
         include_archived: bool,
         source_exact: Optional[str] = None,
+        source_boundary: bool = False,
     ) -> tuple:
         """Expand search results via PPR on scope-filtered adjacency graph.
 
@@ -2131,6 +2147,7 @@ class MemoryEngine:
             source_prefix,
             include_archived,
             source_exact=source_exact,
+            source_boundary=source_boundary,
         )
 
         # Edge counts for info
@@ -2304,6 +2321,7 @@ class MemoryEngine:
         since: Optional[str] = None,
         until: Optional[str] = None,
         source_exact: Optional[str] = None,
+        source_boundary: bool = False,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -2324,6 +2342,7 @@ class MemoryEngine:
             threshold=threshold,
             source_prefix=source_prefix,
             source_exact=source_exact,
+            source_boundary=source_boundary,
             include_archived=include_archived,
             since=since,
             until=until,
@@ -2345,7 +2364,11 @@ class MemoryEngine:
                         )
                         and (
                             not source_prefix
-                            or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                            or self._source_matches_scope(
+                                self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", ""),
+                                source_prefix,
+                                source_boundary,
+                            )
                         )
                     )
                     and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
@@ -2467,6 +2490,7 @@ class MemoryEngine:
             source_prefix=source_prefix,
             include_archived=include_archived,
             source_exact=source_exact,
+            source_boundary=source_boundary,
         )
 
         return self._merge_graph_results(
@@ -2483,6 +2507,7 @@ class MemoryEngine:
         since: Optional[str] = None,
         until: Optional[str] = None,
         source_exact: Optional[str] = None,
+        source_boundary: bool = False,
     ) -> List[Dict[str, Any]]:
         """Vector search without reinforcement side effects (for explain/debug)."""
         if not self.metadata:
@@ -2492,6 +2517,7 @@ class MemoryEngine:
         query_filter = self._build_source_filter(
             source_prefix=source_prefix,
             source_exact=source_exact,
+            source_boundary=source_boundary,
             include_archived=include_archived,
         )
         hits = self.qdrant_store.search(
@@ -2505,7 +2531,7 @@ class MemoryEngine:
                 continue
             meta = self._get_meta_by_id(mem_id)
             source = str(meta.get("source", ""))
-            if source_prefix and not source.startswith(source_prefix):
+            if source_prefix and not self._source_matches_scope(source, source_prefix, source_boundary):
                 continue
             if source_exact is not None and source != source_exact:
                 continue
@@ -2536,6 +2562,7 @@ class MemoryEngine:
         since: Optional[str] = None,
         until: Optional[str] = None,
         source_exact: Optional[str] = None,
+        source_boundary: bool = False,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -2575,6 +2602,7 @@ class MemoryEngine:
             threshold=threshold,
             source_prefix=source_prefix,
             source_exact=source_exact,
+            source_boundary=source_boundary,
             include_archived=include_archived,
             since=since,
             until=until,
@@ -2606,7 +2634,11 @@ class MemoryEngine:
                         )
                         and (
                             not source_prefix
-                            or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                            or self._source_matches_scope(
+                                self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", ""),
+                                source_prefix,
+                                source_boundary,
+                            )
                         )
                     )
                     and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
@@ -2657,7 +2689,11 @@ class MemoryEngine:
                     )
                     and (
                         not source_prefix
-                        or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                        or self._source_matches_scope(
+                            self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", ""),
+                            source_prefix,
+                            source_boundary,
+                        )
                     )
                 )
             ])
@@ -2762,6 +2798,7 @@ class MemoryEngine:
                 source_prefix=source_prefix,
                 include_archived=include_archived,
                 source_exact=source_exact,
+                source_boundary=source_boundary,
             )
 
             results = self._merge_graph_results(
