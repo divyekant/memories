@@ -18,7 +18,11 @@ from typing import Optional, List
 from auth_context import source_matches_prefixes
 from shadow_runner import build_shadow_providers, fanout_shadow_async
 from transcript_hygiene import clean_transcript, redact_secrets
-from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
+from project_memory import (
+    ProjectMemoryPolicyError,
+    TrustedAuthorship,
+    validate_project_write,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -726,6 +730,7 @@ def execute_actions(
                 if not source_matches_prefixes(source, allowed_prefixes):
                     raise PermissionError(f"source not authorized for update: {source}")
                 if old_id is not None:
+                    validate_project_write(new_text, source, trusted_authorship)
                     # Archive old memory instead of deleting (version preservation)
                     archive_kwargs = {
                         "archived": True,

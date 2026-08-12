@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from llm_provider import CompletionResult
-from project_memory import TrustedAuthorship
+from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
 
 
 def _cr(text, input_tokens=10, output_tokens=5):
@@ -493,6 +493,33 @@ class TestExecuteActions:
 
         assert result["stored_count"] == 1
         assert mock_engine.add_memories.call_args.kwargs["trusted_authorship"] == trusted
+
+    def test_execute_update_rejects_project_credential_before_archiving(self, tmp_path):
+        from llm_extract import execute_actions
+        from memory_engine import MemoryEngine
+
+        engine = MemoryEngine(data_dir=str(tmp_path))
+        trusted = TrustedAuthorship.principal("alice", "codex")
+        old_id = engine.add_memories(
+            ["old decision"],
+            ["project/demo/decisions"],
+            trusted_authorship=trusted,
+        )[0]
+        secret = "Production token is ghp_abcdefghijklmnopqrstuvwxyz123456"
+
+        with pytest.raises(ProjectMemoryPolicyError, match="credential-shaped"):
+            execute_actions(
+                engine,
+                [{"action": "UPDATE", "fact_index": 0, "old_id": old_id, "new_text": secret}],
+                [{"text": secret, "category": "decision"}],
+                source="project/demo/decisions",
+                trusted_authorship=trusted,
+            )
+
+        old = engine._get_meta_by_id(old_id)
+        assert old["text"] == "old decision"
+        assert old.get("archived") is not True
+        assert engine.qdrant_store.count() == 1
 
     def test_execute_add_passes_category_metadata(self):
         from llm_extract import execute_actions

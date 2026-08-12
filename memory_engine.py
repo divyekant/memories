@@ -27,13 +27,13 @@ from event_bus import event_bus
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
-from transcript_hygiene import redact_secrets
 from project_memory import (
     RESERVED_METADATA_FIELDS,
     ProjectMemoryPolicyError,
     TrustedAuthorship,
     is_project_source,
     normalize_origin_client,
+    validate_project_write,
 )
 
 logger = logging.getLogger("memories")
@@ -85,18 +85,8 @@ def _validate_project_write(
     source: Any,
     trusted_authorship: Optional[TrustedAuthorship],
 ) -> None:
-    """Enforce exact project write policy before any embedding/storage work."""
-    if not is_project_source(source):
-        return
-    if trusted_authorship is None:
-        raise ProjectMemoryPolicyError(
-            "project-namespace memories require trusted principal or system authorship"
-        )
-    _, redacted_types = redact_secrets(str(text or ""))
-    if redacted_types:
-        raise ProjectMemoryPolicyError(
-            "project-namespace memories cannot contain credential-shaped values"
-        )
+    """Backward-compatible local alias for the shared project policy gate."""
+    validate_project_write(text, source, trusted_authorship)
 
 
 def annotate_relative_scores(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1431,8 +1421,9 @@ class MemoryEngine:
                 raise ProjectMemoryPolicyError(
                     "project-namespace memories require trusted principal or system authorship"
                 )
-            if text is not None:
-                _validate_project_write(text, target_source, trusted_authorship)
+            if target_is_project:
+                effective_text = text if text is not None else current.get("text", "")
+                _validate_project_write(effective_text, target_source, trusted_authorship)
         updated_fields: List[str] = []
 
         # Fast path: source-only change skips backup + re-embed

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import re
 from typing import Any, Iterable, Optional
 
+from transcript_hygiene import redact_secrets
+
 
 PROJECT_KINDS = frozenset({"decisions", "knowledge", "state", "operations"})
 ALLOWED_ORIGIN_CLIENTS = frozenset(
@@ -208,3 +210,22 @@ class TrustedAuthorship:
             metadata["contributors"] = list(self.contributors)
             metadata["source_memory_ids"] = list(self.source_memory_ids)
         return metadata
+
+
+def validate_project_write(
+    text: Any,
+    source: Any,
+    trusted_authorship: Optional[TrustedAuthorship],
+) -> None:
+    """Validate an exact project write before any mutation or storage work."""
+    if not is_project_source(source):
+        return
+    if trusted_authorship is None:
+        raise ProjectMemoryPolicyError(
+            "project-namespace memories require trusted principal or system authorship"
+        )
+    _, redacted_types = redact_secrets(str(text or ""))
+    if redacted_types:
+        raise ProjectMemoryPolicyError(
+            "project-namespace memories cannot contain credential-shaped values"
+        )

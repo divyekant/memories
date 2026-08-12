@@ -174,6 +174,25 @@ def test_source_move_into_project_requires_and_applies_trusted_authorship(engine
     assert meta["author"] == "alice"
 
 
+def test_source_only_move_rejects_existing_credential_before_mutation(engine):
+    secret = "Production token is ghp_abcdefghijklmnopqrstuvwxyz123456"
+    memory_id = engine.add_memories([secret], ["legacy/source"])[0]
+    before = dict(engine._get_meta_by_id(memory_id))
+    before_count = engine.qdrant_store.count()
+
+    with pytest.raises(ProjectMemoryPolicyError, match="credential-shaped"):
+        engine.update_memory(
+            memory_id,
+            source="project/fplguru/knowledge",
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+        )
+
+    assert engine._get_meta_by_id(memory_id) == before
+    assert engine.qdrant_store.count() == before_count
+    assert engine._get_meta_by_id(memory_id)["source"] == "legacy/source"
+    assert "author" not in engine._get_meta_by_id(memory_id)
+
+
 def test_upsert_replacement_applies_current_trusted_authorship(engine):
     created = engine.upsert_memory(
         text="first",
