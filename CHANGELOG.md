@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.12.0] - 2026-08-11
 
 ### Added
 - **Version-consistency guard.** `test_backend_version_sources_agree` asserts that all four backend-facing version sources match: `mcp-server/assets/backend/BACKEND_VERSION`, the version `/health` reports, `FastAPI(version=)`, and the OpenAPI `info.version` it serves. `memories doctor` compares the first two and recommends `memories update` on any difference — a command that only rewires clients and cannot update a running backend — so a checkout where they disagree produces a permanent, unactionable warning; the FastAPI metadata is public API surface that nothing else asserted. Each source is verified to fail the guard on its own, so a bump applied to any subset fails CI instead of shipping.
