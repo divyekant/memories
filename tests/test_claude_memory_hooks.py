@@ -48,6 +48,7 @@ def test_packaged_claude_and_codex_project_declaration_contracts_match(tmp_path:
         "unknown": "project_id: shared-demo\nshared_memory: true\npromotion: true\n",
         "false": "project_id: shared-demo\nshared_memory: false\n",
         "invalid_slug": "project_id: Shared Demo\nshared_memory: true\n",
+        "hash_without_comment_separator": "project_id: shared-demo#suffix\nshared_memory: true\n",
     }
     for name, contents in fixtures.items():
         declaration = tmp_path / f"{name}.yaml"

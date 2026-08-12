@@ -45,6 +45,11 @@ test('project declaration parser accepts only the strict shared-memory contract'
       source: 'project_id: Shared Demo\nshared_memory: true\n',
       expectedReason: 'invalid_project_id',
     },
+    {
+      name: 'hash without YAML comment separation',
+      source: 'project_id: shared-demo#suffix\nshared_memory: true\n',
+      expectedReason: 'invalid_project_id',
+    },
   ];
 
   for (const fixture of fixtures) {
@@ -54,6 +59,33 @@ test('project declaration parser accepts only the strict shared-memory contract'
     } else {
       assert.equal(parsed.ok, false, fixture.name);
       assert.equal(parsed.reason, fixture.expectedReason, fixture.name);
+    }
+  }
+});
+
+test('project declaration hash comment semantics match both packaged hooks', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-comments-'));
+  const declaration = join(dir, 'project.yaml');
+  const libs = [
+    join(process.cwd(), 'assets', 'claude-code', 'hooks', '_lib.sh'),
+    join(process.cwd(), 'assets', 'codex', 'hooks', '_lib.sh'),
+  ];
+  for (const source of [
+    'project_id: shared-demo#suffix\nshared_memory: true\n',
+    'project_id: shared-demo # suffix\nshared_memory: true\n',
+  ]) {
+    await writeFile(declaration, source);
+    const nodeParsed = parseProjectDeclaration(source);
+    for (const lib of libs) {
+      const shellParsed = JSON.parse(execFileSync('bash', ['-c',
+        'source "$1" 2>/dev/null; _memories_parse_project_yaml "$2"',
+        '_', lib, declaration,
+      ], { encoding: 'utf8' }));
+      assert.equal(shellParsed.ok, nodeParsed.ok, source);
+      assert.equal(shellParsed.reason, nodeParsed.reason, source);
+      if (nodeParsed.ok) {
+        assert.equal(shellParsed.project_id, nodeParsed.projectId, source);
+      }
     }
   }
 });
@@ -158,8 +190,10 @@ test('project context disables itself before principal lookup for multiple backe
 test('project context treats env, missing, invalid, and unreachable principals as inactive', async () => {
   const fixtures = [
     { body: { type: 'env' }, reason: 'env_principal' },
-    { body: {}, reason: 'missing_principal' },
+    { body: { type: 'managed' }, reason: 'missing_principal' },
     { body: { type: 'managed', principal_id: 'Not A Slug' }, reason: 'invalid_principal' },
+    { body: {}, reason: 'invalid_principal_type' },
+    { body: { type: 'unknown', principal_id: 'alice' }, reason: 'invalid_principal_type' },
   ];
   for (const fixture of fixtures) {
     const dir = await mkdtemp(join(tmpdir(), 'mem-project-principal-'));
@@ -184,6 +218,39 @@ test('project context treats env, missing, invalid, and unreachable principals a
   });
   assert.equal(unreachable.active, false);
   assert.equal(unreachable.reason, 'principal_unreachable');
+});
+
+test('project context fails closed for missing, malformed, and non-object backend config', async () => {
+  const fixtures = [
+    { name: 'missing', source: null, reason: 'no_backends' },
+    { name: 'malformed', source: 'backends: [\n', reason: 'backend_config_invalid' },
+    { name: 'non-object', source: 'true\n', reason: 'backend_config_invalid' },
+  ];
+  const previousConfigFile = process.env.MEMORIES_BACKENDS_FILE;
+  try {
+    for (const fixture of fixtures) {
+      const dir = await mkdtemp(join(tmpdir(), `mem-project-backend-${fixture.name}-`));
+      await mkdir(join(dir, '.memories'), { recursive: true });
+      await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+      const configPath = join(dir, '.memories', 'backends.yaml');
+      if (fixture.source !== null) await writeFile(configPath, fixture.source);
+      process.env.MEMORIES_BACKENDS_FILE = fixture.source === null ? configPath : configPath;
+      let calls = 0;
+      const context = await resolveProjectContext({
+        cwd: dir,
+        fetchImpl: async () => {
+          calls += 1;
+          throw new Error('backend lookup must not run');
+        },
+      });
+      assert.equal(context.active, false, fixture.name);
+      assert.equal(context.reason, fixture.reason, fixture.name);
+      assert.equal(calls, 0, fixture.name);
+    }
+  } finally {
+    if (previousConfigFile === undefined) delete process.env.MEMORIES_BACKENDS_FILE;
+    else process.env.MEMORIES_BACKENDS_FILE = previousConfigFile;
+  }
 });
 
 test('buildServer threads ctx.client into the X-Memories-Client header via fetchImpl', async () => {

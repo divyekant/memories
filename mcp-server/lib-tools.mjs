@@ -227,6 +227,80 @@ export function loadBackendConfig({ cwd = process.cwd(), url, apiKey, skipFileCo
   };
 }
 
+function strictBackendConfigFailure(reason, diagnostic) {
+  return { backends: [], routing: {}, error: { reason, diagnostic } };
+}
+
+/**
+ * Load only an explicitly configured backend set for collaborative mode.
+ * Unlike legacy routing, this view never invents localhost when no config is
+ * present: a repository declaration must not cause an unauthenticated probe.
+ */
+function loadStrictBackendConfig({ cwd = process.cwd(), url, apiKey, skipFileConfig = false } = {}) {
+  if (skipFileConfig) {
+    if (url === undefined && apiKey === undefined) {
+      return strictBackendConfigFailure("no_backends", "no backend configuration is available");
+    }
+    return {
+      backends: [{ name: "default", url: url || "", apiKey: apiKey || "", scenario: "" }],
+      routing: {},
+    };
+  }
+
+  const explicitFile = process.env.MEMORIES_BACKENDS_FILE;
+  const configPaths = explicitFile
+    ? [explicitFile]
+    : [
+        path.join(cwd, ".memories", "backends.yaml"),
+        path.join(process.env.HOME || "", ".config", "memories", "backends.yaml"),
+      ];
+  const configPath = configPaths.find((candidate) => fs.existsSync(candidate));
+  if (!configPath) {
+    if (explicitFile) {
+      return strictBackendConfigFailure("no_backends", "no backend configuration is available");
+    }
+    if (url !== undefined || apiKey !== undefined) {
+      return {
+        backends: [{ name: "default", url: url || "", apiKey: apiKey || "", scenario: "" }],
+        routing: {},
+      };
+    }
+    return strictBackendConfigFailure("no_backends", "no backend configuration is available");
+  }
+
+  let raw;
+  try {
+    raw = yaml.load(fs.readFileSync(configPath, "utf8"));
+  } catch (error) {
+    return strictBackendConfigFailure("backend_config_invalid", `backend configuration is not valid YAML: ${error.message}`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return strictBackendConfigFailure("backend_config_invalid", "backend configuration must be a YAML mapping");
+  }
+  if (!Object.prototype.hasOwnProperty.call(raw, "backends")) {
+    return strictBackendConfigFailure("no_backends", "backend configuration does not define any backends");
+  }
+  if (!raw.backends || typeof raw.backends !== "object" || Array.isArray(raw.backends)) {
+    return strictBackendConfigFailure("backend_config_invalid", "backend configuration backends must be a YAML mapping");
+  }
+  try {
+    const backends = Object.entries(raw.backends).map(([name, cfg]) => {
+      if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+        throw new Error(`backend ${name} must be a YAML mapping`);
+      }
+      return {
+        name,
+        url: interpolateConfigValue(cfg.url || ""),
+        apiKey: interpolateConfigValue(cfg.api_key || ""),
+        scenario: cfg.scenario || "",
+      };
+    });
+    return { backends, routing: raw.routing || {} };
+  } catch (error) {
+    return strictBackendConfigFailure("backend_config_invalid", `backend configuration is invalid: ${error.message}`);
+  }
+}
+
 function contextFailure(reason, diagnostic) {
   return {
     active: false,
@@ -255,11 +329,12 @@ export async function resolveProjectContext(options = {}) {
 
   const config = suppliedBackends
     ? { backends: suppliedBackends }
-    : loadBackendConfig({ cwd: resolveProjectRoot(cwd), url, apiKey, skipFileConfig });
+    : loadStrictBackendConfig({ cwd: resolveProjectRoot(cwd), url, apiKey, skipFileConfig });
+  if (config.error) return contextFailure(config.error.reason, config.error.diagnostic);
   const backends = Array.isArray(config.backends) ? config.backends : [];
   if (backends.length !== 1) {
     return contextFailure(
-      "multiple_backends",
+      backends.length === 0 ? "no_backends" : "multiple_backends",
       `collaborative project mode requires exactly one configured backend (found ${backends.length})`,
     );
   }
@@ -293,8 +368,9 @@ export async function resolveProjectContext(options = {}) {
   } catch (error) {
     return contextFailure("principal_unreachable", `authenticated principal lookup returned invalid JSON: ${error.message}`);
   }
-  if (identity?.type === "env" || identity?.type === "none") {
-    return contextFailure("env_principal", "environment or unconfigured admin identity cannot activate collaborative mode");
+  if (identity?.type !== "managed") {
+    const reason = identity?.type === "env" || identity?.type === "none" ? "env_principal" : "invalid_principal_type";
+    return contextFailure(reason, "authenticated principal lookup did not return a managed principal");
   }
   const principalId = identity?.principal_id;
   if (!principalId) {

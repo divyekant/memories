@@ -48,6 +48,7 @@ def _fake_curl(bin_dir: Path) -> None:
     script = bin_dir / "curl"
     script.write_text(
         "#!/usr/bin/env bash\n"
+        "if [ -n \"${FAKE_CURL_MARKER:-}\" ]; then : > \"$FAKE_CURL_MARKER\"; fi\n"
         "printf '%s\\n200' \"$FAKE_ME_RESPONSE\"\n"
     )
     script.chmod(0o755)
@@ -62,6 +63,7 @@ def project_declarations() -> dict[str, str]:
         "unknown": "project_id: shared-demo\nshared_memory: true\npromotion: true\n",
         "false": "project_id: shared-demo\nshared_memory: false\n",
         "invalid_slug": "project_id: Shared Demo\nshared_memory: true\n",
+        "hash_without_comment_separator": "project_id: shared-demo#suffix\nshared_memory: true\n",
     }
 
 
@@ -126,7 +128,7 @@ def test_empty_cwd_resolves_to_unknown(lib: Path) -> None:
 
 
 @pytest.mark.parametrize("lib", LIBS, ids=["claude-code-lib", "codex-lib"])
-@pytest.mark.parametrize("fixture_name", ["valid", "missing", "malformed", "unknown", "false", "invalid_slug"])
+@pytest.mark.parametrize("fixture_name", ["valid", "missing", "malformed", "unknown", "false", "invalid_slug", "hash_without_comment_separator"])
 def test_project_declaration_fixtures_are_strict(
     lib: Path,
     fixture_name: str,
@@ -145,7 +147,9 @@ def test_project_declaration_fixtures_are_strict(
     if fixture_name == "valid":
         # A valid declaration still fails closed without an authenticated
         # managed principal; the declaration itself must not grant access.
-        assert context["reason"] in {"missing_principal", "principal_unreachable"}
+        assert context["reason"] in {"no_backends", "missing_principal", "principal_unreachable"}
+    elif fixture_name == "hash_without_comment_separator":
+        assert context["reason"] == "invalid_project_id"
     else:
         assert context["reason"] in {"missing_field", "malformed", "unknown_field", "shared_memory_not_true", "invalid_project_id"}
 
@@ -176,3 +180,85 @@ def test_project_declaration_in_worktree_uses_main_repository_boundary(
     assert context["reason"] == "active"
     assert context["project_id"] == "shared-demo"
     assert context["principal_id"] == "alice"
+
+
+@pytest.mark.parametrize("lib", LIBS, ids=["claude-code-lib", "codex-lib"])
+@pytest.mark.parametrize(
+    ("identity", "reason"),
+    [
+        ({}, "invalid_principal_type"),
+        ({"type": "unknown", "principal_id": "alice"}, "invalid_principal_type"),
+        ({"type": "env"}, "env_principal"),
+        ({"type": "none"}, "env_principal"),
+    ],
+)
+def test_project_context_requires_managed_principal(
+    lib: Path,
+    identity: dict[str, str],
+    reason: str,
+    repo_with_worktree: dict,
+    tmp_path: Path,
+) -> None:
+    memories_dir = repo_with_worktree["repo"] / ".memories"
+    memories_dir.mkdir(exist_ok=True)
+    (memories_dir / "project.yaml").write_text("project_id: shared-demo\nshared_memory: true\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_curl(bin_dir)
+    context = _project_context(
+        lib,
+        str(repo_with_worktree["repo"]),
+        env={
+            "HOME": str(tmp_path / "home"),
+            "MEMORIES_URL": "http://backend.test",
+            "MEMORIES_API_KEY": "secret",
+            "FAKE_ME_RESPONSE": json.dumps(identity),
+            "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        },
+    )
+    assert context["active"] is False
+    assert context["reason"] == reason
+
+
+@pytest.mark.parametrize("lib", LIBS, ids=["claude-code-lib", "codex-lib"])
+@pytest.mark.parametrize(
+    ("name", "backend_yaml", "reason"),
+    [
+        ("missing", None, "no_backends"),
+        ("malformed", "backends: [\n", "backend_config_invalid"),
+        ("non_object", "true\n", "backend_config_invalid"),
+    ],
+)
+def test_project_context_rejects_missing_or_invalid_backend_config(
+    lib: Path,
+    name: str,
+    backend_yaml: str | None,
+    reason: str,
+    repo_with_worktree: dict,
+    tmp_path: Path,
+) -> None:
+    memories_dir = repo_with_worktree["repo"] / ".memories"
+    memories_dir.mkdir(exist_ok=True)
+    (memories_dir / "project.yaml").write_text("project_id: shared-demo\nshared_memory: true\n")
+    if backend_yaml is not None:
+        (memories_dir / "backends.yaml").write_text(backend_yaml)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_curl(bin_dir)
+    marker = tmp_path / "curl-called"
+    context = _project_context(
+        lib,
+        str(repo_with_worktree["repo"]),
+        env={
+            "HOME": str(tmp_path / "home"),
+            "MEMORIES_URL": "",
+            "MEMORIES_API_KEY": "",
+            "MEMORIES_BACKENDS_FILE": "",
+            "FAKE_ME_RESPONSE": json.dumps({"type": "managed", "principal_id": "alice"}),
+            "FAKE_CURL_MARKER": str(marker),
+            "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        },
+    )
+    assert context["active"] is False, name
+    assert context["reason"] == reason, name
+    assert not marker.exists(), name

@@ -242,7 +242,11 @@ _memories_parse_project_yaml() {
       return 0
     fi
     key=$(printf '%s' "$line" | sed 's/:.*//')
-    value=$(printf '%s' "$line" | sed 's/^[^:]*:[[:space:]]*//;s/[[:space:]]*#.*$//;s/[[:space:]]*$//')
+    value=$(printf '%s' "$line" | sed -E 's/^[^:]*:[[:space:]]*//;s/[[:space:]]*$//')
+    case "$value" in
+      \"*\"|\'*\' ) ;;
+      *) value=$(printf '%s' "$value" | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//') ;;
+    esac
     seen_any=1
     case "$key" in
       project_id)
@@ -319,6 +323,72 @@ _memories_project_file() {
   printf '%s' "$file"
 }
 
+_memories_project_backends_file() {
+  local root="${1:-}"
+  if [ -n "${MEMORIES_BACKENDS_FILE:-}" ]; then
+    [ -f "$MEMORIES_BACKENDS_FILE" ] || return 1
+    printf '%s' "$MEMORIES_BACKENDS_FILE"
+    return 0
+  fi
+  if [ -n "$root" ] && [ -f "$root/.memories/backends.yaml" ]; then
+    printf '%s' "$root/.memories/backends.yaml"
+    return 0
+  fi
+  if [ -f "$HOME/.config/memories/backends.yaml" ]; then
+    printf '%s' "$HOME/.config/memories/backends.yaml"
+    return 0
+  fi
+  return 1
+}
+
+# Strict backend view for collaborative activation.  Legacy _load_backends
+# intentionally keeps its env/localhost fallback for ordinary fan-out; this
+# helper never turns an absent or malformed project config into a host probe.
+_memories_project_backend_config() {
+  local root="${1:-}" file="" first="" rhs="" raw=""
+  file=$(_memories_project_backends_file "$root" 2>/dev/null) || {
+    if [ -n "${MEMORIES_BACKENDS_FILE:-}" ]; then
+      jq -nc '{backends:[],error:{reason:"no_backends",diagnostic:"no backend configuration is available"}}'
+    elif [ -n "${MEMORIES_URL:-}" ]; then
+      jq -nc --arg url "$MEMORIES_URL" --arg key "${MEMORIES_API_KEY:-}" \
+        '{backends:[{name:"default",url:$url,api_key:$key,scenario:""}]}'
+    else
+      jq -nc '{backends:[],error:{reason:"no_backends",diagnostic:"no backend configuration is available"}}'
+    fi
+    return 0
+  }
+
+  first=$(awk '
+    /^[[:space:]]*($|#)/ { next }
+    { print; exit }
+  ' "$file" 2>/dev/null)
+  case "$first" in
+    true|false|null|~|\[*|\{*)
+      jq -nc '{backends:[],error:{reason:"backend_config_invalid",diagnostic:"backend configuration must be a YAML mapping"}}'
+      return 0
+      ;;
+  esac
+  if ! printf '%s\n' "$first" | grep -qE '^backends:'; then
+    jq -nc '{backends:[],error:{reason:"no_backends",diagnostic:"backend configuration does not define any backends"}}'
+    return 0
+  fi
+  rhs=$(printf '%s' "$first" | sed -E 's/^backends:[[:space:]]*//;s/[[:space:]]*$//')
+  case "$rhs" in
+    ""|\{\}) ;;
+    \[*|true|false|null|~|[0-9]*)
+      jq -nc '{backends:[],error:{reason:"backend_config_invalid",diagnostic:"backend configuration backends must be a YAML mapping"}}'
+      return 0
+      ;;
+  esac
+
+  raw=$(_parse_backends_yaml "$file" 2>/dev/null) || raw=""
+  if [ -z "$raw" ] || ! printf '%s' "$raw" | jq -e '(.backends | type == "array") and (.routing | type == "object")' >/dev/null 2>&1; then
+    jq -nc '{backends:[],error:{reason:"backend_config_invalid",diagnostic:"backend configuration is malformed"}}'
+    return 0
+  fi
+  printf '%s' "$raw" | jq -c '{backends:(.backends // [])}'
+}
+
 _memories_project_context() {
   local cwd="${1:-${CWD:-$PWD}}"
   local file parsed
@@ -336,10 +406,19 @@ _memories_project_context() {
   # resolution at the main repository root for worktrees.  This function runs
   # in command-substitution scope, so its temporary CWD/cache cannot alter the
   # caller's legacy routing state.
-  local root backends count backend url key response http_status body identity principal
+  local root project_config backends count backend url key response http_status body identity principal
   root=$(_memories_resolve_repo_root "$cwd" 2>/dev/null) || root="$cwd"
-  CWD="$root" _BACKENDS_CACHE="" backends=$(_load_backends 2>/dev/null) || backends="[]"
+  project_config=$(_memories_project_backend_config "$root" 2>/dev/null) || project_config='{"backends":[]}'
+  if [ "$(printf '%s' "$project_config" | jq -r '.error.reason // empty' 2>/dev/null)" ]; then
+    printf '%s' "$project_config" | jq -c '{active:false,reason:.error.reason,diagnostic:.error.diagnostic}'
+    return 0
+  fi
+  backends=$(printf '%s' "$project_config" | jq -c '.backends // []' 2>/dev/null) || backends="[]"
   count=$(printf '%s' "$backends" | jq 'length' 2>/dev/null) || count=0
+  if [ "$count" -eq 0 ]; then
+    jq -nc '{active:false,reason:"no_backends",diagnostic:"no backend configuration is available"}'
+    return 0
+  fi
   if [ "$count" -ne 1 ]; then
     jq -nc --arg diag "collaborative project mode requires exactly one configured backend (found $count)" \
       '{active:false,reason:"multiple_backends",diagnostic:$diag}'
@@ -369,7 +448,9 @@ _memories_project_context() {
     return 0
   }
   case "$(printf '%s' "$identity" | jq -r '.type // empty')" in
+    managed) ;;
     env|none) jq -nc '{active:false,reason:"env_principal",diagnostic:"environment or unconfigured admin identity cannot activate collaborative mode"}'; return 0 ;;
+    *) jq -nc '{active:false,reason:"invalid_principal_type",diagnostic:"authenticated principal lookup did not return a managed principal"}'; return 0 ;;
   esac
   principal=$(printf '%s' "$identity" | jq -r '.principal_id // empty')
   if [ -z "$principal" ]; then
