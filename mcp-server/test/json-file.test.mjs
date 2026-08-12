@@ -110,3 +110,17 @@ test('removePermissions is a no-op when nothing matches or allow is absent', () 
   assert.equal(removePermissions(noAllow, none), noAllow);
   assert.equal(removePermissions({}, none).permissions, undefined);
 });
+
+test('registerMcp persists the API key by default', () => {
+  const { settings } = registerMcp({}, { url: 'https://x', apiKey: 'secret' });
+  assert.equal(settings.mcpServers.memories.env.MEMORIES_API_KEY, 'secret');
+});
+
+test('registerMcp omits the API key when persistApiKey is false', () => {
+  const { settings } = registerMcp({}, { url: 'https://x', apiKey: 'secret', persistApiKey: false });
+  const env = settings.mcpServers.memories.env;
+  assert.equal('MEMORIES_API_KEY' in env, false, 'key written despite persistApiKey:false');
+  assert.equal(env.MEMORIES_URL, 'https://x', 'url must still be written');
+  // The secret must not survive anywhere in the emitted config.
+  assert.equal(JSON.stringify(settings).includes('secret'), false);
+});
