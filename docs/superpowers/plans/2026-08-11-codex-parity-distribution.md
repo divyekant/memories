@@ -1360,3 +1360,74 @@ git commit -m "fix(codex): handle TOML multiline closing runs"
 git push origin codex/codex-parity-distribution
 ```
 ```
+
+### Task 16: Keep Claude Markdown Marker Appends Format-Agnostic
+
+**Files:**
+- Modify: `mcp-server/cli/lib/toml.mjs`
+- Modify: `mcp-server/test/adapter-claude-code.test.mjs`
+- Modify: `mcp-server/test/toml.test.mjs`
+- Modify: this plan
+- Create (forced-added): `.superpowers/sdd/2026-08-11-codex-parity-distribution/task-16-report.md`
+
+**Failure:**
+
+`appendMarkedBlock` is shared by the TOML helpers and the Claude Code adapter's
+Markdown `~/.claude/CLAUDE.md` writer. Applying `maskTomlMultilineStrings` in
+that format-agnostic helper makes an apostrophe in ordinary Markdown prose mask
+the existing marker block. Every later `init` or `update` appends another copy
+of the Memories rules.
+
+**Step 1: Add the end-to-end regression and capture RED**
+
+Seed `~/.claude/CLAUDE.md` with ordinary prose containing an apostrophe, run
+the real Claude Code adapter install twice, and assert the second install is
+byte-identical to the first with exactly one begin/end marker pair. Keep the
+TOML tests focused on the TOML-specific `upsertMarkedBlock` contract rather
+than requiring the generic append helper to parse TOML strings.
+
+Run before production edits:
+
+```bash
+node --test mcp-server/test/adapter-claude-code.test.mjs mcp-server/test/toml.test.mjs
+```
+
+Expected: RED on `cd1301f` because the second install appends a duplicate
+Claude rules block after the apostrophe opens the TOML scanner's string state.
+
+**Step 2: Restore the format boundary**
+
+Restore `appendMarkedBlock` to its plain exact-line marker check so it remains
+safe for Markdown and other text. Keep TOML-aware ownership detection in
+`validateMarkedBlock`, and make `upsertMarkedBlock` append a new owned block
+directly after masked validation proves no real TOML-owned block exists. This
+preserves exact in-string TOML marker handling without applying TOML syntax to
+Claude Markdown.
+
+**Step 3: Verify focused, package, repository, and PR contracts**
+
+```bash
+node --test mcp-server/test/adapter-claude-code.test.mjs mcp-server/test/toml.test.mjs mcp-server/test/adapter-codex.test.mjs
+cd mcp-server && npm test
+cd ..
+uv run pytest -q tests/test_codex_plugin.py tests/test_installer.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
+git diff --check
+git status --short
+```
+
+Inspect the diff for the Markdown/TOML boundary, single-marker idempotence,
+in-string TOML marker preservation, and absence of unrelated changes. Commit
+and push without merging, then wait for PR CI before replying to and resolving
+the current inline thread.
+
+**Exact staging and commit:**
+
+```bash
+git add -f docs/superpowers/plans/2026-08-11-codex-parity-distribution.md \
+  .superpowers/sdd/2026-08-11-codex-parity-distribution/task-16-report.md
+git add mcp-server/cli/lib/toml.mjs mcp-server/test/adapter-claude-code.test.mjs \
+  mcp-server/test/toml.test.mjs
+git commit -m "fix(claude): keep rules install idempotent"
+git push origin codex/codex-parity-distribution
+```

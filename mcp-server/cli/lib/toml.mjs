@@ -85,9 +85,12 @@ export function maskTomlMultilineStrings(text) {
 
 export function appendMarkedBlock(text, marker, body) {
   const start = `# BEGIN ${marker}`;
-  if (maskTomlMultilineStrings(text).split('\n').some((line) => line === start)) return text;
-  return `${text}\n${start}\n${body}\n# END ${marker}\n`;
+  if (text.split('\n').some((line) => line === start)) return text;
+  return appendNewMarkedBlock(text, marker, body);
 }
+
+const appendNewMarkedBlock = (text, marker, body) =>
+  `${text}\n# BEGIN ${marker}\n${body}\n# END ${marker}\n`;
 
 function markedBlockError(marker, reason) {
   const error = new Error(`Invalid marked block "${marker}": ${reason}`);
@@ -122,7 +125,7 @@ export function validateMarkedBlock(text, marker) {
 // (including its whitespace and ordering) is not reformatted during updates.
 export function upsertMarkedBlock(text, marker, body) {
   const block = validateMarkedBlock(text, marker);
-  if (!block) return appendMarkedBlock(text, marker, body);
+  if (!block) return appendNewMarkedBlock(text, marker, body);
   const { lines, startIndex, endIndex } = block;
   return [...lines.slice(0, startIndex + 1), body, ...lines.slice(endIndex)].join('\n');
 }

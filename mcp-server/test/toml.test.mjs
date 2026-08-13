@@ -233,9 +233,9 @@ test('insertMarkedBlockAtRoot ignores exact ownership markers inside triple-basi
   ].join('\n');
   assert.equal(out, expected, 'in-string ownership markers and bytes must be preserved');
   assert.ok(out.indexOf(block) < out.indexOf('[profiles.a]'));
-  const appended = appendMarkedBlock(original, 'Owned', 'owned = true');
-  assert.notEqual(appended, original, 'append must not short-circuit on in-string markers');
-  assert.ok(appended.endsWith(block));
+  const upserted = upsertMarkedBlock(original, 'Owned', 'owned = true');
+  assert.notEqual(upserted, original, 'TOML upsert must not short-circuit on in-string markers');
+  assert.ok(upserted.endsWith(block));
 });
 
 test('insertMarkedBlockAtRoot ignores exact ownership markers inside triple-literal strings', () => {
@@ -262,9 +262,9 @@ test('insertMarkedBlockAtRoot ignores exact ownership markers inside triple-lite
   ].join('\n');
   assert.equal(out, expected, 'in-string ownership markers and bytes must be preserved');
   assert.ok(out.indexOf(block) < out.indexOf('[profiles.a]'));
-  const appended = appendMarkedBlock(original, 'Owned', 'owned = true');
-  assert.notEqual(appended, original, 'append must not short-circuit on in-string markers');
-  assert.ok(appended.endsWith(block));
+  const upserted = upsertMarkedBlock(original, 'Owned', 'owned = true');
+  assert.notEqual(upserted, original, 'TOML upsert must not short-circuit on in-string markers');
+  assert.ok(upserted.endsWith(block));
 });
 
 function assertMultilineClosingRunCase(quote, kind, runLength) {

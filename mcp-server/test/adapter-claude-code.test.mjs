@@ -68,6 +68,24 @@ test('install is idempotent — second run changes nothing', async () => {
   assert.equal(await readFile(join(ctx.home, '.claude/CLAUDE.md'), 'utf8'), md);
 });
 
+test('install stays idempotent when existing CLAUDE.md prose contains an apostrophe', async () => {
+  const ctx = await freshCtx();
+  const claudeMdPath = join(ctx.home, '.claude/CLAUDE.md');
+  const existing = "# Notes\n\nDon't use npm here.\n";
+  await mkdir(dirname(claudeMdPath), { recursive: true });
+  await writeFile(claudeMdPath, existing);
+
+  await adapter.install(ctx);
+  const afterFirst = await readFile(claudeMdPath, 'utf8');
+  await adapter.install(ctx);
+  const afterSecond = await readFile(claudeMdPath, 'utf8');
+
+  assert.ok(afterFirst.startsWith(existing), 'existing Markdown prose must remain byte-for-byte intact');
+  assert.equal(afterSecond, afterFirst, 'a second install must not append another rules block');
+  assert.equal((afterSecond.match(/^# BEGIN Memories Claude rules$/gm) ?? []).length, 1);
+  assert.equal((afterSecond.match(/^# END Memories Claude rules$/gm) ?? []).length, 1);
+});
+
 test('install preserves an existing foreign mcpServers.memories entry', async () => {
   const ctx = await freshCtx();
   await writeJson(join(ctx.home, '.claude/settings.json'), { mcpServers: { memories: { command: 'node', args: ['/old/path.js'] } } });
