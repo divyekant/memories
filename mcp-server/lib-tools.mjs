@@ -460,8 +460,9 @@ export async function resolveProjectContext(options = {}) {
     fetchImpl = globalThis.fetch,
     skipFileConfig = false,
     principalTimeoutMs = 2000,
+    declaration: suppliedDeclaration,
   } = options;
-  const declaration = loadProjectDeclaration(cwd);
+  const declaration = suppliedDeclaration || loadProjectDeclaration(cwd);
   if (!declaration.ok) return contextFailure(declaration.reason, declaration.diagnostic);
 
   const config = suppliedBackendConfig
@@ -575,7 +576,8 @@ export async function resolveProjectContext(options = {}) {
 
 export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = false, version, cwd = process.cwd() } = {}) {
   const fetchFn = fetchImpl || fetch;
-  const collaborativeProjectDeclared = loadProjectDeclaration(cwd).ok;
+  const projectDeclaration = loadProjectDeclaration(cwd);
+  const collaborativeProjectPresent = projectDeclaration.reason !== "missing";
 
   // -- Config Loading ----------------------------------------------------------
 
@@ -764,6 +766,7 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
         backendConfig: config,
         fetchImpl: fetchFn,
         skipFileConfig,
+        declaration: projectDeclaration,
       });
     }
     const pending = projectContextPromise;
@@ -773,7 +776,7 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       // declaration was also loaded once above).  Retry inactive resolution
       // only for a checkout that actually declared collaborative mode, where
       // backend identity or configuration can recover independently.
-      if (!context.active && collaborativeProjectDeclared && projectContextPromise === pending) {
+      if (!context.active && collaborativeProjectPresent && projectContextPromise === pending) {
         projectContextPromise = undefined;
       }
       return context;
@@ -784,7 +787,7 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
   };
 
   function unavailableProjectContextResult(context) {
-    if (!collaborativeProjectDeclared || context.active) return null;
+    if (!collaborativeProjectPresent || context.active) return null;
     return {
       content: [{
         type: "text",
@@ -792,6 +795,25 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       }],
       isError: true,
     };
+  }
+
+  async function projectWriteUnavailable(source) {
+    if (!String(source || "").startsWith("project/") || !collaborativeProjectPresent) {
+      return null;
+    }
+    const projectContext = await server.resolveProjectContext();
+    const unavailable = unavailableProjectContextResult(projectContext);
+    if (unavailable) return unavailable;
+    if (!source.startsWith(`project/${projectContext.projectId}/`)) {
+      return {
+        content: [{
+          type: "text",
+          text: `Project memory source must target the declared project: project/${projectContext.projectId}/<kind>`,
+        }],
+        isError: true,
+      };
+    }
+    return null;
   }
 
   // -- Tools -------------------------------------------------------------------
@@ -1081,20 +1103,8 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       document_at: z.string().optional().describe("ISO 8601 date for when the content was created (e.g. session date). Enables temporal search."),
     },
     async ({ text, source, deduplicate = true, on_duplicate = "supersede", document_at }) => {
-      if (source.startsWith("project/") && collaborativeProjectDeclared) {
-        const projectContext = await server.resolveProjectContext();
-        const unavailable = unavailableProjectContextResult(projectContext);
-        if (unavailable) return unavailable;
-        if (!source.startsWith(`project/${projectContext.projectId}/`)) {
-          return {
-            content: [{
-              type: "text",
-              text: `Project memory source must target the declared project: project/${projectContext.projectId}/<kind>`,
-            }],
-            isError: true,
-          };
-        }
-      }
+      const unavailable = await projectWriteUnavailable(source);
+      if (unavailable) return unavailable;
       const body = { text, source, on_duplicate };
       if (document_at) body.metadata = { document_at };
       const data = await memoriesRequest("/memory/add", {
@@ -1445,10 +1455,19 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     "Flag a memory that should have been captured by extraction but wasn't.",
     {
       text: z.string().min(1).describe("The fact that should have been remembered"),
-      source: z.string().min(1).describe("Source identifier"),
+      source: z.string().min(1).superRefine((value, ctx) => {
+        if (value.startsWith("project/") && !PROJECT_SOURCE_RE.test(value)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "project sources must be project/<project>/<decisions|knowledge|state|operations>",
+          });
+        }
+      }).describe("Source identifier"),
       context: z.string().optional().describe("Optional context"),
     },
     async ({ text, source, context }) => {
+      const unavailable = await projectWriteUnavailable(source);
+      if (unavailable) return unavailable;
       const body = { text, source };
       if (context) body.context = context;
       const data = await memoriesRequest("/memory/missed", {

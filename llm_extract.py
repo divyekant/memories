@@ -19,6 +19,7 @@ from auth_context import source_matches_prefixes
 from shadow_runner import build_shadow_providers, fanout_shadow_async
 from transcript_hygiene import clean_transcript, redact_secrets
 from project_memory import (
+    is_reserved_namespace_source,
     ProjectMemoryPolicyError,
     TrustedAuthorship,
     validate_project_write,
@@ -212,17 +213,30 @@ def _novelty_gate_check(
     engine,
     fact_text: str,
     source: Optional[str] = None,
+    allowed_prefixes: Optional[List[str]] = None,
 ) -> tuple[bool, Optional[dict]]:
     """Return (gated, similar_memory). Fail-open: any error means not gated,
     leaving engine-side dedup (add_memories deduplicate=True) as the backstop.
     """
     try:
         novelty_kwargs = {"threshold": _novelty_gate_threshold()}
-        if source:
+        scope_to_source = is_reserved_namespace_source(source)
+        if scope_to_source:
             novelty_kwargs["source_exact"] = source
         is_new, similar = engine.is_novel(fact_text, **novelty_kwargs)
         if isinstance(is_new, bool) and not is_new:
-            if source and (
+            if not scope_to_source and isinstance(similar, dict) and (
+                is_reserved_namespace_source(str(similar.get("source", "")))
+            ):
+                return False, None
+            if allowed_prefixes is not None and (
+                not isinstance(similar, dict)
+                or not source_matches_prefixes(
+                    str(similar.get("source", "")), allowed_prefixes
+                )
+            ):
+                return False, None
+            if scope_to_source and source and (
                 not isinstance(similar, dict)
                 or str(similar.get("source", "")) != source
             ):
@@ -466,15 +480,32 @@ def run_audn(
     if not facts:
         return [], {"input": 0, "output": 0}, {"similar_per_fact": {}}
 
+    scope_to_source = is_reserved_namespace_source(source)
+
     if not provider.supports_audn:
         # Ollama fallback: novelty check only
         decisions = []
         for i, fact in enumerate(facts):
             fact_text = fact["text"] if isinstance(fact, dict) else str(fact)
             novelty_kwargs = {"threshold": 0.88}
-            if source:
+            if scope_to_source and source:
                 novelty_kwargs["source_exact"] = source
-            is_new, _ = engine.is_novel(fact_text, **novelty_kwargs)
+            is_new, similar = engine.is_novel(fact_text, **novelty_kwargs)
+            if (
+                not scope_to_source
+                and not is_new
+                and isinstance(similar, dict)
+                and (
+                    is_reserved_namespace_source(str(similar.get("source", "")))
+                    or (
+                        allowed_prefixes is not None
+                        and not source_matches_prefixes(
+                            str(similar.get("source", "")), allowed_prefixes
+                        )
+                    )
+                )
+            ):
+                is_new = True
             if is_new:
                 decisions.append({"action": "ADD", "fact_index": i})
             else:
@@ -487,12 +518,12 @@ def run_audn(
         fact_text = fact["text"] if isinstance(fact, dict) else str(fact)
         try:
             search_kwargs = {"k": EXTRACT_SIMILAR_PER_FACT}
-            if source:
+            if scope_to_source and source:
                 search_kwargs["source_exact"] = source
             results = engine.hybrid_search(fact_text, **search_kwargs)
             # Defense in depth for engines/providers that do not enforce the
             # exact-source filter themselves.
-            if source:
+            if scope_to_source and source:
                 results = [
                     r for r in results
                     if str(r.get("source", "")) == source
@@ -501,6 +532,11 @@ def run_audn(
                 results = [
                     r for r in results
                     if source_matches_prefixes(str(r.get("source", "")), allowed_prefixes)
+                ]
+            if not scope_to_source:
+                results = [
+                    r for r in results
+                    if not is_reserved_namespace_source(str(r.get("source", "")))
                 ]
             similar_per_fact[i] = results
         except Exception:
@@ -722,7 +758,9 @@ def execute_actions(
                 if not source_matches_prefixes(source, allowed_prefixes):
                     raise PermissionError(f"source not authorized for add: {source}")
                 if gate_active:
-                    gated, similar = _novelty_gate_check(engine, fact_text, source)
+                    gated, similar = _novelty_gate_check(
+                        engine, fact_text, source, allowed_prefixes
+                    )
                     if gated:
                         result_actions.append({
                             "action": "noop",

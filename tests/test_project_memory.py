@@ -133,12 +133,14 @@ def test_project_write_gate_keeps_person_and_nonreserved_legacy_sources_unchange
         "project/fplguru/custom",
         "project/fplguru/knowledge/extra",
         "project/FPLGuru/knowledge",
+        "person/Alice/fplguru/knowledge",
+        "person/alice/fplguru/custom",
     ],
 )
 def test_project_write_gate_rejects_malformed_reserved_sources(source):
     from memory_engine import _validate_project_write
 
-    with pytest.raises(ProjectMemoryPolicyError, match="project sources must be"):
+    with pytest.raises(ProjectMemoryPolicyError, match="sources must be"):
         _validate_project_write("shared fact", source, None)
 
 
@@ -217,6 +219,33 @@ def test_same_policy_source_move_preserves_project_provenance(engine):
     assert meta["origin_client"] == "manual"
     assert meta["contributors"] == ["alice"]
     assert meta["source_memory_ids"] == [7]
+
+
+@pytest.mark.parametrize(
+    ("old_source", "new_source"),
+    [
+        ("person/alice/fplguru/knowledge", "person/bob/fplguru/knowledge"),
+        ("person/alice/fplguru/knowledge", "person/alice/other/knowledge"),
+        ("project/fplguru/knowledge", "project/other/knowledge"),
+    ],
+)
+def test_owner_or_project_source_move_is_an_authorship_boundary(engine, old_source, new_source):
+    memory_id = engine.add_memories(
+        ["Original fact"],
+        [old_source],
+        trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+    )[0]
+
+    engine.update_memory(
+        memory_id,
+        source=new_source,
+        trusted_authorship=TrustedAuthorship.principal("bob", "claude-code"),
+    )
+
+    meta = engine._get_meta_by_id(memory_id)
+    assert meta["source"] == new_source
+    assert meta["author"] == "bob"
+    assert meta["origin_client"] == "claude-code"
 
 
 def test_namespace_crossing_source_move_requires_trusted_authorship(engine):
@@ -380,6 +409,24 @@ def test_text_update_rejects_preupgrade_malformed_reserved_project_source(engine
     assert engine._get_meta_by_id(memory_id)["text"] == "safe legacy fact"
 
 
+def test_text_update_rejects_preupgrade_malformed_reserved_person_source(engine):
+    memory_id = engine.add_memories(["safe legacy fact"], ["legacy/source"])[0]
+    engine._get_meta_by_id(memory_id)["source"] = "person/Alice/fplguru/knowledge"
+    engine.qdrant_store.set_payload(
+        memory_id, {"source": "person/Alice/fplguru/knowledge"}
+    )
+
+    with pytest.raises(ProjectMemoryPolicyError, match="person sources must be"):
+        engine.update_memory(
+            memory_id,
+            text="replacement",
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            apply_trusted_authorship=True,
+        )
+
+    assert engine._get_meta_by_id(memory_id)["text"] == "safe legacy fact"
+
+
 def test_preupgrade_malformed_project_source_can_be_explicitly_migrated(engine):
     memory_id = engine.add_memories(["historical fact"], ["legacy/source"])[0]
     engine._get_meta_by_id(memory_id)["source"] = "project/decisions.md"
@@ -412,6 +459,29 @@ def test_text_update_revalidates_locked_malformed_reserved_source(engine, monkey
         engine.update_memory(
             memory_id,
             text="Production token is ghp_abcdefghijklmnopqrstuvwxyz123456",
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            apply_trusted_authorship=True,
+        )
+
+    assert engine._get_meta_by_id(memory_id)["text"] == "safe legacy fact"
+
+
+def test_text_update_revalidates_locked_malformed_person_source(engine, monkeypatch):
+    memory_id = engine.add_memories(["safe legacy fact"], ["legacy/source"])[0]
+    original_acquire = engine._entity_locks.acquire_many
+
+    @contextmanager
+    def racing_acquire(keys):
+        with original_acquire(keys):
+            engine._get_meta_by_id(memory_id)["source"] = "person/Alice/fplguru/knowledge"
+            yield
+
+    monkeypatch.setattr(engine._entity_locks, "acquire_many", racing_acquire)
+
+    with pytest.raises(ProjectMemoryPolicyError, match="person sources must be"):
+        engine.update_memory(
+            memory_id,
+            text="replacement",
             trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
             apply_trusted_authorship=True,
         )

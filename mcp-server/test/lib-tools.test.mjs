@@ -365,6 +365,35 @@ test('inactive memory_search keeps one unscoped legacy request and skips princip
   }
 });
 
+test('invalid project declaration fails closed instead of falling back to unscoped search', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-invalid-search-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: Shared Demo\nshared_memory: true\n');
+  const calls = [];
+  const server = buildServer({
+    cwd: dir,
+    url: 'http://backend.test',
+    apiKey: 'secret',
+    skipFileConfig: true,
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ results: [], count: 0 }), { status: 200 });
+    },
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({ name: 'memory_search', arguments: { query: 'must stay scoped' } });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /project declaration|project_id/i);
+    assert.deepEqual(calls, []);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('project mode does not invent localhost when skipFileConfig has no explicit backend', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mem-project-no-backend-'));
   await mkdir(join(dir, '.memories'), { recursive: true });
@@ -778,6 +807,39 @@ test('memory_add documents and enforces one explicit project kind without a pref
     });
     assert.equal(invalid.isError, true);
     assert.equal(calls.length, 1, 'invalid project source must not call the backend');
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('memory_missed uses the same single-backend project write gate as memory_add', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-missed-gate-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  await writeFile(
+    join(dir, '.memories', 'backends.yaml'),
+    'backends:\n  one:\n    url: http://one.test\n  two:\n    url: http://two.test\n',
+  );
+  const calls = [];
+  const server = buildServer({
+    cwd: dir,
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ id: 1, source: 'project/shared-demo/knowledge' }), { status: 200 });
+    },
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({
+      name: 'memory_missed',
+      arguments: { text: 'Shared fact', source: 'project/shared-demo/knowledge' },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /exactly one configured backend/i);
+    assert.deepEqual(calls, []);
   } finally {
     await client.close();
     await server.close();

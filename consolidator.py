@@ -11,7 +11,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from project_memory import TrustedAuthorship
+from project_memory import TrustedAuthorship, is_reserved_namespace_source
 
 logger = logging.getLogger(__name__)
 
@@ -99,14 +99,13 @@ def find_clusters(
         # for. hybrid_search returns RRF rank-fusion scores structurally
         # bounded near 1/60, so comparing those against 0.75 meant no cluster
         # could ever form.
-        search_kwargs = {
-            "query": mem["text"],
-            "k": 10,
-            # Consolidation is a write operation: similar records from a
-            # different principal/project/namespace must never join the
-            # candidate cluster, even when a broad prefix is authorized.
-            "source_exact": mem.get("source", ""),
-        }
+        seed_source = mem.get("source", "")
+        search_kwargs = {"query": mem["text"], "k": 10}
+        # Structured records are exact isolation domains. Legacy client
+        # sources keep historical cross-client consolidation, but may never
+        # absorb a reserved person/project record.
+        if is_reserved_namespace_source(seed_source):
+            search_kwargs["source_exact"] = seed_source
         if source_prefix:
             search_kwargs["source_prefix"] = source_prefix
         similar = engine.search(**search_kwargs)
@@ -124,7 +123,11 @@ def find_clusters(
                 continue
             if hit.get("pinned") or hit.get("archived"):
                 continue
-            if hit.get("source", "") != mem.get("source", ""):
+            hit_source = hit.get("source", "")
+            if is_reserved_namespace_source(seed_source):
+                if hit_source != seed_source:
+                    continue
+            elif is_reserved_namespace_source(hit_source):
                 continue
             score = hit.get("similarity", 0.0)
             if score >= similarity_threshold:

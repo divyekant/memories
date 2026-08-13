@@ -254,6 +254,26 @@ class TestAddWithDoctrine:
         assert replacement["source"] == "claude-code/acme"
         assert replacement["author"] == "alice"
 
+    def test_supersede_revalidates_the_old_source_after_acquiring_its_lock(self, engine, monkeypatch):
+        from contextlib import contextmanager
+
+        old_id = engine.add_memories([T78], ["legacy/acme"])[0]
+        original_acquire = engine._entity_locks.acquire_many
+
+        @contextmanager
+        def racing_acquire(keys):
+            with original_acquire(keys):
+                if engine._memory_key(old_id) in keys:
+                    engine._get_meta_by_id(old_id)["source"] = "project/acme/decisions"
+                yield
+
+        monkeypatch.setattr(engine._entity_locks, "acquire_many", racing_acquire)
+
+        with pytest.raises(ProjectMemoryPolicyError):
+            engine.supersede(old_id, T79, source="legacy/acme")
+
+        assert not engine._get_meta_by_id(old_id).get("archived")
+
     def test_invalid_mode_rejected(self, engine):
         with pytest.raises(ValueError):
             engine.add_with_doctrine(T78, "learning/health", on_duplicate="merge")

@@ -127,6 +127,24 @@ class TestClusterDetection:
             "project/other/decisions",
         }
 
+    def test_legacy_clusters_can_span_clients_without_absorbing_reserved_sources(self):
+        from consolidator import find_clusters
+
+        codex = _make_memory(0, "Use Postgres", source="codex/acme")
+        claude = _make_memory(1, "Postgres is used", source="claude-code/acme")
+        private = _make_memory(2, "Private Postgres note", source="person/alice/acme/knowledge")
+        engine = MagicMock()
+        engine.metadata = [codex, claude, private]
+        engine.search.return_value = [
+            {**claude, "similarity": 0.95},
+            {**private, "similarity": 0.99},
+        ]
+
+        clusters = find_clusters(engine, similarity_threshold=0.75, min_cluster_size=2)
+
+        assert [{m["id"] for m in cluster} for cluster in clusters] == [{0, 1}]
+        assert "source_exact" not in engine.search.call_args_list[0].kwargs
+
     def test_respects_min_cluster_size(self):
         from consolidator import find_clusters
 

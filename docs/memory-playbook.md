@@ -25,8 +25,9 @@ key, member list, role, or secret in this file. The declaration names the
 project only. It never grants access or chooses a principal.
 
 Supported hooks and the MCP bridge resolve the declaration at the main Git
-repository boundary, including worktrees. A missing or invalid declaration
-keeps the existing legacy behavior and never enables shared writes.
+repository boundary, including worktrees. A missing declaration keeps the
+existing legacy behavior. A declaration that exists but is invalid fails
+closed without unscoped reads or writes.
 
 Collaborative mode also requires exactly one configured backend. Configure the
 same URL for every local and cloud client, for example with
@@ -256,6 +257,15 @@ explicitly includes the exact legacy prefix. A new collaborator is never
 given another person's legacy prefixes automatically. Review a legacy memory
 and write a new, explicit `project/fplguru/<kind>` memory if it truly needs to
 be shared.
+
+Pre-upgrade records whose source begins with `project/` or `person/` but does
+not match the strict shapes above are intentionally read/export/delete-only.
+Their ownership is ambiguous, so they cannot be repaired in place or silently
+treated as ordinary legacy data. Using a managed key, explicitly move the
+record to a non-reserved source such as `legacy/project-decisions`, inspect it,
+then create a new strict project memory only if it passes the durable-sharing
+test. Imports report each malformed reserved record as an individual error so
+the rest of a batch remains auditable.
 
 There is no automatic promotion, no implicit membership inferred from Git or
 `.memories/project.yaml`, no cross-backend federation, and no server-to-server

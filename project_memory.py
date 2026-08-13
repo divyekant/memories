@@ -123,15 +123,17 @@ def is_reserved_namespace_source(source: Any) -> bool:
     return isinstance(source, str) and source.startswith(("project/", "person/"))
 
 
-def _source_policy_namespace(source: Any) -> str:
-    """Classify a source for provenance-preserving move decisions."""
+def _source_policy_namespace(source: Any) -> tuple[str, ...]:
+    """Return the complete authorship-policy identity for a source."""
 
     parsed = parse_memory_source(source)
     if parsed is not None:
-        return parsed.namespace
+        if parsed.is_person:
+            return (parsed.namespace, parsed.principal_id or "", parsed.project_id)
+        return (parsed.namespace, parsed.project_id)
     if is_reserved_namespace_source(source):
-        return "reserved"
-    return "legacy"
+        return ("reserved", str(source))
+    return ("legacy",)
 
 
 def is_namespace_crossing_source_move(
@@ -161,8 +163,8 @@ def is_substantive_authored_content_replacement(
     Metadata-only patches intentionally return ``False``: metadata is mutable
     bookkeeping and must not erase contributor/provenance fields.  A changed
     text value is substantive.  Source changes are substantive only when they
-    cross the legacy/person/project policy namespaces; ordinary moves within
-    one namespace preserve the original authorship and provenance.
+    cross an authorship-policy identity. Kind-only moves within the same
+    person/project preserve provenance; owner or project changes do not.
     """
 
     del metadata_patch  # Reserved metadata is filtered by the write boundary.
@@ -302,9 +304,10 @@ def validate_project_write(
     trusted_authorship: Optional[TrustedAuthorship],
 ) -> None:
     """Validate an exact project write before any mutation or storage work."""
-    if isinstance(source, str) and source.startswith("project/") and not is_project_source(source):
+    if is_reserved_namespace_source(source) and parse_memory_source(source) is None:
         raise ProjectMemoryPolicyError(
-            "project sources must be project/<project>/<decisions|knowledge|state|operations>"
+            "project sources must be project/<project>/<kind>; person sources "
+            "must be person/<principal>/<project>/<kind>, with a supported kind"
         )
     if not is_project_source(source):
         return

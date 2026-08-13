@@ -33,6 +33,7 @@ from project_memory import (
     TrustedAuthorship,
     is_namespace_crossing_source_move,
     is_project_source,
+    is_reserved_namespace_source,
     is_substantive_authored_content_replacement,
     normalize_origin_client,
     validate_namespace_preserving_replacement,
@@ -404,6 +405,10 @@ class MemoryEngine:
     def _entity_key(self, source: str) -> str:
         scoped = source.strip() if source else "__unknown__"
         return f"default:{scoped}"
+
+    def _memory_key(self, memory_id: int) -> str:
+        """Stable lock domain for mutations that follow a record across sources."""
+        return f"memory:{memory_id}"
 
     def _point_payload(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         return {k: v for k, v in meta.items() if k != "id"}
@@ -925,42 +930,66 @@ class MemoryEngine:
         if not self._id_exists(old_id):
             raise ValueError(f"Memory {old_id} not found")
 
-        old_meta = self._get_meta_by_id(old_id)
-        previous_text = old_meta.get("text", "")
-        use_source = source or old_meta.get("source", "")
-        old_source = old_meta.get("source", "")
-        validate_namespace_preserving_replacement(
-            [old_source], use_source, "supersede"
-        )
-        if is_project_source(old_source):
-            _validate_project_write(new_text, old_source, trusted_authorship)
-        _validate_project_write(new_text, use_source, trusted_authorship)
+        while True:
+            initial_source = self._get_meta_by_id(old_id).get("source", "")
+            initial_target = source or initial_source
+            keys = [
+                self._memory_key(old_id),
+                self._entity_key(initial_source),
+                self._entity_key(initial_target),
+            ]
+            with self._entity_locks.acquire_many(keys):
+                if not self._id_exists(old_id):
+                    raise ValueError(f"Memory {old_id} not found")
 
-        add_kwargs = {
-            "texts": [new_text],
-            "sources": [use_source],
-            "metadata_list": [metadata] if metadata else None,
-            "deduplicate": False,
-        }
-        added_ids = self.add_memories(
-            **_with_trusted_authorship(add_kwargs, trusted_authorship)
-        )
-        new_id = added_ids[0] if added_ids else None
-        if new_id is None or not self._id_exists(new_id):
-            raise RuntimeError("supersede: add_memories stored nothing; original left untouched")
+                # update_memory uses these same source-domain locks. Re-reading
+                # here makes policy validation and archival one atomic snapshot.
+                old_meta = self._get_meta_by_id(old_id)
+                old_source = old_meta.get("source", "")
+                use_source = source or old_source
+                required_keys = {
+                    self._entity_key(old_source),
+                    self._entity_key(use_source),
+                }
+                if not required_keys.issubset(set(keys)):
+                    # The source moved before the stale lock snapshot was
+                    # acquired. Release and retry with the authoritative keys.
+                    continue
 
-        new_meta = self._get_meta_by_id(new_id)
-        new_meta["supersedes"] = old_id
-        new_meta["previous_text"] = previous_text
-        self.add_link(new_id, old_id, "supersedes")
+                previous_text = old_meta.get("text", "")
+                validate_namespace_preserving_replacement(
+                    [old_source], use_source, "supersede"
+                )
+                if is_project_source(old_source):
+                    _validate_project_write(new_text, old_source, trusted_authorship)
+                _validate_project_write(new_text, use_source, trusted_authorship)
 
-        old_meta["archived"] = True
-        old_meta["superseded_by"] = new_id
-        self.qdrant_store.set_payload(old_id, {"archived": True})
-        self.save()
+                add_kwargs = {
+                    "texts": [new_text],
+                    "sources": [use_source],
+                    "metadata_list": [metadata] if metadata else None,
+                    "deduplicate": False,
+                }
+                added_ids = self.add_memories(
+                    **_with_trusted_authorship(add_kwargs, trusted_authorship)
+                )
+                new_id = added_ids[0] if added_ids else None
+                if new_id is None or not self._id_exists(new_id):
+                    raise RuntimeError("supersede: add_memories stored nothing; original left untouched")
 
-        logger.info("Superseded memory %d → %d (old archived)", old_id, new_id)
-        return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text, "archived_old": True}
+                with self._write_lock:
+                    new_meta = self._get_meta_by_id(new_id)
+                    new_meta["supersedes"] = old_id
+                    new_meta["previous_text"] = previous_text
+                    self.add_link(new_id, old_id, "supersedes")
+
+                    old_meta["archived"] = True
+                    old_meta["superseded_by"] = new_id
+                    self.qdrant_store.set_payload(old_id, {"archived": True})
+                    self.save()
+
+                logger.info("Superseded memory %d → %d (old archived)", old_id, new_id)
+                return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text, "archived_old": True}
 
     def add_with_doctrine(
         self,
@@ -1452,8 +1481,7 @@ class MemoryEngine:
             text is not None or source is not None or bool(metadata_patch)
         )
         validates_project_target = source is not None or (
-            isinstance(target_source, str)
-            and target_source.startswith("project/")
+            is_reserved_namespace_source(target_source)
             and content_update_requested
         )
         if validates_project_target:
@@ -1483,7 +1511,9 @@ class MemoryEngine:
             and source != current.get("source", "")
         )
 
-        with self._entity_locks.acquire_many([old_key, new_key]):
+        with self._entity_locks.acquire_many(
+            [self._memory_key(memory_id), old_key, new_key]
+        ):
             with self._write_lock:
                 if not self._id_exists(memory_id):
                     raise ValueError(f"Memory ID {memory_id} not found")
@@ -1514,8 +1544,7 @@ class MemoryEngine:
                     locked_current_source, source
                 )
                 validates_locked_project_target = source is not None or (
-                    isinstance(locked_target_source, str)
-                    and locked_target_source.startswith("project/")
+                    is_reserved_namespace_source(locked_target_source)
                     and content_update_requested
                 )
                 if validates_locked_project_target:

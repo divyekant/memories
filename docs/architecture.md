@@ -411,6 +411,45 @@ routed reachability keeps per-backend breaker isolation, end-to-end deadlines
 preserve partial results, and 401 responses provide credential guidance.
 Materially short timeout budgets are inconclusive rather than breaker trips.
 
+### Shared project memory boundary
+
+Phase 1 adds two structured source families:
+
+- `person/<principal>/<project>/<kind>` is private to one managed principal.
+- `project/<project>/<kind>` is shared by managed principals whose key is
+  authorized for that exact project prefix.
+
+`kind` is exactly `decisions`, `knowledge`, `state`, or `operations`. A strict
+`.memories/project.yaml` declares only `project_id` and `shared_memory: true`;
+it grants no access. Collaborative routing activates only with one configured
+backend and a managed `/api/keys/me` identity containing a valid stable
+`principal_id`. Missing declarations preserve legacy behavior. Present but
+malformed declarations, unresolved identities, and multiple backends fail
+closed without an unscoped search or write.
+
+Automatic extraction writes to the current person's `knowledge` source. A
+shared write is always deliberate through an add-like tool and passes the same
+project-context gate. The API strips caller-supplied authorship fields and
+stamps the authenticated principal and origin client. Search, novelty,
+replacement, conflict resolution, and scheduled consolidation use the same
+policy domains: structured records never cross principals or projects, while
+ordinary legacy sources retain cross-client deduplication and consolidation.
+
+The write engine re-reads replacement targets while holding their source
+domain locks. This prevents a concurrent source move from changing the policy
+domain between validation and archive/link mutation. Moving only between kinds
+of the same person/project preserves provenance; changing the owner or project
+is an authored replacement and receives fresh trusted attribution.
+
+Historical malformed `project/` or `person/` records are grandfathered for
+read, export, and delete only. They cannot be edited in place because their
+owner/project boundary is ambiguous. An authenticated operator must explicitly
+move one to an ordinary legacy source first, then rewrite it into a strict
+structured source if sharing is intended. This is a security decision, not an
+automatic data migration; see the
+[decision record](decisions/2026-08-13-shared-project-memory-boundary.md) and
+[playbook](memory-playbook.md).
+
 OpenCode does not use Claude Code or Codex shell hooks. The installer merges `mcp.memories` and the repo-local plugin path into `~/.config/opencode/opencode.json`; the MCP server runs as a local OpenCode server through `zsh -lc`, sourcing `~/.config/memories/env` before executing `mcp-server/index.js`. The plugin injects prompt-time recall context, searches exact project prefixes first (`opencode/{project}`, `claude-code/{project}`, `codex/{project}`, `learning/{project}`, `wip/{project}`), and logs active-search telemetry for memory tool calls with `client=opencode`. OpenCode-authored extracted memories should use `opencode/{project}` when extraction is added, but automatic extraction is not enabled by default until reliable OpenCode end-of-turn transcript access is proven.
 
 Hooks share a common library (`_lib.sh`) with logging, health checks, and log rotation. All hooks use guarded `_lib.sh` sourcing with no-op fallbacks for backward compatibility. Response hints use a JSON lookup table (`response-hints.json`) rather than shell case/esac. Hook behavior is configurable via 10 environment variables.
