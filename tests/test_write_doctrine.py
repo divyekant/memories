@@ -381,3 +381,25 @@ class TestBoundaryScopedSearch:
         assert novel is False
         assert match["id"] == 12
         assert engine.search.call_args.kwargs["k"] > 1
+
+    def test_exact_source_novelty_lookup_keeps_single_candidate_search(self, engine):
+        match = {
+            "id": 10,
+            "text": "Exact blocker",
+            "source": "project/acme/knowledge",
+            "similarity": 0.99,
+        }
+        engine.search = MagicMock(return_value=[match])
+
+        novel, result = engine.is_novel(
+            "Exact blocker",
+            threshold=0.9,
+            source_exact="project/acme/knowledge",
+        )
+
+        assert novel is False
+        assert result["id"] == 10
+        assert engine.search.call_args.kwargs == {
+            "k": 1,
+            "source_exact": "project/acme/knowledge",
+        }

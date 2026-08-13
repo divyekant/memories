@@ -2904,17 +2904,19 @@ class MemoryEngine:
         policy_filtered = (
             allowed_source_prefixes is not None or exclude_reserved_sources
         )
-        if source_exact is None and not policy_filtered:
-            # Preserve the legacy call shape for integrations that wrap or
-            # monkeypatch ``search`` without an exact-source parameter.
-            results = self.search(text, k=1)
-        else:
+        if policy_filtered:
             search_kwargs: Dict[str, Any] = {
                 "k": min(max(len(self.metadata), 10), 100),
             }
             if source_exact is not None:
                 search_kwargs["source_exact"] = source_exact
             results = self.search(text, **search_kwargs)
+        elif source_exact is None:
+            # Preserve the legacy call shape for integrations that wrap or
+            # monkeypatch ``search`` without an exact-source parameter.
+            results = self.search(text, k=1)
+        else:
+            results = self.search(text, k=1, source_exact=source_exact)
         if policy_filtered:
             results = [
                 result
