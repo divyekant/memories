@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 from fastapi.testclient import TestClient
 from auth_context import AuthContext
+from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +115,24 @@ class TestMergeMemoriesEngine:
         meta_a = engine._get_meta_by_id(0)
         assert meta_a.get("archived") is True
         assert result["archived"] == [0, 1]
+
+    def test_env_merge_cannot_cross_structured_namespace(self, engine):
+        project_id = engine.add_memories(
+            ["project fact"],
+            ["project/acme/decisions"],
+            trusted_authorship=TrustedAuthorship.principal("alice"),
+        )[0]
+        legacy_id = engine.add_memories(["legacy fact"], ["legacy/acme"])[0]
+
+        with pytest.raises(ProjectMemoryPolicyError, match="namespace"):
+            engine.merge_memories(
+                ids=[project_id, legacy_id],
+                merged_text="combined",
+                source="legacy/acme",
+            )
+
+        assert not engine._get_meta_by_id(project_id).get("archived")
+        assert not engine._get_meta_by_id(legacy_id).get("archived")
 
 
 # ---------------------------------------------------------------------------

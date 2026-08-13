@@ -31,7 +31,10 @@ function memoryId(memory) {
 }
 
 function memoryDate(memory) {
-  return memory.document_at || memory.date || memory.updated_at || memory.created_at || memory.timestamp || "";
+  // Content chronology must not be rewritten by a pin/archive/metadata touch.
+  // updated_at is only a last-resort compatibility fallback for records that
+  // have no content-bearing date at all.
+  return memory.document_at || memory.date || memory.created_at || memory.timestamp || memory.updated_at || "";
 }
 
 function evidenceScore(memory) {
@@ -758,7 +761,11 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     const pending = projectContextPromise;
     try {
       const context = await pending;
-      if (!context.active && projectContextPromise === pending) {
+      // A missing/invalid declaration is fixed for this server lifetime (the
+      // declaration was also loaded once above).  Retry inactive resolution
+      // only for a checkout that actually declared collaborative mode, where
+      // backend identity or configuration can recover independently.
+      if (!context.active && collaborativeProjectDeclared && projectContextPromise === pending) {
         projectContextPromise = undefined;
       }
       return context;

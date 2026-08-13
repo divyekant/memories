@@ -218,11 +218,11 @@ def _novelty_gate_check(
     """
     try:
         novelty_kwargs = {"threshold": _novelty_gate_threshold()}
-        if source is not None:
+        if source:
             novelty_kwargs["source_exact"] = source
         is_new, similar = engine.is_novel(fact_text, **novelty_kwargs)
         if isinstance(is_new, bool) and not is_new:
-            if source is not None and (
+            if source and (
                 not isinstance(similar, dict)
                 or str(similar.get("source", "")) != source
             ):
@@ -471,11 +471,10 @@ def run_audn(
         decisions = []
         for i, fact in enumerate(facts):
             fact_text = fact["text"] if isinstance(fact, dict) else str(fact)
-            is_new, _ = engine.is_novel(
-                fact_text,
-                threshold=0.88,
-                source_exact=source,
-            )
+            novelty_kwargs = {"threshold": 0.88}
+            if source:
+                novelty_kwargs["source_exact"] = source
+            is_new, _ = engine.is_novel(fact_text, **novelty_kwargs)
             if is_new:
                 decisions.append({"action": "ADD", "fact_index": i})
             else:
@@ -487,17 +486,17 @@ def run_audn(
     for i, fact in enumerate(facts):
         fact_text = fact["text"] if isinstance(fact, dict) else str(fact)
         try:
-            results = engine.hybrid_search(
-                fact_text,
-                k=EXTRACT_SIMILAR_PER_FACT,
-                source_exact=source,
-            )
+            search_kwargs = {"k": EXTRACT_SIMILAR_PER_FACT}
+            if source:
+                search_kwargs["source_exact"] = source
+            results = engine.hybrid_search(fact_text, **search_kwargs)
             # Defense in depth for engines/providers that do not enforce the
             # exact-source filter themselves.
-            results = [
-                r for r in results
-                if str(r.get("source", "")) == source
-            ]
+            if source:
+                results = [
+                    r for r in results
+                    if str(r.get("source", "")) == source
+                ]
             if allowed_prefixes is not None:
                 results = [
                     r for r in results

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from transcript_hygiene import redact_secrets
 
@@ -59,12 +59,13 @@ def is_valid_slug(value: Any) -> bool:
 
 
 def parse_memory_source(source: Any) -> Optional[MemorySource]:
-    """Parse a strict person/project source, or return ``None`` for legacy.
+    """Parse a strict person/project source, or return ``None`` for non-strict data.
 
-    Only exact namespace shapes are recognized.  Sources that merely begin
-    with ``person/`` or ``project/`` but have an invalid slug/kind/segment
-    count are deliberately treated as legacy sources so existing data keeps
-    its historical behavior.
+    Only exact namespace shapes are recognized.  A malformed ``project/``
+    source is returned as ``None`` for compatibility with existing records and
+    read/export/delete paths; :func:`validate_project_write` still treats that
+    reserved prefix as non-writable, so parsing it as ``None`` must not be
+    interpreted as permission to create or update it.
     """
 
     if not isinstance(source, str):
@@ -109,6 +110,89 @@ def is_person_source(source: Any) -> bool:
 
     parsed = parse_memory_source(source)
     return parsed is not None and parsed.is_person
+
+
+def is_reserved_namespace_source(source: Any) -> bool:
+    """Return whether *source* occupies a reserved project/person prefix.
+
+    This intentionally includes malformed historical records.  They remain
+    readable and deletable, but any move involving one is fail-closed until a
+    deliberate migration path is used.
+    """
+
+    return isinstance(source, str) and source.startswith(("project/", "person/"))
+
+
+def _source_policy_namespace(source: Any) -> str:
+    """Classify a source for provenance-preserving move decisions."""
+
+    parsed = parse_memory_source(source)
+    if parsed is not None:
+        return parsed.namespace
+    if is_reserved_namespace_source(source):
+        return "reserved"
+    return "legacy"
+
+
+def is_namespace_crossing_source_move(
+    current_source: Any,
+    new_source: Any,
+) -> bool:
+    """Return whether a source move crosses an authorship policy boundary."""
+
+    return (
+        new_source is not None
+        and new_source != current_source
+        and _source_policy_namespace(current_source)
+        != _source_policy_namespace(new_source)
+    )
+
+
+def is_substantive_authored_content_replacement(
+    *,
+    current_text: Any = None,
+    new_text: Any = None,
+    current_source: Any = None,
+    new_source: Any = None,
+    metadata_patch: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """Whether an edit replaces authored content and should restamp identity.
+
+    Metadata-only patches intentionally return ``False``: metadata is mutable
+    bookkeeping and must not erase contributor/provenance fields.  A changed
+    text value is substantive.  Source changes are substantive only when they
+    cross the legacy/person/project policy namespaces; ordinary moves within
+    one namespace preserve the original authorship and provenance.
+    """
+
+    del metadata_patch  # Reserved metadata is filtered by the write boundary.
+    if new_text is not None and new_text != current_text:
+        return True
+    return is_namespace_crossing_source_move(current_source, new_source)
+
+
+def validate_namespace_preserving_replacement(
+    existing_sources: Iterable[Any],
+    target_source: Any,
+    operation: str,
+) -> None:
+    """Reject supersede/merge/move operations across reserved namespaces.
+
+    The guard is intentionally independent of caller type or authentication:
+    an env-admin or unmanaged caller must not accidentally re-home a strict
+    person/project record.  Exact-source replacements remain valid and are
+    checked by the ordinary project-write policy separately.
+    """
+
+    for existing_source in existing_sources:
+        if existing_source == target_source:
+            continue
+        if is_reserved_namespace_source(existing_source) or is_reserved_namespace_source(
+            target_source
+        ):
+            raise ProjectMemoryPolicyError(
+                f"{operation} source cannot cross project or person namespace boundaries"
+            )
 
 
 def normalize_origin_client(value: Any) -> str:

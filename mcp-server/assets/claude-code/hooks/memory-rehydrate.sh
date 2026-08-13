@@ -58,7 +58,7 @@ PROJECT=$(_memories_resolve_project "${CWD:-unknown}" 2>/dev/null || basename "$
 PREFIXES="${MEMORIES_SOURCE_PREFIXES:-$(_default_source_prefixes)}"
 PROJECT_CONTEXT_JSON=$(_memories_project_context "${CWD:-}" 2>/dev/null || printf '{"active":false}')
 PROJECT_CONTEXT_ACTIVE=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')
-if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && declare -F _memories_project_declared >/dev/null && _memories_project_declared "${CWD:-}"; then
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && declare -F _memories_project_context_declared >/dev/null && _memories_project_context_declared "$PROJECT_CONTEXT_JSON"; then
   _log_warn "Collaborative project identity unavailable; skipping memory rehydration"
   exit 0
 fi

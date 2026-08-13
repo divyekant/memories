@@ -244,6 +244,29 @@ class TestKeyManagementAPI:
         assert me.json()["name"] == "Renamed Display Name"
         assert me.json()["principal_id"] == "person-c"
 
+    def test_missing_principal_is_exposed_and_can_be_assigned(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(
+            name="Display Name",
+            role="read-write",
+            prefixes=["test/*"],
+        )
+
+        before = client.get("/api/keys/me", headers={"X-API-Key": created["key"]})
+        assert before.status_code == 200
+        assert before.json().get("principal_id") is None
+
+        patched = client.patch(
+            f"/api/keys/{created['id']}",
+            json={"principal_id": "assigned-person"},
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert patched.status_code == 200
+
+        after = client.get("/api/keys/me", headers={"X-API-Key": created["key"]})
+        assert after.status_code == 200
+        assert after.json()["principal_id"] == "assigned-person"
+
     def test_env_admin_has_no_principal_id(self, app_with_keys):
         client, _, _ = app_with_keys
         resp = client.get("/api/keys/me", headers={"X-API-Key": "admin-env-key"})

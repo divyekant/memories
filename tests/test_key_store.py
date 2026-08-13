@@ -69,6 +69,76 @@ class TestPrincipalIdMigration:
         restarted = KeyStore(db_path)
         assert restarted.list_keys()[0]["principal_id"] == "stable-principal"
 
+    def test_invalid_legacy_display_name_backfills_to_null(self):
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "keys.db")
+        raw_key = "mem_" + "b" * 32
+        now = "2026-08-11T00:00:00Z"
+
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                key_hash TEXT UNIQUE NOT NULL,
+                key_prefix TEXT NOT NULL,
+                role TEXT NOT NULL,
+                prefixes TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                usage_count INTEGER DEFAULT 0,
+                revoked INTEGER DEFAULT 0
+            );
+            """
+        )
+        conn.execute(
+            """INSERT INTO api_keys
+               (id, name, key_hash, key_prefix, role, prefixes, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "legacy-display-id",
+                "Legacy Display Name",
+                KeyStore.hash_key(raw_key),
+                raw_key[:8],
+                "read-write",
+                json.dumps(["legacy/*"]),
+                now,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        store = KeyStore(db_path)
+
+        assert store.list_keys()[0]["principal_id"] is None
+        assert store.lookup(raw_key)["principal_id"] is None
+
+    def test_startup_normalizes_invalid_backfill_but_preserves_valid_principal(self):
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "keys.db")
+        store = KeyStore(db_path)
+        invalid = store.create_key("Legacy Display Name", "read-write", ["legacy/*"])
+        valid = store.create_key(
+            "Another Display Name",
+            "read-write",
+            ["legacy/*"],
+            principal_id="stable-principal",
+        )
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "UPDATE api_keys SET principal_id = ? WHERE id = ?",
+            ("Legacy Display Name", invalid["id"]),
+        )
+        conn.commit()
+        conn.close()
+
+        restarted = KeyStore(db_path)
+        principals = {item["id"]: item["principal_id"] for item in restarted.list_keys()}
+        assert principals[invalid["id"]] is None
+        assert principals[valid["id"]] == "stable-principal"
+
 
 class TestKeyGeneration:
     def test_key_has_mem_prefix_and_36_chars(self):
@@ -112,12 +182,13 @@ class TestCreateKey:
         assert result["principal_id"] == "person-a"
         assert self.ks.list_keys()[0]["principal_id"] == "person-a"
 
-    def test_compatibility_default_preserves_display_name_exactly(self):
-        # Legacy callers may use arbitrary display names.  Do not silently
-        # normalize those identities; a later project write must fail closed
-        # until an administrator assigns an explicit valid principal slug.
+    def test_omitted_principal_does_not_use_invalid_display_name(self):
         result = self.ks.create_key("Legacy Display Name", "read-only", ["proj/"])
-        assert result["principal_id"] == "Legacy Display Name"
+        assert result["principal_id"] is None
+
+    def test_omitted_principal_uses_name_when_name_is_valid_slug(self):
+        result = self.ks.create_key("legacy-key", "read-only", ["proj/"])
+        assert result["principal_id"] == "legacy-key"
 
     def test_rejects_invalid_explicit_principal_id(self):
         with pytest.raises(ValueError, match="principal_id"):

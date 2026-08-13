@@ -35,7 +35,12 @@ from audit_log import AuditLog, NullAuditLog
 from usage_tracker import UsageTracker, NullTracker
 from extraction_profiles import ExtractionProfiles
 from transcript_hygiene import clean_transcript
-from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
+from project_memory import (
+    ProjectMemoryPolicyError,
+    TrustedAuthorship,
+    is_substantive_authored_content_replacement,
+    validate_namespace_preserving_replacement,
+)
 
 # -- Logging ------------------------------------------------------------------
 
@@ -685,11 +690,13 @@ def _run_fallback_extraction(
         }
 
     for fact in facts:
-        is_new, similar = memory.is_novel(
-            fact,
-            threshold=EXTRACT_FALLBACK_NOVELTY_THRESHOLD,
-            source_exact=source_value,
-        )
+        novelty_kwargs = {"threshold": EXTRACT_FALLBACK_NOVELTY_THRESHOLD}
+        # Managed project/person writes are isolated to their exact source.
+        # Env-admin and legacy fallback calls retain historical global dedup,
+        # matching MemoryEngine.add_memories().
+        if trusted_authorship is not None:
+            novelty_kwargs["source_exact"] = source_value
+        is_new, similar = memory.is_novel(fact, **novelty_kwargs)
         if is_new:
             add_kwargs = {
                 "texts": [fact],
@@ -2802,8 +2809,10 @@ async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request
     ):
         raise HTTPException(status_code=400, detail="At least one field must be provided")
     try:
-        if auth.prefixes is not None:
+        existing = None
+        if auth.prefixes is not None or trusted_authorship is not None:
             existing = memory.get_memory(memory_id)
+        if auth.prefixes is not None:
             _require_write(auth, existing.get("source", ""))
             if request_body.source is not None:
                 _require_write(auth, request_body.source)
@@ -2818,13 +2827,12 @@ async def patch_memory(memory_id: int, request_body: PatchMemoryRequest, request
         # A substantive project replacement is authored by the current
         # authenticated editor.  Pin/archive-only operations intentionally do
         # not restamp authorship.
-        if (
-            trusted_authorship is not None
-            and (
-                request_body.text is not None
-                or request_body.source is not None
-                or request_body.metadata_patch
-            )
+        if trusted_authorship is not None and is_substantive_authored_content_replacement(
+            current_text=(existing or {}).get("text"),
+            new_text=request_body.text,
+            current_source=(existing or {}).get("source"),
+            new_source=request_body.source,
+            metadata_patch=request_body.metadata_patch,
         ):
             update_kwargs["apply_trusted_authorship"] = True
         result = memory.update_memory(
@@ -3017,18 +3025,28 @@ async def rename_folder(request_body: RenameFolderRequest, request: Request):
         source = m.get("source", "")
         if source == old_prefix or source.startswith(old_prefix + "/"):
             new_source = new_prefix + source[len(old_prefix):]
-            targets.append((m["id"], new_source))
+            targets.append((m["id"], source, new_source))
 
     if not targets:
         raise HTTPException(status_code=404, detail=f"No memories found with folder prefix '{old_prefix}'")
 
+    # Preflight every target before mutating any record.  Folder rename has no
+    # transaction/rollback primitive, so reject all moves touching reserved
+    # project/person namespaces up front; valid same-policy legacy moves keep
+    # their original authorship and provenance.
+    for _memory_id, current_source, new_source in targets:
+        try:
+            validate_namespace_preserving_replacement(
+                [current_source], new_source, "folder rename"
+            )
+        except ProjectMemoryPolicyError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
     updated = 0
     errors = 0
-    for memory_id, new_source in targets:
+    for memory_id, _current_source, new_source in targets:
         try:
             update_kwargs = {"memory_id": memory_id, "source": new_source}
-            if trusted_authorship is not None:
-                update_kwargs["apply_trusted_authorship"] = True
             memory.update_memory(
                 **_with_trusted_authorship(update_kwargs, trusted_authorship)
             )

@@ -207,6 +207,33 @@ class TestAddWithDoctrine:
 
         assert not engine._get_meta_by_id(old_id).get("archived")
 
+    def test_env_supersede_cannot_cross_structured_namespace(self, engine):
+        old_id = engine.add_memories(
+            [T78],
+            ["project/acme/decisions"],
+            trusted_authorship=TrustedAuthorship.principal("alice"),
+        )[0]
+
+        with pytest.raises(ProjectMemoryPolicyError, match="namespace"):
+            engine.supersede(old_id, T79, source="legacy/acme")
+
+        assert not engine._get_meta_by_id(old_id).get("archived")
+
+    def test_env_supersede_can_keep_exact_structured_person_source(self, engine):
+        old_id = engine.add_memories(
+            [T78],
+            ["person/alice/acme/knowledge"],
+        )[0]
+
+        result = engine.supersede(
+            old_id,
+            T79,
+            source="person/alice/acme/knowledge",
+        )
+
+        assert engine._get_meta_by_id(old_id)["archived"] is True
+        assert engine._get_meta_by_id(result["new_id"])["source"] == "person/alice/acme/knowledge"
+
     def test_trusted_supersede_can_move_between_authorized_legacy_sources(self, engine):
         trusted = TrustedAuthorship.principal("alice")
         old_id = engine.add_memories(

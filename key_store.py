@@ -46,13 +46,40 @@ class KeyStore:
         columns = {
             row[1] for row in conn.execute("PRAGMA table_info(api_keys)").fetchall()
         }
+        added_principal_column = False
         if "principal_id" not in columns:
             # Existing installations have no principal identity column.  Keep
-            # the migration additive, then backfill from the immutable legacy
-            # display name below.
+            # the migration additive, then backfill only names that already
+            # satisfy the principal slug contract below.
             conn.execute("ALTER TABLE api_keys ADD COLUMN principal_id TEXT")
-        conn.execute(
-            "UPDATE api_keys SET principal_id = name WHERE principal_id IS NULL"
+            added_principal_column = True
+
+        if added_principal_column:
+            rows = conn.execute(
+                "SELECT id, name FROM api_keys WHERE principal_id IS NULL"
+            ).fetchall()
+            conn.executemany(
+                "UPDATE api_keys SET principal_id = ? WHERE id = ?",
+                [
+                    (row["name"], row["id"])
+                    for row in rows
+                    if is_valid_slug(row["name"])
+                ],
+            )
+
+        # A previous migration iteration persisted arbitrary display names as
+        # principals.  Normalize those values on every startup, while
+        # retaining valid explicit/stored identities unchanged.
+        rows = conn.execute(
+            "SELECT id, principal_id FROM api_keys WHERE principal_id IS NOT NULL"
+        ).fetchall()
+        conn.executemany(
+            "UPDATE api_keys SET principal_id = NULL WHERE id = ?",
+            [
+                (row["id"],)
+                for row in rows
+                if not is_valid_slug(row["principal_id"])
+            ],
         )
         conn.commit()
         conn.close()
@@ -92,13 +119,17 @@ class KeyStore:
         if role not in VALID_ROLES:
             raise ValueError(f"Invalid role '{role}'. Must be one of: {VALID_ROLES}")
 
-        # Keep the pre-principal API compatible: callers that omit the new
-        # field retain the key name as their identity.  Explicit identities
-        # are strict path-safe slugs because they are later used in namespace
-        # sources and trusted authorship.
-        effective_principal_id = name if principal_id is None else principal_id
-        if principal_id is not None and not is_valid_slug(principal_id):
-            raise ValueError("principal_id must be a valid lowercase slug")
+        # Explicit identities are strict path-safe slugs because they are
+        # later used in namespace sources and trusted authorship.  An omitted
+        # identity may use the display name only when it is already a valid
+        # slug; never normalize arbitrary names because that can collide or
+        # silently change identity.
+        if principal_id is not None:
+            if not is_valid_slug(principal_id):
+                raise ValueError("principal_id must be a valid lowercase slug")
+            effective_principal_id = principal_id
+        else:
+            effective_principal_id = name if is_valid_slug(name) else None
 
         # Admin keys ignore prefix scoping
         if role == "admin":

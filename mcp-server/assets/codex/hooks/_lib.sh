@@ -323,16 +323,24 @@ _memories_project_file() {
   printf '%s' "$file"
 }
 
-# True only when this repository boundary contains a valid collaborative
-# declaration.  Hooks use this after context resolution to distinguish a
-# legacy checkout (no declaration, keep legacy behavior) from a declared
-# checkout whose authenticated principal is temporarily unavailable (skip all
-# project-aware reads and automatic writes rather than falling back broadly).
-_memories_project_declared() {
-  local cwd="${1:-${CWD:-$PWD}}" file parsed
-  file=$(_memories_project_file "$cwd" 2>/dev/null) || return 1
-  parsed=$(_memories_parse_project_yaml "$file" 2>/dev/null) || return 1
-  [ "$(printf '%s' "$parsed" | jq -r '.ok // false' 2>/dev/null)" = "true" ]
+# Determine declaration presence from the context result already computed by
+# the hook.  This avoids resolving the repository root and parsing project.yaml
+# a second time on every invocation while preserving fail-closed behavior for
+# a valid declaration whose backend identity is unavailable.
+_memories_project_context_declared() {
+  local context="${1:-}" active reason
+  [ -n "$context" ] || context='{}'
+  active=$(printf '%s' "$context" | jq -r '.active // false' 2>/dev/null) || return 1
+  [ "$active" = "true" ] && return 0
+  reason=$(printf '%s' "$context" | jq -r '.reason // "missing"' 2>/dev/null) || return 1
+  case "$reason" in
+    missing|malformed|unreadable|unknown_field|missing_field|invalid_project_id|shared_memory_not_true)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
 }
 
 _memories_project_backends_file() {

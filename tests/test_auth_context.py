@@ -249,6 +249,17 @@ class TestToMeResponse:
         assert resp["name"] == "Display Name"
         assert resp["principal_id"] == "person-a"
 
+    def test_missing_managed_principal_is_explicitly_null(self):
+        ctx = AuthContext(
+            role="read-write",
+            prefixes=["proj/*"],
+            key_type="managed",
+            key_name="Display Name",
+        )
+        resp = ctx.to_me_response()
+        assert "principal_id" in resp
+        assert resp["principal_id"] is None
+
     def test_no_id_or_name_when_not_set(self):
         ctx = AuthContext(role="admin", prefixes=None, key_type="env")
         resp = ctx.to_me_response()

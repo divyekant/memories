@@ -65,7 +65,7 @@ if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
 fi
 PROJECT_CONTEXT_JSON=$(_memories_project_context "$CWD" 2>/dev/null || printf '{"active":false}')
 PROJECT_CONTEXT_ACTIVE=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')
-if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && declare -F _memories_project_declared >/dev/null && _memories_project_declared "$CWD"; then
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && declare -F _memories_project_context_declared >/dev/null && _memories_project_context_declared "$PROJECT_CONTEXT_JSON"; then
   _log_warn "Collaborative project identity unavailable; skipping subagent memory recall"
   exit 0
 fi

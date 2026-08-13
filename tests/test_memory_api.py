@@ -168,6 +168,40 @@ def test_patch_substantive_project_edit_restamps_current_trusted_authorship(clie
     assert kwargs["apply_trusted_authorship"] is True
 
 
+def test_patch_metadata_only_does_not_request_authorship_restamp(client):
+    test_client, mock_engine = client
+    import app as app_module
+    from project_memory import TrustedAuthorship
+
+    mock_engine.get_memory.return_value = {
+        "id": 4,
+        "text": "Alice's project fact",
+        "source": "project/acme/knowledge",
+        "author": "system",
+        "contributors": ["alice"],
+        "source_memory_ids": [17],
+    }
+    mock_engine.update_memory.return_value = {
+        "id": 4,
+        "updated_fields": ["metadata"],
+        "author": "system",
+        "contributors": ["alice"],
+        "source_memory_ids": [17],
+    }
+    bob = TrustedAuthorship.principal("bob", "codex")
+    with patch.object(app_module, "_trusted_authorship", return_value=bob):
+        response = test_client.patch(
+            "/memory/4",
+            json={"metadata_patch": {"kept": True}},
+            headers={"X-API-Key": "test-key"},
+        )
+
+    assert response.status_code == 200
+    kwargs = mock_engine.update_memory.call_args.kwargs
+    assert kwargs["trusted_authorship"] == bob
+    assert "apply_trusted_authorship" not in kwargs
+
+
 def test_env_admin_can_patch_project_lifecycle_without_authorship_stamp(client):
     test_client, mock_engine = client
     mock_engine.get_memory.return_value = {
@@ -217,6 +251,31 @@ def test_managed_dedup_blocker_lookup_is_scoped_to_destination_source(client):
 
     assert response.status_code == 200
     assert mock_engine.is_novel.call_args.kwargs["source_exact"] == "project/acme/knowledge"
+
+
+def test_legacy_fallback_dedup_remains_global_for_env_admin(client, monkeypatch):
+    _, mock_engine = client
+    import app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "_fallback_extract_facts",
+        lambda _messages: ["A durable decision was recorded for this project"],
+    )
+    mock_engine.is_novel.return_value = (
+        False,
+        {"id": 8, "source": "other/source", "similarity": 0.99},
+    )
+
+    app_module._run_fallback_extraction(
+        "ignored transcript",
+        "legacy/source",
+        "stop",
+        None,
+    )
+
+    kwargs = mock_engine.is_novel.call_args.kwargs
+    assert "source_exact" not in kwargs
 
 
 def test_get_memory_batch(client):

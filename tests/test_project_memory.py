@@ -169,6 +169,82 @@ def test_metadata_patch_cannot_spoof_or_replace_existing_author(engine):
     assert meta["kept"] is True
 
 
+def test_metadata_only_patch_preserves_existing_project_provenance(engine):
+    memory_id = engine.add_memories(
+        ["Shared project fact"],
+        ["project/fplguru/knowledge"],
+        trusted_authorship=TrustedAuthorship.system(
+            contributors=["alice", "bob"],
+            source_memory_ids=[7, 9],
+            origin_client="manual",
+        ),
+    )[0]
+
+    engine.update_memory(
+        memory_id,
+        metadata_patch={"kept": True},
+        trusted_authorship=TrustedAuthorship.principal("carol", "codex"),
+    )
+
+    meta = engine._get_meta_by_id(memory_id)
+    assert meta["author"] == "system"
+    assert meta["origin_client"] == "manual"
+    assert meta["contributors"] == ["alice", "bob"]
+    assert meta["source_memory_ids"] == [7, 9]
+    assert meta["kept"] is True
+
+
+def test_same_policy_source_move_preserves_project_provenance(engine):
+    memory_id = engine.add_memories(
+        ["Shared project fact"],
+        ["project/fplguru/knowledge"],
+        trusted_authorship=TrustedAuthorship.system(
+            contributors=["alice"],
+            source_memory_ids=[7],
+            origin_client="manual",
+        ),
+    )[0]
+
+    engine.update_memory(
+        memory_id,
+        source="project/fplguru/state",
+        trusted_authorship=TrustedAuthorship.principal("carol", "codex"),
+    )
+
+    meta = engine._get_meta_by_id(memory_id)
+    assert meta["source"] == "project/fplguru/state"
+    assert meta["author"] == "system"
+    assert meta["origin_client"] == "manual"
+    assert meta["contributors"] == ["alice"]
+    assert meta["source_memory_ids"] == [7]
+
+
+def test_namespace_crossing_source_move_requires_trusted_authorship(engine):
+    memory_id = engine.add_memories(["Private fact"], ["legacy/fplguru"])[0]
+
+    with pytest.raises(ProjectMemoryPolicyError, match="trusted"):
+        engine.update_memory(
+            memory_id,
+            source="person/alice/fplguru/knowledge",
+        )
+
+    assert engine._get_meta_by_id(memory_id)["source"] == "legacy/fplguru"
+
+
+def test_legacy_text_and_source_update_remains_unmanaged_compatible(engine):
+    memory_id = engine.add_memories(["Old fact"], ["legacy/fplguru"])[0]
+
+    engine.update_memory(
+        memory_id,
+        text="New fact",
+        source="codex/fplguru",
+    )
+
+    meta = engine._get_meta_by_id(memory_id)
+    assert meta["text"] == "New fact"
+    assert meta["source"] == "codex/fplguru"
+
+
 def test_source_move_into_project_requires_and_applies_trusted_authorship(engine):
     memory_id = engine.add_memories(["fact"], ["legacy/source"])[0]
     # Simulate a pre-upgrade legacy point that predates reserved-field
@@ -302,6 +378,22 @@ def test_text_update_rejects_preupgrade_malformed_reserved_project_source(engine
         )
 
     assert engine._get_meta_by_id(memory_id)["text"] == "safe legacy fact"
+
+
+def test_preupgrade_malformed_project_source_can_be_explicitly_migrated(engine):
+    memory_id = engine.add_memories(["historical fact"], ["legacy/source"])[0]
+    engine._get_meta_by_id(memory_id)["source"] = "project/decisions.md"
+    engine.qdrant_store.set_payload(memory_id, {"source": "project/decisions.md"})
+
+    engine.update_memory(
+        memory_id,
+        source="legacy/project-decisions",
+        trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+    )
+
+    meta = engine._get_meta_by_id(memory_id)
+    assert meta["source"] == "legacy/project-decisions"
+    assert meta["author"] == "alice"
 
 
 def test_text_update_revalidates_locked_malformed_reserved_source(engine, monkeypatch):

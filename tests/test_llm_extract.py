@@ -296,6 +296,60 @@ class TestAUDNCycle:
         )
         assert decisions[0]["action"] == "NOOP"
 
+    def test_ollama_no_source_uses_unscoped_novelty_lookup(self):
+        """Legacy/env-admin extraction keeps the historical global lookup."""
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = False
+
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (
+            False,
+            {"id": 5, "text": "Existing legacy fact", "source": "legacy/project"},
+        )
+
+        decisions, _, _ = run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "Existing legacy fact", "category": "detail"}],
+            source="",
+        )
+
+        assert decisions[0]["action"] == "NOOP"
+        assert "source_exact" not in mock_engine.is_novel.call_args.kwargs
+
+    def test_provider_no_source_keeps_unscoped_similar_memory_candidates(self):
+        """Provider AUDN must not filter all candidates when destination is empty."""
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {"action": "NOOP", "fact_index": 0, "existing_id": 7},
+        ]))
+
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {
+                "id": 7,
+                "text": "Existing legacy fact",
+                "source": "legacy/project",
+                "similarity": 0.99,
+            },
+        ]
+
+        run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "Existing legacy fact", "category": "detail"}],
+            source="",
+        )
+
+        assert "source_exact" not in mock_engine.hybrid_search.call_args.kwargs
+        prompt = mock_provider.complete.call_args[0][1]
+        assert "Existing legacy fact" in prompt
+
     def test_audn_prompt_truncates_similar_memory_text(self):
         from llm_extract import run_audn, EXTRACT_SIMILAR_TEXT_CHARS
 
@@ -536,6 +590,28 @@ class TestExecuteActions:
 
         assert result["stored_count"] == 1
         assert mock_engine.add_memories.call_args.kwargs["trusted_authorship"] == trusted
+
+    def test_novelty_gate_no_source_accepts_unscoped_duplicate(self):
+        """The legacy novelty gate must retain duplicate detection across sources."""
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (
+            False,
+            {"id": 12, "text": "Existing legacy fact", "source": "legacy/project", "similarity": 0.99},
+        )
+
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{"text": "Existing legacy fact", "category": "detail"}],
+            source="",
+        )
+
+        assert result["actions"][0]["action"] == "noop"
+        assert result["actions"][0]["existing_id"] == 12
+        assert "source_exact" not in mock_engine.is_novel.call_args.kwargs
+        mock_engine.add_memories.assert_not_called()
 
     def test_execute_update_rejects_project_credential_before_archiving(self, tmp_path):
         from llm_extract import execute_actions

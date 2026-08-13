@@ -68,6 +68,39 @@ def test_packaged_claude_and_codex_project_declaration_contracts_match(tmp_path:
             assert claude["ok"] is False
 
 
+@pytest.mark.parametrize(
+    ("context", "expected"),
+    [
+        ({"active": True, "reason": "active"}, True),
+        ({"active": False, "reason": "principal_unreachable"}, True),
+        ({"active": False, "reason": "missing_principal"}, True),
+        ({"active": False, "reason": "missing"}, False),
+        ({"active": False, "reason": "malformed"}, False),
+        ({"active": False, "reason": "unknown_field"}, False),
+    ],
+)
+def test_project_context_encodes_whether_a_valid_declaration_exists(
+    context: dict[str, object], expected: bool
+) -> None:
+    outputs = []
+    for lib in (HOOKS_DIR / "_lib.sh", CODEX_HOOKS_DIR / "_lib.sh"):
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1" 2>/dev/null; _memories_project_context_declared "$2"',
+                "_",
+                str(lib),
+                json.dumps(context),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        outputs.append(result.returncode == 0)
+    assert outputs == [expected, expected]
+
+
 def _write_fake_curl(bin_dir: Path) -> Path:
     script = bin_dir / "curl"
     script.write_text(

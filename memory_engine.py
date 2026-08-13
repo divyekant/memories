@@ -31,9 +31,11 @@ from project_memory import (
     RESERVED_METADATA_FIELDS,
     ProjectMemoryPolicyError,
     TrustedAuthorship,
-    is_person_source,
+    is_namespace_crossing_source_move,
     is_project_source,
+    is_substantive_authored_content_replacement,
     normalize_origin_client,
+    validate_namespace_preserving_replacement,
     validate_project_write,
 )
 
@@ -927,20 +929,9 @@ class MemoryEngine:
         previous_text = old_meta.get("text", "")
         use_source = source or old_meta.get("source", "")
         old_source = old_meta.get("source", "")
-        crosses_structured_namespace = (
-            (isinstance(old_source, str) and old_source.startswith("project/"))
-            or (isinstance(use_source, str) and use_source.startswith("project/"))
-            or is_person_source(old_source)
-            or is_person_source(use_source)
+        validate_namespace_preserving_replacement(
+            [old_source], use_source, "supersede"
         )
-        if (
-            trusted_authorship is not None
-            and use_source != old_source
-            and crosses_structured_namespace
-        ):
-            raise ProjectMemoryPolicyError(
-                "trusted supersede source cannot cross project or person namespace boundaries"
-            )
         if is_project_source(old_source):
             _validate_project_write(new_text, old_source, trusted_authorship)
         _validate_project_write(new_text, use_source, trusted_authorship)
@@ -1178,6 +1169,9 @@ class MemoryEngine:
         for mid in ids:
             if not self._id_exists(mid):
                 raise ValueError(f"Memory {mid} not found")
+
+        source_values = [self._get_meta_by_id(mid).get("source", "") for mid in ids]
+        validate_namespace_preserving_replacement(source_values, source, "merge")
 
         for mid in ids:
             source_value = self._get_meta_by_id(mid).get("source", "")
@@ -1447,21 +1441,31 @@ class MemoryEngine:
         current_is_project = is_project_source(current_source)
         target_is_project = is_project_source(target_source)
         touches_project = current_is_project or target_is_project
-        source_enters_project = target_is_project and not current_is_project
-        replaces_authored_content = (
-            text is not None
-            or source is not None
-            or bool(metadata_patch)
-            or apply_trusted_authorship
+        replaces_authored_content = is_substantive_authored_content_replacement(
+            current_text=current.get("text", ""),
+            new_text=text,
+            current_source=current_source,
+            new_source=source,
+            metadata_patch=metadata_patch,
+        )
+        content_update_requested = (
+            text is not None or source is not None or bool(metadata_patch)
         )
         validates_project_target = source is not None or (
             isinstance(target_source, str)
             and target_source.startswith("project/")
-            and replaces_authored_content
+            and content_update_requested
         )
         if validates_project_target:
             effective_text = text if text is not None else current.get("text", "")
             _validate_project_write(effective_text, target_source, trusted_authorship)
+        namespace_crossing = is_namespace_crossing_source_move(
+            current_source, source
+        )
+        if namespace_crossing and trusted_authorship is None:
+            raise ProjectMemoryPolicyError(
+                "namespace-crossing replacements require trusted principal or system authorship"
+            )
         if apply_trusted_authorship or (touches_project and replaces_authored_content):
             if trusted_authorship is None:
                 raise ProjectMemoryPolicyError(
@@ -1496,34 +1500,55 @@ class MemoryEngine:
                     is_project_source(locked_current_source)
                     or is_project_source(locked_target_source)
                 )
-                source_enters_project = (
-                    is_project_source(locked_target_source)
-                    and not is_project_source(locked_current_source)
+                locked_replaces_authored_content = (
+                    is_substantive_authored_content_replacement(
+                        current_text=meta.get("text", ""),
+                        new_text=text,
+                        current_source=locked_current_source,
+                        new_source=source,
+                        metadata_patch=metadata_patch,
+                    )
+                    or apply_trusted_authorship
+                )
+                locked_namespace_crossing = is_namespace_crossing_source_move(
+                    locked_current_source, source
                 )
                 validates_locked_project_target = source is not None or (
                     isinstance(locked_target_source, str)
                     and locked_target_source.startswith("project/")
-                    and replaces_authored_content
+                    and content_update_requested
                 )
                 if validates_locked_project_target:
                     locked_text = text if text is not None else meta.get("text", "")
                     _validate_project_write(
                         locked_text, locked_target_source, trusted_authorship
                     )
+                if locked_namespace_crossing and trusted_authorship is None:
+                    raise ProjectMemoryPolicyError(
+                        "namespace-crossing replacements require trusted principal or system authorship"
+                    )
                 if apply_trusted_authorship or (
-                    locked_touches_project and replaces_authored_content
+                    locked_touches_project and locked_replaces_authored_content
                 ):
                     if trusted_authorship is None:
                         raise ProjectMemoryPolicyError(
                             "project-namespace memories require trusted principal or system authorship"
                         )
+                should_apply_trusted_authorship = (
+                    apply_trusted_authorship
+                    or locked_namespace_crossing
+                    or (
+                        locked_touches_project
+                        and locked_replaces_authored_content
+                    )
+                )
 
                 if source_only:
                     meta["source"] = source
-                    if apply_trusted_authorship or source_enters_project:
-                        # Source replacement follows the same authorship
-                        # contract as the general update path, including
-                        # moves out to an authorized legacy namespace.
+                    if should_apply_trusted_authorship:
+                        # Namespace-crossing source replacement and explicit
+                        # trusted application are authored edits.  Same-policy
+                        # folder/source moves preserve the existing identity.
                         for reserved in RESERVED_METADATA_FIELDS:
                             meta.pop(reserved, None)
                         meta.update(trusted_authorship.as_metadata())
@@ -1557,7 +1582,7 @@ class MemoryEngine:
                         meta[key] = value
                     updated_fields.append("metadata")
 
-                if apply_trusted_authorship or source_enters_project:
+                if should_apply_trusted_authorship:
                     if trusted_authorship is None:
                         raise ProjectMemoryPolicyError(
                             "trusted authorship is required for replacement updates"
@@ -3208,6 +3233,7 @@ class MemoryEngine:
                 "source": source,
                 "created_at": record.get("created_at", ""),
                 "updated_at": record.get("updated_at", ""),
+                "_import_line": idx,
             }
             custom = record.get("custom_fields")
             if custom and isinstance(custom, dict):
@@ -3215,12 +3241,23 @@ class MemoryEngine:
             parsed.append(entry)
 
         # Validate every exact project record before any strategy can delete,
-        # replace, or add data.  The common add boundary repeats this check,
-        # but this preflight keeps smart imports fail-closed before mutation.
+        # replace, or add data.  A malformed/pre-existing reserved source is a
+        # record-level compatibility error: retain valid records and report
+        # the rejected line instead of aborting the entire import.
+        validated: List[Dict[str, Any]] = []
         for entry in parsed:
-            _validate_project_write(
-                entry["text"], entry["source"], trusted_authorship
-            )
+            line_number = entry.pop("_import_line", 0)
+            try:
+                _validate_project_write(
+                    entry["text"], entry["source"], trusted_authorship
+                )
+            except ProjectMemoryPolicyError as exc:
+                result["errors"].append(
+                    {"line": line_number, "error": str(exc)}
+                )
+                continue
+            validated.append(entry)
+        parsed = validated
 
         # --- backup ---
         backup_name: Optional[str] = None

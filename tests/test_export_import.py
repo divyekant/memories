@@ -169,6 +169,22 @@ class TestImportMemories:
         assert result["imported"] == 0
         assert len(result["errors"]) == 2
 
+    def test_import_collects_malformed_reserved_project_record_error(self, engine):
+        header = json.dumps({"_header": True, "count": 2, "version": "2.0.0"})
+        malformed = json.dumps({
+            "text": "old shared record",
+            "source": "project/fplguru/custom",
+        })
+        valid = json.dumps({"text": "valid legacy record", "source": "legacy/ok"})
+
+        result = engine.import_memories([header, malformed, valid], strategy="add")
+
+        assert result["imported"] == 1
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["line"] == 2
+        assert "project sources must be" in result["errors"][0]["error"]
+        assert [m["source"] for m in engine.metadata] == ["legacy/ok"]
+
 
 class TestImportSmart:
     def test_smart_skips_exact_duplicates(self, engine):

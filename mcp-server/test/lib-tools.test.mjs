@@ -592,6 +592,97 @@ test('project-aware tools retry an inactive principal resolution and cache recov
   }
 });
 
+test('legacy server caches a missing project declaration for its lifetime', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-missing-cache-'));
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    calls.push({ url: requestUrl, body: options.body ? JSON.parse(options.body) : null });
+    if (requestUrl.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({
+        type: 'managed',
+        principal_id: 'alice',
+        prefixes: [],
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ results: [], count: 0 }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    await client.callTool({ name: 'memory_search', arguments: { query: 'first', k: 3 } });
+    await mkdir(join(dir, '.memories'), { recursive: true });
+    await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+    await client.callTool({ name: 'memory_search', arguments: { query: 'second', k: 3 } });
+
+    assert.equal(calls.filter((call) => call.url.endsWith('/api/keys/me')).length, 0);
+    assert.deepEqual(
+      calls.filter((call) => call.url.endsWith('/search')).map((call) => call.body),
+      [
+        { query: 'first', k: 3, hybrid: true, feedback_weight: 0.1, graph_weight: 0.1 },
+        { query: 'second', k: 3, hybrid: true, feedback_weight: 0.1, graph_weight: 0.1 },
+      ],
+    );
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('project evidence recency ignores metadata-only updated_at timestamps', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-evidence-created-at-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const memories = [
+    {
+      id: 1,
+      source: 'project/shared-demo/knowledge',
+      text: 'port is 8900',
+      similarity: 0.95,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-08-13T00:00:00Z',
+      pinned: true,
+    },
+    {
+      id: 2,
+      source: 'project/shared-demo/knowledge',
+      text: 'port is now 9000',
+      similarity: 0.85,
+      created_at: '2026-08-01T00:00:00Z',
+      updated_at: '2026-08-01T00:00:00Z',
+    },
+  ];
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    if (requestUrl.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({ type: 'managed', principal_id: 'alice', prefixes: [] }), { status: 200 });
+    }
+    const body = options.body ? JSON.parse(options.body) : {};
+    const results = memories.filter((memory) => (
+      memory.source === body.source_prefix || memory.source.startsWith(`${body.source_prefix}/`)
+    ));
+    return new Response(JSON.stringify({ results, count: results.length }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({
+      name: 'memory_evidence',
+      arguments: { query: 'current port', k: 5 },
+    });
+    const rendered = result.content.map((item) => item.text || '').join('\n');
+    assert.match(rendered, /Current candidate:\n\[2\] project\/shared-demo\/knowledge 2026-08-01/);
+    assert.match(rendered, /Older evidence:\n\[1\] project\/shared-demo\/knowledge 2026-01-01/);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('project context fails closed for missing, malformed, and non-object backend config', async () => {
   const fixtures = [
     { name: 'missing', source: null, reason: 'no_backends' },
