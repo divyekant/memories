@@ -137,11 +137,25 @@ def test_codex_install_writes_standalone_hooks_json(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "PostToolUse -> memory-observe.sh (matcher: mcp__.*__memory_|exec)" in result.stdout
-    assert "PreCompact -> memory-flush.sh" not in result.stdout
+    expected_hook_scripts = {
+        "SessionStart": "memory-recall.sh",
+        "UserPromptSubmit": "memory-query.sh",
+        "Stop": "memory-extract.sh",
+        "PostToolUse": "memory-observe.sh",
+        "PreToolUse": "memory-guard.sh",
+        "PreCompact": "memory-flush.sh",
+        "PostCompact": "memory-rehydrate.sh",
+        "SubagentStart": "memory-subagent-recall.sh",
+        "SubagentStop": "memory-subagent-capture.sh",
+        "SessionEnd": "memory-commit.sh",
+    }
+    for event, script in expected_hook_scripts.items():
+        assert f"{event} -> {script}" in result.stdout
 
     # Hooks config goes to standalone hooks.json (not settings.json)
     hooks_json = json.loads((home / ".codex" / "hooks.json").read_text())
     hooks = hooks_json["hooks"]
+    assert set(hooks) == set(expected_hook_scripts)
     assert (
         hooks["SessionStart"][0]["hooks"][0]["command"]
         == f"{home}/.codex/hooks/memory/memory-recall.sh"
@@ -161,6 +175,26 @@ def test_codex_install_writes_standalone_hooks_json(tmp_path: Path) -> None:
     assert (
         hooks["PostToolUse"][0]["hooks"][0]["command"]
         == f"{home}/.codex/hooks/memory/memory-observe.sh"
+    )
+    assert (
+        hooks["PreCompact"][0]["hooks"][0]["command"]
+        == f"{home}/.codex/hooks/memory/memory-flush.sh"
+    )
+    assert (
+        hooks["PostCompact"][0]["hooks"][0]["command"]
+        == f"{home}/.codex/hooks/memory/memory-rehydrate.sh"
+    )
+    assert (
+        hooks["SubagentStart"][0]["hooks"][0]["command"]
+        == f"{home}/.codex/hooks/memory/memory-subagent-recall.sh"
+    )
+    assert (
+        hooks["SubagentStop"][0]["hooks"][0]["command"]
+        == f"{home}/.codex/hooks/memory/memory-subagent-capture.sh"
+    )
+    assert (
+        hooks["SessionEnd"][0]["hooks"][0]["command"]
+        == f"{home}/.codex/hooks/memory/memory-commit.sh"
     )
 
     # settings.json has permissions only (no hooks)
@@ -182,8 +216,33 @@ def test_codex_install_writes_standalone_hooks_json(tmp_path: Path) -> None:
     assert (hook_dir / "memory-extract.sh").exists()
     assert (hook_dir / "memory-guard.sh").exists()
     assert (hook_dir / "memory-observe.sh").exists()
+    assert (hook_dir / "memory-flush.sh").exists()
+    assert (hook_dir / "memory-rehydrate.sh").exists()
+    assert (hook_dir / "memory-subagent-recall.sh").exists()
+    assert (hook_dir / "memory-subagent-capture.sh").exists()
+    assert (hook_dir / "memory-commit.sh").exists()
     assert (hook_dir / "_lib.sh").exists()
     assert (hook_dir / "response-hints.json").exists()
+
+
+def test_codex_installer_does_not_auto_approve_feedback_writes(tmp_path: Path) -> None:
+    install_script = _prepare_installer_fixture(tmp_path)
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write_fake_curl(bin_dir)
+
+    result = _run_installer(
+        home,
+        "--codex",
+        install_script=install_script,
+        input_text="4\n",
+        extra_env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    settings = json.loads((home / ".codex" / "settings.json").read_text())
+    assert "mcp__memories__memory_is_useful" not in settings["permissions"]["allow"]
 
 
 def test_codex_install_adds_client_attribution_to_existing_mcp_config(tmp_path: Path) -> None:

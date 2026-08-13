@@ -1,70 +1,68 @@
 ---
 name: memories:setup
-description: "Bootstrap the existing Memories Codex integration from this repository checkout. Use after installing the repo-local Memories plugin in Codex, or when Codex needs the hooks/MCP wiring refreshed."
+description: "Guide portable Memories setup for Codex. The published memories-mcp npm installer owns hooks and MCP wiring."
 ---
 
 # Memories Setup For Codex
 
-This plugin does not try to hard-code machine-specific paths into a cached plugin copy.
-Instead, it bootstraps the real Codex integration from the current repository checkout.
+This is a thin, portable guide. The published `memories-mcp` npm package owns
+Codex hooks and MCP configuration; this plugin does not bundle or install a
+second copy of either. No repository checkout is required.
 
-## Goal
+## Local stdio setup (recommended)
 
-Find the local `memories` repo that contains `mcp-server/index.js` and `integrations/claude-code/install.sh`, then run the existing installer for the Codex target.
-
-## Process
-
-### 1. Locate the repository root
-
-Search upward from the current working directory until you find both:
-
-- `mcp-server/index.js`
-- `integrations/claude-code/install.sh`
-
-If you cannot find them, stop and tell the user this plugin is intended to be used from inside a checkout of the Memories repository.
-
-### 2. Ensure MCP dependencies are installed
-
-From that repository root, run:
+Run this in the user's terminal:
 
 ```bash
-npm --prefix ./mcp-server install
+npx -y memories-mcp@latest init --codex
 ```
 
-This ensures `mcp-server/index.js` has its Node dependencies available before Codex tries to launch it.
+The installer owns the local stdio MCP registration and all supported Codex
+hooks. It may use the default local backend (`http://localhost:8900`) or the
+backend URL configured by the user's local environment. If authentication is
+enabled, enter the API key only in the local installer prompt or environment;
+never paste a key into chat and never print one in a setup report.
 
-### 3. Run the Codex installer
+### Direct remote MCP setup (OAuth)
 
-From the repository root, run:
+For a hosted MCP endpoint, run:
 
 ```bash
-./integrations/claude-code/install.sh --codex
+npx -y memories-mcp@latest init --codex --mcp-url https://... --yes
+codex mcp login memories
 ```
 
-This is the canonical setup path. It configures:
+`--mcp-url` is an absolute HTTPS MCP URL and uses OAuth. Do not combine it
+with `--url` or `--api-key`; the remote configuration contains no backend API
+key. The second command completes Codex's OAuth login for the `memories`
+server. Remote MCP tools are separate from lifecycle-hook transport: hooks are
+installed but remain inactive until `MEMORIES_URL` or a REST `backends.yaml`
+configuration is available to the hook process.
 
-- hook scripts under `~/.codex/hooks/memory/`
-- hook registration in `~/.codex/hooks.json`
-- read-only memory tool permissions in `~/.codex/settings.json`
-- Memories MCP and `developer_instructions` in `~/.codex/config.toml`
-
-### 4. Verify the key outputs
-
-Check these files after the installer completes:
+### Verify without exposing credentials
 
 ```bash
-ls -la ~/.codex/hooks/memory/
-jq '.hooks' ~/.codex/hooks.json
-rg -n 'mcp_servers\\.memories|developer_instructions' ~/.codex/config.toml
+test -f ~/.codex/hooks.json && jq '.hooks' ~/.codex/hooks.json
+rg -n 'mcp_servers\.memories|developer_instructions' ~/.codex/config.toml
 ```
 
-### 5. Report exactly what changed
+These checks inspect hook and registration presence only. Do not dump
+`config.toml` environment values or any API key.
 
-Tell the user:
+### Lifecycle and coexistence notes
 
-- which repo root you used
-- whether `npm --prefix ./mcp-server install` succeeded
-- whether `./integrations/claude-code/install.sh --codex` succeeded
-- whether `~/.codex/hooks.json` and the `mcp_servers.memories` block now exist
+The npm installer selects the lifecycle supported by the installed Codex:
+Codex `>= 0.146.0` gets ten events; older or unparseable versions get the
+five-event legacy profile. `PostCompact` is silent (`suppressOutput` only),
+while `SessionStart(source=compact)` is the recall surface. `SessionEnd`
+performs one first-routed extract request and exits; the request has a 2-second
+maximum and the manifest timeout is exactly 3 seconds, with no polling.
 
-If any step fails, stop at the failing step and surface the exact command and error.
+The plugin and installer do not configure Codex's optional native Memories
+cache. External Memories remains the durable, searchable cross-client
+authority; native Codex Memories is an optional local derived cache. If
+desired, `memories.disable_on_external_context = true` can be set manually to
+avoid duplicate context, but the installer never sets either setting.
+
+The installer auto-approves six read-only MCP tools. `memory_is_useful` is a
+feedback write and remains prompt-gated when it is mentioned or called.

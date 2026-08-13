@@ -258,14 +258,16 @@ def test_project_context_binds_to_the_same_worktree_backend_as_normal_routing(
     assert context["active"] is True
     assert context["backend_url"] == "http://worktree-backend.test"
     assert context["config_origin"] == str(worktree_memories / "backends.yaml")
-    assert payload["normal"] == [
-        {
-            "name": "worktree",
-            "url": "http://worktree-backend.test",
-            "api_key": "worktree-secret",
-            "scenario": "",
-        }
-    ]
+    assert len(payload["normal"]) == 1
+    assert {
+        key: payload["normal"][0][key]
+        for key in ("name", "url", "api_key", "scenario")
+    } == {
+        "name": "worktree",
+        "url": "http://worktree-backend.test",
+        "api_key": "worktree-secret",
+        "scenario": "",
+    }
     assert "http://worktree-backend.test/api/keys/me" in curl_log.read_text()
     assert "http://main-backend.test/api/keys/me" not in curl_log.read_text()
 

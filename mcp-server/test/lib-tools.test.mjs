@@ -8,6 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import {
   buildServer,
+  MEMORIES_MCP_INSTRUCTIONS,
   parseProjectDeclaration,
   loadProjectDeclaration,
   resolveProjectContext,
@@ -978,6 +979,21 @@ test('buildServer ctx.version overrides the package.json default', async () => {
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
   try {
     assert.equal(client.getServerVersion().version, '9.9.9-test');
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('buildServer publishes shared MCP instructions during initialize', async () => {
+  assert.match(MEMORIES_MCP_INSTRUCTIONS.slice(0, 512), /exact project-scoped/i);
+
+  const server = buildServer({ url: 'http://x', apiKey: '', client: 'x' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    assert.match(client.getInstructions() ?? '', /exact project-scoped/i);
   } finally {
     await client.close();
     await server.close();

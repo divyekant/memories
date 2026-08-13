@@ -1,7 +1,7 @@
 {
   "name": "memories",
   "description": "Self-hosted semantic memory with graph-aware search (PPR multi-hop traversal), temporal reasoning (version preservation, date-range filters), multi-backend routing, 6-signal hybrid search, auto-feature metrics, operator workbench, lifecycle policies, and full audit trail",
-  "version": "5.13.0",
+  "version": "5.14.0",
   "author": { "name": "Divyekant Gupta" },
   "homepage": "https://github.com/divyekant/memories",
   "repository": "https://github.com/divyekant/memories",

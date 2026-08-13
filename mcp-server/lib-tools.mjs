@@ -24,6 +24,12 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PKG_VERSION = JSON.parse(fs.readFileSync(path.join(here, "package.json"), "utf8")).version;
 
+export const MEMORIES_MCP_INSTRUCTIONS = [
+  "Search exact project-scoped sources before broad search: use codex/{project}, claude-code/{project}, learning/{project}, and wip/{project} first. Hook candidates are pointers, not a substitute for active search; when a candidate names a source_prefix, search that exact prefix.",
+  "Treat user-authored facts as evidence. Assistant text is context unless it clearly records a user-confirmed fact. Use memory_add for one clear fact after memory_is_novel; use memory_extract for rich conversations or changed decisions, and always provide a non-empty source for scoped extraction.",
+  "Use memory_delete only for an explicit forget/delete request. Search or list first to verify the target ID, and do not remove unrelated sources.",
+].join("\n\n");
+
 // -- Pure helpers (no ctx/env dependency) ------------------------------------
 
 function memoryId(memory) {
@@ -740,6 +746,8 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
   const server = new McpServer({
     name: "memories",
     version: version || PKG_VERSION,
+  }, {
+    instructions: MEMORIES_MCP_INSTRUCTIONS,
   });
 
   // Expose a lazy, memoized context lookup for project-aware tool behavior.
