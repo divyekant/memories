@@ -340,6 +340,74 @@ test('active memory_search preserves an explicit source_prefix without project f
   }
 });
 
+test('active memory_list without a source browses only project, current-person, and authorized legacy scopes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-list-scoped-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const browseSources = [];
+  const fetchImpl = async (url) => {
+    const requestUrl = new URL(String(url));
+    if (requestUrl.pathname.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({
+        type: 'managed',
+        principal_id: 'alice',
+        prefixes: [
+          'project/shared-demo/',
+          'person/alice/shared-demo/',
+          'project/other/',
+          'codex/shared-demo',
+        ],
+      }), { status: 200 });
+    }
+    const source = requestUrl.searchParams.get('source');
+    browseSources.push(source);
+    const bySource = {
+      'project/shared-demo': [
+        { id: 1, source: 'project/shared-demo/knowledge', text: 'Shared fact' },
+        { id: 9, source: 'project/shared-demo-extra/knowledge', text: 'Sibling project fact' },
+      ],
+      'person/alice/shared-demo': [
+        { id: 2, source: 'person/alice/shared-demo/knowledge', text: 'Private fact' },
+      ],
+      'codex/shared-demo': [
+        { id: 3, source: 'codex/shared-demo', text: 'Legacy fact' },
+      ],
+    };
+    const memories = bySource[source] || [];
+    return new Response(JSON.stringify({ memories, total: memories.length, offset: 0, limit: 50 }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({ name: 'memory_list', arguments: { limit: 20 } });
+    const rendered = result.content.map((item) => item.text || '').join('\n');
+    assert.deepEqual(browseSources, [
+      'project/shared-demo',
+      'person/alice/shared-demo',
+      'codex/shared-demo',
+    ]);
+    assert.match(rendered, /Shared fact/);
+    assert.match(rendered, /Private fact/);
+    assert.match(rendered, /Legacy fact/);
+    assert.doesNotMatch(rendered, /Sibling project fact/);
+    assert.doesNotMatch(rendered, /project\/other/);
+
+    browseSources.length = 0;
+    const countResult = await client.callTool({ name: 'memory_count', arguments: {} });
+    assert.deepEqual(browseSources, [
+      'project/shared-demo',
+      'person/alice/shared-demo',
+      'codex/shared-demo',
+    ]);
+    assert.match(countResult.content[0].text, /^3 memories in project "shared-demo"\.$/);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('inactive memory_search keeps one unscoped legacy request and skips principal lookup', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mem-project-search-inactive-'));
   const calls = [];

@@ -708,12 +708,16 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     return labels.length ? `[${labels.join(", ")}]` : "";
   }
 
-  async function projectSearchRequest(body, projectContext) {
-    const prefixes = [
+  function projectReadPrefixes(projectContext) {
+    return [
       `project/${projectContext.projectId}`,
       `person/${projectContext.principalId}/${projectContext.projectId}`,
       ...(projectContext.legacySourcePrefixes || []),
     ];
+  }
+
+  async function projectSearchRequest(body, projectContext) {
+    const prefixes = projectReadPrefixes(projectContext);
     const responses = await Promise.all(prefixes.map(async (prefix) => {
       const scopedBody = { ...body, source_prefix: prefix, source_boundary: true };
       const data = await memoriesRequest("/search", {
@@ -741,6 +745,39 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     }
     const capped = results.slice(0, body.k);
     return { results: capped, count: capped.length };
+  }
+
+  async function projectListRequest(offset, limit, projectContext) {
+    const prefixes = projectReadPrefixes(projectContext);
+    const responses = await Promise.all(prefixes.map(async (prefix) => {
+      const data = await memoriesRequest(
+        `/memories?offset=0&limit=5000&source=${encodeURIComponent(prefix)}`,
+        {},
+        "manage",
+      );
+      return (data.memories || []).filter((memory) => {
+        const source = String(memory?.source || "");
+        return source === prefix || source.startsWith(`${prefix}/`);
+      });
+    }));
+    const seen = new Set();
+    const memories = [];
+    for (const scoped of responses) {
+      for (const memory of scoped) {
+        const key = memory?.id !== undefined && memory?.id !== null
+          ? `id:${memory.id}:source:${memory.source || ""}`
+          : `text:${memory?.text || ""}:source:${memory?.source || ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        memories.push(memory);
+      }
+    }
+    return {
+      memories: memories.slice(offset, offset + limit),
+      total: memories.length,
+      offset,
+      limit,
+    };
   }
 
   // -- Server ------------------------------------------------------------------
@@ -1240,10 +1277,17 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       source: z.string().optional().describe("Filter by source prefix (e.g. 'project/decisions' matches 'project/decisions/2024.md')"),
     },
     async ({ offset = 0, limit = 20, source }) => {
-      let url = `/memories?offset=${offset}&limit=${limit}`;
-      if (source) url += `&source=${encodeURIComponent(source)}`;
-
-      const data = await memoriesRequest(url, {}, "manage");
+      const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
+      let data;
+      if (projectContext.active && source === undefined) {
+        data = await projectListRequest(offset, limit, projectContext);
+      } else {
+        let url = `/memories?offset=${offset}&limit=${limit}`;
+        if (source) url += `&source=${encodeURIComponent(source)}`;
+        data = await memoriesRequest(url, {}, "manage");
+      }
 
       if (data.total === 0) {
         return { content: [{ type: "text", text: "No memories found." }] };
@@ -1291,11 +1335,21 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       source: z.string().optional().describe("Source prefix filter (e.g. 'project/docs')"),
     },
     async ({ source }) => {
-      let url = "/memories/count";
-      if (source) url += `?source=${encodeURIComponent(source)}`;
-
-      const data = await memoriesRequest(url, {}, "manage");
-      const label = source ? `memories with source prefix "${source}"` : "total memories";
+      const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
+      let data;
+      let label;
+      if (projectContext.active && source === undefined) {
+        const scoped = await projectListRequest(0, 5000, projectContext);
+        data = { count: scoped.total };
+        label = `memories in project "${projectContext.projectId}"`;
+      } else {
+        let url = "/memories/count";
+        if (source) url += `?source=${encodeURIComponent(source)}`;
+        data = await memoriesRequest(url, {}, "manage");
+        label = source ? `memories with source prefix "${source}"` : "total memories";
+      }
       return {
         content: [{
           type: "text",

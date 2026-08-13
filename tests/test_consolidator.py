@@ -292,6 +292,41 @@ class TestConsolidation:
         assert engine.add_memories.call_args.kwargs["sources"] == ["codex/acme"]
         engine.delete_memories.assert_called_once_with([0, 1])
 
+    def test_consolidation_revalidates_stale_cluster_under_memory_locks(self, tmp_path, monkeypatch):
+        from contextlib import contextmanager
+        from consolidator import consolidate_cluster
+        from memory_engine import MemoryEngine
+
+        engine = MemoryEngine(data_dir=str(tmp_path))
+        trusted = TrustedAuthorship.principal("alice", "codex")
+        ids = engine.add_memories(
+            ["Fact A", "Fact B"],
+            ["project/acme/knowledge", "project/acme/knowledge"],
+            trusted_authorship=trusted,
+        )
+        cluster = [dict(engine._get_meta_by_id(mid)) for mid in ids]
+        provider = MagicMock()
+        provider.complete.return_value = _cr(json.dumps(["Merged fact"]))
+        original_acquire = engine._entity_locks.acquire_many
+        raced = False
+
+        @contextmanager
+        def racing_acquire(keys):
+            nonlocal raced
+            with original_acquire(keys):
+                if not raced and engine._memory_key(ids[1]) in keys:
+                    raced = True
+                    engine._get_meta_by_id(ids[1])["source"] = "project/other/knowledge"
+                yield
+
+        monkeypatch.setattr(engine._entity_locks, "acquire_many", racing_acquire)
+
+        result = consolidate_cluster(provider, engine, cluster, dry_run=False)
+
+        assert "changed while consolidation was running" in result["error"]
+        assert all(engine._id_exists(mid) for mid in ids)
+        assert engine.qdrant_store.count() == 2
+
     def test_consolidate_uses_dominant_category(self):
         from consolidator import consolidate_cluster
 

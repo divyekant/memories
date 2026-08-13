@@ -380,7 +380,12 @@ class TestBoundaryScopedSearch:
 
         assert novel is False
         assert match["id"] == 12
-        assert engine.search.call_args.kwargs["k"] > 1
+        assert engine.search.call_args.kwargs == {
+            "k": 1,
+            "allowed_prefixes": ["codex/acme", "claude-code/acme", "project/acme"],
+            "exclude_reserved_sources": True,
+            "reinforce_results": False,
+        }
 
     def test_exact_source_novelty_lookup_keeps_single_candidate_search(self, engine):
         match = {
@@ -403,3 +408,38 @@ class TestBoundaryScopedSearch:
             "k": 1,
             "source_exact": "project/acme/knowledge",
         }
+
+
+class TestMergeLockRevalidation:
+    def test_merge_revalidates_sources_after_acquiring_stable_memory_locks(self, engine, monkeypatch):
+        from contextlib import contextmanager
+
+        first_id, second_id = engine.add_memories(
+            [T78, T79],
+            ["legacy/acme", "legacy/acme"],
+        )
+        original_acquire = engine._entity_locks.acquire_many
+        raced = False
+
+        @contextmanager
+        def racing_acquire(keys):
+            nonlocal raced
+            with original_acquire(keys):
+                if not raced and engine._memory_key(second_id) in keys:
+                    raced = True
+                    engine._get_meta_by_id(second_id)["source"] = "project/other/decisions"
+                yield
+
+        monkeypatch.setattr(engine._entity_locks, "acquire_many", racing_acquire)
+
+        with pytest.raises(ProjectMemoryPolicyError):
+            engine.merge_memories(
+                [first_id, second_id],
+                "Merged fact",
+                "legacy/acme",
+            )
+
+        assert engine._id_exists(first_id)
+        assert engine._id_exists(second_id)
+        assert not engine._get_meta_by_id(first_id).get("archived")
+        assert not engine._get_meta_by_id(second_id).get("archived")

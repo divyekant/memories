@@ -266,22 +266,38 @@ def consolidate_cluster(
         trusted_authorship = TrustedAuthorship.system(
             source_memory_ids=old_ids,
         )
-        added = engine.add_memories(
-            texts=new_texts,
-            sources=[source] * len(new_texts),
-            metadata_list=metadata_list,
-            trusted_authorship=trusted_authorship,
-        )
-        if not added:
+        replace_method = getattr(type(engine), "replace_consolidation_cluster", None)
+        if callable(replace_method):
+            mutation = replace_method(
+                engine,
+                cluster,
+                new_texts,
+                source,
+                metadata_list,
+                trusted_authorship,
+            )
+            mutation_error = mutation.get("error")
+        else:
+            # Compatibility for lightweight integrations and test doubles;
+            # production MemoryEngine uses the locked transaction above.
+            added = engine.add_memories(
+                texts=new_texts,
+                sources=[source] * len(new_texts),
+                metadata_list=metadata_list,
+                trusted_authorship=trusted_authorship,
+            )
+            mutation_error = None if added else "add_memories stored nothing; originals left untouched"
+            if added:
+                engine.delete_memories(old_ids)
+        if mutation_error:
             return {
                 "merged_count": 0,
                 "new_count": 0,
                 "old_ids": old_ids,
                 "new_texts": new_texts,
                 "dry_run": dry_run,
-                "error": "add_memories stored nothing; originals left untouched",
+                "error": mutation_error,
             }
-        engine.delete_memories(old_ids)
 
     return {
         "merged_count": len(cluster),
