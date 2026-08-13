@@ -22,6 +22,25 @@ npx memories-mcp uninstall   # reverse everything init did
 
 Flags: `--claude` / `--codex` / `--cursor` / `--generic` restrict targets (default: auto-detect), `--url` / `--api-key` configure the backend, `--dry-run` prints the plan without writing, `--yes` runs non-interactive.
 
+### Codex setup
+
+For a local Codex install, run `npx memories-mcp init --codex --yes`. This uses
+local stdio MCP and installs the Codex hooks and developer instructions. A
+`codex-cli` version at or above `0.146.0` receives the ten-event lifecycle
+profile; older or unparseable versions use the compatible five-event profile.
+
+To keep a backend key out of the local MCP entry, add
+`--no-persist-api-key`; the hooks can read `MEMORIES_API_KEY` from the process
+environment instead.
+
+For a remote Streamable HTTP MCP server with OAuth, use
+`npx memories-mcp init --codex --mcp-url https://memory.example/mcp --yes`, then
+run `codex mcp login memories`. Remote mode does not copy a backend API key into
+Codex configuration and skips REST health/bootstrap. Remote MCP tools are
+separate from lifecycle-hook transport: hooks are installed but remain inactive
+until `MEMORIES_URL` or a REST `backends.yaml` configuration is available to the
+hook process.
+
 ## Use as a plain MCP server
 
 Any MCP client can run the server directly — no installer needed:

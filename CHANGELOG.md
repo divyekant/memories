@@ -1,5 +1,30 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Codex distribution parity.** The repo-local plugin is now a thin setup
+  guide whose published `npx -y memories-mcp@latest init --codex` installer
+  owns hooks and MCP wiring. Local stdio (`--url`/`MEMORIES_URL`) and direct
+  remote OAuth (`--mcp-url https://... --yes`, followed by `codex mcp login
+  memories`) are documented separately; the remote path never carries a
+  backend API key.
+- **Codex lifecycle documentation.** Codex `>= 0.146.0` receives ten events;
+  older or unparseable clients receive five. `PostCompact` is silent and
+  `SessionStart(source=compact)` is the recall surface. `SessionEnd` makes one
+  first-routed extract POST with a 2-second max-time, no polling, and a
+  manifest timeout exactly 3 seconds. The installer auto-approves six
+  read-only tools while `memory_is_useful` remains prompt-gated.
+- **Native-memory coexistence.** External Memories remains the durable,
+  searchable cross-client authority; native Codex Memories is an optional local
+  derived cache. The installer never sets either. `memories.disable_on_external_context = true`
+  is an optional recommendation only.
+- **Reliability parity.** Codex now documents the v5.10-v5.12 hook guarantees:
+  payload-`cwd` activation/config gates, resolved routed reachability with
+  per-backend breaker isolation, end-to-end deadlines with partial results,
+  401 credential guidance, and conservative handling of materially short
+  timeout budgets.
+
 ## [5.13.0] - 2026-08-12
 
 ### Fixed
@@ -81,7 +106,9 @@
 
 No breaking changes in this release: all old paths resolve via the symlinks above, `install.sh` behaves identically apart from the new banner, and the backend/API are untouched.
 
-**First publish pending:** `memories-mcp` has not yet been published to npm as of this release. Docs reference `npx memories-mcp@latest init` as the canonical command — it will resolve once the first publish ships; until then use the `install.sh` path or run the CLI from a repo checkout (`node mcp-server/cli/index.mjs init`).
+**Publication note:** `memories-mcp` is now published; current setup uses the
+portable `npx -y memories-mcp@latest` installer. The historical shell installer
+remains only as a deprecated compatibility path for targets it still covers.
 
 ## [5.7.2] - 2026-07-14
 
@@ -254,7 +281,7 @@ R@5 across all 120 questions: **98.3%**. Retrieval is no longer the bottleneck �
   - Plugin CLAUDE.md with behavioral overrides making memory non-optional
 - **Repo-local Codex Plugin** — lightweight Codex plugin at `plugins/memories` with repo marketplace entry in `.agents/plugins/marketplace.json`
   - Reuses the `memories` skill for Codex without creating a second behavior fork
-  - Adds a Codex bootstrap skill (`$memories:setup`) that installs `mcp-server` deps and runs the canonical `./integrations/claude-code/install.sh --codex` flow from the local checkout
+  - Adds a Codex setup skill (`$memories:setup`) that guides the published npm installer without bundling a server or requiring a checkout at runtime
   - Keeps Codex hook, MCP, and `developer_instructions` wiring in the existing installer instead of duplicating machine-specific paths in the cached plugin copy
 - Assertive injection framing — recalled memories now include "IMPORTANT: MUST be considered" prefix matching CC's native memory priority language
 

@@ -28,12 +28,12 @@ const FLAG_TARGETS = {
   '--generic': 'generic',
 };
 
-const VALID_FLAGS = ['--claude', '--codex', '--cursor', '--generic', '--dry-run', '--yes', '--url', '--api-key', '--mcp-name', '--no-persist-api-key', '-h', '--help'];
+const VALID_FLAGS = ['--claude', '--codex', '--cursor', '--generic', '--dry-run', '--yes', '--url', '--mcp-url', '--api-key', '--mcp-name', '--no-persist-api-key', '-h', '--help'];
 
 const HELP_TEXT = `memories — installer/manager CLI for the Memories MCP plugin
 
 Usage:
-  memories init [--claude] [--codex] [--cursor] [--generic] [--url <u>] [--api-key <k>] [--mcp-name <name>]... [--dry-run] [--yes]
+  memories init [--claude] [--codex] [--cursor] [--generic] [--url <u>] [--mcp-url <u>] [--api-key <k>] [--no-persist-api-key] [--mcp-name <name>]... [--dry-run] [--yes]
   memories update [same flags as init]
   memories doctor [--claude] [--codex] [--cursor] [--generic]
   memories uninstall [--claude] [--codex] [--cursor] [--generic]
@@ -42,15 +42,16 @@ Usage:
 Flags:
   --claude, --codex, --cursor, --generic   Restrict to these targets (default: auto-detect)
   --url <u>                                Backend URL (default: $MEMORIES_URL or http://localhost:8900)
+  --mcp-url <u>                             Direct remote MCP URL (Codex only; uses OAuth)
   --api-key <k>                            Backend API key (default: $MEMORIES_API_KEY or none)
   --mcp-name <name>                        Additional MCP server name to pre-approve read-only tools
-  --no-persist-api-key                     Omit the API key from the MCP entry (it is read from $MEMORIES_API_KEY)
                                             for (claude-code/cursor only). Repeatable. Use when your
                                             memory MCP server is registered under a name other than
                                             "memories" — a claude.ai connector, or a manual rename.
                                             There is no wildcard for the server segment, so names not
                                             known at install time (e.g. a UUID-named connector) still
                                             need this flag or a manual permissions.allow entry.
+  --no-persist-api-key                     Omit the API key from the MCP entry (it is read from $MEMORIES_API_KEY)
   --dry-run                                Print the plan and exit before any writes
   --yes                                    Non-interactive: accept all defaults, skip prompts
   -h, --help                                Show this help`;
@@ -62,7 +63,7 @@ export function parseArgs(argv) {
     command = args.shift();
   }
 
-  const result = { command, targets: [], dryRun: false, yes: false, url: undefined, apiKey: undefined, mcpNames: [], persistApiKey: true };
+  const result = { command, targets: [], dryRun: false, yes: false, url: undefined, mcpUrl: undefined, apiKey: undefined, mcpNames: [], persistApiKey: true };
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -76,6 +77,10 @@ export function parseArgs(argv) {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --url');
       result.url = args[++i];
+    } else if (a === '--mcp-url') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --mcp-url');
+      result.mcpUrl = args[++i];
     } else if (a === '--api-key') {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) throw new Error('Missing value for --api-key');
@@ -94,6 +99,71 @@ export function parseArgs(argv) {
   }
 
   return result;
+}
+
+function validateRemoteMcpOptions(parsed, targets) {
+  if (parsed.mcpUrl === undefined) return;
+  if (parsed.url !== undefined) {
+    throw new Error('--mcp-url cannot be combined with --url');
+  }
+  if (parsed.apiKey !== undefined) {
+    throw new Error('--mcp-url cannot be combined with --api-key');
+  }
+  if (!targets.length || targets.some((target) => target !== 'codex')) {
+    throw new Error('--mcp-url is only supported with --codex');
+  }
+}
+
+export function validateRemoteMcpUrl(value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('--mcp-url must be an absolute HTTPS URL');
+  }
+  // Raw whitespace/control characters can break the TOML basic string even
+  // though URL() may accept and normalize some of them. Reject before any
+  // prompt, log, health check, or installer mutation can occur.
+  if (/\s|[\u0000-\u001f\u007f-\u009f]/u.test(value)) {
+    throw new Error('--mcp-url must not contain whitespace or control characters');
+  }
+  if (value.includes('\\')) {
+    throw new Error('--mcp-url must not contain backslashes');
+  }
+  if (/%(?![0-9A-Fa-f]{2})/.test(value)) {
+    throw new Error('--mcp-url contains invalid percent-encoding');
+  }
+
+  let remoteUrl;
+  try {
+    remoteUrl = new URL(value);
+  } catch {
+    throw new Error('--mcp-url must be an absolute HTTPS URL');
+  }
+  if (!value.startsWith('https://')) {
+    throw new Error('--mcp-url must use canonical HTTPS URL syntax beginning with https://');
+  }
+  if (!remoteUrl.hostname) {
+    throw new Error('--mcp-url must be an absolute HTTPS URL with a host');
+  }
+  if (remoteUrl.protocol !== 'https:') {
+    throw new Error('--mcp-url must use https:// for remote OAuth MCP');
+  }
+  if (remoteUrl.username || remoteUrl.password) {
+    throw new Error('--mcp-url must not include credentials');
+  }
+  // URL.hash is empty for a bare trailing '#', so inspect the original input
+  // as well as the parsed URL to reject all fragments.
+  if (remoteUrl.hash || value.includes('#')) {
+    throw new Error('--mcp-url must not include a fragment');
+  }
+
+  // URL() normalizes an authority-only endpoint by adding its canonical root
+  // slash. Accept that one normalization while continuing to reject all
+  // other non-canonical spellings (explicit default ports, case changes,
+  // encoded authority changes, etc.).
+  const authorityOnly = /^https:\/\/[^/?#]+$/u.test(value);
+  if (remoteUrl.href !== value && !(authorityOnly && remoteUrl.href === `${value}/`)) {
+    throw new Error('--mcp-url must use canonical HTTPS URL syntax');
+  }
+  return remoteUrl.href;
 }
 
 async function autoDetectTargets(home) {
@@ -179,6 +249,7 @@ async function offerBackendBootstrap(ctx) {
 
 async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
   const targets = await resolveTargets(parsed, ctx, restrictedTargets);
+  validateRemoteMcpOptions(parsed, targets);
 
   if (parsed.dryRun) {
     ctx.log(`mode=${parsed.command}`);
@@ -186,24 +257,37 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
     return;
   }
 
-  const url = parsed.url ?? process.env.MEMORIES_URL ?? (parsed.yes ? DEFAULT_URL : await ctx.askImpl('Memories backend URL', { def: DEFAULT_URL }));
-  const apiKey = parsed.apiKey ?? process.env.MEMORIES_API_KEY ?? (parsed.yes ? '' : await ctx.askImpl('Memories API key (blank for none)', { def: '' }));
-  ctx.url = url;
-  ctx.apiKey = apiKey;
   // Default 'memories' plus any --mcp-name overrides, deduped — consumed by
   // the claude-code/cursor adapters when writing the read-only allowlist.
   ctx.mcpNames = [...new Set(['memories', ...parsed.mcpNames])];
   ctx.persistApiKey = parsed.persistApiKey;
 
-  const health = await checkHealth(url, { fetchImpl: ctx.fetchImpl });
-  if (!health.ok) {
-    if (parsed.yes) {
-      ctx.log(`Backend unreachable at ${url} (${health.error}) — continuing; clients will work once it is up.`);
-    } else {
-      await offerBackendBootstrap(ctx);
+  if (parsed.mcpUrl !== undefined) {
+    // A direct remote MCP URL is already the client-facing endpoint. It uses
+    // OAuth at that endpoint, so there is no local REST backend to probe or
+    // bootstrap and no backend API key to copy into Codex configuration.
+    ctx.mcpUrl = parsed.mcpUrl;
+    ctx.url = undefined;
+    ctx.apiKey = '';
+    ctx.log(
+      'Remote MCP tools use OAuth; Codex lifecycle hooks require MEMORIES_URL or a REST backends.yaml configuration and remain inactive otherwise.',
+    );
+  } else {
+    const url = parsed.url ?? process.env.MEMORIES_URL ?? (parsed.yes ? DEFAULT_URL : await ctx.askImpl('Memories backend URL', { def: DEFAULT_URL }));
+    const apiKey = parsed.apiKey ?? process.env.MEMORIES_API_KEY ?? (parsed.yes ? '' : await ctx.askImpl('Memories API key (blank for none)', { def: '' }));
+    ctx.url = url;
+    ctx.apiKey = apiKey;
+
+    const health = await checkHealth(url, { fetchImpl: ctx.fetchImpl });
+    if (!health.ok) {
+      if (parsed.yes) {
+        ctx.log(`Backend unreachable at ${url} (${health.error}) — continuing; clients will work once it is up.`);
+      } else {
+        await offerBackendBootstrap(ctx);
+      }
+    } else if (parsed.yes) {
+      ctx.log(`Backend healthy (${health.totalMemories} memories).`);
     }
-  } else if (parsed.yes) {
-    ctx.log(`Backend healthy (${health.totalMemories} memories).`);
   }
 
   for (const t of targets) {
@@ -237,6 +321,9 @@ async function runInitOrUpdate(parsed, ctx, restrictedTargets) {
     const state = await readState(ctx.home);
     if (!state.installedTargets.includes(t)) state.installedTargets.push(t);
     await writeState(ctx.home, state);
+  }
+  if (parsed.mcpUrl !== undefined) {
+    ctx.log('Run `codex mcp login memories` to authenticate the remote Memories MCP server.');
   }
   ctx.log(`${parsed.command === 'init' ? 'Init' : 'Update'} complete for: ${targets.join(', ')}`);
 }
@@ -321,6 +408,11 @@ async function runUninstall(parsed, ctx, restrictedTargets) {
 export async function run(argv, ctxOverrides = {}) {
   const parsed = parseArgs(argv);
 
+  // Validate the raw endpoint before constructing an execution context or
+  // taking the help fast path. A malformed value must never be hidden by
+  // `help`, nor cause help/logging side effects before it is rejected.
+  if (parsed.mcpUrl !== undefined) parsed.mcpUrl = validateRemoteMcpUrl(parsed.mcpUrl);
+
   const home = ctxOverrides.home ?? os.homedir();
   const assetsDir = ctxOverrides.assetsDir ?? join(dirname(fileURLToPath(import.meta.url)), '../assets');
   const log = ctxOverrides.log ?? console.log;
@@ -339,8 +431,13 @@ export async function run(argv, ctxOverrides = {}) {
     throw new Error(`Unknown command: ${parsed.command}. Valid commands: init, doctor, update, uninstall, help`);
   }
 
+  if (parsed.mcpUrl !== undefined && parsed.command !== 'init' && parsed.command !== 'update') {
+    throw new Error('--mcp-url is only supported with init/update --codex');
+  }
+
   let restrictedTargets = null;
-  if (process.platform === 'win32') {
+  const platform = ctxOverrides.platform ?? process.platform;
+  if (platform === 'win32') {
     restrictedTargets = ['generic'];
     log('Windows detected — only the generic (manual) target is supported here; wire other clients by hand using `memories doctor` output.');
   }

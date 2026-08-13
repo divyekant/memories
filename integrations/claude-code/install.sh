@@ -24,15 +24,16 @@ OPENCODE_PLUGIN_SRC="$REPO_ROOT/integrations/opencode/plugin/memories.js"
 # Builds the read-only MCP tool allow-rule JSON array for a given MCP
 # server name. Mirrors readonlyMcpTools() in mcp-server/cli/lib/hooks.mjs
 # (kept in sync by hand — this installer is a separate, deprecated code
-# path). Deliberately the explicit 7 tools, not `mcp__<server>__*`: Claude
+# path). Deliberately the explicit 6 tools, not `mcp__<server>__*`: Claude
 # Code allow rules only glob-match after a literal server segment, and a
 # wildcard-everything rule would also pre-approve destructive tools like
-# memory_delete, defeating the point of a read-only allowlist. Built
+# memory_delete or persistent feedback writes, defeating the point of a
+# read-only allowlist. Built
 # without jq so it stays safe to call before the jq-availability check
 # below (e.g. under --dry-run, which exits before that check runs).
 readonly_mcp_tools_json() {
   local server="${1:-memories}"
-  local tools=(memory_search memory_list memory_count memory_stats memory_is_novel memory_is_useful memory_conflicts)
+  local tools=(memory_search memory_list memory_count memory_stats memory_is_novel memory_conflicts)
   local json="[" first=true
   for t in "${tools[@]}"; do
     if [ "$first" = true ]; then first=false; else json+=","; fi

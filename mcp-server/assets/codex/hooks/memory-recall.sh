@@ -28,10 +28,19 @@ if [ -f "$_LIB" ]; then
 else
   _log_info() { :; }; _log_error() { :; }; _log_warn() { :; }
   _rotate_log() { :; }; _health_check() { return 0; }
+  _resolve_primary_backend_url() { printf '%s' "${MEMORIES_URL:-http://localhost:8900}"; }
   _default_source_prefixes() { echo 'codex/{project},claude-code/{project},learning/{project},wip/{project}'; }
+  _hook_deadline_init() { :; }
+  _hook_deadline_exhausted() { printf 'false'; }
+  _hook_call_budget() { printf '%s' "$1"; }
 fi
 
-_exit_if_disabled 2>/dev/null || true
+INPUT=$(cat)
+CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // .workspace_roots[0] // empty')
+_exit_if_disabled "$CWD" 2>/dev/null || true
+
+# Bound the full SessionStart hook, not just individual curl calls.
+_hook_deadline_init
 
 # Rotate log on session start
 _rotate_log
@@ -48,8 +57,6 @@ MEMORIES_RECALL_FALLBACK_THRESHOLD="${MEMORIES_RECALL_FALLBACK_THRESHOLD:-0.55}"
 # Configurable recall limit (Task 1.2)
 RECALL_LIMIT="${MEMORIES_RECALL_LIMIT:-8}"
 
-INPUT=$(cat)
-CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // empty')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // "unknown"')
 MEMORIES_USAGE_CLIENT=$(_memory_client_prefix 2>/dev/null || echo "codex")
 MEMORIES_USAGE_SESSION_ID="$SESSION_ID"
@@ -69,17 +76,33 @@ SESSION_SOURCE=$(echo "$INPUT" | jq -r '.source // "unknown"')
 
 _log_info "Session start for project=$PROJECT cwd=$CWD source=$SESSION_SOURCE"
 
-# Health check — warn if service unreachable
+# Health check — warn if every routed search backend is unreachable.
 HEALTH_WARNING=""
 if ! _health_check; then
-  _log_warn "Service unreachable at $MEMORIES_URL"
+  HEALTH_DOWN_NAMES="${MEMORIES_HEALTH_DOWN_NAMES:-${MEMORIES_URL:-http://localhost:8900}}"
+  _log_warn "Service unreachable: $HEALTH_DOWN_NAMES"
   HEALTH_WARNING=$(cat <<HWEOF
 ## Memories Service Warning
 
-Memories service is not reachable at $MEMORIES_URL. Memory recall and extraction are unavailable this session. Check that the service is running.
+Memories recall/search is unavailable this session ($HEALTH_DOWN_NAMES). Check that the service is running.
 HWEOF
 )
 fi
+
+AUTH_FAILED="false"
+AUTH_FAILED_BACKENDS_JSON='[]'
+_note_auth_status() {
+  local resp="$1"
+  local flag backends
+  flag=$(printf '%s' "$resp" | jq -r '.auth_failed // false' 2>/dev/null) || flag="false"
+  [ "$flag" = "true" ] && AUTH_FAILED="true"
+  backends=$(printf '%s' "$resp" | jq -c '.auth_failed_backends // []' 2>/dev/null) || backends='[]'
+  AUTH_FAILED_BACKENDS_JSON=$(jq -nc \
+    --argjson existing "$AUTH_FAILED_BACKENDS_JSON" \
+    --argjson incoming "$backends" \
+    '$existing + $incoming | unique_by((.name // "") + "|" + (.url // ""))')
+  return 0
+}
 
 search_memories() {
   _search_memories_multi "$@"
@@ -107,9 +130,17 @@ RAW_RESPONSES=""
 SCOPED_PREFIX_LIST=""
 SEARCH_COUNT=0
 IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
+prefix_idx=0
 for raw_prefix in "${prefix_templates[@]}"; do
+  prefix_idx=$((prefix_idx + 1))
   raw_prefix=$(echo "$raw_prefix" | xargs)
   [ -z "$raw_prefix" ] && continue
+
+  if [ "$(_hook_deadline_exhausted)" = "true" ]; then
+    SKIPPED_PREFIXES=$(IFS=,; echo "${prefix_templates[*]:$((prefix_idx - 1))}")
+    _log_warn "Hook budget exhausted — skipping remaining prefix searches: $SKIPPED_PREFIXES"
+    break
+  fi
 
   prefix=$(printf '%s' "$raw_prefix" | sed "s/{project}/$PROJECT/g")
   query=$(query_for_prefix "$prefix")
@@ -121,6 +152,7 @@ for raw_prefix in "${prefix_templates[@]}"; do
 
   SEARCH_COUNT=$((SEARCH_COUNT + 1))
   response=$(search_memories "$query" "$prefix" "$limit" "$MEMORIES_RECALL_SCOPED_THRESHOLD")
+  _note_auth_status "$response"
   if [ -n "$response" ]; then
     RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
   fi
@@ -140,9 +172,14 @@ RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$RECALL_
 ' 2>/dev/null) || RESULTS_JSON="[]"
 
 if [ "$RESULTS_JSON" = "[]" ]; then
-  SEARCH_COUNT=$((SEARCH_COUNT + 1))
-  FALLBACK_RESPONSE=$(search_memories "project $PROJECT conventions decisions patterns" "" 6 "$MEMORIES_RECALL_FALLBACK_THRESHOLD")
-  RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
+  if [ "$(_hook_deadline_exhausted)" = "true" ]; then
+    _log_warn "Hook budget exhausted — skipping the unscoped fallback search"
+  else
+    SEARCH_COUNT=$((SEARCH_COUNT + 1))
+    FALLBACK_RESPONSE=$(search_memories "project $PROJECT conventions decisions patterns" "" 6 "$MEMORIES_RECALL_FALLBACK_THRESHOLD")
+    _note_auth_status "$FALLBACK_RESPONSE"
+    RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
+  fi
 fi
 
 CONTEXT_RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
@@ -157,8 +194,14 @@ _log_info "Recalled $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null |
 
 # Dedicated deferred-work surfacing
 WIP_QUERY="deferred incomplete blocked todo revisit wip"
-SEARCH_COUNT=$((SEARCH_COUNT + 1))
-WIP_RESULTS=$(search_memories "$WIP_QUERY" "wip/$PROJECT" 5 0.3)
+if [ "$(_hook_deadline_exhausted)" = "true" ]; then
+  _log_warn "Hook budget exhausted — skipping the deferred-work (WIP) search"
+  WIP_RESULTS='{"results":[],"count":0}'
+else
+  SEARCH_COUNT=$((SEARCH_COUNT + 1))
+  WIP_RESULTS=$(search_memories "$WIP_QUERY" "wip/$PROJECT" 5 0.3)
+  _note_auth_status "$WIP_RESULTS"
+fi
 WIP_COUNT=$(echo "$WIP_RESULTS" | jq -r '.count // 0')
 DEFERRED_SECTION=""
 if [ "$WIP_COUNT" -gt 0 ] && [ "$WIP_COUNT" != "null" ]; then
@@ -221,12 +264,59 @@ Preserve boundary conditions (until/unless/because) verbatim.
 Do not ask the user to reconfirm a remembered decision.
 EOF
 
+# Credential diagnostic: /health is unauthenticated, so report a rejected
+# search key separately from a backend reachability warning.
+CREDENTIAL_WARNING=""
+if [ "$AUTH_FAILED" = "true" ]; then
+  AUTH_BACKEND_LABELS=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'map("\(.name) (\(.url))") | join(", ")')
+  AUTH_DEFAULT_ENV_ONLY=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r 'length > 0 and all(.[]; ((.name // "") == "default") and ((.env_backed // false) == true))')
+  AUTH_KEY_ENV_REFS=$(printf '%s' "$AUTH_FAILED_BACKENDS_JSON" | jq -r '[.[] | select((.env_backed // false) != true and (.api_key_env // "") != "") | .api_key_env] | unique | join(", ")')
+  _log_warn "Backend(s) rejected the API key (401): $AUTH_BACKEND_LABELS"
+  if [ "$AUTH_DEFAULT_ENV_ONLY" = "true" ]; then
+    CREDENTIAL_WARNING=$(cat <<CWEOF
+## Memories Credential Warning
+
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Set MEMORIES_API_KEY; memory recall/search is unavailable for this backend.
+CWEOF
+    )
+  elif [ -n "$AUTH_KEY_ENV_REFS" ] && [ "$CANDIDATE_COUNT" -gt 0 ]; then
+    CREDENTIAL_WARNING=$(cat <<CWEOF
+## Memories Credential Warning
+
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key or referenced environment variable(s) $AUTH_KEY_ENV_REFS for those backends; healthy routed backends still returned candidates this session.
+CWEOF
+    )
+  elif [ "$CANDIDATE_COUNT" -gt 0 ]; then
+    CREDENTIAL_WARNING=$(cat <<CWEOF
+## Memories Credential Warning
+
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key for those backends or its referenced environment variable; healthy routed backends still returned candidates this session.
+CWEOF
+    )
+  elif [ -n "$AUTH_KEY_ENV_REFS" ]; then
+    CREDENTIAL_WARNING=$(cat <<CWEOF
+## Memories Credential Warning
+
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key or referenced environment variable(s) $AUTH_KEY_ENV_REFS for those backends.
+CWEOF
+    )
+  else
+    CREDENTIAL_WARNING=$(cat <<CWEOF
+## Memories Credential Warning
+
+Search backend(s) $AUTH_BACKEND_LABELS rejected the API key. Update the configured api_key for those backends or its referenced environment variable.
+CWEOF
+    )
+  fi
+fi
+
 # --- Output context for Codex ---
-jq -n --arg memories "$CONTEXT_RESULTS" --arg playbook "$PLAYBOOK" --arg health_warning "$HEALTH_WARNING" --arg deferred "$DEFERRED_SECTION" '{
+jq -n --arg memories "$CONTEXT_RESULTS" --arg playbook "$PLAYBOOK" --arg health_warning "$HEALTH_WARNING" --arg credential_warning "$CREDENTIAL_WARNING" --arg deferred "$DEFERRED_SECTION" '{
   hookSpecificOutput: {
     hookEventName: "SessionStart",
     additionalContext: (
       (if ($health_warning | length) > 0 then $health_warning + "\n\n" else "" end) +
+      (if ($credential_warning | length) > 0 then $credential_warning + "\n\n" else "" end) +
       (if ($memories | length) > 0 then "## Relevant Memories\n\n" + $memories + "\n\n" else "" end) +
       (if ($deferred | length) > 0 then $deferred + "\n" else "" end) +
       $playbook
