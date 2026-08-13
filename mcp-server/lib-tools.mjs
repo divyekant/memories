@@ -816,6 +816,16 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     return null;
   }
 
+  async function memoriesAddRequest(reqPath, body) {
+    const unavailable = await projectWriteUnavailable(body?.source);
+    if (unavailable) return { unavailable };
+    const data = await memoriesRequest(reqPath, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }, "add");
+    return { data };
+  }
+
   // -- Tools -------------------------------------------------------------------
 
   server.tool(
@@ -1103,14 +1113,11 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       document_at: z.string().optional().describe("ISO 8601 date for when the content was created (e.g. session date). Enables temporal search."),
     },
     async ({ text, source, deduplicate = true, on_duplicate = "supersede", document_at }) => {
-      const unavailable = await projectWriteUnavailable(source);
-      if (unavailable) return unavailable;
       const body = { text, source, on_duplicate };
       if (document_at) body.metadata = { document_at };
-      const data = await memoriesRequest("/memory/add", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, "add");
+      const addResult = await memoriesAddRequest("/memory/add", body);
+      if (addResult.unavailable) return addResult.unavailable;
+      const data = addResult.data;
 
       let msg;
       if (data.action === "superseded") {
@@ -1466,14 +1473,11 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       context: z.string().optional().describe("Optional context"),
     },
     async ({ text, source, context }) => {
-      const unavailable = await projectWriteUnavailable(source);
-      if (unavailable) return unavailable;
       const body = { text, source };
       if (context) body.context = context;
-      const data = await memoriesRequest("/memory/missed", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, "add");
+      const addResult = await memoriesAddRequest("/memory/missed", body);
+      if (addResult.unavailable) return addResult.unavailable;
+      const data = addResult.data;
       return {
         content: [{
           type: "text",

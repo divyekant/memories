@@ -31,6 +31,12 @@ principal/project for person memory, or namespace plus project for shared
 memory. Moving to another owner or project is an authored replacement and is
 restamped.
 
+An explicit PATCH may move a record across owners or projects when the caller
+has write authority on both source domains; the move is restamped to that
+authenticated editor. Supersede, merge, folder rename, conflict resolution,
+and automatic maintenance reject cross-domain moves because their purpose is
+content replacement or bulk derivation, not deliberate re-homing.
+
 Missing declarations retain legacy behavior. A declaration that exists but
 is invalid fails closed. Ordinary legacy sources retain global cross-client
 duplicate detection and consolidation, but structured records are excluded

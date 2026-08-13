@@ -846,6 +846,18 @@ test('memory_missed uses the same single-backend project write gate as memory_ad
   }
 });
 
+test('every MCP add operation is forced through the project-aware add chokepoint', async () => {
+  const source = await readFile(new URL('../lib-tools.mjs', import.meta.url), 'utf8');
+  const directAddOps = source.match(/,\s*["']add["']\s*\)/g) || [];
+  assert.equal(directAddOps.length, 1, 'new add operations must use memoriesAddRequest');
+  const helperStart = source.indexOf('async function memoriesAddRequest');
+  const helperEnd = source.indexOf('\n  }', helperStart);
+  const directAddIndex = source.search(/,\s*["']add["']\s*\)/);
+  assert.ok(helperStart >= 0 && directAddIndex > helperStart && directAddIndex < helperEnd);
+  assert.match(source, /memoriesAddRequest\("\/memory\/add"/);
+  assert.match(source, /memoriesAddRequest\("\/memory\/missed"/);
+});
+
 test('declared project memory_add rejects ambiguous multi-backend routing before any write', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mem-project-add-multi-'));
   await mkdir(join(dir, '.memories'), { recursive: true });
