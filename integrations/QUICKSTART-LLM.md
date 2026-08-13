@@ -227,143 +227,70 @@ If you prefer MCP-only manual config, add this to `~/.cursor/mcp.json`:
 
 ## Setup for Codex
 
-Codex uses:
-- `~/.codex/hooks.json` for 5 native hook events (`SessionStart`, `UserPromptSubmit`, `Stop`, `PreToolUse`, `PostToolUse`)
-- `~/.codex/config.toml` for MCP + developer instructions
-- `~/.codex/settings.json` for tool permissions
-- Codex-specific hook scripts in `integrations/codex/hooks/` (separate from Claude Code hooks)
-- Hook defaults that read/write `codex/{project}` memories unless you override them
+Codex runtime setup is owned by the published npm package. No repository checkout is required.
 
-The Codex Stop hook is **beefier** than Claude Code's (500 tail lines, 10 message pairs, 8000 char cap, no signal filter) to compensate for Codex lacking PreCompact/SessionEnd events.
-
-### Option A: Install the repo-local Codex plugin
-
-If you're inside a checkout of this repository, Codex can read the repo marketplace at `.agents/plugins/marketplace.json`.
-Install the `memories` plugin from that repo marketplace, then run:
-
-```text
-$memories:setup
-```
-
-That skill finds the current repo checkout, installs `mcp-server` dependencies, and then runs the canonical installer:
+### Local stdio setup (recommended)
 
 ```bash
-./integrations/claude-code/install.sh --codex
+npx -y memories-mcp@latest init --codex
 ```
 
-This is the lowest-maintenance way to get the setup workflow into Codex without hard-coding repo-specific paths into a cached plugin copy.
+This installs the supported Codex hooks and local stdio MCP registration. It
+uses `MEMORIES_URL`/`MEMORIES_API_KEY` from the local environment when present;
+never paste credentials into chat or a setup report.
 
-### Option B: Run the installer directly
+### Direct remote MCP setup (OAuth)
 
 ```bash
-cd ~/projects/memories
-cd mcp-server && npm install && cd ..
-./integrations/claude-code/install.sh --codex
+npx -y memories-mcp@latest init --codex --mcp-url https://... --yes
+codex mcp login memories
 ```
 
-The installer will:
-1. Install Codex-specific hook scripts to `~/.codex/hooks/memory/`
-2. Write hook config to `~/.codex/hooks.json` (standalone, merged with existing if present)
-3. Merge read-only memory tool permissions into `~/.codex/settings.json`
-4. Add MCP server config for `memories` to `~/.codex/config.toml` when missing
-5. Add default `developer_instructions` (if not already set) to bias `memory_search` usage
+`--mcp-url` is a canonical absolute HTTPS MCP endpoint. Do not combine it with
+`--url` or `--api-key`; the remote configuration uses OAuth and does not carry a
+backend API key. Remote MCP tools are separate from lifecycle-hook transport:
+hooks are installed but remain inactive until `MEMORIES_URL` or a REST
+`backends.yaml` configuration is available to the hook process.
 
-The hooks load `MEMORIES_URL` / `MEMORIES_API_KEY` from `~/.config/memories/env` (or `MEMORIES_ENV_FILE` override).
-Default scoped retrieval prefixes are `codex/{project},claude-code/{project},learning/{project},wip/{project}` for Codex and `claude-code/{project},codex/{project},learning/{project},wip/{project}` for Claude Code. Extraction still writes to the active client prefix by default.
-For scoped API keys, override them with `MEMORIES_SOURCE_PREFIXES` and `MEMORIES_EXTRACT_SOURCE`.
-Active-search hooks also write privacy-safe local telemetry to `~/.config/memories/active-search.jsonl`; summarize it with `.venv/bin/python scripts/active_search_metrics.py --log ~/.config/memories/active-search.jsonl`.
+### Lifecycle and configuration
 
-### Option C: Manual setup
+The installer writes scripts under `~/.codex/hooks/memory/`, merges
+`~/.codex/hooks.json`, and writes MCP registration plus developer instructions
+to `~/.codex/config.toml`. It selects ten events for Codex `>= 0.146.0`:
 
-**Step 1: Install hook scripts**
+`SessionStart`, `UserPromptSubmit`, `Stop`, `PreToolUse`, `PostToolUse`,
+`PreCompact`, `PostCompact`, `SubagentStart`, `SubagentStop`, and `SessionEnd`.
 
-```bash
-mkdir -p ~/.codex/hooks/memory
-cp ~/projects/memories/integrations/codex/hooks/memory-*.sh ~/.codex/hooks/memory/
-cp ~/projects/memories/integrations/codex/hooks/_lib.sh ~/.codex/hooks/memory/
-cp ~/projects/memories/integrations/codex/hooks/response-hints.json ~/.codex/hooks/memory/
-chmod +x ~/.codex/hooks/memory/*.sh
-```
+Older or unparseable clients receive the five-event legacy profile:
+`SessionStart`, `UserPromptSubmit`, `Stop`, `PreToolUse`, and `PostToolUse`.
+`PostCompact` returns only `suppressOutput`; rehydration uses
+`SessionStart(source=compact)`. `PreCompact` extracts with
+`context=pre_compact`, subagent stop extracts with `context=subagent_stop`,
+and `SessionEnd` enqueues one first-routed `context=session_end` request with a
+two-second max-time and no polling. Its hook timeout is exactly three seconds.
+The Codex Stop hook uses a larger window (500 tail lines, 10 message pairs,
+8000 characters, no signal filter) because it remains the single extraction
+boundary in the legacy profile.
 
-**Step 2: Create `~/.codex/hooks.json`**
+The current approval policy is in `config.toml`: six read-only memory tools are
+auto-approved under the Memories MCP server, while mutating tools—including
+`memory_is_useful`—remain prompt-gated. The installer does not write
+`~/.codex/settings.json`.
 
-```json
-{
-  "hooks": {
-    "SessionStart": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "/Users/you/.codex/hooks/memory/memory-recall.sh",
-        "timeout": 5
-      }]
-    }],
-    "UserPromptSubmit": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "/Users/you/.codex/hooks/memory/memory-query.sh",
-        "timeout": 10
-      }]
-    }],
-    "Stop": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "/Users/you/.codex/hooks/memory/memory-extract.sh",
-        "timeout": 30
-      }]
-    }],
-    "PostToolUse": [{
-      "matcher": "mcp__.*__memory_|exec",
-      "hooks": [{
-        "type": "command",
-        "command": "/Users/you/.codex/hooks/memory/memory-observe.sh",
-        "timeout": 1
-      }]
-    }],
-    "PreToolUse": [{
-      "matcher": "Write|Edit",
-      "hooks": [{
-        "type": "command",
-        "command": "/Users/you/.codex/hooks/memory/memory-guard.sh",
-        "timeout": 1
-      }]
-    }]
-  }
-}
-```
+Codex native Memories is optional and local-only. External Memories MCP remains
+the durable, searchable cross-client authority; the installer never forces
+either mode. To avoid duplicate native context, set
+`memories.disable_on_external_context = true` manually in `config.toml`.
 
-If `~/.codex/hooks.json` already exists, merge these entries instead of replacing the file.
+For scoped API keys, override `MEMORIES_SOURCE_PREFIXES` and
+`MEMORIES_EXTRACT_SOURCE` in `~/.config/memories/env`. Active-search hooks write
+privacy-safe telemetry to `~/.config/memories/active-search.jsonl`.
 
-**Step 3: Edit `~/.codex/config.toml`**
-
-```toml
-[mcp_servers.memories]
-command = "node"
-args = ["/path/to/memories/mcp-server/index.js"]
-
-[mcp_servers.memories.env]
-MEMORIES_URL = "http://localhost:8900"
-MEMORIES_API_KEY = "your-api-key-here"
-MEMORIES_CLIENT = "codex"
-```
-
-**Step 4: Optional source overrides for scoped keys**
-
-If your API key is prefix-scoped and does not allow `codex/*`, set these in `~/.config/memories/env`:
-
-```bash
-MEMORIES_SOURCE_PREFIXES="your-authorized-prefix/{project},learning/{project},wip/{project}"
-MEMORIES_EXTRACT_SOURCE="your-authorized-prefix/{project}"
-```
-
-**Step 5: Restart Codex**
-
-Codex will expose `memory_search`, `memory_add`, `memory_delete`, `memory_delete_by_source`, `memory_count`, `memory_list`, `memory_stats`, `memory_is_novel`, and other tools via MCP.
+The legacy `integrations/claude-code/install.sh --codex` path may remain for
+compatibility with older repository installs, but it is not the canonical
+Codex setup. Use the npm commands above for new runtime setup.
 
 ---
-
 ## Setup for OpenCode
 
 OpenCode uses Memories through MCP plus OpenCode plugin hooks. It does not use Claude Code or Codex shell hooks.
@@ -523,12 +450,23 @@ curl -s https://memory.yourdomain.com/health   # prod
 |------|-------|-------|-------------|
 | `memory-recall.sh` | SessionStart | Sync | Searches project-scoped memories, injects candidate pointers and recall playbook (no MEMORY.md hydration) |
 | `memory-query.sh` | UserPromptSubmit | Sync | Searches project-scoped memories using transcript context and prompt enrichment; injects the full playbook mandate only for prompts with candidate matches or prior-work shape, otherwise a 1-2 line reminder |
-| `memory-extract.sh` | Stop | Async | Beefier extraction: 500 lines, 10 msg pairs, 8000 chars, no signal filter (compensates for no PreCompact/SessionEnd) |
+| `memory-extract.sh` | Stop | Async | Legacy-profile extraction: 500 lines, 10 msg pairs, 8000 chars, no signal filter |
+| `memory-flush.sh` | PreCompact | Async | Expanded-profile extraction with `context=pre_compact` |
+| `memory-rehydrate.sh` | PostCompact | Sync | Schema-safe `suppressOutput`; rehydration uses `SessionStart(source=compact)` |
+| `memory-subagent-recall.sh` | SubagentStart | Sync | Injects project-scoped candidates into a new subagent |
+| `memory-subagent-capture.sh` | SubagentStop | Async | Extracts the subagent transcript with `context=subagent_stop` |
+| `memory-commit.sh` | SessionEnd | Async | One first-routed `context=session_end` enqueue, two-second max-time, no polling; manifest timeout exactly 3 seconds |
 | `memory-guard.sh` | PreToolUse | Sync | Blocks writes to MEMORY.md files |
 | `memory-observe.sh` | PostToolUse | Async | Logs memory MCP tool usage with `[codex]` tag |
 | MCP tools + developer instructions | Each new user turn | — | Drives active `memory_search` usage before implementation-heavy or prior-context responses |
 
-Codex uses `~/.codex/hooks.json` for hooks, `~/.codex/settings.json` for tool permissions, and `~/.codex/config.toml` for MCP + developer instructions. The legacy `memory-codex-notify.sh` (config.toml notify hook) is preserved for backward compatibility but superseded by native hooks.
+Codex uses a version-aware ten-event profile on `>= 0.146.0` and the five-event
+legacy profile otherwise. Hooks live in `~/.codex/hooks.json`; MCP registration,
+developer instructions, and six read-only approvals live in `~/.codex/config.toml`.
+Mutating tools, including `memory_is_useful`, remain prompt-gated. The installer
+does not write `~/.codex/settings.json`. The legacy `memory-codex-notify.sh`
+(config.toml notify hook) remains for backward compatibility but is superseded
+by native hooks.
 
 ### OpenCode
 
@@ -668,8 +606,11 @@ This enables strict add-only fallback writes (no AUDN update/delete behavior), i
 # Remove Claude hooks/config installed by the Memories installer
 ./integrations/claude-code/install.sh --claude --uninstall
 
-# Remove Codex hooks/config installed by the Memories installer
-./integrations/claude-code/install.sh --codex --uninstall
+# Remove Codex hooks/config installed by the published npm installer
+npx -y memories-mcp@latest uninstall --codex --yes
+
+# Legacy repository installer compatibility path (older installs only)
+# ./integrations/claude-code/install.sh --codex --uninstall
 
 # Remove OpenCode mcp/plugin entries and marker-managed skill files.
 # Existing unmarked ~/.config/opencode/skills/memories content is preserved.

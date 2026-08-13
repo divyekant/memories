@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, symlink, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, symlink, access, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { parseArgs, run } from '../cli/index.mjs';
+import { parseArgs, run, validateRemoteMcpUrl } from '../cli/index.mjs';
 import { readJson, writeJson } from '../cli/lib/json-file.mjs';
 
 const exists = (p) => access(p).then(() => true, () => false);
@@ -27,6 +27,220 @@ test('parseArgs throws on trailing --url with no value', () => {
 
 test('parseArgs throws on trailing --api-key with no value', () => {
   assert.throws(() => parseArgs(['init', '--api-key']), /--api-key/);
+});
+
+test('parseArgs accepts --mcp-url and rejects a missing value', () => {
+  assert.equal(
+    parseArgs(['init', '--codex', '--mcp-url', 'https://memory.example/mcp']).mcpUrl,
+    'https://memory.example/mcp',
+  );
+  assert.throws(() => parseArgs(['init', '--mcp-url']), /Missing value/);
+});
+
+test('remote Codex init writes an OAuth URL block without contacting the REST backend', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  const logs = [];
+  let healthCalls = 0;
+  await run(['init', '--codex', '--mcp-url', 'https://memory.example/mcp', '--yes'], {
+    home,
+    log: (message) => logs.push(message),
+    fetchImpl: async () => {
+      healthCalls += 1;
+      throw new Error('REST health/bootstrap must not run for --mcp-url');
+    },
+  });
+
+  const config = await readFile(join(home, '.codex/config.toml'), 'utf8');
+  assert.equal(healthCalls, 0);
+  assert.match(config, /\[mcp_servers\.memories\]\nurl = "https:\/\/memory\.example\/mcp"\nauth = "oauth"/);
+  assert.match(config, /default_tools_approval_mode = "prompt"/);
+  assert.doesNotMatch(config, /command = /);
+  assert.doesNotMatch(config, /MEMORIES_API_KEY/);
+  assert.ok(logs.some((message) => message.includes('codex mcp login memories')));
+});
+
+test('remote Codex init explains that lifecycle hooks need a separately configured REST backend', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  const logs = [];
+  let healthCalls = 0;
+  await run(['init', '--codex', '--mcp-url', 'https://memory.example/mcp', '--yes'], {
+    home,
+    log: (message) => logs.push(message),
+    fetchImpl: async () => {
+      healthCalls += 1;
+      throw new Error('REST health/bootstrap must not run for --mcp-url');
+    },
+  });
+
+  assert.equal(healthCalls, 0);
+  assert.ok(
+    logs.some((message) => /lifecycle hooks.*MEMORIES_URL.*backends\.yaml.*inactive/i.test(message)),
+    'remote setup must state the REST transport prerequisite for lifecycle hooks',
+  );
+});
+
+test('Codex init --no-persist-api-key omits the API key from generated local TOML', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await run(['init', '--codex', '--url', 'http://localhost:8900', '--api-key', 'super-secret', '--no-persist-api-key', '--yes'], {
+    home,
+    log: () => {},
+    fetchImpl: async () => new Response(JSON.stringify({ total_memories: 0 }), { status: 200 }),
+  });
+
+  const config = await readFile(join(home, '.codex/config.toml'), 'utf8');
+  assert.match(config, /MEMORIES_URL = "http:\/\/localhost:8900"/);
+  assert.match(config, /MEMORIES_CLIENT = "codex"/);
+  assert.doesNotMatch(config, /MEMORIES_API_KEY/);
+  assert.doesNotMatch(config, /super-secret/);
+});
+
+test('remote MCP options are validated before dry-run or backend checks', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  let healthCalls = 0;
+  const opts = {
+    home,
+    log: () => {},
+    fetchImpl: async () => {
+      healthCalls += 1;
+      throw new Error('health should not run after validation failure');
+    },
+  };
+
+  await assert.rejects(
+    () => run(['init', '--codex', '--mcp-url', 'https://memory.example/mcp', '--url', 'http://localhost:8900'], opts),
+    /--mcp-url cannot be combined with --url/,
+  );
+  await assert.rejects(
+    () => run(['init', '--codex', '--mcp-url', 'https://memory.example/mcp', '--api-key', 'backend-key'], opts),
+    /--mcp-url cannot be combined with --api-key/,
+  );
+  await assert.rejects(
+    () => run(['init', '--claude', '--mcp-url', 'https://memory.example/mcp'], opts),
+    /--mcp-url is only supported with --codex/,
+  );
+  assert.equal(healthCalls, 0);
+});
+
+async function snapshotRemoteSetupPaths(home) {
+  const paths = [
+    join(home, '.codex'),
+    join(home, '.codex/config.toml'),
+    join(home, '.codex/hooks.json'),
+    join(home, '.codex/hooks/memory'),
+    join(home, '.codex/hooks/memory/foreign.sh'),
+    join(home, '.config/memories'),
+    join(home, '.config/memories/state.json'),
+  ];
+  const snapshot = {};
+  for (const path of paths) {
+    try {
+      snapshot[path] = { type: 'file', value: await readFile(path, 'utf8') };
+    } catch (error) {
+      if (error.code === 'EISDIR') {
+        snapshot[path] = { type: 'directory', value: await readdir(path) };
+      } else {
+        snapshot[path] = { type: 'missing', value: error.code };
+      }
+    }
+  }
+  return snapshot;
+}
+
+test('invalid remote MCP URLs fail atomically before prompts, logs, health, or setup writes', async () => {
+  const cases = [
+    ['https://memory.example/mcp\nmalicious = true', /control character/i],
+    ['https://memory.example/mcp\u0000malicious', /control character/i],
+    ['https:memory.example/mcp', /canonical HTTPS URL/i],
+    ['https:///memory.example/mcp', /canonical HTTPS URL/i],
+    [String.raw`https:\memory.example\mcp`, /backslash/i],
+    [String.raw`https://memory.example/mcp?next=\admin`, /backslash/i],
+    ['https://memory.example/%zz', /percent-encoding/i],
+    ['memory.example/mcp', /absolute HTTPS URL/i],
+    ['http://memory.example/mcp', /HTTPS/i],
+    ['https://user:pass@memory.example/mcp', /credentials/i],
+    ['https://memory.example/mcp#fragment', /fragment/i],
+  ];
+
+  for (const [mcpUrl, expectedError] of cases) {
+    const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+    await mkdir(join(home, '.codex/hooks/memory'), { recursive: true });
+    await mkdir(join(home, '.config/memories'), { recursive: true });
+    await writeFile(join(home, '.codex/config.toml'), 'model = "gpt-5.5"\n');
+    await writeFile(join(home, '.codex/hooks.json'), '{"foreign":true}\n');
+    await writeFile(join(home, '.codex/hooks/memory/foreign.sh'), '#!/bin/sh\n');
+    await writeFile(join(home, '.config/memories/state.json'), '{"installedTargets":["foreign"]}\n');
+    const before = await snapshotRemoteSetupPaths(home);
+    const logs = [];
+    let healthCalls = 0;
+    let promptCalls = 0;
+
+    await assert.rejects(
+      () => run(['init', '--codex', '--mcp-url', mcpUrl, '--yes'], {
+        home,
+        log: (message) => logs.push(message),
+        askImpl: async () => { promptCalls += 1; return ''; },
+        fetchImpl: async () => { healthCalls += 1; throw new Error('health should not run'); },
+      }),
+      expectedError,
+    );
+
+    assert.deepEqual(await snapshotRemoteSetupPaths(home), before, `setup artifacts changed for ${JSON.stringify(mcpUrl)}`);
+    assert.deepEqual(logs, [], `logs should stay empty for ${JSON.stringify(mcpUrl)}`);
+    assert.equal(promptCalls, 0, `prompts should stay untouched for ${JSON.stringify(mcpUrl)}`);
+    assert.equal(healthCalls, 0, `health should stay untouched for ${JSON.stringify(mcpUrl)}`);
+  }
+});
+
+test('remote MCP authority URL is normalized with a trailing slash in Codex TOML', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  await run(['init', '--codex', '--mcp-url', 'https://memory.example.com', '--yes'], {
+    home,
+    log: () => {},
+    fetchImpl: async () => { throw new Error('REST health/bootstrap must not run for --mcp-url'); },
+  });
+
+  const config = await readFile(join(home, '.codex/config.toml'), 'utf8');
+  assert.match(config, /url = "https:\/\/memory\.example\.com\/"/);
+  assert.doesNotMatch(config, /url = "https:\/\/memory\.example\.com"\n/);
+});
+
+test('validateRemoteMcpUrl accepts canonical HTTPS URLs with encoded paths and queries', () => {
+  assert.equal(validateRemoteMcpUrl('https://memory.example.com'), 'https://memory.example.com/');
+  assert.equal(validateRemoteMcpUrl('https://memory.example.com/'), 'https://memory.example.com/');
+  assert.doesNotThrow(() => validateRemoteMcpUrl('https://memory.example/mcp?scope=read%2Fonly&next=%2Fv1%2Fsearch'));
+  assert.throws(() => validateRemoteMcpUrl('https:memory.example/mcp'), /canonical HTTPS URL/i);
+  assert.throws(() => validateRemoteMcpUrl('https:///memory.example/mcp'), /canonical HTTPS URL/i);
+  assert.throws(() => validateRemoteMcpUrl(String.raw`https:\memory.example\mcp`), /backslash/i);
+  assert.throws(() => validateRemoteMcpUrl(String.raw`https://memory.example/mcp?next=\admin`), /backslash/i);
+  assert.throws(() => validateRemoteMcpUrl('https://memory.example/%zz'), /percent-encoding/i);
+});
+
+test('remote MCP value validation precedes the injectable Windows restriction log', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mem-cli-'));
+  const logs = [];
+  await assert.rejects(
+    () => run(['init', '--codex', '--mcp-url', 'https:memory.example/mcp', '--yes'], {
+      home,
+      platform: 'win32',
+      log: (message) => logs.push(message),
+    }),
+    /canonical HTTPS URL/i,
+  );
+  assert.deepEqual(logs, []);
+});
+
+test('invalid remote MCP URLs fail before help output for command and flag help paths', async () => {
+  for (const argv of [
+    ['help', '--mcp-url', 'https:memory.example/mcp'],
+    ['--help', '--mcp-url', 'https:memory.example/mcp'],
+  ]) {
+    const logs = [];
+    await assert.rejects(
+      () => run(argv, { log: (message) => logs.push(message) }),
+      /canonical HTTPS URL/i,
+    );
+    assert.deepEqual(logs, [], `help path logged before validating ${argv.join(' ')}`);
+  }
 });
 
 test('parseArgs collects repeatable --mcp-name into mcpNames', () => {
@@ -77,8 +291,9 @@ test('init --yes without --mcp-name only pre-approves the default server (unchan
     fetchImpl: async () => new Response(JSON.stringify({ total_memories: 0 }), { status: 200 }),
   });
   const settings = await readJson(join(home, '.claude/settings.json'));
-  assert.equal(settings.permissions.allow.length, 7);
+  assert.equal(settings.permissions.allow.length, 6);
   assert.ok(settings.permissions.allow.every((t) => t.startsWith('mcp__memories__')));
+  assert.ok(!settings.permissions.allow.includes('mcp__memories__memory_is_useful'));
 });
 
 test('init --dry-run writes nothing', async () => {

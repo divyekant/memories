@@ -39,6 +39,46 @@
         "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-guard.sh",
         "timeout": 1
       }]
+    }],
+    "PreCompact": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-flush.sh",
+        "timeout": 30
+      }]
+    }],
+    "PostCompact": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-rehydrate.sh",
+        "timeout": 5
+      }]
+    }],
+    "SubagentStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-subagent-recall.sh",
+        "timeout": 5
+      }]
+    }],
+    "SubagentStop": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-subagent-capture.sh",
+        "timeout": 30
+      }]
+    }],
+    "SessionEnd": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "${MEMORIES_HOOKS_DIR:-~/.codex/hooks/memory}/memory-commit.sh",
+        "timeout": 3
+      }]
     }]
   }
 }

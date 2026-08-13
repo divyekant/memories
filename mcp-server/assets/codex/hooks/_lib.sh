@@ -180,11 +180,46 @@ _memories_disabled() {
   esac
 }
 
+# A hook is active only when explicitly enabled or when a backend is actually
+# configured. The optional cwd lets callers pass a payload workspace before
+# loading the backend file; explicit/project/global precedence remains in the
+# resolver itself.
+_memories_has_backend_config() {
+  local cwd="${1:-}"
+  [ -n "${MEMORIES_URL:-}" ] && return 0
+  _resolve_backends_file "$cwd" >/dev/null
+}
+
+_memories_active() {
+  local cwd="${1:-}"
+  if _memories_disabled; then
+    return 1
+  fi
+  if [ -n "${MEMORIES_ENABLED+x}" ]; then
+    case "${MEMORIES_ENABLED}" in
+      1|true|TRUE|yes|YES|on|ON) return 0 ;;
+      0|false|FALSE|no|NO|off|OFF) return 1 ;;
+    esac
+  fi
+  _memories_has_backend_config "$cwd"
+}
+
 _exit_if_disabled() {
+  local cwd="${1:-}"
   if _memories_disabled; then
     _log_info "Hook disabled by MEMORIES_DISABLED"
     exit 0
   fi
+  if _memories_active "$cwd"; then
+    return 0
+  fi
+  if [ -n "${MEMORIES_ENABLED+x}" ]; then
+    _log_info "Hook disabled by MEMORIES_ENABLED=${MEMORIES_ENABLED}"
+  fi
+  # No explicit opt-in and no configured backend: true silent no-op. Do not
+  # log here because doing so would create a config directory for every
+  # contributor who never enabled memory hooks.
+  exit 0
 }
 
 # Rotate log if over 1000 lines (called from SessionStart only)
@@ -229,6 +264,64 @@ _resolve_env_reference() {
 }
 
 
+# -- Hook-wide deadline -------------------------------------------------------
+_MEMORIES_HOOK_BUDGET_MS_DEFAULT=5000
+_MEMORIES_HOOK_BUDGET_MARGIN_MS=500
+_MEMORIES_HOOK_CALL_RESERVE_S="0.15"
+_MEMORIES_HOOK_MIN_CALL_S="0.3"
+
+_hook_now_s() {
+  jq -n 'now' 2>/dev/null || date +%s
+}
+
+_hook_deadline_init() {
+  local start
+  start=$(_hook_now_s)
+  local budget_ms="${MEMORIES_HOOK_BUDGET_MS:-$_MEMORIES_HOOK_BUDGET_MS_DEFAULT}"
+  _MEMORIES_HOOK_DEADLINE_S=$(jq -n \
+    --argjson start "$start" \
+    --argjson budget_ms "$budget_ms" \
+    --argjson margin_ms "$_MEMORIES_HOOK_BUDGET_MARGIN_MS" \
+    '$start + (($budget_ms - $margin_ms) / 1000)' 2>/dev/null) || _MEMORIES_HOOK_DEADLINE_S=""
+}
+
+_hook_remaining_s() {
+  if [ -z "${_MEMORIES_HOOK_DEADLINE_S:-}" ]; then
+    printf '999999'
+    return 0
+  fi
+  local now
+  now=$(_hook_now_s)
+  jq -n --argjson deadline "$_MEMORIES_HOOK_DEADLINE_S" --argjson now "$now" \
+    '$deadline - $now' 2>/dev/null || printf '999999'
+}
+
+_hook_deadline_exhausted() {
+  local remaining
+  remaining=$(_hook_remaining_s)
+  jq -n --argjson remaining "$remaining" --argjson min "$_MEMORIES_HOOK_MIN_CALL_S" \
+    '$remaining < $min' 2>/dev/null || printf 'false'
+}
+
+_hook_call_budget() {
+  local existing_cap="$1"
+  local remaining
+  remaining=$(_hook_remaining_s)
+  local budget
+  budget=$(jq -n --argjson cap "$existing_cap" --argjson remaining "$remaining" \
+    --argjson reserve "$_MEMORIES_HOOK_CALL_RESERVE_S" \
+    '[$cap, ($remaining - $reserve)] | min' 2>/dev/null) || budget="$existing_cap"
+  local ok
+  ok=$(jq -n --argjson budget "$budget" --argjson min "$_MEMORIES_HOOK_MIN_CALL_S" \
+    '$budget >= $min' 2>/dev/null) || ok="false"
+  if [ "$ok" != "true" ]; then
+    return 1
+  fi
+  printf '%s' "$budget"
+  return 0
+}
+
+
 # -- Backend circuit breaker --------------------------------------------------
 # When the backend is down or slow, every hook on every prompt pays full curl
 # timeouts (~8s measured across a prompt's hook fan-out). After a failure the
@@ -237,11 +330,28 @@ _resolve_env_reference() {
 _MEMORIES_BREAKER_FILE="${MEMORIES_BREAKER_FILE:-$HOME/.config/memories/backend-down}"
 _MEMORIES_BREAKER_COOLDOWN="${MEMORIES_BREAKER_COOLDOWN:-60}"
 
+_breaker_file_for() {
+  local name="${1-default}"
+  if [ "$name" = "default" ]; then
+    printf '%s' "$_MEMORIES_BREAKER_FILE"
+  else
+    # Backend names are arbitrary YAML keys. Encode every byte rather than
+    # replacing punctuation, so names such as foo/bar and foo?bar cannot
+    # share a breaker file. `od` is available on macOS and Linux; the fixed
+    # namespace keeps these paths distinct from the historical default file.
+    local encoded
+    encoded=$(printf '%s' "$name" | LC_ALL=C od -An -tx1 | tr -d '[:space:]')
+    printf '%s.backend-%s' "$_MEMORIES_BREAKER_FILE" "$encoded"
+  fi
+}
+
 _breaker_open() {
-  [ -f "$_MEMORIES_BREAKER_FILE" ] || return 1
+  local file
+  file=$(_breaker_file_for "${1:-default}")
+  [ -f "$file" ] || return 1
   local ts now age
-  ts=$(cat "$_MEMORIES_BREAKER_FILE" 2>/dev/null)
-  case "$ts" in ''|*[!0-9]*) rm -f "$_MEMORIES_BREAKER_FILE" 2>/dev/null; return 1 ;; esac
+  ts=$(cat "$file" 2>/dev/null)
+  case "$ts" in ''|*[!0-9]*) rm -f "$file" 2>/dev/null; return 1 ;; esac
   now=$(date +%s)
   age=$((now - ts))
   [ "$age" -lt "$_MEMORIES_BREAKER_COOLDOWN" ] && return 0
@@ -249,28 +359,103 @@ _breaker_open() {
 }
 
 _breaker_trip() {
-  mkdir -p "$(dirname "$_MEMORIES_BREAKER_FILE")" 2>/dev/null
-  date +%s > "$_MEMORIES_BREAKER_FILE" 2>/dev/null
-  _log_warn "Memories backend unreachable — circuit open for ${_MEMORIES_BREAKER_COOLDOWN}s (hooks skip backend calls)" 2>/dev/null || true
+  local name="${1:-default}"
+  local file
+  file=$(_breaker_file_for "$name")
+  mkdir -p "$(dirname "$file")" 2>/dev/null
+  date +%s > "$file" 2>/dev/null
+  _log_warn "Memories backend '$name' unreachable — circuit open for ${_MEMORIES_BREAKER_COOLDOWN}s" 2>/dev/null || true
 }
 
 _breaker_reset() {
-  rm -f "$_MEMORIES_BREAKER_FILE" 2>/dev/null
+  local file
+  file=$(_breaker_file_for "${1:-default}")
+  rm -f "$file" 2>/dev/null
   return 0
 }
 
-# Health check — returns 0 if service is reachable (breaker-aware)
+# A timeout is evidence about the backend only when it received a fair share
+# of the requested per-call budget. Shrinking deadline budgets must not trip a
+# healthy backend's breaker.
+_MEMORIES_BREAKER_FAIR_BUDGET_RATIO="${MEMORIES_BREAKER_FAIR_BUDGET_RATIO:-0.75}"
+
+_should_trip_breaker() {
+  local rc="$1" budget="$2" cap="$3"
+  [ "$rc" = "28" ] || return 0
+  local fair
+  fair=$(jq -n --argjson b "$budget" --argjson c "$cap" \
+    --argjson r "$_MEMORIES_BREAKER_FAIR_BUDGET_RATIO" \
+    '$b >= ($c * $r)' 2>/dev/null) || fair="true"
+  [ "$fair" = "true" ] && return 0
+  return 1
+}
+
+# Health check probes every routed search backend in parallel and leaves
+# per-backend breaker state for the search fan-out to consume.
 _health_check() {
-  local url="${MEMORIES_URL:-http://localhost:8900}"
-  if _breaker_open; then
+  MEMORIES_HEALTH_DOWN_NAMES=""
+
+  local backends
+  backends=$(_get_backends_for_op "search" 2>/dev/null) || backends="[]"
+  local backend_count
+  backend_count=$(printf '%s' "$backends" | jq 'length' 2>/dev/null) || backend_count=0
+  if [ "${backend_count:-0}" -eq 0 ]; then
+    MEMORIES_HEALTH_DOWN_NAMES="no backend resolved for search routing"
     MEMORIES_BACKEND_DOWN=1
     return 1
   fi
-  if curl -sf --max-time 2 "$url/health" >/dev/null 2>&1; then
-    _breaker_reset
+
+  local probe_budget
+  if ! probe_budget=$(_hook_call_budget 2); then
+    MEMORIES_HEALTH_DOWN_NAMES="hook budget exhausted before any health probe"
+    MEMORIES_BACKEND_DOWN=1
+    return 1
+  fi
+
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  local backend url name backend_idx
+  backend_idx=0
+  while read -r backend; do
+    backend_idx=$((backend_idx + 1))
+    url=$(printf '%s' "$backend" | jq -r '.url')
+    name=$(printf '%s' "$backend" | jq -r '.name')
+    if _breaker_open "$name"; then
+      printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${backend_idx}"
+      continue
+    fi
+    (
+      if curl -sf --max-time "$probe_budget" "$url/health" >/dev/null 2>&1; then
+        _breaker_reset "$name"
+        : > "$tmpdir/up_${backend_idx}"
+      else
+        _breaker_trip "$name"
+        printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${backend_idx}"
+      fi
+    ) &
+  done < <(printf '%s' "$backends" | jq -c '.[]')
+  wait
+
+  local up_count=0
+  local f
+  for f in "$tmpdir"/up_*; do
+    [ -e "$f" ] || continue
+    up_count=$((up_count + 1))
+  done
+  for f in "$tmpdir"/down_*; do
+    [ -e "$f" ] || continue
+    if [ -n "$MEMORIES_HEALTH_DOWN_NAMES" ]; then
+      MEMORIES_HEALTH_DOWN_NAMES="$MEMORIES_HEALTH_DOWN_NAMES, $(cat "$f")"
+    else
+      MEMORIES_HEALTH_DOWN_NAMES="$(cat "$f")"
+    fi
+  done
+  rm -rf "$tmpdir"
+
+  if [ "$up_count" -gt 0 ]; then
+    MEMORIES_BACKEND_DOWN=0
     return 0
   fi
-  _breaker_trip
   MEMORIES_BACKEND_DOWN=1
   return 1
 }
@@ -290,12 +475,14 @@ _parse_backends_yaml() {
   _flush_backend() {
     if [ -n "$current_name" ] && [ -n "$url" ]; then
       # Resolve ${VAR} references without bash 4 indirect expansion.
-      local resolved_key resolved_url
+      local resolved_key resolved_url key_env
       resolved_key="$(_resolve_env_reference "$api_key")"
       resolved_url="$(_resolve_env_reference "$url")"
+      key_env=$(printf '%s' "$api_key" | sed -n 's/.*${\([A-Za-z_][A-Za-z0-9_]*\)}.*/\1/p')
       backends_json=$(printf '%s' "$backends_json" | jq -c --arg n "$current_name" \
         --arg u "$resolved_url" --arg k "$resolved_key" --arg s "$scenario" \
-        '. + [{name: $n, url: $u, api_key: $k, scenario: $s}]')
+        --arg ke "$key_env" --argjson eb false \
+        '. + [{name: $n, url: $u, api_key: $k, api_key_env: $ke, env_backed: $eb, scenario: $s}]')
     fi
     url="" api_key="" scenario="" current_name=""
   }
@@ -317,10 +504,13 @@ _parse_backends_yaml() {
     fi
 
     if [ "$current_section" = "backends" ]; then
-      # Backend name line (2-space indent, no further indent)
-      if printf '%s' "$line" | grep -qE '^  [a-zA-Z_][a-zA-Z0-9_-]*:'; then
+      # Backend name line (exactly two-space indent, unquoted key, and no
+      # colon/comment content after the key). YAML permits punctuation such as
+      # slash and question mark in unquoted keys, so keep only the structural
+      # boundaries here rather than imposing an identifier grammar.
+      if printf '%s' "$line" | grep -qE '^  [^:#[:space:]][^:]*:[[:space:]]*(#.*)?$'; then
         _flush_backend
-        current_name=$(printf '%s' "$line" | sed 's/^ *//;s/:.*//')
+        current_name=$(printf '%s' "$line" | sed -E 's/^  ([^:#[:space:]][^:]*):[[:space:]]*(#.*)?$/\1/' | sed 's/[[:space:]]*$//')
       fi
       # Properties (4-space indent)
       if printf '%s' "$line" | grep -qE '^    url:'; then
@@ -369,6 +559,30 @@ _parse_backends_yaml() {
   jq -nc --argjson b "$backends_json" --argjson r "$routing_json" '{backends: $b, routing: $r}'
 }
 
+# Resolve the backend config using one precedence shared by activation and
+# loading: explicit env override, project root, payload cwd, then global file.
+_resolve_backends_file() {
+  local cwd="${1:-}"
+  if [ -n "${MEMORIES_BACKENDS_FILE:-}" ] && [ -f "${MEMORIES_BACKENDS_FILE}" ]; then
+    printf '%s' "${MEMORIES_BACKENDS_FILE}"
+    return 0
+  fi
+  local project_dir="${CODEX_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-$PWD}}"
+  if [ -n "$project_dir" ] && [ -f "$project_dir/.memories/backends.yaml" ]; then
+    printf '%s' "$project_dir/.memories/backends.yaml"
+    return 0
+  fi
+  if [ -n "$cwd" ] && [ -f "$cwd/.memories/backends.yaml" ]; then
+    printf '%s' "$cwd/.memories/backends.yaml"
+    return 0
+  fi
+  if [ -f "$HOME/.config/memories/backends.yaml" ]; then
+    printf '%s' "$HOME/.config/memories/backends.yaml"
+    return 0
+  fi
+  return 1
+}
+
 _load_backends() {
   # Return cached if already loaded
   if [ -n "$_BACKENDS_CACHE" ]; then
@@ -376,16 +590,8 @@ _load_backends() {
     return 0
   fi
 
-  local config_file="${MEMORIES_BACKENDS_FILE:-}"
-
-  # Resolution: explicit env → project → global → env var fallback
-  if [ -z "$config_file" ]; then
-    if [ -f "${CWD:-}/.memories/backends.yaml" ] 2>/dev/null; then
-      config_file="$CWD/.memories/backends.yaml"
-    elif [ -f "$HOME/.config/memories/backends.yaml" ]; then
-      config_file="$HOME/.config/memories/backends.yaml"
-    fi
-  fi
+  local config_file=""
+  config_file=$(_resolve_backends_file "${CWD:-}" 2>/dev/null) || config_file=""
 
   if [ -n "$config_file" ] && [ -f "$config_file" ]; then
     # Parse YAML → JSON.  Try Node.js + js-yaml first (best fidelity),
@@ -411,7 +617,8 @@ try {
   const data = yaml.load(fs.readFileSync('${config_file}', 'utf8'));
   const interp = (v) => { const m = (v||'').match(/\\\$\{(\w+)\}/); return m ? (process.env[m[1]] || v) : v; };
   const backends = Object.entries(data.backends || {}).map(([name, cfg]) => {
-    return { name, url: interp(cfg.url || ''), api_key: interp(cfg.api_key || ''), scenario: cfg.scenario || '' };
+    const keyRef = String(cfg.api_key || '').match(/\\\$\{([A-Za-z_][A-Za-z0-9_]*)\}/);
+    return { name, url: interp(cfg.url || ''), api_key: interp(cfg.api_key || ''), api_key_env: keyRef ? keyRef[1] : '', env_backed: false, scenario: cfg.scenario || '' };
   });
   console.log(JSON.stringify({ backends, routing: data.routing || {} }));
 } catch(e) {
@@ -433,8 +640,19 @@ try {
     local url="${MEMORIES_URL:-http://localhost:8900}"
     local key="${MEMORIES_API_KEY:-}"
     _BACKENDS_CACHE=$(jq -nc --arg url "$url" --arg key "$key" \
-      '{backends: [{name: "default", url: $url, api_key: $key, scenario: ""}], routing: {}}')
+      '{backends: [{name: "default", url: $url, api_key: $key, api_key_env: "MEMORIES_API_KEY", env_backed: true, scenario: ""}], routing: {}}')
     echo "$_BACKENDS_CACHE" | jq -c '.backends'
+  fi
+}
+
+_resolve_primary_backend_url() {
+  local backends url
+  backends=$(_get_backends_for_op "search" 2>/dev/null) || backends="[]"
+  url=$(printf '%s' "$backends" | jq -r '.[0].url // empty' 2>/dev/null) || url=""
+  if [ -n "$url" ]; then
+    printf '%s' "$url"
+  else
+    printf '%s' "${MEMORIES_URL:-http://localhost:8900}"
   fi
 }
 
@@ -504,16 +722,16 @@ _search_memories_multi() {
   local usage_session_id="${MEMORIES_USAGE_SESSION_ID:-}"
   local usage_invocation="${MEMORIES_USAGE_INVOCATION:-${MEMORIES_HOOK_NAME:-hook}}"
 
-  if _breaker_open; then
-    MEMORIES_BACKEND_DOWN=1
-    echo '{"results":[],"count":0}'
-    return
-  fi
-
   local backends
   backends=$(_get_backends_for_op "search")
   local count
   count=$(echo "$backends" | jq 'length')
+
+  if [ "$count" -eq 0 ]; then
+    MEMORIES_BACKEND_DOWN=1
+    echo '{"results":[],"count":0,"backend_down":true}'
+    return
+  fi
 
   local body
   if [ -n "$prefix" ]; then
@@ -525,55 +743,138 @@ _search_memories_multi() {
   fi
 
   if [ "$count" -le 1 ]; then
-    # Single backend — direct call (backward compat, no overhead)
-    local url key
+    # Single backend — direct call (backward compat, no overhead). Breaker
+    # state is keyed by this backend's name; the env-only fallback remains
+    # "default" and therefore keeps the historical breaker filename.
+    local url key name api_key_env env_backed
     url=$(echo "$backends" | jq -r '.[0].url')
     key=$(echo "$backends" | jq -r '.[0].api_key')
-    local out
-    if out=$(curl -sf --max-time 4 -X POST "$url/search" \
+    name=$(echo "$backends" | jq -r '.[0].name // "default"')
+    api_key_env=$(echo "$backends" | jq -r '.[0].api_key_env // empty')
+    env_backed=$(echo "$backends" | jq -r '.[0].env_backed // false')
+
+    if _breaker_open "$name"; then
+      MEMORIES_BACKEND_DOWN=1
+      echo '{"results":[],"count":0,"backend_down":true}'
+      return
+    fi
+
+    local call_budget
+    if ! call_budget=$(_hook_call_budget 4); then
+      MEMORIES_BACKEND_DOWN=1
+      echo '{"results":[],"count":0,"backend_down":true}'
+      return
+    fi
+
+    # Keep Codex's usage headers and source payload while retaining the status
+    # code so authenticated 401s are distinguishable from reachability errors.
+    local raw curl_rc status out
+    raw=$(curl -s --max-time "$call_budget" -w '\n%{http_code}' -X POST "$url/search" \
       -H "Content-Type: application/json" \
       -H "X-API-Key: $key" \
       -H "X-Memories-Client: $usage_client" \
       -H "X-Memories-Session-Id: $usage_session_id" \
       -H "X-Memories-Invocation: $usage_invocation" \
-      -d "$body" 2>/dev/null); then
-      _breaker_reset
-      printf '%s' "$out"
+      -d "$body" 2>/dev/null)
+    curl_rc=$?
+    status="${raw##*$'\n'}"
+    out="${raw%$'\n'*}"
+    if [ $curl_rc -eq 0 ] && [ -n "$raw" ] && [ "$status" != "$raw" ]; then
+      case "$status" in
+        2??)
+          _breaker_reset "$name"
+          MEMORIES_BACKEND_DOWN=0
+          printf '%s' "$out" | jq -c '. + {backend_down: false}' 2>/dev/null || printf '%s' "$out"
+          ;;
+        401)
+          _breaker_reset "$name"
+          MEMORIES_AUTH_FAILED=1
+          jq -nc --arg name "$name" --arg url "$url" --arg api_key_env "$api_key_env" --argjson env_backed "$env_backed" \
+            '{results: [], count: 0, backend_down: false, auth_failed: true, auth_failed_backends: [{name: $name, url: $url, api_key_env: $api_key_env, env_backed: $env_backed}]}'
+          ;;
+        *)
+          _breaker_trip "$name"
+          MEMORIES_BACKEND_DOWN=1
+          echo '{"results":[],"count":0,"backend_down":true}'
+          ;;
+      esac
     else
-      _breaker_trip
+      if _should_trip_breaker "$curl_rc" "$call_budget" 4; then
+        _breaker_trip "$name"
+      fi
       MEMORIES_BACKEND_DOWN=1
-      echo '{"results":[],"count":0}'
+      echo '{"results":[],"count":0,"backend_down":true}'
     fi
     return
   fi
 
-  # Multi-backend: parallel fan-out with background subshells
-  # Use process substitution (< <(...)) so the while loop runs in the current
-  # shell and `wait` can actually collect the background jobs.
+  # Multi-backend: parallel fan-out. Each backend has independent breaker
+  # state, so one failed backend cannot suppress healthy peers.
+  local call_budget
+  if ! call_budget=$(_hook_call_budget 4); then
+    MEMORIES_BACKEND_DOWN=1
+    echo '{"results":[],"count":0,"backend_down":true}'
+    return
+  fi
+
   local tmpdir
   tmpdir=$(mktemp -d)
-  local i=0
+  local attempted=0
+  local backend_idx=0
   while read -r backend; do
-    local url key name
+    backend_idx=$((backend_idx + 1))
+    local url key name api_key_env env_backed output_id
     url=$(echo "$backend" | jq -r '.url')
     key=$(echo "$backend" | jq -r '.api_key')
     name=$(echo "$backend" | jq -r '.name')
+    api_key_env=$(echo "$backend" | jq -r '.api_key_env // empty')
+    env_backed=$(echo "$backend" | jq -r '.env_backed // false')
+    output_id="$backend_idx"
+    if _breaker_open "$name"; then
+      continue
+    fi
+    attempted=1
     (
-      result=$(curl -sf --max-time 4 -X POST "$url/search" \
+      raw=$(curl -s --max-time "$call_budget" -w '\n%{http_code}' -X POST "$url/search" \
         -H "Content-Type: application/json" \
         -H "X-API-Key: $key" \
         -H "X-Memories-Client: $usage_client" \
         -H "X-Memories-Session-Id: $usage_session_id" \
         -H "X-Memories-Invocation: $usage_invocation" \
         -d "$body" 2>/dev/null)
-      if [ -n "$result" ]; then
-        # Tag results with _backend
-        echo "$result" | jq -c --arg b "$name" '.results[] | . + {_backend: $b}' > "$tmpdir/result_${name}.jsonl"
+      search_rc=$?
+      status="${raw##*$'\n'}"
+      result="${raw%$'\n'*}"
+      if [ $search_rc -eq 0 ] && [ -n "$raw" ] && [ "$status" != "$raw" ]; then
+        case "$status" in
+          2??)
+            _breaker_reset "$name"
+            touch "$tmpdir/reachable_${output_id}.marker"
+            echo "$result" | jq -c --arg b "$name" '.results[] | . + {_backend: $b}' > "$tmpdir/result_${output_id}.jsonl"
+            ;;
+          401)
+            _breaker_reset "$name"
+            touch "$tmpdir/reachable_${output_id}.marker"
+            jq -nc --arg name "$name" --arg url "$url" --arg api_key_env "$api_key_env" --argjson env_backed "$env_backed" \
+              '{name: $name, url: $url, api_key_env: $api_key_env, env_backed: $env_backed}' > "$tmpdir/auth_failed_${output_id}.json"
+            ;;
+          *)
+            _breaker_trip "$name"
+            ;;
+        esac
+      elif _should_trip_breaker "$search_rc" "$call_budget" 4; then
+        _breaker_trip "$name"
       fi
     ) &
-    i=$((i + 1))
   done < <(echo "$backends" | jq -c '.[]')
   wait
+
+  if [ "$attempted" -eq 0 ]; then
+    rm -rf "$tmpdir"
+    MEMORIES_BACKEND_DOWN=1
+    echo '{"results":[],"count":0,"backend_down":true}'
+    return
+  fi
 
   # Merge results: sort by score, dedup keeping highest-scoring duplicate,
   # then re-sort to guarantee global score ordering after dedup.
@@ -582,11 +883,30 @@ _search_memories_multi() {
   # while relative_score is normalized per result set (top of every set = 1.0)
   # and would let a single-result set outrank everything. relative_score is for
   # display only.
-  cat "$tmpdir"/result_*.jsonl 2>/dev/null | jq -s '
+  local merged
+  merged=$(cat "$tmpdir"/result_*.jsonl 2>/dev/null | jq -s '
     sort_by(-(.similarity // .rrf_score // 0))
     | unique_by(.text)
     | sort_by(-(.similarity // .rrf_score // 0))
-  ' | jq -c '{results: ., count: length}'
+  ' | jq -c '{results: ., count: length}')
+  local auth_backends='[]'
+  local auth_file
+  local reachable_count=0 reachable_file backend_down=false
+  for reachable_file in "$tmpdir"/reachable_*.marker; do
+    [ -e "$reachable_file" ] || continue
+    reachable_count=$((reachable_count + 1))
+  done
+  [ "$reachable_count" -gt 0 ] || backend_down=true
+  for auth_file in "$tmpdir"/auth_failed_*.json; do
+    [ -e "$auth_file" ] || continue
+    auth_backends=$(cat "$auth_file" | jq -c --argjson existing "$auth_backends" '$existing + [.] | unique_by((.name // "") + "|" + (.url // ""))')
+  done
+  if [ "$auth_backends" != "[]" ]; then
+    printf '%s' "$merged" | jq -c --argjson auth_backends "$auth_backends" --argjson backend_down "$backend_down" \
+      '. + {backend_down: $backend_down, auth_failed: true, auth_failed_backends: $auth_backends}'
+  else
+    printf '%s' "$merged" | jq -c --argjson backend_down "$backend_down" '. + {backend_down: $backend_down}'
+  fi
 
   rm -rf "$tmpdir"
 }

@@ -1,13 +1,23 @@
 import { chmod, copyFile, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
+import { execFile as nodeExecFile } from 'node:child_process';
 import { join } from 'node:path';
-import { readJson, writeJson, addPermissions, removePermissions, mergeHookSettings } from '../lib/json-file.mjs';
-import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOLS } from '../lib/hooks.mjs';
-import { installStatePath, recordPermissions, readRecordedPermissions, clearRecordedPermissions } from '../lib/install-state.mjs';
-import { appendMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlock, hasTomlSection, hasTomlKey, ensureTomlStringKey, tomlEscape } from '../lib/toml.mjs';
+import { promisify } from 'node:util';
+import { readJson, writeJson, removePermissions, mergeHookSettings } from '../lib/json-file.mjs';
+import { renderHooksJson, copyHookScripts, READONLY_MCP_TOOL_NAMES } from '../lib/hooks.mjs';
+import { installStatePath, readRecordedPermissions, clearRecordedPermissions } from '../lib/install-state.mjs';
+import { upsertMarkedBlock, insertMarkedBlockAtRoot, removeMarkedBlockStrict, validateMarkedBlock, hasTomlSection, hasTomlKey, tomlEscape, maskTomlMultilineStrings } from '../lib/toml.mjs';
 
 const MARKER_NOTIFY = 'Memories Codex notify';
 const MARKER_MCP = 'Memories Codex MCP';
 const MARKER_DEV = 'Memories Codex developer instructions';
+const CODEX_EXPANDED_HOOK_VERSION = [0, 146, 0];
+const CODEX_MANAGED_HOOKS = [
+  'memory-recall.sh', 'memory-query.sh', 'memory-extract.sh',
+  'memory-observe.sh', 'memory-guard.sh', 'memory-flush.sh',
+  'memory-rehydrate.sh', 'memory-subagent-recall.sh',
+  'memory-subagent-capture.sh', 'memory-commit.sh',
+];
+const execFile = promisify(nodeExecFile);
 
 const DEVELOPER_INSTRUCTIONS = `developer_instructions = """
 Use the Memories MCP tools as your memory layer with three responsibilities:
@@ -21,6 +31,133 @@ Source prefixes: replace {project} with the current working directory basename. 
 
 const exists = (p) => access(p).then(() => true, () => false);
 
+// Read only the exact root tables used by Codex's optional native memory
+// settings. This deliberately is not a general TOML parser: status must not
+// infer values from profile/managed/nested tables, commented examples, or
+// prose embedded in multiline strings.
+function explicitRootBoolean(text, sectionName, keyName) {
+  let section = null;
+  let value;
+  for (const line of maskTomlMultilineStrings(text).split('\n')) {
+    if (/^\s*\[/.test(line)) {
+      const sectionMatch = line.match(/^\s*\[([^\[\]]+)\]\s*(?:#.*)?$/);
+      // Any table header ends the previous section. Array-of-table headers
+      // and malformed/nested headers are deliberately not root assignments.
+      section = sectionMatch ? sectionMatch[1].trim() : null;
+      continue;
+    }
+    if (section !== sectionName) continue;
+    const assignment = line.match(new RegExp(`^\\s*${keyName}\\s*=\\s*(true|false)\\s*(?:#.*)?$`));
+    if (assignment) value = assignment[1] === 'true';
+  }
+  return value;
+}
+
+/**
+ * Codex added the expanded lifecycle events in 0.146.0. Parse only the first
+ * semantic version in the command output so distro suffixes and a leading
+ * `codex-cli` label do not affect the numeric comparison.
+ */
+export function supportsExpandedHooks(versionText) {
+  const match = String(versionText ?? '').match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return false;
+  const version = match.slice(1, 4).map(Number);
+  for (let i = 0; i < CODEX_EXPANDED_HOOK_VERSION.length; i += 1) {
+    if (version[i] !== CODEX_EXPANDED_HOOK_VERSION[i]) {
+      return version[i] > CODEX_EXPANDED_HOOK_VERSION[i];
+    }
+  }
+  return true;
+}
+
+async function detectCodexVersion(ctx) {
+  if (ctx.codexVersion !== undefined) {
+    return String(ctx.codexVersion ?? '');
+  }
+  const execImpl = ctx.execFileImpl ?? execFile;
+  try {
+    const result = await execImpl('codex', ['--version']);
+    return typeof result === 'string' ? result : String(result?.stdout ?? '');
+  } catch {
+    return '';
+  }
+}
+
+const LEGACY_HOOK_COMMANDS = {
+  SessionStart: 'memory-recall.sh',
+  UserPromptSubmit: 'memory-query.sh',
+  Stop: 'memory-extract.sh',
+  PostToolUse: 'memory-observe.sh',
+  PreToolUse: 'memory-guard.sh',
+};
+
+// These are the seven allow-rules written by the pre-manifest Codex
+// installer. They are retained only as a narrowly gated migration path for
+// installs that predate install-state provenance.
+const LEGACY_CODEX_RULES = [
+  ...READONLY_MCP_TOOL_NAMES.map((tool) => `mcp__memories__${tool}`),
+  'mcp__memories__memory_is_useful',
+];
+const LEGACY_CODEX_HOOK_ASSETS = [
+  ...Object.values(LEGACY_HOOK_COMMANDS),
+  'memory-codex-notify.sh',
+];
+const EXPANDED_HOOK_COMMANDS = {
+  ...LEGACY_HOOK_COMMANDS,
+  PreCompact: 'memory-flush.sh',
+  PostCompact: 'memory-rehydrate.sh',
+  SubagentStart: 'memory-subagent-recall.sh',
+  SubagentStop: 'memory-subagent-capture.sh',
+  SessionEnd: 'memory-commit.sh',
+};
+
+async function hasLegacyCodexOwnershipEvidence(p) {
+  if (!(await exists(p.hooksDest))) return false;
+  // The old adapter copied all five legacy lifecycle scripts plus its
+  // Codex-specific notify helper. Requiring every known asset keeps this
+  // fallback fail-closed for arbitrary user-created ~/.codex/hooks/memory
+  // directories while still recognizing installs from before provenance was
+  // recorded.
+  for (const name of LEGACY_CODEX_HOOK_ASSETS) {
+    if (!(await exists(join(p.hooksDest, name)))) return false;
+  }
+  return true;
+}
+
+async function installedHookProfileAt(path, hooksDir) {
+  try {
+    const hooks = await readJson(path);
+    if (!hooks.hooks || !hooksDir) return 'unknown';
+    const owns = (event, filename) => {
+      const command = join(hooksDir, filename);
+      return (hooks.hooks[event] ?? []).some((entry) =>
+        (entry.hooks ?? []).some((hook) => hook.type === 'command' && hook.command === command));
+    };
+    if (Object.entries(EXPANDED_HOOK_COMMANDS).every(([event, filename]) => owns(event, filename))) {
+      return 'expanded';
+    }
+    if (Object.entries(LEGACY_HOOK_COMMANDS).every(([event, filename]) => owns(event, filename))) {
+      return 'legacy';
+    }
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function removeManagedHooks(settings, hooksDir) {
+  if (!settings.hooks) return settings;
+  const ownedCommands = new Set(CODEX_MANAGED_HOOKS.map((name) => join(hooksDir, name)));
+  const hooks = {};
+  for (const [event, entries] of Object.entries(settings.hooks)) {
+    const kept = entries
+      .map((entry) => ({ ...entry, hooks: (entry.hooks ?? []).filter((hook) => !ownedCommands.has(hook.command)) }))
+      .filter((entry) => entry.hooks.length > 0);
+    if (kept.length) hooks[event] = kept;
+  }
+  return { ...settings, hooks };
+}
+
 const paths = (ctx) => ({
   hooksSrc: join(ctx.assetsDir, 'codex/hooks'),
   hooksDest: join(ctx.home, '.codex/hooks/memory'),
@@ -30,59 +167,134 @@ const paths = (ctx) => ({
   config: join(ctx.home, '.codex/config.toml'),
 });
 
-export async function install(ctx) {
-  const p = paths(ctx);
+function mcpBlock(ctx) {
+  const approvals = READONLY_MCP_TOOL_NAMES.map((tool) =>
+    `[mcp_servers.memories.tools.${tool}]\napproval_mode = "approve"`,
+  ).join('\n\n');
+  if (ctx.mcpUrl !== undefined) {
+    return `[mcp_servers.memories]
+url = "${tomlEscape(ctx.mcpUrl)}"
+auth = "oauth"
+default_tools_approval_mode = "prompt"
 
-  await copyHookScripts(p.hooksSrc, p.hooksDest);
-  await copyFile(p.notifySrc, join(p.hooksDest, 'memory-codex-notify.sh'));
-  await chmod(join(p.hooksDest, 'memory-codex-notify.sh'), 0o755);
-
-  const hooksConfig = JSON.parse(await readFile(join(p.hooksSrc, 'hooks.json'), 'utf8'));
-  const rendered = renderHooksJson(hooksConfig, p.hooksDest);
-  const existingHooks = await readJson(p.hooksJson);
-  await writeJson(p.hooksJson, mergeHookSettings(existingHooks, rendered));
-
-  let settings = await readJson(p.settings);
-  // Record only rules we actually introduce — a rule the user already had is
-  // theirs, and uninstall must leave it behind.
-  const alreadyPresent = new Set(settings.permissions?.allow ?? []);
-  const addedRules = READONLY_MCP_TOOLS.filter((rule) => !alreadyPresent.has(rule));
-  settings = addPermissions(settings, READONLY_MCP_TOOLS);
-  await writeJson(p.settings, settings);
-  await recordPermissions(installStatePath(ctx.home), 'codex', addedRules);
-
-  await mkdir(join(ctx.home, '.codex'), { recursive: true });
-  let toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
-  if (!hasTomlSection(toml, 'mcp_servers.memories')) {
-    const mcpBlock = `[mcp_servers.memories]
+${approvals}`;
+  }
+  return `[mcp_servers.memories]
 command = "npx"
 args = ["-y", "memories-mcp"]
+default_tools_approval_mode = "prompt"
 
 [mcp_servers.memories.env]
 MEMORIES_URL = "${tomlEscape(ctx.url)}"
-MEMORIES_API_KEY = "${tomlEscape(ctx.apiKey)}"
-MEMORIES_CLIENT = "codex"`;
-    toml = appendMarkedBlock(toml, MARKER_MCP, mcpBlock);
+${ctx.persistApiKey === false ? '' : `MEMORIES_API_KEY = "${tomlEscape(ctx.apiKey)}"\n`}MEMORIES_CLIENT = "codex"
+
+${approvals}`;
+}
+
+export async function install(ctx) {
+  const p = paths(ctx);
+  const statePath = installStatePath(ctx.home);
+  const recordedRules = await readRecordedPermissions(statePath, 'codex');
+  const legacyOwnershipEvidence = recordedRules === null
+    ? await hasLegacyCodexOwnershipEvidence(p)
+    : false;
+  const cleanupRules = recordedRules ?? (legacyOwnershipEvidence ? LEGACY_CODEX_RULES : null);
+
+  let toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
+  // Preflight every installer-owned marker before preparing hooks or changing
+  // observable install state. Developer insertion is strict as well, but this
+  // explicit pass ensures no malformed notify/MCP/developer marker can be
+  // bypassed by an idempotence check below.
+  validateMarkedBlock(toml, MARKER_NOTIFY);
+  const mcpMarker = validateMarkedBlock(toml, MARKER_MCP);
+  validateMarkedBlock(toml, MARKER_DEV);
+
+  const versionText = await detectCodexVersion(ctx);
+  const profile = supportsExpandedHooks(versionText) ? 'expanded' : 'legacy';
+  const manifest = profile === 'expanded' ? 'hooks.json' : 'hooks.legacy.json';
+  const hooksConfig = JSON.parse(await readFile(join(p.hooksSrc, manifest), 'utf8'));
+  const rendered = renderHooksJson(hooksConfig, p.hooksDest);
+  // Remove only commands from a prior Memories profile before merging. This
+  // lets a downgrade from expanded to legacy remove stale lifecycle entries
+  // while mergeHookSettings still preserves every foreign hook entry.
+  const existingHooks = removeManagedHooks(await readJson(p.hooksJson), p.hooksDest);
+  // An existing MCP section without any ownership marker belongs to the user.
+  // Refresh only a marked block, or create one when no Memories server exists.
+  // upsertMarkedBlock fails closed when the marker pair is incomplete/ambiguous.
+  if (mcpMarker || !hasTomlSection(toml, 'mcp_servers.memories')) {
+    toml = upsertMarkedBlock(toml, MARKER_MCP, mcpBlock(ctx));
   }
-  toml = ensureTomlStringKey(toml, 'mcp_servers.memories.env', 'MEMORIES_CLIENT', 'codex');
 
   if (!hasTomlKey(toml, 'developer_instructions')) {
     toml = insertMarkedBlockAtRoot(toml, MARKER_DEV, DEVELOPER_INSTRUCTIONS);
   }
+
+  // All config validation and in-memory preparation completes before any
+  // filesystem mutation. A malformed owned TOML block must not leave hooks or
+  // foreign hook settings behind when the install fails closed.
+  ctx.codexHookProfile = profile;
+  await copyHookScripts(p.hooksSrc, p.hooksDest);
+  await copyFile(p.notifySrc, join(p.hooksDest, 'memory-codex-notify.sh'));
+  await chmod(join(p.hooksDest, 'memory-codex-notify.sh'), 0o755);
+  await mkdir(join(ctx.home, '.codex'), { recursive: true });
+  await writeJson(p.hooksJson, mergeHookSettings(existingHooks, rendered));
   await writeFile(p.config, toml);
 
-  ctx.log(`Codex wired (hooks: ${p.hooksDest})`);
+  // v5.12 wrote read-only Codex approvals to settings.json. Once the current
+  // TOML policy is durable, remove exactly the rules that install-state says
+  // that older run introduced (or the narrowly evidenced seven-rule legacy
+  // set), then retain an explicit empty provenance record for installs that
+  // introduced no legacy rules. That sentinel prevents a later uninstall from
+  // mistaking freshly copied current hooks for a pre-manifest install.
+  if (cleanupRules !== null && await exists(p.settings)) {
+    const owned = new Set(cleanupRules);
+    await writeJson(p.settings, removePermissions(await readJson(p.settings), (rule) => owned.has(rule)));
+  }
+  // Keep a current-install provenance sentinel even when this run had no
+  // legacy rules to remove. A later uninstall must distinguish a current
+  // install (whose copied hook assets happen to include every legacy script)
+  // from a pre-manifest install, so it must not infer ownership from shape.
+  // Preserve every other target/field in install-state for retry safety.
+  const state = await readJson(statePath);
+  await writeJson(statePath, {
+    ...state,
+    permissions: { ...(state.permissions ?? {}), codex: [] },
+  });
+
+  ctx.log(`Codex wired (hooks: ${p.hooksDest}, hook profile: ${profile})`);
 }
 
 export async function uninstall(ctx) {
   const p = paths(ctx);
-  // Captured before the removal below erases the evidence.
-  const wasInstalled = await exists(p.hooksDest);
+  // Read before the removal below erases the evidence.
   const recordedRules = await readRecordedPermissions(installStatePath(ctx.home), 'codex');
+  const legacyOwnershipEvidence = recordedRules === null
+    ? await hasLegacyCodexOwnershipEvidence(p)
+    : false;
+  const cleanupRules = recordedRules ?? (legacyOwnershipEvidence ? LEGACY_CODEX_RULES : null);
+
+  // Validate and prepare every installer-owned TOML block before touching any
+  // other artifact. A malformed later marker must not partially remove earlier
+  // blocks, hooks, settings rules, or the ownership record.
+  let toml = null;
+  if (await exists(p.config)) {
+    toml = await readFile(p.config, 'utf8');
+    for (const marker of [MARKER_NOTIFY, MARKER_MCP, MARKER_DEV]) {
+      toml = removeMarkedBlockStrict(toml, marker);
+    }
+  }
+
+  // Parse every mutable JSON artifact before removing the hook directory. A
+  // pre-manifest install has no recorded provenance, so its exact hook assets
+  // are the only ownership evidence available for the legacy-rule migration.
+  // If malformed JSON were discovered after rm(), a retry would lose that
+  // evidence and strand the seven legacy rules permanently.
+  const hooksJson = await exists(p.hooksJson) ? await readJson(p.hooksJson) : null;
+  const settings = await exists(p.settings) ? await readJson(p.settings) : null;
+
   await rm(p.hooksDest, { recursive: true, force: true });
 
-  if (await exists(p.hooksJson)) {
-    const hooksJson = await readJson(p.hooksJson);
+  if (hooksJson !== null) {
     if (hooksJson.hooks) {
       for (const [event, entries] of Object.entries(hooksJson.hooks)) {
         const kept = entries
@@ -94,18 +306,14 @@ export async function uninstall(ctx) {
     await writeJson(p.hooksJson, hooksJson);
   }
 
-  if (await exists(p.settings)) {
+  if (settings !== null) {
     // Only rules this install recorded; see the claude-code adapter for why
     // shape-matching is unsafe here.
-    const owned = new Set(recordedRules ?? (wasInstalled ? READONLY_MCP_TOOLS : []));
-    await writeJson(p.settings, removePermissions(await readJson(p.settings), (rule) => owned.has(rule)));
+    const owned = new Set(cleanupRules ?? []);
+    await writeJson(p.settings, removePermissions(settings, (rule) => owned.has(rule)));
   }
 
-  if (await exists(p.config)) {
-    let toml = await readFile(p.config, 'utf8');
-    toml = removeMarkedBlock(toml, MARKER_NOTIFY);
-    toml = removeMarkedBlock(toml, MARKER_MCP);
-    toml = removeMarkedBlock(toml, MARKER_DEV);
+  if (toml !== null) {
     await writeFile(p.config, toml);
   }
 
@@ -120,5 +328,17 @@ export async function status(ctx) {
   const hooks = await exists(p.hooksDest);
   const toml = (await exists(p.config)) ? await readFile(p.config, 'utf8') : '';
   const mcp = hasTomlSection(toml, 'mcp_servers.memories');
-  return { installed: hooks && mcp, details: [`hooks: ${hooks}`, `mcp: ${mcp}`] };
+  const profile = await installedHookProfileAt(p.hooksJson, p.hooksDest);
+  const nativeMemories = explicitRootBoolean(toml, 'features', 'memories');
+  const dedupe = explicitRootBoolean(toml, 'memories', 'disable_on_external_context');
+  return {
+    installed: hooks && mcp,
+    details: [
+      `hooks: ${hooks}`,
+      `mcp: ${mcp}`,
+      `hook profile: ${profile}`,
+      `native memories: ${nativeMemories === undefined ? 'not explicitly configured' : nativeMemories ? 'enabled' : 'disabled'}`,
+      `external-context dedupe: ${dedupe === undefined ? 'not explicitly configured' : dedupe ? 'enabled' : 'disabled'}`,
+    ],
+  };
 }
