@@ -274,6 +274,24 @@ class TestConsolidation:
         engine.add_memories.assert_not_called()
         engine.delete_memories.assert_not_called()
 
+    def test_legacy_cross_client_cluster_can_consolidate(self):
+        from consolidator import consolidate_cluster
+
+        cluster = [
+            _make_memory(0, "Use Postgres", source="codex/acme"),
+            _make_memory(1, "Postgres is used", source="claude-code/acme"),
+        ]
+        provider = MagicMock()
+        provider.complete.return_value = _cr(json.dumps(["Use Postgres"]))
+        engine = MagicMock()
+        engine.add_memories.return_value = [100]
+
+        result = consolidate_cluster(provider, engine, cluster, dry_run=False)
+
+        assert result["merged_count"] == 2
+        assert engine.add_memories.call_args.kwargs["sources"] == ["codex/acme"]
+        engine.delete_memories.assert_called_once_with([0, 1])
+
     def test_consolidate_uses_dominant_category(self):
         from consolidator import consolidate_cluster
 

@@ -8,6 +8,7 @@ archived (never deleted) with a supersedes link.
 
 import numpy as np
 import pytest
+from unittest.mock import MagicMock
 
 import memory_engine as memory_engine_module
 from memory_engine import MemoryEngine
@@ -348,3 +349,35 @@ class TestBoundaryScopedSearch:
         assert hybrid
         assert {item["source"] for item in hybrid} == {"project/acme/knowledge"}
         assert sibling_id not in {item["id"] for item in hybrid}
+
+    def test_novelty_search_skips_ineligible_top_hit_for_lower_authorized_legacy_match(self, engine):
+        structured = {
+            "id": 10,
+            "text": "Structured blocker",
+            "source": "project/acme/knowledge",
+            "similarity": 0.99,
+        }
+        unauthorized = {
+            "id": 11,
+            "text": "Other legacy blocker",
+            "source": "claude-code/other",
+            "similarity": 0.98,
+        }
+        authorized = {
+            "id": 12,
+            "text": "Authorized legacy duplicate",
+            "source": "claude-code/acme",
+            "similarity": 0.97,
+        }
+        engine.search = MagicMock(return_value=[structured, unauthorized, authorized])
+
+        novel, match = engine.is_novel(
+            "Authorized legacy duplicate",
+            threshold=0.9,
+            allowed_source_prefixes=["codex/acme", "claude-code/acme", "project/acme"],
+            exclude_reserved_sources=True,
+        )
+
+        assert novel is False
+        assert match["id"] == 12
+        assert engine.search.call_args.kwargs["k"] > 1

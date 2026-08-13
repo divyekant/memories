@@ -38,6 +38,7 @@ from transcript_hygiene import clean_transcript
 from project_memory import (
     ProjectMemoryPolicyError,
     TrustedAuthorship,
+    is_reserved_namespace_source,
     is_substantive_authored_content_replacement,
     validate_namespace_preserving_replacement,
 )
@@ -691,11 +692,14 @@ def _run_fallback_extraction(
 
     for fact in facts:
         novelty_kwargs = {"threshold": EXTRACT_FALLBACK_NOVELTY_THRESHOLD}
-        # Managed project/person writes are isolated to their exact source.
-        # Env-admin and legacy fallback calls retain historical global dedup,
-        # matching MemoryEngine.add_memories().
-        if trusted_authorship is not None:
+        # Structured writes are isolated to their exact source. Legacy
+        # fallbacks retain authorized cross-client dedup without allowing a
+        # person/project record to suppress the write.
+        if is_reserved_namespace_source(source_value):
             novelty_kwargs["source_exact"] = source_value
+        else:
+            novelty_kwargs["allowed_source_prefixes"] = allowed_prefixes
+            novelty_kwargs["exclude_reserved_sources"] = True
         is_new, similar = memory.is_novel(fact, **novelty_kwargs)
         if is_new:
             add_kwargs = {

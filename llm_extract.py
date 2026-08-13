@@ -223,6 +223,9 @@ def _novelty_gate_check(
         scope_to_source = is_reserved_namespace_source(source)
         if scope_to_source:
             novelty_kwargs["source_exact"] = source
+        else:
+            novelty_kwargs["allowed_source_prefixes"] = allowed_prefixes
+            novelty_kwargs["exclude_reserved_sources"] = True
         is_new, similar = engine.is_novel(fact_text, **novelty_kwargs)
         if isinstance(is_new, bool) and not is_new:
             if not scope_to_source and isinstance(similar, dict) and (
@@ -490,6 +493,9 @@ def run_audn(
             novelty_kwargs = {"threshold": 0.88}
             if scope_to_source and source:
                 novelty_kwargs["source_exact"] = source
+            else:
+                novelty_kwargs["allowed_source_prefixes"] = allowed_prefixes
+                novelty_kwargs["exclude_reserved_sources"] = True
             is_new, similar = engine.is_novel(fact_text, **novelty_kwargs)
             if (
                 not scope_to_source

@@ -278,6 +278,40 @@ def test_legacy_fallback_dedup_remains_global_for_env_admin(client, monkeypatch)
     assert "source_exact" not in kwargs
 
 
+def test_managed_legacy_fallback_filters_global_novelty_to_authorized_legacy_sources(client, monkeypatch):
+    _, mock_engine = client
+    import app as app_module
+    from project_memory import TrustedAuthorship
+
+    monkeypatch.setattr(
+        app_module,
+        "_fallback_extract_facts",
+        lambda _messages: ["A durable decision was recorded for this project"],
+    )
+    mock_engine.is_novel.return_value = (
+        False,
+        {"id": 9, "source": "claude-code/acme", "similarity": 0.99},
+    )
+
+    result = app_module._run_fallback_extraction(
+        "ignored transcript",
+        "codex/acme",
+        "stop",
+        ["codex/acme", "claude-code/acme", "project/acme"],
+        TrustedAuthorship.principal("alice", "codex"),
+    )
+
+    assert result["actions"][0]["action"] == "noop"
+    kwargs = mock_engine.is_novel.call_args.kwargs
+    assert "source_exact" not in kwargs
+    assert kwargs["allowed_source_prefixes"] == [
+        "codex/acme",
+        "claude-code/acme",
+        "project/acme",
+    ]
+    assert kwargs["exclude_reserved_sources"] is True
+
+
 def test_get_memory_batch(client):
     test_client, mock_engine = client
     response = test_client.post(

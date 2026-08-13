@@ -185,14 +185,16 @@ def consolidate_cluster(
     """
     old_ids = [m["id"] for m in cluster]
     sources = {m.get("source", "") for m in cluster}
-    if len(sources) > 1:
+    if len(sources) > 1 and any(
+        is_reserved_namespace_source(source) for source in sources
+    ):
         return {
             "merged_count": 0,
             "new_count": 0,
             "old_ids": old_ids,
             "new_texts": [],
             "dry_run": dry_run,
-            "skipped_reason": "cluster contains memories from multiple exact sources",
+            "skipped_reason": "cluster contains structured memories from multiple exact sources",
         }
     protected = [m["id"] for m in cluster if m.get("pinned") or m.get("archived")]
     if protected:

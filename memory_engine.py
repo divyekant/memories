@@ -27,6 +27,7 @@ from event_bus import event_bus
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
+from auth_context import source_matches_prefixes
 from project_memory import (
     RESERVED_METADATA_FIELDS,
     ProjectMemoryPolicyError,
@@ -718,7 +719,7 @@ class MemoryEngine:
                 for i, text in enumerate(texts):
                     novelty_kwargs = {"threshold": dedup_threshold}
                     # Authenticated writes are isolated to the exact
-                    # destination source.  Legacy callers without trusted
+                    # destination source. Legacy callers without trusted
                     # authorship retain the historical global dedup behavior.
                     if trusted_authorship is not None:
                         novelty_kwargs["source_exact"] = sources[i]
@@ -2892,14 +2893,40 @@ class MemoryEngine:
         text: str,
         threshold: float = 0.88,
         source_exact: Optional[str] = None,
+        allowed_source_prefixes: Optional[List[str]] = None,
+        exclude_reserved_sources: bool = False,
     ) -> Tuple[bool, Optional[Dict]]:
-        """Check if text is novel, optionally within one exact source."""
-        if source_exact is None:
+        """Check novelty within an exact source or an eligible policy scope.
+
+        Policy-filtered lookups retrieve several candidates before filtering so
+        an ineligible top result cannot hide a lower-ranked authorized match.
+        """
+        policy_filtered = (
+            allowed_source_prefixes is not None or exclude_reserved_sources
+        )
+        if source_exact is None and not policy_filtered:
             # Preserve the legacy call shape for integrations that wrap or
             # monkeypatch ``search`` without an exact-source parameter.
             results = self.search(text, k=1)
         else:
-            results = self.search(text, k=1, source_exact=source_exact)
+            search_kwargs: Dict[str, Any] = {
+                "k": min(max(len(self.metadata), 10), 100),
+            }
+            if source_exact is not None:
+                search_kwargs["source_exact"] = source_exact
+            results = self.search(text, **search_kwargs)
+        if policy_filtered:
+            results = [
+                result
+                for result in results
+                if not (
+                    exclude_reserved_sources
+                    and is_reserved_namespace_source(str(result.get("source", "")))
+                )
+                and source_matches_prefixes(
+                    str(result.get("source", "")), allowed_source_prefixes
+                )
+            ]
         if not results:
             return True, None
         top_match = results[0]

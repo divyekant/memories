@@ -846,6 +846,39 @@ test('memory_missed uses the same single-backend project write gate as memory_ad
   }
 });
 
+test('declared project memory_update without a source fails closed before reading an ambiguous backend', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-update-multi-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  await writeFile(
+    join(dir, '.memories', 'backends.yaml'),
+    'backends:\n  one:\n    url: http://one.test\n  two:\n    url: http://two.test\n',
+  );
+  const calls = [];
+  const server = buildServer({
+    cwd: dir,
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ id: 41, source: 'project/shared-demo/knowledge' }), { status: 200 });
+    },
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({
+      name: 'memory_update',
+      arguments: { id: 41, text: 'Updated shared fact' },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /exactly one configured backend/i);
+    assert.deepEqual(calls, []);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('every MCP add operation is forced through the project-aware add chokepoint', async () => {
   const source = await readFile(new URL('../lib-tools.mjs', import.meta.url), 'utf8');
   const directAddOps = source.match(/,\s*["']add["']\s*\)/g) || [];

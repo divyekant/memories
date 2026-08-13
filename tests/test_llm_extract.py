@@ -772,6 +772,33 @@ class TestExecuteActions:
         assert result["actions"][0]["action"] == "add"
         mock_engine.add_memories.assert_called_once()
 
+    def test_managed_legacy_novelty_requests_filtered_multi_candidate_lookup(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (
+            False,
+            {"id": 13, "text": "Legacy fact", "source": "claude-code/demo", "similarity": 0.95},
+        )
+
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{"text": "Legacy fact", "category": "detail"}],
+            source="codex/demo",
+            allowed_prefixes=["codex/demo", "claude-code/demo", "project/demo"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+        )
+
+        assert result["actions"][0]["action"] == "noop"
+        kwargs = mock_engine.is_novel.call_args.kwargs
+        assert kwargs["allowed_source_prefixes"] == [
+            "codex/demo",
+            "claude-code/demo",
+            "project/demo",
+        ]
+        assert kwargs["exclude_reserved_sources"] is True
+
     def test_execute_update_rejects_project_credential_before_archiving(self, tmp_path):
         from llm_extract import execute_actions
         from memory_engine import MemoryEngine

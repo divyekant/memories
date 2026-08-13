@@ -826,6 +826,33 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     return { data };
   }
 
+  async function projectSupersedeUnavailable(id, source) {
+    if (!collaborativeProjectPresent) return null;
+    const projectContext = await server.resolveProjectContext();
+    const unavailable = unavailableProjectContextResult(projectContext);
+    if (unavailable) return unavailable;
+
+    // Supersede inherits the stored source when the caller omits one. Read it
+    // only after collaborative identity has resolved to exactly one backend,
+    // then gate both the existing and requested destinations.
+    const existing = await memoriesRequest(`/memory/${id}`, {}, "manage");
+    for (const candidate of [existing?.source, source].filter(Boolean)) {
+      if (
+        String(candidate).startsWith("project/")
+        && !String(candidate).startsWith(`project/${projectContext.projectId}/`)
+      ) {
+        return {
+          content: [{
+            type: "text",
+            text: `Project memory source must target the declared project: project/${projectContext.projectId}/<kind>`,
+          }],
+          isError: true,
+        };
+      }
+    }
+    return null;
+  }
+
   // -- Tools -------------------------------------------------------------------
 
   server.tool(
@@ -1145,6 +1172,8 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       document_at: z.string().optional().describe("ISO 8601 date for when the corrected fact became true"),
     },
     async ({ id, text, source, document_at }) => {
+      const unavailable = await projectSupersedeUnavailable(id, source);
+      if (unavailable) return unavailable;
       const body = { text };
       if (source) body.source = source;
       if (document_at) body.metadata = { document_at };
