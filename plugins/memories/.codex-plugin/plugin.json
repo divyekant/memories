@@ -1,6 +1,6 @@
 {
   "name": "memories",
-  "version": "5.13.0",
+  "version": "5.14.0",
   "description": "Memories discipline plus a portable Codex setup guide; the published npm installer owns hooks and MCP wiring.",
   "author": {
     "name": "Divyekant Gupta",

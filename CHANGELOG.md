@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [5.14.0] - 2026-08-13
+
 ### Changed
 - **Codex distribution parity.** The repo-local plugin is now a thin setup
   guide whose published `npx -y memories-mcp@latest init --codex` installer
