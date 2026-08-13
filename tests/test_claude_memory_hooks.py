@@ -3358,6 +3358,59 @@ def test_codex_memory_recall_401_shows_credential_warning_not_reachability(tmp_p
     assert calls
 
 
+@pytest.mark.parametrize(
+    "script",
+    [CODEX_HOOKS_DIR / "memory-recall.sh", CODEX_HOOKS_DIR / "memory-query.sh"],
+)
+def test_declared_project_identity_401_fails_closed_with_credential_guidance(
+    script: Path, tmp_path: Path
+) -> None:
+    project_dir = tmp_path / "project"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    payload = {"cwd": str(project_dir), "source": "startup", "prompt": "prior work"}
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        payload,
+        responses=[
+            {
+                "url_suffix": "/api/keys/me",
+                "status": 401,
+                "response": {"detail": "invalid api key"},
+            }
+        ],
+    )
+
+    assert result.returncode == 0, result.stderr
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "rejected the API key" in context
+    assert "MEMORIES_API_KEY" in context
+    assert [call for call in calls if str(call["url"]).endswith("/search")] == []
+
+
+def test_declared_project_identity_respects_session_deadline(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    result, calls, _ = _run_hook(
+        CODEX_HOOKS_DIR / "memory-recall.sh",
+        tmp_path,
+        {"cwd": str(project_dir), "source": "startup"},
+        responses=[],
+        extra_env={"MEMORIES_HOOK_BUDGET_MS": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "budget exhausted" in context.lower()
+    assert calls == []
+
+
 def test_codex_memory_recall_multi_backend_401_keeps_candidate_and_identity(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()

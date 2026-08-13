@@ -442,7 +442,7 @@ _memories_project_backend_config() {
   file=$(_resolve_backends_file "$cwd" 2>/dev/null) || {
     if [ -n "${MEMORIES_URL:-}" ]; then
       jq -nc --arg url "$MEMORIES_URL" --arg key "${MEMORIES_API_KEY:-}" \
-        '{backends:[{name:"default",url:$url,api_key:$key,scenario:""}],config_origin:"environment"}'
+        '{backends:[{name:"default",url:$url,api_key:$key,api_key_env:"MEMORIES_API_KEY",env_backed:true,scenario:""}],config_origin:"environment"}'
     else
       jq -nc '{backends:[],error:{reason:"no_backends",diagnostic:"no backend configuration is available"}}'
     fi
@@ -500,7 +500,7 @@ _memories_project_context() {
   # Load exactly the backend set the hooks already use for this payload cwd.
   # This function runs in command-substitution scope, so its temporary cache
   # cannot alter the caller's legacy routing state.
-  local project_config backends count backend url key response http_status body identity principal config_origin
+  local project_config backends count backend url key response http_status body identity principal config_origin call_budget
   project_config=$(_memories_project_backend_config "$cwd" 2>/dev/null) || project_config='{"backends":[]}'
   if [ "$(printf '%s' "$project_config" | jq -r '.error.reason // empty' 2>/dev/null)" ]; then
     printf '%s' "$project_config" | jq -c '{active:false,reason:.error.reason,diagnostic:.error.diagnostic}'
@@ -526,15 +526,33 @@ _memories_project_context() {
     return 0
   }
 
+  call_budget=2
+  if declare -F _hook_call_budget >/dev/null 2>&1; then
+    call_budget=$(_hook_call_budget 2) || {
+      jq -nc '{active:false,reason:"budget_exhausted",diagnostic:"hook budget exhausted before authenticated principal lookup"}'
+      return 0
+    }
+  fi
   if [ -n "$key" ]; then
-    response=$(curl -sS --max-time 2 -H "X-API-Key: $key" -w $'\n%{http_code}' "${url%/}/api/keys/me" 2>/dev/null) || response=""
+    response=$(curl -sS --max-time "$call_budget" -H "X-API-Key: $key" -w $'\n%{http_code}' "${url%/}/api/keys/me" 2>/dev/null) || response=""
   else
-    response=$(curl -sS --max-time 2 -w $'\n%{http_code}' "${url%/}/api/keys/me" 2>/dev/null) || response=""
+    response=$(curl -sS --max-time "$call_budget" -w $'\n%{http_code}' "${url%/}/api/keys/me" 2>/dev/null) || response=""
   fi
   http_status=$(printf '%s\n' "$response" | tail -n 1)
   body=$(printf '%s\n' "$response" | sed '$d')
   case "$http_status" in
     2??) ;;
+    401)
+      local backend_name api_key_env env_backed
+      backend_name=$(printf '%s' "$backend" | jq -r '.name // "default"')
+      api_key_env=$(printf '%s' "$backend" | jq -r '.api_key_env // empty')
+      env_backed=$(printf '%s' "$backend" | jq -r '.env_backed // false')
+      jq -nc --arg diag "authenticated principal lookup returned HTTP 401" \
+        --arg name "$backend_name" --arg url "$url" --arg api_key_env "$api_key_env" \
+        --argjson env_backed "$env_backed" \
+        '{active:false,reason:"principal_unauthorized",diagnostic:$diag,auth_failed:true,auth_failed_backends:[{name:$name,url:$url,api_key_env:$api_key_env,env_backed:$env_backed}]}'
+      return 0
+      ;;
     *) jq -nc --arg diag "authenticated principal lookup returned HTTP ${http_status:-unknown}" '{active:false,reason:"principal_unreachable",diagnostic:$diag}'; return 0 ;;
   esac
   identity=$(printf '%s' "$body" | jq -c . 2>/dev/null) || {
@@ -572,6 +590,32 @@ _memories_project_context() {
   jq -nc --arg project "$project_id" --arg principal "$principal" --arg backend "$backend_name" \
     --arg url "$url" --arg origin "$config_origin" --argjson prefixes "$identity_prefixes" --argjson legacy "$legacy_prefixes" \
     '{active:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,backend:$backend,backend_name:$backend,backend_url:$url,config_origin:$origin,prefixes:$prefixes,legacy_source_prefixes:$legacy}'
+}
+
+_memories_project_unavailable_message() {
+  local context="${1:-}" reason labels env_refs env_only
+  [ -n "$context" ] || context='{}'
+  reason=$(printf '%s' "$context" | jq -r '.reason // "unknown"' 2>/dev/null) || reason="unknown"
+  case "$reason" in
+    principal_unauthorized)
+      labels=$(printf '%s' "$context" | jq -r '[.auth_failed_backends[]? | "\(.name) (\(.url))"] | join(", ")' 2>/dev/null)
+      env_refs=$(printf '%s' "$context" | jq -r '[.auth_failed_backends[]? | select((.env_backed // false) != true and (.api_key_env // "") != "") | .api_key_env] | unique | join(", ")' 2>/dev/null)
+      env_only=$(printf '%s' "$context" | jq -r '(.auth_failed_backends | length) > 0 and all(.auth_failed_backends[]; ((.name // "") == "default") and ((.env_backed // false) == true))' 2>/dev/null)
+      if [ "$env_only" = "true" ]; then
+        printf 'Memories project backend(s) %s rejected the API key. Set MEMORIES_API_KEY; collaborative recall/search is unavailable.' "$labels"
+      elif [ -n "$env_refs" ]; then
+        printf 'Memories project backend(s) %s rejected the API key. Update the configured api_key or referenced environment variable(s) %s; collaborative recall/search is unavailable.' "$labels" "$env_refs"
+      else
+        printf 'Memories project backend(s) %s rejected the API key. Update the configured api_key; collaborative recall/search is unavailable.' "$labels"
+      fi
+      ;;
+    budget_exhausted)
+      printf 'Memories project identity lookup was skipped because the hook budget exhausted before the request; collaborative recall/search is unavailable for this invocation.'
+      ;;
+    *)
+      printf 'Collaborative project memory is unavailable: %s' "$(printf '%s' "$context" | jq -r '.diagnostic // .reason // "unknown error"' 2>/dev/null)"
+      ;;
+  esac
 }
 
 _memories_project_recall_prefixes() {

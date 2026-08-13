@@ -71,7 +71,9 @@ PROJECT=$(_memories_resolve_project "$CWD" 2>/dev/null || basename "$CWD")
 PROJECT_CONTEXT_JSON=$(_memories_project_context "$CWD" 2>/dev/null || printf '{"active":false}')
 PROJECT_CONTEXT_ACTIVE=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')
 if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && declare -F _memories_project_context_declared >/dev/null && _memories_project_context_declared "$PROJECT_CONTEXT_JSON"; then
-  _log_warn "Collaborative project identity unavailable; skipping memory recall"
+  PROJECT_UNAVAILABLE_MESSAGE=$(_memories_project_unavailable_message "$PROJECT_CONTEXT_JSON")
+  _log_warn "$PROJECT_UNAVAILABLE_MESSAGE"
+  jq -n --arg message "$PROJECT_UNAVAILABLE_MESSAGE" '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$message}}'
   exit 0
 fi
 PROJECT_CONTEXT_ID=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.project_id // empty' 2>/dev/null || true)
