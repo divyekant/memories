@@ -419,7 +419,7 @@ function contextFailure(reason, diagnostic) {
  * Keep legacy continuity narrow when collaborative mode is active.  The
  * authenticated key's prefixes are the authorization source; repository
  * configuration never grants a new prefix.  A legacy prefix is eligible only
- * when a non-leading path segment names this project; an explicitly
+ * when its second path segment names this project; an explicitly
  * authorized descendant such as codex/demo/knowledge remains eligible.
  * Project and person namespaces are routed explicitly before this list and
  * must never be treated as legacy continuity.  Family/wildcard prefixes are
@@ -436,7 +436,7 @@ export function deriveLegacyProjectPrefixes(projectId, authorizedPrefixes) {
     const prefix = original.replaceAll("{project}", projectId);
     if (!prefix || prefix.includes("*") || prefix.endsWith("/")) continue;
     const segments = prefix.split("/");
-    if (segments.length < 2 || !segments.slice(1).includes(projectId)) continue;
+    if (segments.length < 2 || segments[1] !== projectId) continue;
     if (segments[0] === "project" || segments[0] === "person") continue;
     if ([...seen].some((existing) => prefix === existing || prefix.startsWith(`${existing}/`))) continue;
     for (const existing of [...result]) {

@@ -592,7 +592,7 @@ _memories_project_context() {
       ($raw | if type == "string" then (gsub("^[[:space:]]+|[[:space:]]+$"; "") | gsub("\\{project\\}"; $project)) else "" end) as $prefix
       | if ($prefix == "" or ($prefix | contains("*")) or ($prefix | endswith("/"))) then .
         else ($prefix | split("/")) as $parts
-        | if (($parts | length) >= 2 and ($parts[1:] | index($project)) != null and $parts[0] != "project" and $parts[0] != "person") then
+        | if (($parts | length) >= 2 and $parts[1] == $project and $parts[0] != "project" and $parts[0] != "person") then
             if any(.[]; . as $existing | ($prefix == $existing or ($prefix | startswith($existing + "/")))) then .
             else ([.[] | select((. | startswith($prefix + "/")) | not)] + [$prefix])
             end

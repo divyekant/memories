@@ -2516,6 +2516,7 @@ def test_active_project_hooks_use_only_authenticated_legacy_prefixes(
                     "person/alice/shared-demo",
                     "codex/shared-demo",
                     "codex/shared-demo/knowledge",
+                    "codex/other/shared-demo",
                     "wip/other-project",
                 ],
             },
@@ -2551,6 +2552,7 @@ def test_active_project_hooks_use_only_authenticated_legacy_prefixes(
     assert "claude-code/shared-demo" not in search_prefixes
     assert "learning/shared-demo" not in search_prefixes
     assert "wip/shared-demo" not in search_prefixes
+    assert "codex/other/shared-demo" not in search_prefixes
 
 
 @pytest.mark.parametrize(

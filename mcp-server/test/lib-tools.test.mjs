@@ -21,6 +21,7 @@ test('legacy project prefixes retain authorized kind-level descendants', () => {
       'codex/shared-demo/knowledge',
       'claude-code/shared-demo/state',
       'codex/other/knowledge',
+      'codex/other/shared-demo',
       'project/shared-demo/knowledge',
       'person/alice/shared-demo/knowledge',
     ]),
