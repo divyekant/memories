@@ -6,14 +6,17 @@ shaping: true
 
 ## Status
 
-Proposed for architectural review on 2026-08-13. This document specifies a
-candidate scope; it does not authorize implementation or change the adopted
-Phase 1 boundary.
+Scope converged in PR #97 review on 2026-08-14. This revision encodes that
+agreement and is ready for exact-head consistency review together with the
+Phase 2 implementation plan. It authorizes implementation after that review;
+it does not authorize FPLGuru activation or change the adopted Phase 1 access
+boundary.
 
 Phase 2 is intentionally limited to automatic promotion from person-private
 memory into an already-authorized shared project namespace, plus the recovery,
-audit, and operator controls needed to make that automation safe. The final
-scope will be selected after review of this proposal.
+audit, maintenance exclusions, evaluation, and operator controls needed to
+make that automation safe. Production activation remains a separately gated
+rollout decision.
 
 ## Source
 
@@ -73,11 +76,13 @@ safe candidates that were interrupted or deferred.
 | R1 | Personal, explicitly private, sensitive, cross-project, or unauthorized content never becomes project-readable through promotion. | Must-have |
 | R2 | Semantic project relevance and sharing intent are judged by a configured model; deterministic logic is limited to enforceable structural and safety vetoes. | Must-have |
 | R3 | Tentative, disputed, contradicted, incomplete, or low-confidence knowledge remains private. | Must-have |
-| R4 | Promotion precision gets an independent model review without paying a second provider call for every extracted fact. | Must-have |
+| R4 | Promotion precision gets an independent model review; bounded low-relevance audit sampling independently measures false-private recall without making review-everything the permanent architecture. | Must-have |
 | R5 | Every proposal, review, promotion, rejection, and retry is attributable, auditable, and idempotent across worker or process failure. | Must-have |
 | R6 | Reconciliation recovers interrupted eligible work but does not promote by blindly rerunning unchanged uncertain evidence. | Must-have |
 | R7 | Upgrade and rollout are inert by default at the server; operators can observe real decisions in shadow mode and stop promotion immediately. | Must-have |
 | R8 | Phase 2 stays same-host and project-specific, preserves legacy behavior outside activated projects, and does not introduce generic entities, federation, per-memory ACLs, or UI scope. | Must-have |
+| R9 | Automatic maintenance cannot rewrite or hard-delete shared project knowledge or destroy an auditable in-flight promotion workflow. | Must-have |
+| R10 | Activation requires predeclared fixture, live-shadow, dual-principal, time, and volume gates; policy changes invalidate prior shadow evidence. | Must-have |
 
 ## Evidence Spike
 
@@ -142,12 +147,12 @@ obviously personal or non-project facts.
 | C1 | The extraction call proposes project relevance, visibility, assertion status, confidence, and one of the four existing project kinds. | |
 | C2 | Every extracted fact is first committed to the authenticated person's exact project namespace with server-owned proposal state in the same memory add. | |
 | C3 | Server-owned gates reject invalid context, authorization, schema, secrets, PII, and raw-transcript-shaped output before a proposal can advance. | |
-| C4 | Only plausible project candidates enter a narrow asynchronous promotion review, selected by model-judged project relevance rather than visibility alone; ordinary non-project facts incur no second call. | |
-| C5 | The reviewer sees the candidate plus the current extraction context and returns `approve`, `reject`, or `defer`; output is still subject to project authorization. | |
+| C4 | Plausible project candidates enter a narrow asynchronous promotion review. A fixed, bounded audit floor also reviews low-relevance candidates to measure false-private recall; below the floor all eligible low-relevance candidates are sampled. | |
+| C5 | The reviewer sees the candidate plus the current extraction context and returns `approve`, `reject`, or `defer`; output is still subject to project authorization and shared-memory reference data is explicitly untrusted. | |
 | C6 | Approval creates one sanitized shared record with trusted authorship and provenance, then archives the active private candidate. | |
 | C7 | Candidate state on the private memory plus an entity lock and source-memory lookup make promotion retries idempotent. | |
-| C8 | The existing maintenance scheduler reconciles interrupted candidates and deferred candidates with genuinely new evidence. | |
-| C9 | Server `off`, `shadow`, and `auto` caps plus the repository project setting control rollout without changing authorization. | |
+| C8 | The existing maintenance scheduler reconciles interrupted candidates and deferred candidates with genuinely new evidence, while promotion-state retention prevents maintenance from destroying workflow state. | |
+| C9 | Server `off`, `shadow`, and `auto` caps plus an explicit repository project setting control rollout without changing authorization. | |
 | C10 | MiniLM supports similarity, duplicate detection, and prioritization only; it never decides visibility. | |
 
 ### D: MiniLM visibility authority
@@ -175,6 +180,8 @@ dirty spike reproduced that limitation.
 | R6 | Reconciliation recovers interrupted eligible work but does not promote by blindly rerunning unchanged uncertain evidence. | Must-have | ✅ | ✅ | ✅ | ✅ |
 | R7 | Upgrade and rollout are inert by default at the server; operators can observe real decisions in shadow mode and stop promotion immediately. | Must-have | ✅ | ✅ | ✅ | ✅ |
 | R8 | Phase 2 stays same-host and project-specific, preserves legacy behavior outside activated projects, and does not introduce generic entities, federation, per-memory ACLs, or UI scope. | Must-have | ✅ | ✅ | ✅ | ✅ |
+| R9 | Automatic maintenance cannot rewrite/delete project knowledge or destroy promotion workflow state. | Must-have | ❌ | ❌ | ✅ | ❌ |
+| R10 | Activation requires versioned fixture and live-shadow gates, and policy changes invalidate prior evidence. | Must-have | ❌ | ✅ | ✅ | ❌ |
 
 **Notes:**
 
@@ -182,8 +189,10 @@ dirty spike reproduced that limitation.
 - B fails R4 because every fact pays for a second provider call.
 - D fails R1–R4 because embedding similarity is not a sharing-intent or
   assertion-state classifier.
+- A, B, and D do not specify the Phase 2 maintenance exclusion and activation
+  evidence required by R9 and R10.
 
-Shape C is the proposed selection, pending review.
+Shape C is selected.
 
 ## Detailed Flow
 
@@ -195,17 +204,20 @@ active collaborative extraction
   -> structural preflight validates exact private destination and authorship
   -> fact + server-owned proposal state are committed together under
      person/<principal>/<project>/knowledge
+  -> route plausible candidates to review
+     and select a fixed bounded audit floor from low-relevance candidates
   -> off: stop private
-     shadow: run reviewer and record would-promote outcome, stop private
-     auto: run reviewer
+     shadow: run reviewer and record would-promote outcome, never write shared
+     auto: run reviewer on either route
        -> reject: remain private, terminal for this evidence/version
        -> defer: remain private, eligible only with new evidence/version
        -> approve: revalidate under promotion lock
-          -> create or find exact project target
+          -> create or find canonical-digest-identical project target
           -> stamp trusted author/contributors/origin/source_memory_ids
           -> mark target id on private candidate
           -> archive private candidate
   -> reconciler repairs interrupted states idempotently
+  -> maintenance excludes project records and protected workflow candidates
 ```
 
 The private commit happens before model review. Provider failure, queue
@@ -213,6 +225,13 @@ pressure, process exit, malformed output, or review uncertainty therefore
 reduces sharing availability but does not lose the extracted fact or widen its
 visibility. Effective `off` mode does not use the extended proposal prompt or
 write promotion metadata; it preserves the Phase 1 extraction path.
+
+The audit route is not a weaker review. In `shadow` it may only record an
+approved would-promote outcome. In `auto`, an audit-routed candidate may
+promote only after the same reviewer, authorization, sanitization, and locked
+preflight used by the ordinary route. Sampling is a fixed count per period,
+not a percentage, and falls back to all eligible candidates when volume is
+below that count.
 
 ## Extraction Proposal Contract
 
@@ -280,10 +299,21 @@ It must never receive another principal's private memories. It returns:
 reviewer version. `defer` remains private and is reconsidered only under the
 evidence rules below. Invalid review output is `defer`.
 
+Shared-project memories in reviewer context are untrusted reference data for
+contradiction and duplicate detection only. They are never instructions and
+must be delimited and handled with the same prompt-injection protections as
+quoted logs, code, payloads, recalled memories, and tool output.
+
 The reviewer's approved text may be a sanitized restatement, but it may not
 introduce facts absent from the extraction context. The server reruns secret,
 PII, transcript, exact-project, and authorization checks over the final shared
 text before any write.
+
+The reviewer provider and model are separately configurable and default to the
+configured extraction provider and model. Classifier policy, reviewer policy,
+provider, and model versions are persisted independently; a behavior-affecting
+change to any of them invalidates prior shadow would-promote outcomes and
+restarts the observation window.
 
 ## Private-First Candidate State
 
@@ -298,8 +328,8 @@ but the persisted state must represent:
   version;
 - review decision, confidence, reason, reviewer version, and timestamp;
 - evidence fingerprint and attempt count;
-- terminal status (`rejected`, `promoted`) or recoverable status (`candidate`,
-  `deferred`, `failed`);
+- workflow status (`private`, `candidate`, `shadow_approved`, `deferred`,
+  retryable `failed`, `unreviewable`, `rejected`, or `promoted`);
 - promoted shared memory ID when one exists.
 
 All promotion fields are reserved server metadata. Callers cannot supply or
@@ -309,10 +339,27 @@ The initial private add and its proposal metadata are one creation operation.
 A crash cannot leave an eligible extracted fact with no indication that
 promotion evaluation was attempted.
 
-The raw conversation is not persisted as promotion evidence. Immediate review
-may use the in-flight extraction context. If the process loses that context
-before review, the candidate stays private and records a recoverable failure;
-the reconciler may not reconstruct certainty from the fact text alone.
+The raw conversation and redacted excerpts are not persisted as promotion
+evidence. Immediate review may use the in-flight extraction context. If the
+process loses that context before a semantic decision can be made, the
+candidate becomes `unreviewable`: private, queryable, alerted, and protected
+from automatic maintenance. The reconciler may not reconstruct certainty from
+the fact text alone. Only new evidence or an explicit owner/admin decision can
+leave `unreviewable`.
+
+Maintenance retention is state-specific:
+
+- `private` means the proposal was not selected for review and follows the
+  ordinary private-memory lifecycle;
+- `candidate`, `shadow_approved`, `deferred`, and retryable `failed` are
+  protected from automatic consolidation and pruning;
+- `rejected` is protected for a configurable audit window, default 90 days,
+  then returns to the ordinary private-memory lifecycle while its decision
+  remains in the audit log;
+- `promoted` is archived and remains protected by the existing archive rule;
+- `unreviewable` has no automatic expiry and stays protected until an
+  owner/admin approves, rejects, or dismisses it, or new evidence produces a
+  real review decision.
 
 ## Idempotent Promotion
 
@@ -345,18 +392,30 @@ Promotion is add-or-reuse, not an automatic shared-memory rewrite mechanism.
 Before creating a target, the server searches only the exact authorized
 `project/<project>/<kind>` namespace:
 
-- if no equivalent shared memory exists, create one;
-- if an equivalent active shared memory exists, reuse it, append the current
+- if no canonical-digest-identical shared memory exists, create one;
+- if a canonical-digest-identical active shared memory exists, reuse it, append the current
   principal as a contributor, append the private candidate ID to server-owned
   source provenance, and archive the private candidate;
-- if the candidate would update, contradict, delete, or supersede existing
-  shared knowledge, defer it for owner/admin review rather than mutating the
-  shared record automatically.
+- semantic similarity may be shown to the reviewer and counted as a
+  near-duplicate, but it never archives, merges, updates, or suppresses the
+  candidate;
+- if the candidate would contradict, delete, or supersede existing shared
+  knowledge, defer it for owner/admin review rather than mutating the shared
+  record automatically.
+
+Canonicalization is deliberately narrow: normalize Unicode to NFC, normalize
+line endings, trim outer and per-line whitespace, and collapse repeated spaces
+or tabs. Preserve case, punctuation, token order, and line order. The SHA-256
+digest covers project ID, project kind, and canonical text. This makes
+whitespace-only duplicates reusable without turning semantic similarity into
+a destructive equivalence decision.
 
 Reusing a shared record preserves its original author while adding the new
 contributor. Phase 2 does not let automatic extraction UPDATE or DELETE shared
 project knowledge. Rich project knowledge lifecycle and automated
-supersession remain Phase 3 concerns.
+supersession remain Phase 3 concerns. Semantically similar approved facts may
+therefore coexist as separate shared records; that duplicate cost is explicit
+and measured.
 
 ## Reconciliation
 
@@ -370,14 +429,44 @@ It may act as follows:
 |---|---|
 | `candidate` or retryable `failed` with current in-flight evidence available | Resume review or promotion. |
 | Shared target exists but private finalization is incomplete | Finish metadata and archive the private candidate. |
-| `deferred` with changed private text, explicit owner approval, newly relevant shared-project evidence, or a newer reviewer policy/version | Re-review. |
+| `shadow_approved` under the current accepted policy after both modes become `auto` | Revalidate and promote idempotently. |
+| `deferred` with changed private text, explicit owner approval, newly relevant shared-project evidence, or a newer reviewer policy/version **and sufficient evidence** | Re-review. |
 | `deferred` with unchanged evidence and reviewer version | Do nothing. |
 | `rejected` with unchanged evidence and reviewer version | Do nothing. |
+| `unreviewable` without new evidence or manual decision | Do nothing; retain and include it in backlog age/count alerts. |
 | `promoted` | Verify target linkage only; never create another target. |
 
 New evidence may use the candidate owner's updated private record and
 authorized shared-project memories. It may not use another principal's private
 memory. Mere passage of time or rerunning the same prompt is not new evidence.
+
+The pass revalidates current managed-key identity and exact project write
+authority before any shared mutation. Revoked access leaves the candidate
+private. Reconciliation is bounded by both batch size and wall-clock budget and
+uses per-candidate locks; one stuck provider call cannot consume the entire
+maintenance window.
+
+## Automatic Maintenance Boundary and Phase 1 Prerequisite
+
+Phase 1 currently permits weekly pruning to hard-delete stale, never-retrieved
+project records. Before any FPLGuru seed or activation, a standalone hotfix
+must exclude **every source beginning with `project/`** from automatic pruning,
+including malformed/grandfathered paths such as `project/notes`. This protects
+records users reasonably understand as shared while leaving ordinary
+`person/...` private-memory pruning unchanged. It is a release prerequisite,
+not something activation may wait for Phase 2 to fix.
+
+Phase 2 additionally excludes strict `project/<project>/<kind>` records from
+automatic consolidation for the entire phase. Existing LLM consolidation may
+rewrite meaning and cannot represent claim-level contributor provenance;
+unioning contributors onto synthesized text would falsely imply that every
+person supported every clause. Project semantic consolidation, supersession,
+and lifecycle management are deferred to Phase 3.
+
+Private promotion candidates follow the state-specific maintenance retention
+rules above. Manual and scheduled consolidation/pruning must use the same
+central predicate so an operator endpoint cannot bypass protections enforced
+by the scheduler.
 
 ## Configuration and Rollout Control
 
@@ -391,9 +480,10 @@ promotion:
 ```
 
 Allowed project modes are `off`, `shadow`, and `auto`. For an explicitly
-collaborative project, omitted `promotion` defaults to `auto`, preserving the
-product decision that automatic promotion is the normal project behavior once
-the feature is enabled. Unknown keys and unsupported values fail closed.
+collaborative project, omitted `promotion` means `off` in the first Phase 2
+release. `shadow` or `auto` therefore requires an explicit declaration.
+Unknown keys and unsupported values fail closed. A later release may revisit
+the default only after production evidence exists.
 
 The declaration is not authority. It cannot grant a project prefix, name a
 principal, or override the host's cap. The backend applies an operator-owned
@@ -402,6 +492,31 @@ global cap, defaulting to `off` in the first Phase 2 release:
 ```text
 PROJECT_PROMOTION_MODE=off|shadow|auto
 ```
+
+The first release also exposes bounded operator settings with conservative
+defaults:
+
+```text
+PROJECT_PROMOTION_RELEVANCE_THRESHOLD=0.70
+PROJECT_PROMOTION_NEAR_DUPLICATE_THRESHOLD=0.88
+PROJECT_PROMOTION_AUDIT_FLOOR=10
+PROJECT_PROMOTION_AUDIT_PERIOD_DAYS=7
+PROJECT_PROMOTION_RECONCILE_BATCH=25
+PROJECT_PROMOTION_RECONCILE_BUDGET_SECONDS=20
+PROJECT_PROMOTION_REJECTED_RETENTION_DAYS=90
+PROJECT_PROMOTION_UNREVIEWABLE_ALERT_COUNT=20
+PROJECT_PROMOTION_UNREVIEWABLE_ALERT_AGE_HOURS=24
+PROJECT_PROMOTION_REVIEW_PROVIDER=
+PROJECT_PROMOTION_REVIEW_MODEL=
+```
+
+An empty review-provider or review-model value inherits the configured
+extraction provider or model respectively.
+
+FPLGuru shadow starts with a deliberately permissive relevance threshold so
+every plausibly durable project fact is reviewed. Tightening it later is an
+operator configuration change gated by fixture recall and audit-route drift
+evidence, not a redesign.
 
 Effective behavior is the more restrictive of the host cap and the declared
 project mode. This makes an upgrade inert until the host operator opts in,
@@ -418,6 +533,12 @@ That value is untrusted policy input, not authorization; the managed key and
 exact server-side namespace checks remain decisive. The mode and declaration
 fingerprint are captured on each candidate so worktree or branch divergence is
 auditable rather than silently reinterpreted later.
+
+The classifier prompt/policy, reviewer prompt/policy, provider, and model have
+explicit version identifiers. Changing any behavior-affecting identifier
+invalidates prior shadow would-promote outcomes and restarts both the minimum
+time and volume observation gates. Stale shadow approvals are never promoted;
+if their evidence is no longer available they become `unreviewable`.
 
 Phase 1 clients reject the new declaration field, so operators must upgrade
 the backend and supported clients before committing `promotion` configuration.
@@ -438,22 +559,31 @@ The shadow candidates remain recoverable. When the host and project move to
 This prevents the observation window itself from creating a permanent shared
 knowledge gap.
 
+Shadow is mutation-free with respect to shared project state. Both ordinary
+and audit-routed approvals are stored only as would-promote outcomes. In
+`auto`, an audit-routed approval may promote after the same full review and
+locked authorization path as an ordinary candidate.
+
 The proposed FPLGuru rollout is:
 
-1. deploy Phase 2 with the host cap `off`;
-2. provision and verify the two managed principal keys;
-3. activate the repository declaration with `promotion.mode: shadow` and set
+1. merge and deploy the standalone `project/` pruning hotfix;
+2. deploy Phase 2 with the host cap `off`;
+3. provision and verify the two managed principal keys;
+4. activate the repository declaration with `promotion.mode: shadow` and set
    the host cap to `shadow`;
-4. inspect a minimum review set drawn from both principals, including every
-   high-risk and every would-promote candidate;
-5. correct prompts/policy and repeat if any unsafe candidate would promote;
-6. set the host cap and repository to `auto`;
-7. reconcile accepted shadow candidates;
-8. seed the separately reviewed 20–50 historical shared memories described by
+5. inspect every would-promote outcome and the bounded audit cohort, with both
+   principals represented;
+6. if any unsafe candidate would promote, change policy/provider/prompt,
+   invalidate all prior outcomes, and restart the observation window;
+7. remain in shadow for at least two weeks and until every fixture and live
+   volume gate below is satisfied;
+8. set the host cap and repository to `auto`;
+9. reconcile only shadow approvals from the currently accepted policy;
+10. seed the separately reviewed 20–50 historical shared memories described by
    the Phase 1 playbook.
 
-The minimum shadow sample size and release metric are review questions below;
-the small synthetic spike is not enough to activate `auto`.
+The small synthetic spike is not enough to activate `auto`. Two quiet weeks do
+not satisfy the rollout gate.
 
 ## Review and Audit Surface
 
@@ -465,7 +595,9 @@ before any manual review behavior can ship:
   decisions;
 - `POST /promotions/{candidate_id}/approve` approves one's own private
   candidate when the caller also has write access to the target project;
-- `POST /promotions/{candidate_id}/reject` rejects one's own private candidate;
+- `POST /promotions/{candidate_id}/reject` rejects one's own candidate or
+  explicitly dismisses one's own `unreviewable` candidate, with an audited
+  reason;
 - the same operations allow an admin to inspect or decide any candidate;
 - deny one collaborator access to another collaborator's private candidate
   text and rationale;
@@ -476,7 +608,14 @@ MCP parity, if manual review is exposed through MCP in Phase 2, uses the names
 `memory_promotions`, `memory_promotion_get`, `memory_promotion_approve`, and
 `memory_promotion_reject`; the two mutating tools remain user-confirmed writes.
 The API operations and authorization rules are Phase 2 acceptance criteria.
-“Review mode” is not an accepted project mode until they exist.
+No manual promotion workflow may ship until these API authorization rules
+exist, even if MCP parity is deferred.
+
+There is no bulk dismissal endpoint in Phase 2. An owner may script the
+per-item audited reject operation during an incident; a bulk mutation API is
+deferred until real volume demonstrates that it is needed. Unresolved
+`unreviewable` count and oldest age have explicit alert thresholds so degraded
+review infrastructure cannot create silent permanent debt.
 
 ## MiniLM's Role
 
@@ -501,11 +640,15 @@ failures directly.
 | Extraction provider unavailable | Existing configured private extraction fallback applies; no automatic promotion. |
 | Proposal fields malformed | Store the valid extracted fact privately with no promotion. |
 | Secret, PII, or raw-transcript marker in candidate/final text | Reject promotion; retain only text allowed by existing private extraction hygiene. |
-| Review provider unavailable, timeout, malformed output, or low confidence | Defer privately. |
-| Queue full or worker/process exit | Private fact survives; candidate is retryable only when sufficient evidence remains. |
+| Review provider unavailable, timeout, malformed output, or low confidence while evidence remains in flight | Defer privately and retry only within the bounded evidence lifetime. |
+| Review evidence is lost before a semantic decision | Mark `unreviewable`, retain privately, protect from maintenance, and alert by count/age; never infer from fact text alone. |
+| Queue full or worker/process exit | Private fact survives; candidate is retryable only when sufficient evidence remains, otherwise `unreviewable`. |
 | Authorization revoked between proposal and write | Reject at final under-lock preflight. |
 | Target add succeeds but private finalization fails | Reconciler finds target by private source ID and finishes without duplicating. |
 | Project mode or host cap changes to `off` | Stop new reviews/promotions immediately; do not delete existing shared knowledge. |
+| Classifier/reviewer prompt, policy, provider, or model version changes | Invalidate prior shadow outcomes and restart time plus volume gates; stale approvals cannot promote. |
+| Semantic near-duplicate found | Keep both records/candidates; surface and measure similarity, but do not merge, archive, or suppress automatically. |
+| Automatic maintenance sees `project/` or protected workflow state | Skip it using the shared maintenance predicate. |
 
 ## Evaluation and Activation Gates
 
@@ -521,19 +664,40 @@ fixture suite that includes at least:
 - malformed model output and provider failure;
 - retry, crash-window, duplicate, revocation, and cross-principal isolation.
 
-Proposed activation gates for review are:
+Activation gates are:
 
-1. zero unsafe promotions in the high-risk fixture suite;
-2. at least 95% promotion precision across the full labeled fixture set;
-3. at least 85% recall for confirmed durable project facts;
-4. no cross-principal private disclosure in API, reviewer input, logs, audit, or
-   reconciliation tests;
-5. successful idempotency tests for every mutation boundary;
-6. a manually inspected FPLGuru shadow sample from both principals with zero
-   unsafe would-promote outcomes.
+1. a versioned labeled suite of at least 100 weighted fixtures;
+2. zero unsafe promotions in every high-risk fixture;
+3. at least 95% promotion precision across the full labeled fixture set;
+4. at least 85% end-to-end recall for confirmed durable project facts,
+   including false-private measurement through the low-relevance audit route;
+5. no cross-principal private disclosure in API, reviewer input, logs, audit,
+   metrics, or reconciliation tests;
+6. successful idempotency tests for every mutation boundary;
+7. at least two weeks of real dual-principal FPLGuru shadow activity;
+8. at least 50 total reviewed live candidates;
+9. at least 30 manually inspected would-promote outcomes;
+10. at least five would-promote outcomes from each principal;
+11. zero unsafe live would-promote outcomes across the whole sample.
 
-The final fixture count, shadow sample size, and acceptable recall target remain
-open to review. Privacy and authorization gates are not negotiable thresholds.
+Fewer than 30 would-promote outcomes extends shadow. Fewer than roughly 10
+after two weeks triggers a routing-threshold review rather than being treated
+as safety evidence. The fixture suite carries the statistical precision and
+recall argument; live shadow exists to catch vocabulary, interleaving, and
+injection shapes the fixtures did not anticipate.
+
+Required operational metrics are project-record count by kind, canonical
+exact-reuse count/rate, semantic near-duplicate candidate count/rate,
+unresolved `unreviewable` count and oldest age, terminal-retention expirations,
+review outcomes by route/principal/policy version, and alert state. Auto remains
+off until the rollback procedure and FPLGuru activation evidence record are
+reviewed.
+
+For stable interpretation, exact-reuse rate is exact reuses divided by all
+successful promotions, and semantic near-duplicate rate is reviewed candidates
+with at least one above-threshold semantic project match divided by all
+reviewed candidates. Counters are partitioned by project kind and policy
+version; zero denominators report rate `0.0`.
 
 ## Explicit Non-Goals
 
@@ -548,40 +712,53 @@ Phase 2 does not include:
 - a second canonical fact store or transactional outbox;
 - automatic bulk promotion of legacy history;
 - a web dashboard or review UI;
+- a bulk promotion-review mutation endpoint;
 - model training or a MiniLM classification head;
 - changing the four project kinds;
+- semantic consolidation, supersession, or claim-level contributor provenance
+  for project knowledge;
 - production FPLGuru activation in the specification PR.
 
 `assertion_status` is classifier evidence used to fail private; it is not the
 Phase 3 project knowledge lifecycle.
 
-## Reviewer Questions
+## Resolved Scope Decisions
 
-Review should focus on these unresolved or high-risk decisions:
+PR #97 review resolved the former reviewer questions as follows:
 
-1. Is a second call only for plausible promotion candidates enough independent
-   scrutiny when it uses the same configured provider/model, or must the
-   reviewer support a separately configured provider?
-2. Does private-memory metadata provide enough durable candidate state without
-   introducing a queue/outbox, especially across the target-add/finalization
-   crash window?
-3. Is it correct to refuse automatic retry when the in-flight transcript was
-   lost, rather than persist a redacted evidence excerpt?
-4. Does “project default auto, host default off” satisfy backward compatibility
-   for existing Phase 1 declarations, or should auto require a new explicit
-   declaration field in the first release?
-5. Is the repository declaration an acceptable project-level policy input when
-   different branches/worktrees can temporarily declare different modes?
-6. Which exact review operations belong in the minimum implementation, and may
-   collaborators manually approve only their own private candidates?
-7. What evidence besides text change, explicit approval, shared-project
-   similarity, or reviewer-version change may legitimately re-open a deferred
-   candidate?
-8. What fixture size and real shadow sample are sufficient before enabling
-   FPLGuru `auto` without a separate canary environment?
-9. Does routing high-project-relevance facts to the reviewer recover enough
-   false-private proposals without effectively reviewing every technical fact,
-   and how should that recall/cost tradeoff be measured?
+1. The reviewer is a separate narrow call. Its provider/model is independently
+   configurable and defaults to the extraction provider/model.
+2. Candidate metadata on the private record is the sole durable workflow
+   state; Phase 2 adds no queue/outbox or second canonical fact store.
+3. No transcript or redacted evidence excerpt is persisted. Lost evidence
+   becomes queryable, alerted `unreviewable` state and requires new evidence or
+   an owner/admin decision.
+4. The first release requires explicit `promotion.mode`; omission is off even
+   when `shared_memory: true`.
+5. Repository configuration is untrusted project policy input. The server cap,
+   managed principal, and exact ACL remain authority, and the declaration
+   fingerprint is captured for branch/worktree auditability.
+6. The minimum review surface is list, get, approve, and reject/dismiss.
+   Collaborators can inspect/decide only their own private candidates; admins
+   can inspect/decide all.
+7. Deferred work reopens only for changed private text, explicit owner/admin
+   action, genuinely new authorized shared-project evidence, or a new accepted
+   policy with sufficient evidence. Passage of time is not evidence.
+8. The fixture and live gates are the exact counts and thresholds in the
+   preceding section.
+9. Selective routing is retained, but FPLGuru begins permissively and a fixed
+   low-relevance audit floor independently measures recall. Shadow audit
+   approvals never mutate shared state; auto audit approvals may promote only
+   through the same full review path.
+10. Automatic reuse is canonical-digest equality only. Semantic similarity is
+    untrusted reviewer context and a metric, never a destructive equivalence
+    decision.
+11. Project semantic lifecycle is deferred to Phase 3. Phase 2 accepts
+    duplicates and excludes project records from automatic consolidation.
+12. Every `project/`-prefixed source, including malformed legacy paths, is
+    protected from pruning by a standalone pre-activation hotfix.
+13. `unreviewable` backlog alerts ship in Phase 2; bulk dismissal is deferred
+    in favor of scriptable per-item audited decisions.
 
 ## Acceptance Criteria for the Future Implementation
 
@@ -599,10 +776,23 @@ The implementation is not complete until:
 7. Candidate review APIs enforce owner/admin visibility and target write
    authority.
 8. Shadow mode creates no project records and accepted shadow candidates can be
-   reconciled once auto is enabled.
+   reconciled once auto is enabled only when their full policy/provider/prompt
+   version remains current.
 9. Reconciliation is bounded, idempotent, same-host, and evidence-aware.
 10. MiniLM cannot independently change visibility in any production path.
 11. The global cap defaults off and disabling it stops new promotion without
     deleting prior shared knowledge.
-12. The labeled dirty suite, operational metrics, rollback procedure, and
-    FPLGuru activation playbook are documented before release.
+12. Canonical-digest equality is the only automatic shared-record reuse path;
+    semantic near-duplicates coexist and are measured.
+13. Scheduled and manual automatic pruning skip every `project/`-prefixed
+    source, and automatic consolidation skips strict project memories.
+14. Promotion-state private memories follow the specified per-state retention
+    rules, including non-expiring `unreviewable` and 90-day rejected audit
+    retention by default.
+15. Unreviewable count/age alerts and all specified promotion/duplicate/project
+    metrics are exposed without leaking candidate text.
+16. The versioned 100+ labeled dirty suite, live-shadow evidence record,
+    operational metrics, rollback procedure, and FPLGuru activation playbook
+    are documented before release.
+17. No production seed, repository activation, or host-cap increase occurs as
+    part of implementation or the specification PR.
