@@ -680,19 +680,13 @@ class PromotionService:
                 "promotion policy identity is stale",
                 reviewer_version=self._current_reviewer_version(state.project_id),
             )
-        if review.decision is ReviewDecision.APPROVE and self._effective_mode(state) is PromotionMode.SHADOW:
-            proposed_text = review.shared_text or str(candidate.get("text", ""))
-            sanitized = self._sanitize_shadow_text(proposed_text)
-            shadow_violations = self._final_text_violations(sanitized, state.project_id)
-            if not sanitized or shadow_violations:
-                review = _safe_review(
-                    ReviewDecision.DEFER,
-                    review.confidence,
-                    "approved text failed safety validation after sanitization",
-                    reviewer_version=self._current_reviewer_version(state.project_id),
-                )
-            else:
-                review = replace(review, shared_text=sanitized)
+        if self._effective_mode(state) is PromotionMode.SHADOW:
+            review = self._normalize_shadow_review(
+                candidate_text=str(candidate.get("text", "")),
+                review=review,
+                project_id=state.project_id,
+                reviewer_version=self._current_reviewer_version(state.project_id),
+            )
         if review.decision is ReviewDecision.REJECT:
             status = PromotionStatus.REJECTED
         elif review.decision is ReviewDecision.DEFER:
@@ -732,6 +726,29 @@ class PromotionService:
                 outcome=status.value,
             )
         return result
+
+    @classmethod
+    def _normalize_shadow_review(
+        cls,
+        *,
+        candidate_text: str,
+        review: PromotionReview,
+        project_id: str,
+        reviewer_version: str,
+    ) -> PromotionReview:
+        """Apply the production shadow sanitization and final-veto boundary."""
+        if review.decision is not ReviewDecision.APPROVE:
+            return review
+        proposed_text = review.shared_text or candidate_text
+        sanitized = cls._sanitize_shadow_text(proposed_text)
+        if not sanitized or cls._final_text_violations(sanitized, project_id):
+            return _safe_review(
+                ReviewDecision.DEFER,
+                review.confidence,
+                "approved text failed safety validation after sanitization",
+                reviewer_version=reviewer_version,
+            )
+        return replace(review, shared_text=sanitized)
 
     def _mark_failed(
         self,

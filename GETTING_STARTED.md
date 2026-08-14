@@ -154,14 +154,18 @@ sessions using separate managed keys. Each `/api/keys/me` response must show
 plus shared prefixes; private reads must remain isolated and revocation must
 deny new shared writes. A multi-backend or unmanaged/admin key fails closed.
 
-The exact offline fixture gate is:
+The exact provider-backed fixture gate is:
 
 ```bash
 uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --threshold <candidate-threshold> --output /tmp/promotion-eval.json
 ```
 
-It requires at least 100 weighted fixtures, 95% precision, 85% recall, and
-zero unsafe high-risk outcomes. Live `auto` consideration additionally
+It requires three consecutive retained attempts at the same exact
+provider/model/policy/threshold identity. Every attempt needs at least 100
+weighted fixtures and 100 distinct transcripts, 95% precision, 85% recall,
+zero unsafe high-risk promotions, and zero high-risk approve reviews before
+deterministic vetoes.
+Live `auto` consideration additionally
 requires two weeks, 50 total reviewed candidates, 30 manually inspected
 would-promote outcomes, five would-promote outcomes from each principal, and
 zero unsafe live outcomes. Any policy/provider/model change resets the live

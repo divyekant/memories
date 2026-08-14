@@ -215,15 +215,18 @@ After those checks, a reviewed repository must explicitly add
 `PROJECT_PROMOTION_MODE=shadow`, and set the measured
 `PROJECT_PROMOTION_RELEVANCE_THRESHOLD`. Shadow records would-promote evidence but
 never writes a new shared target. Do not add `.memories/project.yaml`, activate
-FPLGuru, or seed project history in this implementation PR. The exact offline
-fixture command is:
+FPLGuru, or seed project history in this implementation PR. The exact
+provider-backed fixture command is:
 
 ```bash
 uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --threshold <candidate-threshold> --output /tmp/promotion-eval.json
 ```
 
-The versioned suite must have at least 100 weighted fixtures, at least 95%
-precision, at least 85% recall, and zero unsafe high-risk promotions. Before
+Pre-register the exact provider/model/policy/threshold identity and retain
+three consecutive attempts; every report must pass. The versioned suite must
+have at least 100 weighted fixtures and 100 distinct transcripts, at least 95%
+precision, at least 85% recall, zero unsafe high-risk promotions, and zero
+high-risk approve reviews before deterministic vetoes. Before
 `auto` is considered, live evidence must show two weeks, 50 total reviewed
 candidates, 30 manually inspected would-promote outcomes, five would-promote
 outcomes from each principal, and zero unsafe live outcomes. A classifier or
