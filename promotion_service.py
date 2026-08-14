@@ -654,6 +654,227 @@ class PromotionService:
                 logger.warning("Promotion review failed for candidate %s: %s", candidate_id, exc)
         return reviews
 
+    # -- owner/admin review surface -------------------------------------
+
+    @staticmethod
+    def _candidate_view(candidate: Mapping[str, Any], state: PromotionState) -> dict[str, Any]:
+        return {
+            "id": candidate.get("id"),
+            "text": candidate.get("text", ""),
+            "source": candidate.get("source", ""),
+            "author": candidate.get("author"),
+            "archived": bool(candidate.get("archived")),
+            "owner": state.owner,
+            "project_id": state.project_id,
+            "status": state.status.value,
+            "promotion": state.as_metadata()["promotion"],
+        }
+
+    def _candidate_for_actor(
+        self,
+        candidate_id: int,
+        actor: AuthContext,
+        *,
+        require_write: bool = False,
+    ) -> tuple[dict[str, Any], PromotionState]:
+        if not isinstance(actor, AuthContext):
+            raise PermissionError("promotion access requires authentication")
+        try:
+            candidate, state = self._candidate(candidate_id)
+        except (ValueError, ProjectMemoryPolicyError) as exc:
+            raise LookupError("promotion candidate not found") from exc
+        target_source = self._target_source(state)
+        if actor.role != "admin":
+            if actor.principal_id != state.owner or not actor.can_read(candidate["source"]):
+                raise LookupError("promotion candidate not found")
+        if require_write and (
+            actor.role == "read-only"
+            or not actor.can_write(candidate["source"])
+            or not actor.can_write(target_source)
+        ):
+            raise PermissionError("promotion decision requires project write access")
+        return candidate, state
+
+    def list_candidates(
+        self,
+        actor: AuthContext,
+        *,
+        project_id: str | None = None,
+        owner: str | None = None,
+        status: PromotionStatus | str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(actor, AuthContext):
+            raise PermissionError("promotion access requires authentication")
+        expected_status: PromotionStatus | None = None
+        if status is not None:
+            expected_status = status if isinstance(status, PromotionStatus) else PromotionStatus(status)
+        visible: list[dict[str, Any]] = []
+        for raw_candidate in getattr(self.engine, "metadata", ()):
+            if not isinstance(raw_candidate, Mapping):
+                continue
+            candidate = dict(raw_candidate)
+            state = promotion_state_from_memory(candidate)
+            if state is None:
+                continue
+            try:
+                self._candidate(int(candidate.get("id")))
+            except (TypeError, ValueError, ProjectMemoryPolicyError):
+                continue
+            if actor.role != "admin" and (
+                actor.principal_id != state.owner or not actor.can_read(candidate.get("source", ""))
+            ):
+                continue
+            if project_id is not None and state.project_id != project_id:
+                continue
+            if owner is not None and state.owner != owner:
+                continue
+            if expected_status is not None and state.status is not expected_status:
+                continue
+            try:
+                captured = datetime.fromisoformat(state.captured_at.replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                continue
+            if captured.tzinfo is None:
+                captured = captured.replace(tzinfo=timezone.utc)
+            if since is not None and captured < since:
+                continue
+            if until is not None and captured > until:
+                continue
+            visible.append(self._candidate_view(candidate, state))
+        visible.sort(
+            key=lambda item: item["promotion"].get("captured_at", ""),
+            reverse=True,
+        )
+        safe_offset = max(0, int(offset))
+        safe_limit = max(1, min(500, int(limit)))
+        return visible[safe_offset : safe_offset + safe_limit]
+
+    def get_candidate(self, candidate_id: int, actor: AuthContext) -> dict[str, Any]:
+        candidate, state = self._candidate_for_actor(candidate_id, actor)
+        return self._candidate_view(candidate, state)
+
+    @staticmethod
+    def _manual_reason(reason: str) -> str:
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason is required")
+        if len(reason) > 2000:
+            raise ValueError("reason is too long")
+        return reason.strip()
+
+    def approve_candidate(
+        self,
+        candidate_id: int,
+        *,
+        actor: AuthContext,
+        reason: str,
+        shared_text: str | None = None,
+    ) -> dict[str, Any]:
+        reason = self._manual_reason(reason)
+        candidate, state = self._candidate_for_actor(
+            candidate_id,
+            actor,
+            require_write=True,
+        )
+        if state.status not in {
+            PromotionStatus.CANDIDATE,
+            PromotionStatus.DEFERRED,
+            PromotionStatus.UNREVIEWABLE,
+            PromotionStatus.FAILED,
+            PromotionStatus.SHADOW_APPROVED,
+        }:
+            raise ValueError("candidate is not manually approvable")
+        if state.status in {PromotionStatus.DEFERRED, PromotionStatus.UNREVIEWABLE} and (
+            not isinstance(shared_text, str) or not shared_text.strip()
+        ):
+            raise ValueError("shared_text is required for deferred or unreviewable approval")
+        effective_mode = self._effective_mode(state)
+        if effective_mode is PromotionMode.OFF:
+            raise ValueError("project promotion is disabled")
+        proposed_text = shared_text
+        if proposed_text is None and state.review is not None:
+            proposed_text = state.review.shared_text
+        if proposed_text is None:
+            proposed_text = str(candidate.get("text", ""))
+        if effective_mode is PromotionMode.SHADOW:
+            proposed_text = self._sanitize_shadow_text(proposed_text)
+            violations = self._final_text_violations(proposed_text, state.project_id)
+            if not proposed_text or violations:
+                raise ValueError(
+                    "shared text failed safety validation: " + ", ".join(violations)
+                )
+        else:
+            proposed_text = self._validate_final_text(proposed_text, state)
+        review = _safe_review(
+            ReviewDecision.APPROVE,
+            1.0,
+            reason,
+            shared_text=proposed_text,
+            reviewer_version=self._current_reviewer_version(state.project_id),
+        )
+        next_status = (
+            PromotionStatus.SHADOW_APPROVED
+            if effective_mode is PromotionMode.SHADOW
+            else PromotionStatus.CANDIDATE
+        )
+        next_state = replace(
+            state,
+            status=next_status,
+            review=review,
+            attempt_count=state.attempt_count + 1,
+        )
+        self.engine.update_promotion_state(
+            candidate_id,
+            next_state,
+            expected_source=candidate["source"],
+            expected_statuses=[state.status],
+        )
+        if effective_mode is PromotionMode.SHADOW:
+            return self._candidate_view(self.engine.get_memory(candidate_id), next_state)
+        return self.promote(
+            candidate_id,
+            manual_actor=actor,
+            shared_text=proposed_text,
+        )
+
+    def reject_candidate(
+        self,
+        candidate_id: int,
+        *,
+        actor: AuthContext,
+        reason: str,
+    ) -> dict[str, Any]:
+        reason = self._manual_reason(reason)
+        candidate, state = self._candidate_for_actor(
+            candidate_id,
+            actor,
+            require_write=True,
+        )
+        if state.status in {PromotionStatus.PROMOTED, PromotionStatus.REJECTED}:
+            raise ValueError("candidate is not manually rejectable")
+        review = _safe_review(
+            ReviewDecision.REJECT,
+            1.0,
+            reason,
+            reviewer_version=self._current_reviewer_version(state.project_id),
+        )
+        next_state = replace(
+            state,
+            status=PromotionStatus.REJECTED,
+            review=review,
+            attempt_count=state.attempt_count + 1,
+        )
+        self.engine.update_promotion_state(
+            candidate_id,
+            next_state,
+            expected_source=candidate["source"],
+            expected_statuses=[state.status],
+        )
+        return self._candidate_view(self.engine.get_memory(candidate_id), next_state)
+
     # -- promotion ------------------------------------------------------
 
     @staticmethod

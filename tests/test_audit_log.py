@@ -30,6 +30,36 @@ class TestAuditLog:
         entries = audit.query(limit=10)
         assert entries[0]["resource_id"] == "42"
 
+    def test_log_metadata_round_trips_as_json(self, audit):
+        audit.log(
+            action="promotion.approved",
+            resource_id="42",
+            metadata={"reason": "confirmed", "reviewer_version": "reviewer-v1"},
+        )
+        entry = audit.query(resource_id="42")[0]
+        assert entry["metadata"] == {
+            "reason": "confirmed",
+            "reviewer_version": "reviewer-v1",
+        }
+        assert "metadata_json" not in entry
+
+    def test_existing_audit_database_migrates_metadata_column(self, tmp_path):
+        import sqlite3
+        from audit_log import AuditLog
+
+        db_path = tmp_path / "legacy-audit.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE audit_log (id INTEGER PRIMARY KEY, ts TEXT, action TEXT, "
+            "key_id TEXT, key_name TEXT, resource_id TEXT, source_prefix TEXT, ip TEXT)"
+        )
+        conn.commit()
+        conn.close()
+
+        audit = AuditLog(str(db_path))
+        audit.log(action="promotion.rejected", metadata={"reason": "private"})
+        assert audit.query()[0]["metadata"] == {"reason": "private"}
+
     def test_query_by_action(self, audit):
         audit.log(action="search", key_id="k1")
         audit.log(action="add", key_id="k1")

@@ -14,6 +14,7 @@ import logging
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -359,7 +360,13 @@ def _with_promotion_context(
     return kwargs
 
 
-def _audit(request: Request, action: str, resource_id: str = "", source: str = "") -> None:
+def _audit(
+    request: Request,
+    action: str,
+    resource_id: str = "",
+    source: str = "",
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
     """Log an audit entry from the current request context."""
     auth = _get_auth(request)
     ip = request.client.host if request.client else ""
@@ -370,6 +377,7 @@ def _audit(request: Request, action: str, resource_id: str = "", source: str = "
         resource_id=resource_id,
         source_prefix=source,
         ip=ip,
+        metadata=metadata,
     )
 
 
@@ -1595,6 +1603,19 @@ class PromotionRequestContext(BaseModel):
     )
 
 
+class PromotionApproveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(..., min_length=1, max_length=2000)
+    shared_text: Optional[str] = Field(default=None, min_length=1, max_length=12000)
+
+
+class PromotionRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(..., min_length=1, max_length=2000)
+
+
 def build_promotion_context(
     auth: AuthContext,
     source: str,
@@ -2046,6 +2067,123 @@ async def get_audit_log(
     _require_admin(auth)
     entries = audit_log.query(action=action, key_id=key_id, resource_id=resource_id, limit=limit, offset=offset)
     return {"entries": entries, "count": len(entries), "total": audit_log.count(action=action, key_id=key_id, resource_id=resource_id)}
+
+
+def _promotion_service_or_503() -> PromotionService:
+    if promotion_service is None:
+        raise HTTPException(status_code=503, detail="Promotion service is unavailable")
+    return promotion_service
+
+
+@app.get("/promotions")
+async def list_promotions(
+    request: Request,
+    project_id: Optional[str] = Query(default=None, pattern=r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"),
+    owner: Optional[str] = Query(default=None, pattern=r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"),
+    state: Optional[str] = Query(default=None),
+    since: Optional[datetime] = Query(default=None),
+    until: Optional[datetime] = Query(default=None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """List promotion workflow records visible to the owner or an admin."""
+    auth = _get_auth(request)
+    service = _promotion_service_or_503()
+    try:
+        items = service.list_candidates(
+            auth,
+            project_id=project_id,
+            owner=owner,
+            status=state,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"promotions": items, "count": len(items), "limit": limit, "offset": offset}
+
+
+@app.get("/promotions/{candidate_id}")
+async def get_promotion(candidate_id: int, request: Request):
+    """Fetch one private promotion candidate without leaking other owners."""
+    try:
+        return _promotion_service_or_503().get_candidate(candidate_id, _get_auth(request))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Promotion candidate not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@app.post("/promotions/{candidate_id}/approve")
+async def approve_promotion(
+    candidate_id: int,
+    request_body: PromotionApproveRequest,
+    request: Request,
+):
+    """Approve one owned candidate through the same locked promotion path."""
+    auth = _get_auth(request)
+    try:
+        result = _promotion_service_or_503().approve_candidate(
+            candidate_id,
+            actor=auth,
+            reason=request_body.reason,
+            shared_text=request_body.shared_text,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Promotion candidate not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _audit(
+        request,
+        "promotion.approved",
+        resource_id=str(candidate_id),
+        metadata={
+            "reason": request_body.reason,
+            "result_status": result.get("status"),
+            "target_memory_id": result.get("target_memory_id"),
+            "manual": True,
+        },
+    )
+    return result
+
+
+@app.post("/promotions/{candidate_id}/reject")
+async def reject_promotion(
+    candidate_id: int,
+    request_body: PromotionRejectRequest,
+    request: Request,
+):
+    """Reject or explicitly dismiss one owned private candidate."""
+    auth = _get_auth(request)
+    try:
+        result = _promotion_service_or_503().reject_candidate(
+            candidate_id,
+            actor=auth,
+            reason=request_body.reason,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Promotion candidate not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _audit(
+        request,
+        "promotion.rejected",
+        resource_id=str(candidate_id),
+        metadata={
+            "reason": request_body.reason,
+            "result_status": result.get("status"),
+            "manual": True,
+        },
+    )
+    return result
 
 
 @app.post("/audit/purge")

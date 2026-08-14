@@ -399,6 +399,86 @@ def test_archived_linked_target_is_not_reused(key_store):
     assert engine.get_memory(9)["archived"] is True
 
 
+def test_owner_lists_only_own_candidates_and_admin_lists_all(key_store):
+    alice = _candidate(state=_state())
+    bob_state = _state(owner="bob")
+    bob = _candidate(2, bob_state, text="Bob private fact")
+    bob["source"] = "person/bob/fplguru/knowledge"
+    bob["author"] = "bob"
+    engine = FakeEngine([alice, bob])
+    service = PromotionService(engine, key_store, reviewer=PromotionReviewer(provider=FakeProvider()))
+    alice_auth = AuthContext(
+        role="read-write",
+        prefixes=["person/alice/fplguru", "project/fplguru"],
+        key_type="managed",
+        principal_id="alice",
+    )
+    admin = AuthContext(role="admin", prefixes=None, key_type="env")
+
+    assert {item["owner"] for item in service.list_candidates(alice_auth)} == {"alice"}
+    assert {item["owner"] for item in service.list_candidates(admin)} == {"alice", "bob"}
+    with pytest.raises(LookupError):
+        service.get_candidate(2, alice_auth)
+
+
+def test_manual_unreviewable_approval_requires_shared_text_and_reject_dismisses(key_store):
+    unreviewable = _candidate(
+        state=_state(status=PromotionStatus.UNREVIEWABLE),
+    )
+    engine = FakeEngine([unreviewable])
+    service = PromotionService(
+        engine,
+        key_store,
+        config=PromotionConfig(host_mode=PromotionMode.AUTO, relevance_threshold=0.5),
+        reviewer=PromotionReviewer(provider=FakeProvider()),
+    )
+    actor = AuthContext(
+        role="read-write",
+        prefixes=["person/alice/fplguru", "project/fplguru"],
+        key_type="managed",
+        principal_id="alice",
+    )
+
+    with pytest.raises(ValueError, match="shared_text"):
+        service.approve_candidate(1, actor=actor, reason="confirmed")
+    rejected = service.reject_candidate(1, actor=actor, reason="not project knowledge")
+    assert rejected["status"] == "rejected"
+    assert engine.get_memory(1).get("archived") is not True
+
+
+def test_manual_approve_promotes_in_auto_and_read_only_cannot_decide(key_store):
+    deferred = _candidate(state=_state(status=PromotionStatus.DEFERRED))
+    engine = FakeEngine([deferred])
+    service = PromotionService(
+        engine,
+        key_store,
+        config=PromotionConfig(host_mode=PromotionMode.AUTO, relevance_threshold=0.5),
+        reviewer=PromotionReviewer(provider=FakeProvider()),
+    )
+    reader = AuthContext(
+        role="read-only",
+        prefixes=["person/alice/fplguru", "project/fplguru"],
+        key_type="managed",
+        principal_id="alice",
+    )
+    writer = replace(reader, role="read-write")
+
+    with pytest.raises(PermissionError):
+        service.approve_candidate(
+            1,
+            actor=reader,
+            reason="confirmed",
+            shared_text="The project uses an exact idempotency tuple.",
+        )
+    result = service.approve_candidate(
+        1,
+        actor=writer,
+        reason="confirmed",
+        shared_text="The project uses an exact idempotency tuple.",
+    )
+    assert result["status"] == "promoted"
+
+
 def test_near_duplicate_does_not_mutate_existing_project_record(key_store):
     existing = {
         "id": 10,
