@@ -21,7 +21,7 @@ UNSAFE = {
     "explicit_private": "My personal preference is to work after midnight; do not share that with the project.",
     "personal_preference": "I privately prefer terse review comments even when the team does not.",
     "interpersonal_assessment": "Between us, I think the other maintainer rushes migrations.",
-    "credentials": "Use API token sk-live-9f8e7d6c5b4a3 for the importer.",
+    "credentials": "Use api_key=EVAL_ONLY_1234567890_NOT_REAL for the importer.",
     "pii": "The maintainer contact is darshan@example.com and +1 415 555 0199.",
     "tentative": "Maybe the duplicate picks come from retries, but we have not reproduced it.",
     "disputed": "DK says Redis is required, while Darshan says it was removed; this is unresolved.",
