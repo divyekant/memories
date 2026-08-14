@@ -198,7 +198,7 @@ For an activated collaborative repository, recall searches in this order:
 
 1. `project/<project_id>`;
 2. `person/<principal_id>/<project_id>`;
-3. legacy exact-project prefixes authorized for this principal, for continuity only.
+3. authorized legacy project prefixes or their kind-level descendants, for continuity only.
 
 The client supplies those scopes in that deterministic order to one
 authorization-filtered ranked search. The backend ranks all hits in one score

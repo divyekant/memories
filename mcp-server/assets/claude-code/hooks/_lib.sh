@@ -592,7 +592,11 @@ _memories_project_context() {
       ($raw | if type == "string" then (gsub("^[[:space:]]+|[[:space:]]+$"; "") | gsub("\\{project\\}"; $project)) else "" end) as $prefix
       | if ($prefix == "" or ($prefix | contains("*")) or ($prefix | endswith("/"))) then .
         else ($prefix | split("/")) as $parts
-        | if (($parts | length) >= 2 and $parts[-1] == $project and $parts[0] != "project" and $parts[0] != "person" and (index($prefix) | not)) then . + [$prefix] else . end
+        | if (($parts | length) >= 2 and ($parts[1:] | index($project)) != null and $parts[0] != "project" and $parts[0] != "person") then
+            if any(.[]; . as $existing | ($prefix == $existing or ($prefix | startswith($existing + "/")))) then .
+            else ([.[] | select((. | startswith($prefix + "/")) | not)] + [$prefix])
+            end
+          else . end
         end
     )
   ' 2>/dev/null || printf '[]')
@@ -643,9 +647,12 @@ _memories_project_recall_prefixes() {
       case "$prefix" in
         project/*|person/*|*/|*\*) continue ;;
       esac
-      # An exact legacy prefix names this project in its final segment.  A
-      # family prefix or another project's prefix must never widen recall.
-      [ "${prefix##*/}" = "$project" ] || continue
+      # Retain an explicitly authorized descendant of this legacy project,
+      # while rejecting family prefixes and other projects.
+      case "$prefix" in
+        */"$project"|*/"$project"/*) ;;
+        *) continue ;;
+      esac
       duplicate=0
       for existing in "${prefixes[@]}"; do
         [ "$existing" = "$prefix" ] && duplicate=1 && break

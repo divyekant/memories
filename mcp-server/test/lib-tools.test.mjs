@@ -12,7 +12,28 @@ import {
   parseProjectDeclaration,
   loadProjectDeclaration,
   resolveProjectContext,
+  deriveLegacyProjectPrefixes,
 } from '../lib-tools.mjs';
+
+test('legacy project prefixes retain authorized kind-level descendants', () => {
+  assert.deepEqual(
+    deriveLegacyProjectPrefixes('shared-demo', [
+      'codex/shared-demo/knowledge',
+      'claude-code/shared-demo/state',
+      'codex/other/knowledge',
+      'project/shared-demo/knowledge',
+      'person/alice/shared-demo/knowledge',
+    ]),
+    ['codex/shared-demo/knowledge', 'claude-code/shared-demo/state'],
+  );
+  assert.deepEqual(
+    deriveLegacyProjectPrefixes('shared-demo', [
+      'codex/shared-demo/knowledge',
+      'codex/shared-demo',
+    ]),
+    ['codex/shared-demo'],
+  );
+});
 
 test('project declaration parser accepts only the strict shared-memory contract', () => {
   const fixtures = [
@@ -165,7 +186,7 @@ test('project context resolves backend config from the main repository boundary 
   assert.equal(context.principalId, 'alice');
 });
 
-test('project context retains managed prefixes and allows only exact legacy project prefixes', async () => {
+test('project context retains managed prefixes and narrows legacy continuity to the declared project', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mem-project-prefixes-'));
   await mkdir(join(dir, '.memories'), { recursive: true });
   await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
@@ -366,6 +387,42 @@ test('active memory_search intersects project scopes with kind-level ACLs before
     const rendered = result.content.map((item) => item.text || '').join('\n');
     assert.match(rendered, /Allowed decision/);
     assert.doesNotMatch(rendered, /Crowding result/);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('active memory_search retains a kind-level legacy ACL', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-search-legacy-kind-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const searchBodies = [];
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    if (requestUrl.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({
+        type: 'managed',
+        principal_id: 'alice',
+        prefixes: ['codex/shared-demo/knowledge'],
+      }), { status: 200 });
+    }
+    const body = JSON.parse(options.body);
+    searchBodies.push(body);
+    return new Response(JSON.stringify({
+      results: [{ id: 1, source: 'codex/shared-demo/knowledge', text: 'Legacy knowledge', similarity: 0.8 }],
+      count: 1,
+    }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({ name: 'memory_search', arguments: { query: 'knowledge', k: 1 } });
+    assert.equal(searchBodies.length, 1);
+    assert.deepEqual(searchBodies[0].source_prefixes, ['codex/shared-demo/knowledge']);
+    assert.match(result.content.map((item) => item.text || '').join('\n'), /Legacy knowledge/);
   } finally {
     await client.close();
     await server.close();

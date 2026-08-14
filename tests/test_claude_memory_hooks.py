@@ -2565,15 +2565,25 @@ def test_active_project_hooks_use_only_authenticated_legacy_prefixes(
     ],
     ids=lambda value: value.name if isinstance(value, Path) else "payload",
 )
+@pytest.mark.parametrize(
+    "authorized_prefix",
+    [
+        "person/alice/shared-demo/knowledge",
+        "codex/shared-demo/knowledge",
+    ],
+    ids=["person-kind", "legacy-kind"],
+)
 def test_active_project_hooks_intersect_recall_roots_with_kind_level_acl(
-    tmp_path: Path, script: Path, payload: dict[str, object]
+    tmp_path: Path,
+    script: Path,
+    payload: dict[str, object],
+    authorized_prefix: str,
 ) -> None:
     project_dir = tmp_path / "shared-demo"
     (project_dir / ".memories").mkdir(parents=True)
     (project_dir / ".memories" / "project.yaml").write_text(
         "project_id: shared-demo\nshared_memory: true\n"
     )
-    authorized_prefix = "person/alice/shared-demo/knowledge"
     responses = [
         {
             "url_suffix": "/api/keys/me",
@@ -2610,6 +2620,48 @@ def test_active_project_hooks_intersect_recall_roots_with_kind_level_acl(
         for call in calls
         if str(call["url"]).endswith("/search")
     )
+
+
+@pytest.mark.parametrize(
+    ("script", "payload"),
+    [
+        (RECALL_SCRIPT, {}),
+        (QUERY_SCRIPT, {"prompt": "Please explain the shared project architecture."}),
+        (REHYDRATE_SCRIPT, {"compact_summary": "shared project architecture"}),
+        (HOOKS_DIR / "memory-subagent-recall.sh", {"agent_type": "Plan"}),
+        (CODEX_HOOKS_DIR / "memory-recall.sh", {}),
+        (CODEX_HOOKS_DIR / "memory-query.sh", {"prompt": "Please explain the shared project architecture."}),
+    ],
+    ids=lambda value: value.name if isinstance(value, Path) else "payload",
+)
+def test_active_project_hooks_handle_explicitly_empty_acl_without_search(
+    tmp_path: Path, script: Path, payload: dict[str, object]
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    responses = [
+        {
+            "url_suffix": "/api/keys/me",
+            "response": {
+                "type": "managed",
+                "principal_id": "alice",
+                "prefixes": [],
+            },
+        }
+    ]
+
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        {"cwd": str(project_dir), **payload},
+        responses,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not [call for call in calls if str(call["url"]).endswith("/search")]
 
 
 @pytest.mark.parametrize(
@@ -2857,7 +2909,7 @@ def test_project_helpers_allowlist_prefixes_and_deduplicate_stable_records(
         [
             "bash",
             "-c",
-            'source "$1"; _memories_project_recall_prefixes demo alice "claude-code/demo" "$2" false',
+            'source "$1"; _memories_project_recall_prefixes demo alice "claude-code/demo,codex/demo/knowledge" "$2" false',
             "_",
             str(lib),
             json.dumps(
@@ -2865,6 +2917,7 @@ def test_project_helpers_allowlist_prefixes_and_deduplicate_stable_records(
                     "project/demo/knowledge",
                     "person/alice/demo/state",
                     "claude-code/demo",
+                    "codex/demo/knowledge",
                 ]
             ),
         ],
@@ -2877,6 +2930,7 @@ def test_project_helpers_allowlist_prefixes_and_deduplicate_stable_records(
         "project/demo/knowledge",
         "person/alice/demo/state",
         "claude-code/demo",
+        "codex/demo/knowledge",
     ]
 
     merge_input = "\n".join(

@@ -253,7 +253,8 @@ not widen a key to compensate for a failed isolation check.
 Legacy sources such as `codex/fplguru`, `claude-code/fplguru`,
 `learning/fplguru`, and `wip/fplguru` are not renamed or copied. During
 collaborative recall they remain readable only when that principal's key
-explicitly includes the exact legacy prefix. A new collaborator is never
+explicitly includes the legacy project prefix or a narrower descendant such
+as `codex/fplguru/knowledge`. A new collaborator is never
 given another person's legacy prefixes automatically. Review a legacy memory
 and write a new, explicit `project/fplguru/<kind>` memory if it truly needs to
 be shared.
