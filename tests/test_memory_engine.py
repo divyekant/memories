@@ -369,6 +369,19 @@ class TestListMemories:
         assert [memory["text"] for memory in listed["memories"]] == ["project"]
         assert engine.count_memories(source_prefix="codex/shared", source_boundary=True) == 1
 
+    def test_filtered_count_can_include_archived_browse_rows(self, engine):
+        ids = engine.add_memories(
+            texts=["active", "archived"],
+            sources=["codex/shared/knowledge", "codex/shared/knowledge"],
+        )
+        engine.update_memory(ids[1], archived=True)
+
+        assert engine.count_by_filter(
+            source_prefix="codex/shared",
+            source_boundary=True,
+            include_archived=True,
+        ) == 2
+
 
 class TestPersistence:
     def test_save_and_load(self, engine, tmp_path):

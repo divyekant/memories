@@ -387,6 +387,7 @@ def _count_accessible_memories(
                 source_prefix=source_prefix,
                 allowed_prefixes=auth.prefixes,
                 source_boundary=source_boundary,
+                include_archived=True,
             )
             if isinstance(result, int):
                 return result

@@ -751,7 +751,7 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
   }
 
   async function projectSearchRequest(body, projectContext) {
-    const prefixes = projectReadPrefixes(projectContext);
+    const prefixes = projectBrowsePrefixes(projectContext);
     const responses = await Promise.all(prefixes.map(async (prefix) => {
       const scopedBody = { ...body, source_prefix: prefix, source_boundary: true };
       const data = await memoriesRequest("/search", {
@@ -765,17 +765,17 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       return { ...data, results, count: results.length };
     }));
 
+    const candidates = responses.flatMap((data) => data.results || []);
+    candidates.sort((left, right) => evidenceScore(right) - evidenceScore(left));
     const seen = new Set();
     const results = [];
-    for (const data of responses) {
-      for (const result of data.results || []) {
-        const key = result?.id !== undefined && result?.id !== null
-          ? `id:${result.id}:source:${result.source || ""}`
-          : `text:${result?.text || ""}:source:${result?.source || ""}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        results.push(result);
-      }
+    for (const result of candidates) {
+      const key = result?.id !== undefined && result?.id !== null
+        ? `id:${result.id}:source:${result.source || ""}`
+        : `text:${result?.text || ""}:source:${result?.source || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push(result);
     }
     const capped = results.slice(0, body.k);
     return { results: capped, count: capped.length };

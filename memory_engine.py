@@ -3245,6 +3245,7 @@ class MemoryEngine:
         source_prefix: Optional[str] = None,
         allowed_prefixes: Optional[List[str]] = None,
         source_boundary: bool = False,
+        include_archived: bool = False,
     ) -> int:
         """Count memories using Qdrant-level filtering (O(1) vs O(n) scan).
 
@@ -3254,6 +3255,7 @@ class MemoryEngine:
             source_prefix=source_prefix,
             allowed_prefixes=allowed_prefixes,
             source_boundary=source_boundary,
+            include_archived=include_archived,
         )
         if query_filter is None:
             return len(self.metadata)

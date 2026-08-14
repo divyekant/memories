@@ -340,6 +340,77 @@ test('active memory_search preserves an explicit source_prefix without project f
   }
 });
 
+test('active memory_search intersects project scopes with kind-level ACLs before limiting', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-search-acl-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const searchPrefixes = [];
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    if (requestUrl.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({
+        type: 'managed',
+        principal_id: 'alice',
+        prefixes: ['project/shared-demo/decisions'],
+      }), { status: 200 });
+    }
+    const body = JSON.parse(options.body);
+    searchPrefixes.push(body.source_prefix);
+    const results = body.source_prefix === 'project/shared-demo/decisions'
+      ? [{ id: 1, source: 'project/shared-demo/decisions', text: 'Allowed decision', similarity: 0.8 }]
+      : [{ id: 2, source: 'project/shared-demo/knowledge', text: 'Crowding result', similarity: 0.99 }];
+    return new Response(JSON.stringify({ results, count: results.length }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({ name: 'memory_search', arguments: { query: 'decision', k: 1 } });
+    assert.deepEqual(searchPrefixes, ['project/shared-demo/decisions']);
+    const rendered = result.content.map((item) => item.text || '').join('\n');
+    assert.match(rendered, /Allowed decision/);
+    assert.doesNotMatch(rendered, /Crowding result/);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('active memory_search ranks authorized scopes globally before applying k', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-search-rank-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    if (requestUrl.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({
+        type: 'managed',
+        principal_id: 'alice',
+        prefixes: ['project/shared-demo/', 'person/alice/shared-demo/'],
+      }), { status: 200 });
+    }
+    const body = JSON.parse(options.body);
+    const results = body.source_prefix === 'project/shared-demo'
+      ? [{ id: 1, source: 'project/shared-demo/knowledge', text: 'Weak shared match', similarity: 0.2 }]
+      : [{ id: 2, source: 'person/alice/shared-demo/knowledge', text: 'Exact private match', similarity: 0.95 }];
+    return new Response(JSON.stringify({ results, count: results.length }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({ name: 'memory_search', arguments: { query: 'exact', k: 1 } });
+    const rendered = result.content.map((item) => item.text || '').join('\n');
+    assert.match(rendered, /Exact private match/);
+    assert.doesNotMatch(rendered, /Weak shared match/);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('active memory_list without a source browses only project, current-person, and authorized legacy scopes', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mem-project-list-scoped-'));
   await mkdir(join(dir, '.memories'), { recursive: true });
@@ -819,7 +890,11 @@ test('project-aware tools retry an inactive principal resolution and cache recov
       return new Response(JSON.stringify({
         type: 'managed',
         principal_id: 'alice',
-        prefixes: ['codex/shared-demo'],
+        prefixes: [
+          'project/shared-demo/',
+          'person/alice/shared-demo/',
+          'codex/shared-demo',
+        ],
       }), { status: 200 });
     }
     const body = options.body ? JSON.parse(options.body) : {};
@@ -918,7 +993,11 @@ test('project evidence recency ignores metadata-only updated_at timestamps', asy
   const fetchImpl = async (url, options = {}) => {
     const requestUrl = String(url);
     if (requestUrl.endsWith('/api/keys/me')) {
-      return new Response(JSON.stringify({ type: 'managed', principal_id: 'alice', prefixes: [] }), { status: 200 });
+      return new Response(JSON.stringify({
+        type: 'managed',
+        principal_id: 'alice',
+        prefixes: ['project/shared-demo/'],
+      }), { status: 200 });
     }
     const body = options.body ? JSON.parse(options.body) : {};
     const results = memories.filter((memory) => (
