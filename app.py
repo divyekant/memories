@@ -1373,7 +1373,6 @@ class SearchRequest(BaseModel):
     )
     source_prefixes: Optional[List[str]] = Field(
         None,
-        max_length=20,
         description="Optional union of boundary-safe source path prefixes",
     )
     source_boundary: bool = Field(
@@ -2091,10 +2090,11 @@ async def enforce_policies(
 
 # -- Search -------------------------------------------------------------------
 
-@app.post("/search")
-async def search(request_body: SearchRequest, request: Request):
-    """Search for similar memories (vector-only or hybrid)"""
-    auth = _get_auth(request)
+def _validated_search_scope_kwargs(
+    request_body: SearchRequest,
+    auth: AuthContext,
+) -> Dict[str, Any]:
+    """Validate shared search scope fields once for every SearchRequest route."""
     if request_body.source_prefix and request_body.source_prefixes is not None:
         raise HTTPException(status_code=422, detail="source_prefix and source_prefixes are mutually exclusive")
     if request_body.source_prefixes is not None:
@@ -2103,6 +2103,19 @@ async def search(request_body: SearchRequest, request: Request):
         for prefix in request_body.source_prefixes:
             if not auth.can_read(prefix):
                 raise HTTPException(status_code=403, detail=f"Key does not have read access to source: {prefix}")
+    scope_kwargs: Dict[str, Any] = {}
+    if request_body.source_boundary:
+        scope_kwargs["source_boundary"] = True
+    if request_body.source_prefixes is not None:
+        scope_kwargs["allowed_prefixes"] = request_body.source_prefixes
+    return scope_kwargs
+
+
+@app.post("/search")
+async def search(request_body: SearchRequest, request: Request):
+    """Search for similar memories (vector-only or hybrid)"""
+    auth = _get_auth(request)
+    scope_kwargs = _validated_search_scope_kwargs(request_body, auth)
     logger.info("Search: q=%r k=%d hybrid=%s", request_body.query[:80], request_body.k, request_body.hybrid)
     # -- Auto-detect query intent and adjust parameters ---
     _auto_detected = False
@@ -2155,10 +2168,7 @@ async def search(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
-            if request_body.source_boundary:
-                search_kwargs["source_boundary"] = True
-            if request_body.source_prefixes is not None:
-                search_kwargs["allowed_prefixes"] = request_body.source_prefixes
+            search_kwargs.update(scope_kwargs)
             results = memory.hybrid_search(**search_kwargs)
         else:
             search_kwargs = dict(
@@ -2170,10 +2180,7 @@ async def search(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
-            if request_body.source_boundary:
-                search_kwargs["source_boundary"] = True
-            if request_body.source_prefixes is not None:
-                search_kwargs["allowed_prefixes"] = request_body.source_prefixes
+            search_kwargs.update(scope_kwargs)
             results = memory.search(**search_kwargs)
         results = annotate_relative_scores(auth.filter_results(results))
         result_count = len(results)
@@ -2216,6 +2223,7 @@ async def search_explain(request_body: SearchRequest, request: Request):
     """Search with detailed scoring breakdown (admin-only)."""
     auth = _get_auth(request)
     _require_admin(auth)
+    scope_kwargs = _validated_search_scope_kwargs(request_body, auth)
     logger.info("Search explain: q=%r k=%d", request_body.query[:80], request_body.k)
     try:
         fb_scores = None
@@ -2239,8 +2247,7 @@ async def search_explain(request_body: SearchRequest, request: Request):
             since=request_body.since,
             until=request_body.until,
         )
-        if request_body.source_boundary:
-            search_kwargs["source_boundary"] = True
+        search_kwargs.update(scope_kwargs)
         explain_result = memory.hybrid_search_explain(**search_kwargs)
         # Apply auth filtering to results and track how many were removed
         raw_results = explain_result["results"]
@@ -2258,6 +2265,7 @@ async def search_explain(request_body: SearchRequest, request: Request):
 async def search_evidence(request_body: SearchRequest, request: Request):
     """Search and return an agent-facing evidence packet."""
     auth = _get_auth(request)
+    scope_kwargs = _validated_search_scope_kwargs(request_body, auth)
     logger.info("Search evidence: q=%r k=%d", request_body.query[:80], request_body.k)
     if request_body.auto_intent:
         from query_intent import classify_query
@@ -2307,8 +2315,7 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
-            if request_body.source_boundary:
-                search_kwargs["source_boundary"] = True
+            search_kwargs.update(scope_kwargs)
             results = memory.hybrid_search(**search_kwargs)
         else:
             search_kwargs = dict(
@@ -2320,8 +2327,7 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 since=request_body.since,
                 until=request_body.until,
             )
-            if request_body.source_boundary:
-                search_kwargs["source_boundary"] = True
+            search_kwargs.update(scope_kwargs)
             results = memory.search(**search_kwargs)
         results = annotate_relative_scores(auth.filter_results(results))
         from evidence_packet import build_evidence_packet
@@ -2343,9 +2349,13 @@ async def search_evidence(request_body: SearchRequest, request: Request):
 async def search_batch(request_body: SearchBatchRequest, request: Request):
     """Run multiple searches in one request."""
     auth = _get_auth(request)
+    scope_kwargs_by_item = [
+        _validated_search_scope_kwargs(item, auth)
+        for item in request_body.queries
+    ]
     try:
         outputs = []
-        for item in request_body.queries:
+        for item, scope_kwargs in zip(request_body.queries, scope_kwargs_by_item):
             if item.hybrid:
                 search_kwargs = dict(
                     query=item.query,
@@ -2360,8 +2370,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     since=item.since,
                     until=item.until,
                 )
-                if item.source_boundary:
-                    search_kwargs["source_boundary"] = True
+                search_kwargs.update(scope_kwargs)
                 results = memory.hybrid_search(**search_kwargs)
             else:
                 search_kwargs = dict(
@@ -2372,8 +2381,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     since=item.since,
                     until=item.until,
                 )
-                if item.source_boundary:
-                    search_kwargs["source_boundary"] = True
+                search_kwargs.update(scope_kwargs)
                 results = memory.search(**search_kwargs)
             results = annotate_relative_scores(auth.filter_results(results))
             batch_result_count = len(results)

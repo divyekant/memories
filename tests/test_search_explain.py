@@ -103,6 +103,19 @@ class TestSearchExplainEndpoint:
         assert "candidates_considered" in explain
         assert isinstance(explain["candidates_considered"], int)
 
+    def test_explain_forwards_source_prefix_union(self, client):
+        test_client, mock_engine = client
+        prefixes = ["project/shared", "person/alice/shared"]
+
+        response = test_client.post(
+            "/search/explain",
+            json={"query": "python", "source_prefixes": prefixes},
+            headers={"X-API-Key": "test-key"},
+        )
+
+        assert response.status_code == 200
+        assert mock_engine.hybrid_search_explain.call_args.kwargs["allowed_prefixes"] == prefixes
+
     def test_explain_results_match_regular_search(self, client):
         """Explain results should be the same as regular hybrid_search."""
         test_client, mock_engine = client

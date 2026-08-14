@@ -89,6 +89,35 @@ class TestAddAndSearch:
             "person/alice/shared/knowledge",
         }
 
+    def test_hybrid_search_explain_honors_allowed_prefix_union(self, engine):
+        engine.add_memories(
+            texts=[
+                "shared deployment decision",
+                "private deployment detail",
+                "unrelated deployment detail",
+            ],
+            sources=[
+                "codex/shared/decisions",
+                "person/alice/shared/knowledge",
+                "codex/other/knowledge",
+            ],
+        )
+
+        explained = engine.hybrid_search_explain(
+            "deployment",
+            k=10,
+            allowed_prefixes=[
+                "codex/shared",
+                "person/alice/shared",
+            ],
+            graph_weight=0.1,
+        )
+
+        assert {result["source"] for result in explained["results"]} == {
+            "codex/shared/decisions",
+            "person/alice/shared/knowledge",
+        }
+
     def test_add_sets_created_at_and_updated_at(self, engine):
         ids = engine.add_memories(["timestamp test"], ["test/ts"])
         meta = engine.metadata[ids[0]]

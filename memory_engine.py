@@ -2691,6 +2691,7 @@ class MemoryEngine:
         until: Optional[str] = None,
         source_exact: Optional[str] = None,
         source_boundary: bool = False,
+        allowed_prefixes: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Vector search without reinforcement side effects (for explain/debug)."""
         if not self.metadata:
@@ -2701,6 +2702,7 @@ class MemoryEngine:
             source_prefix=source_prefix,
             source_exact=source_exact,
             source_boundary=source_boundary,
+            allowed_prefixes=allowed_prefixes,
             include_archived=include_archived,
         )
         hits = self.qdrant_store.search(
@@ -2717,6 +2719,10 @@ class MemoryEngine:
             if source_prefix and not self._source_matches_scope(source, source_prefix, source_boundary):
                 continue
             if source_exact is not None and source != source_exact:
+                continue
+            if allowed_prefixes is not None and not source_matches_prefixes(
+                source, allowed_prefixes
+            ):
                 continue
             # Temporal filtering
             if not self._passes_temporal_filter(meta, since, until):
@@ -2746,6 +2752,7 @@ class MemoryEngine:
         until: Optional[str] = None,
         source_exact: Optional[str] = None,
         source_boundary: bool = False,
+        allowed_prefixes: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -2786,6 +2793,7 @@ class MemoryEngine:
             source_prefix=source_prefix,
             source_exact=source_exact,
             source_boundary=source_boundary,
+            allowed_prefixes=allowed_prefixes,
             include_archived=include_archived,
             since=since,
             until=until,
@@ -2805,7 +2813,7 @@ class MemoryEngine:
         if self.bm25_index is not None:
             tokenized = query.lower().split()
             bm25_scores = self.bm25_index.get_scores(tokenized)
-            if source_prefix or source_exact is not None:
+            if source_prefix or source_exact is not None or allowed_prefixes is not None:
                 bm25_ranked = [
                     (pos, score)
                     for pos, score in enumerate(bm25_scores)
@@ -2821,6 +2829,13 @@ class MemoryEngine:
                                 self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", ""),
                                 source_prefix,
                                 source_boundary,
+                            )
+                        )
+                        and (
+                            allowed_prefixes is None
+                            or source_matches_prefixes(
+                                str(self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "")),
+                                allowed_prefixes,
                             )
                         )
                     )
@@ -2858,7 +2873,7 @@ class MemoryEngine:
 
         # Count how many were filtered by source prefix
         filtered_by_source = 0
-        if (source_prefix or source_exact is not None) and self.bm25_index is not None:
+        if (source_prefix or source_exact is not None or allowed_prefixes is not None) and self.bm25_index is not None:
             tokenized = query.lower().split()
             raw_bm25 = self.bm25_index.get_scores(tokenized)
             total_bm25_with_score = sum(1 for s in raw_bm25 if s > 0)
@@ -2876,6 +2891,13 @@ class MemoryEngine:
                             self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", ""),
                             source_prefix,
                             source_boundary,
+                        )
+                    )
+                    and (
+                        allowed_prefixes is None
+                        or source_matches_prefixes(
+                            str(self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "")),
+                            allowed_prefixes,
                         )
                     )
                 )
@@ -2982,6 +3004,7 @@ class MemoryEngine:
                 include_archived=include_archived,
                 source_exact=source_exact,
                 source_boundary=source_boundary,
+                allowed_prefixes=allowed_prefixes,
             )
 
             results = self._merge_graph_results(

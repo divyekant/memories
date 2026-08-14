@@ -140,6 +140,76 @@ def test_search_passes_source_prefix_union_to_one_hybrid_query(client):
     ]
 
 
+def test_search_accepts_more_than_twenty_source_prefixes(client):
+    test_client, mock_engine = client
+    prefixes = [f"project/shared/kind-{index}" for index in range(25)]
+
+    response = test_client.post(
+        "/search",
+        json={"query": "decision", "source_prefixes": prefixes},
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert mock_engine.hybrid_search.call_args.kwargs["allowed_prefixes"] == prefixes
+
+
+def test_search_evidence_forwards_source_prefix_union(client):
+    test_client, mock_engine = client
+    prefixes = ["project/shared", "person/alice/shared"]
+
+    response = test_client.post(
+        "/search/evidence",
+        json={"query": "decision", "source_prefixes": prefixes},
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert mock_engine.hybrid_search.call_args.kwargs["allowed_prefixes"] == prefixes
+
+
+def test_search_batch_forwards_source_prefix_unions(client):
+    test_client, mock_engine = client
+    hybrid_prefixes = ["project/shared", "person/alice/shared"]
+    vector_prefixes = ["project/other"]
+
+    response = test_client.post(
+        "/search/batch",
+        json={
+            "queries": [
+                {"query": "decision", "source_prefixes": hybrid_prefixes},
+                {"query": "fact", "hybrid": False, "source_prefixes": vector_prefixes},
+            ]
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert mock_engine.hybrid_search.call_args.kwargs["allowed_prefixes"] == hybrid_prefixes
+    assert mock_engine.search.call_args.kwargs["allowed_prefixes"] == vector_prefixes
+
+
+def test_search_batch_rejects_mixed_source_scope_fields_before_querying(client):
+    test_client, mock_engine = client
+
+    response = test_client.post(
+        "/search/batch",
+        json={
+            "queries": [
+                {
+                    "query": "decision",
+                    "source_prefix": "project/shared",
+                    "source_prefixes": ["project/shared/decisions"],
+                }
+            ]
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 422
+    mock_engine.hybrid_search.assert_not_called()
+
+
 def test_delete_batch_endpoint_deletes_multiple_ids(client):
     test_client, _ = client
     response = test_client.post(
