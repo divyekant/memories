@@ -58,6 +58,34 @@ class TestProviderFactory:
             assert provider.provider_name == "ollama"
             assert provider.model == "llama3:8b"
 
+    def test_explicit_provider_only_uses_environment_model(self):
+        with patch.dict(
+            os.environ,
+            {"EXTRACT_PROVIDER": "", "EXTRACT_MODEL": "env-model"},
+            clear=True,
+        ):
+            from llm_provider import get_provider
+
+            provider = get_provider(provider_name="ollama")
+
+            assert provider is not None
+            assert provider.provider_name == "ollama"
+            assert provider.model == "env-model"
+
+    def test_explicit_model_only_uses_environment_provider(self):
+        with patch.dict(
+            os.environ,
+            {"EXTRACT_PROVIDER": "ollama", "EXTRACT_MODEL": "env-model"},
+            clear=True,
+        ):
+            from llm_provider import get_provider
+
+            provider = get_provider(model="explicit-model")
+
+            assert provider is not None
+            assert provider.provider_name == "ollama"
+            assert provider.model == "explicit-model"
+
     def test_omitted_provider_and_model_preserve_environment_behavior(self):
         with patch.dict(
             os.environ,

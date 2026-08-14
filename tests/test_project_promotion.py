@@ -39,8 +39,29 @@ def test_digest_normalizes_only_unicode_line_endings_and_whitespace():
     assert canonical_project_text("  First   line\r\nSecond\tline  ") == "First line\nSecond line"
 
 
+def test_digest_keeps_project_kind_punctuation_and_order_identity():
+    base = project_text_digest("fplguru", "knowledge", "First claim.\nSecond claim!")
+
+    assert base != project_text_digest("other-project", "knowledge", "First claim.\nSecond claim!")
+    assert base != project_text_digest("fplguru", "decisions", "First claim.\nSecond claim!")
+    assert base != project_text_digest("fplguru", "knowledge", "First claim?\nSecond claim!")
+    assert base != project_text_digest("fplguru", "knowledge", "Second claim!\nFirst claim.")
+
+
 def test_malformed_proposal_fails_private():
     assert parse_proposal({"visibility": "project", "confidence": "high"}) is None
+    for field in ("project_relevance", "confidence"):
+        malformed = {
+            "project_relevance": 0.9,
+            "visibility": "project",
+            "assertion_status": "confirmed",
+            "project_kind": "knowledge",
+            "confidence": 0.9,
+            "reason": "durable fact",
+            "classifier_version": "classifier-v1",
+        }
+        malformed[field] = "0.9"
+        assert parse_proposal(malformed) is None
     assert parse_proposal(
         {
             "project_relevance": 0.9,
@@ -230,6 +251,106 @@ def test_review_route_uses_ordinary_threshold_then_fixed_audit_floor():
         recent_audit_count=2,
         config=config,
     ) == "ordinary"
+
+
+@pytest.mark.parametrize(
+    ("visibility", "assertion_status"),
+    [
+        ("private", "confirmed"),
+        ("uncertain", "confirmed"),
+        ("project", "tentative"),
+        ("project", "disputed"),
+    ],
+)
+def test_review_route_rejects_private_uncertain_and_nonfinal_proposals(
+    visibility, assertion_status
+):
+    proposal = PromotionProposal(
+        project_relevance=0.95,
+        visibility=visibility,
+        assertion_status=assertion_status,
+        project_kind="knowledge",
+        confidence=0.9,
+        reason="durable fact",
+        classifier_version="classifier-v1",
+    )
+
+    assert (
+        select_review_route(
+            proposal,
+            recent_audit_count=0,
+            config=PromotionConfig(relevance_threshold=0.8),
+        )
+        is None
+    )
+
+
+def test_persisted_review_requires_reviewer_version_and_timestamp():
+    proposal = PromotionProposal(
+        project_relevance=0.95,
+        visibility="project",
+        assertion_status="confirmed",
+        project_kind="knowledge",
+        confidence=0.91,
+        reason="durable project invariant",
+        classifier_version="classifier-v1",
+    )
+    with pytest.raises(ValueError):
+        PromotionState(
+            status=PromotionStatus.CANDIDATE,
+            owner="alice",
+            project_id="fplguru",
+            declaration_fingerprint="decl-sha256",
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_provider="openai",
+            reviewer_model="gpt-4.1-nano",
+            capture_mode=PromotionMode.SHADOW,
+            route="ordinary",
+            proposal=proposal,
+            review=PromotionReview(
+                decision=ReviewDecision.DEFER,
+                confidence=0.5,
+                reason="insufficient evidence",
+            ),
+            evidence_fingerprint="evidence-sha256",
+            captured_at="2026-08-14T11:00:00+00:00",
+        )
+    state = PromotionState(
+        status=PromotionStatus.CANDIDATE,
+        owner="alice",
+        project_id="fplguru",
+        declaration_fingerprint="decl-sha256",
+        classifier_provider="anthropic",
+        classifier_model="claude-haiku",
+        reviewer_provider="openai",
+        reviewer_model="gpt-4.1-nano",
+        capture_mode=PromotionMode.SHADOW,
+        route="ordinary",
+        proposal=proposal,
+        review=PromotionReview(
+            decision=ReviewDecision.DEFER,
+            confidence=0.5,
+            reason="insufficient evidence",
+            reviewer_version="reviewer-v2",
+            reviewed_at="2026-08-14T12:00:00+00:00",
+        ),
+        evidence_fingerprint="evidence-sha256",
+        captured_at="2026-08-14T11:00:00+00:00",
+    )
+    metadata = state.as_metadata()
+
+    del metadata["promotion"]["review"]["reviewer_version"]
+    assert promotion_state_from_memory(metadata) is None
+    metadata = state.as_metadata()
+    metadata["promotion"]["review"]["reviewer_version"] = ""
+    assert promotion_state_from_memory(metadata) is None
+    metadata = state.as_metadata()
+    del metadata["promotion"]["review"]["reviewed_at"]
+    assert promotion_state_from_memory(metadata) is None
+    metadata = state.as_metadata()
+    metadata["promotion"]["review"]["reviewed_at"] = ""
+    assert promotion_state_from_memory(metadata) is None
 
 
 def test_project_promotion_metadata_is_reserved():

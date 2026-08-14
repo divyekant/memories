@@ -13,6 +13,7 @@ from enum import Enum
 import hashlib
 import json
 import math
+from numbers import Real
 import os
 import re
 import unicodedata
@@ -71,12 +72,9 @@ def _coerce_enum(value: Any, enum_type: type[Enum], field_name: str) -> Enum:
 
 def _finite_number(value: Any, field_name: str, *, minimum: float = 0.0, maximum: float = 1.0) -> float:
     # bool is an int subclass but is never a valid semantic score.
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, Real):
         raise ValueError(f"invalid {field_name}")
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"invalid {field_name}") from None
+    result = float(value)
     if not math.isfinite(result) or result < minimum or result > maximum:
         raise ValueError(f"invalid {field_name}")
     return result
@@ -374,6 +372,10 @@ class PromotionState:
             raise ValueError("invalid proposal")
         if self.review is not None and not isinstance(self.review, PromotionReview):
             raise ValueError("invalid review")
+        if self.review is not None and (
+            not self.review.reviewer_version or not self.review.reviewed_at
+        ):
+            raise ValueError("persisted reviews require reviewer_version and reviewed_at")
 
     @property
     def reviewed_at(self) -> str:
@@ -481,7 +483,7 @@ def _parse_review(value: Any) -> PromotionReview | None:
     if set(value) - allowed or not required.issubset(value):
         return None
     try:
-        return PromotionReview(
+        review = PromotionReview(
             decision=value["decision"],
             confidence=value["confidence"],
             reason=value["reason"],
@@ -491,6 +493,9 @@ def _parse_review(value: Any) -> PromotionReview | None:
         )
     except (TypeError, ValueError):
         return None
+    if not review.reviewer_version or not review.reviewed_at:
+        return None
+    return review
 
 
 def promotion_state_from_memory(memory: Mapping[str, Any]) -> PromotionState | None:
