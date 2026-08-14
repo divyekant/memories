@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,6 +28,7 @@ class KeyStore:
     def __init__(self, db_path: str):
         self._db_path = db_path
         self._local = threading.local()
+        self._authority_lock = threading.RLock()
         conn = self._connect()
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS api_keys (
@@ -215,19 +217,39 @@ class KeyStore:
         the exact requested source against each live key's prefix ACL rather
         than trusting a candidate's stored metadata.
         """
-        if not is_valid_slug(principal_id) or not isinstance(source, str):
+        return self.principal_can_write_all(principal_id, [source])
+
+    def principal_can_write_all(
+        self,
+        principal_id: str,
+        sources: list[str],
+    ) -> bool:
+        """Return whether one live managed key can write every exact source.
+
+        Multiple narrowly scoped keys for the same principal must not combine
+        into broader promotion authority. The candidate's private namespace
+        and the shared target therefore have to be authorized by the same
+        current key record.
+        """
+        if (
+            not is_valid_slug(principal_id)
+            or not isinstance(sources, list)
+            or not sources
+            or any(not isinstance(source, str) or not source for source in sources)
+        ):
             return False
 
-        conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT role, prefixes FROM api_keys "
-                "WHERE principal_id = ? AND revoked = 0 "
-                "AND role IN ('read-write', 'admin')",
-                (principal_id,),
-            ).fetchall()
-        finally:
-            conn.close()
+        with self._authority_lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT role, prefixes FROM api_keys "
+                    "WHERE principal_id = ? AND revoked = 0 "
+                    "AND role IN ('read-write', 'admin')",
+                    (principal_id,),
+                ).fetchall()
+            finally:
+                conn.close()
 
         for row in rows:
             if row["role"] == "admin":
@@ -239,11 +261,20 @@ class KeyStore:
             if isinstance(prefixes, list):
                 safe_prefixes = [prefix for prefix in prefixes if isinstance(prefix, str)]
                 try:
-                    if source_matches_prefixes(source, safe_prefixes):
+                    if all(
+                        source_matches_prefixes(source, safe_prefixes)
+                        for source in sources
+                    ):
                         return True
                 except (AttributeError, TypeError):
                     continue
         return False
+
+    @contextmanager
+    def promotion_authority_lock(self):
+        """Linearize promotion's final ACL check with key mutation/revocation."""
+        with self._authority_lock:
+            yield
 
     def list_keys(self) -> list[dict[str, Any]]:
         """List all keys (including revoked), without exposing raw key or hash."""
@@ -281,45 +312,47 @@ class KeyStore:
         if "principal_id" in updates and not is_valid_slug(updates["principal_id"]):
             raise ValueError("principal_id must be a valid lowercase slug")
 
-        conn = self._get_conn()
-        row = conn.execute(
-            "SELECT revoked FROM api_keys WHERE id = ?", (key_id,)
-        ).fetchone()
+        with self._authority_lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT revoked FROM api_keys WHERE id = ?", (key_id,)
+            ).fetchone()
 
-        if row is None:
-            raise ValueError(f"Key '{key_id}' not found")
-        if row["revoked"]:
-            raise ValueError(f"Key '{key_id}' is revoked")
+            if row is None:
+                raise ValueError(f"Key '{key_id}' not found")
+            if row["revoked"]:
+                raise ValueError(f"Key '{key_id}' is revoked")
 
-        set_parts = []
-        params: list[Any] = []
-        for k, v in updates.items():
-            if k == "prefixes":
-                set_parts.append("prefixes = ?")
-                params.append(json.dumps(v))
-            else:
-                set_parts.append(f"{k} = ?")
-                params.append(v)
+            set_parts = []
+            params: list[Any] = []
+            for k, v in updates.items():
+                if k == "prefixes":
+                    set_parts.append("prefixes = ?")
+                    params.append(json.dumps(v))
+                else:
+                    set_parts.append(f"{k} = ?")
+                    params.append(v)
 
-        if set_parts:
-            params.append(key_id)
-            conn.execute(
-                f"UPDATE api_keys SET {', '.join(set_parts)} WHERE id = ?",
-                params,
-            )
-            conn.commit()
+            if set_parts:
+                params.append(key_id)
+                conn.execute(
+                    f"UPDATE api_keys SET {', '.join(set_parts)} WHERE id = ?",
+                    params,
+                )
+                conn.commit()
 
     def revoke(self, key_id: str) -> None:
         """Revoke a key. Raises ValueError if not found or already revoked."""
-        conn = self._get_conn()
-        row = conn.execute(
-            "SELECT revoked FROM api_keys WHERE id = ?", (key_id,)
-        ).fetchone()
+        with self._authority_lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT revoked FROM api_keys WHERE id = ?", (key_id,)
+            ).fetchone()
 
-        if row is None:
-            raise ValueError(f"Key '{key_id}' not found")
-        if row["revoked"]:
-            raise ValueError(f"Key '{key_id}' is already revoked")
+            if row is None:
+                raise ValueError(f"Key '{key_id}' not found")
+            if row["revoked"]:
+                raise ValueError(f"Key '{key_id}' is already revoked")
 
-        conn.execute("UPDATE api_keys SET revoked = 1 WHERE id = ?", (key_id,))
-        conn.commit()
+            conn.execute("UPDATE api_keys SET revoked = 1 WHERE id = ?", (key_id,))
+            conn.commit()

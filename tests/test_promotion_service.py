@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
+from threading import Event
 
 import pytest
 
@@ -156,6 +159,19 @@ class FakeEngine:
         return dict(item)
 
 
+class RecordingLockManager(EntityLockManager):
+    def __init__(self):
+        super().__init__()
+        self.acquisitions = []
+
+    @contextmanager
+    def acquire_many(self, keys):
+        normalized = tuple(sorted(set(keys)))
+        self.acquisitions.append(normalized)
+        with super().acquire_many(normalized):
+            yield
+
+
 def _candidate(candidate_id=1, state=None, text="The project uses an exact idempotency tuple."):
     return {
         "id": candidate_id,
@@ -266,6 +282,121 @@ def test_promote_safe_order_and_exact_reuse_union(key_store):
     assert target["author"] == "alice"
     assert set(target["contributors"]) == {"alice", "bob"}
     assert set(target["source_memory_ids"]) == {1, 3}
+
+
+def test_promotion_uses_promotion_origin_and_locks_both_policy_domains(key_store):
+    candidate = _candidate(state=_approved_state())
+    engine = FakeEngine([candidate])
+    engine._entity_locks = RecordingLockManager()
+    service = PromotionService(
+        engine,
+        key_store,
+        config=PromotionConfig(host_mode=PromotionMode.AUTO, relevance_threshold=0.5),
+        reviewer=PromotionReviewer(provider=FakeProvider()),
+    )
+
+    result = service.promote(1)
+
+    target = engine.get_memory(result["target_memory_id"])
+    assert target["origin_client"] == "other"
+    assert engine._entity_locks.acquisitions[0] == (
+        "memory:1",
+        "source:person/alice/fplguru/knowledge",
+        "source:project/fplguru/knowledge",
+    )
+
+
+def test_split_keys_do_not_combine_into_promotion_authority(tmp_path):
+    store = KeyStore(str(tmp_path / "keys.db"))
+    store.create_key(
+        "Alice private",
+        "read-write",
+        ["person/alice/fplguru"],
+        principal_id="alice",
+    )
+    store.create_key(
+        "Alice project",
+        "read-write",
+        ["project/fplguru"],
+        principal_id="alice",
+    )
+    candidate = _candidate(state=_approved_state())
+    engine = FakeEngine([candidate])
+    service = PromotionService(
+        engine,
+        store,
+        config=PromotionConfig(host_mode=PromotionMode.AUTO, relevance_threshold=0.5),
+        reviewer=PromotionReviewer(provider=FakeProvider()),
+    )
+
+    with pytest.raises(ValueError, match="authority"):
+        service.promote(1)
+    assert "target_add" not in engine.events
+
+
+def test_revocation_is_linearized_with_the_final_promotion_boundary(key_store):
+    candidate = _candidate(state=_approved_state())
+    engine = FakeEngine([candidate])
+    service = PromotionService(
+        engine,
+        key_store,
+        config=PromotionConfig(host_mode=PromotionMode.AUTO, relevance_threshold=0.5),
+        reviewer=PromotionReviewer(provider=FakeProvider()),
+    )
+    checked = Event()
+    proceed = Event()
+    revoke_started = Event()
+    original = key_store.principal_can_write_all
+
+    def pause_after_check(principal_id, sources):
+        allowed = original(principal_id, sources)
+        checked.set()
+        assert proceed.wait(timeout=2)
+        return allowed
+
+    key_store.principal_can_write_all = pause_after_check
+    key_id = key_store.list_keys()[0]["id"]
+
+    def revoke():
+        revoke_started.set()
+        key_store.revoke(key_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        promote_future = pool.submit(service.promote, 1)
+        assert checked.wait(timeout=2)
+        revoke_future = pool.submit(revoke)
+        assert revoke_started.wait(timeout=2)
+        time.sleep(0.02)
+        assert not revoke_future.done()
+        proceed.set()
+        assert promote_future.result(timeout=2)["status"] == "promoted"
+        revoke_future.result(timeout=2)
+
+
+def test_archived_linked_target_is_not_reused(key_store):
+    candidate = _candidate(state=_approved_state())
+    archived_target = {
+        "id": 9,
+        "text": candidate["text"],
+        "source": "project/fplguru/knowledge",
+        "author": "alice",
+        "origin_client": "other",
+        "contributors": ["alice"],
+        "source_memory_ids": [1],
+        "archived": True,
+    }
+    engine = FakeEngine([candidate, archived_target])
+    service = PromotionService(
+        engine,
+        key_store,
+        config=PromotionConfig(host_mode=PromotionMode.AUTO, relevance_threshold=0.5),
+        reviewer=PromotionReviewer(provider=FakeProvider()),
+    )
+
+    result = service.promote(1)
+
+    assert result["target_memory_id"] != 9
+    assert engine.get_memory(9)["archived"] is True
 
 
 def test_near_duplicate_does_not_mutate_existing_project_record(key_store):

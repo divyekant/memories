@@ -706,7 +706,7 @@ class PromotionService:
                 validate_project_write(
                     text,
                     target_source,
-                    TrustedAuthorship.principal(state.owner, "manual"),
+                    TrustedAuthorship.principal(state.owner, "promotion"),
                 )
             except (ProjectMemoryPolicyError, ValueError) as exc:
                 violations.append(str(exc))
@@ -718,6 +718,8 @@ class PromotionService:
         target_source = self._target_source(state)
         for memory in getattr(self.engine, "metadata", ()):
             if not isinstance(memory, Mapping) or memory.get("source") != target_source:
+                continue
+            if memory.get("archived"):
                 continue
             source_ids = memory.get("source_memory_ids", [])
             if isinstance(source_ids, list) and candidate_id in source_ids:
@@ -740,12 +742,15 @@ class PromotionService:
     def _authorize_candidate(self, state: PromotionState, manual_actor: AuthContext | None) -> None:
         private_source = f"person/{state.owner}/{state.project_id}/knowledge"
         target_source = self._target_source(state)
-        if not self.key_store.principal_can_write(state.owner, private_source):
-            raise ValueError("candidate owner no longer has private write authority")
+        if not self.key_store.principal_can_write_all(
+            state.owner,
+            [private_source, target_source],
+        ):
+            raise ValueError(
+                "candidate owner no longer has one live key with promotion authority"
+            )
         # Promotion always validates the exact target ACL, including for
         # manual owner/admin calls.  A manual actor adds a second gate.
-        if not self.key_store.principal_can_write(state.owner, target_source):
-            raise ValueError("candidate owner no longer has project write authority")
         if manual_actor is not None:
             if not isinstance(manual_actor, AuthContext) or not manual_actor.can_write(target_source):
                 raise ValueError("manual actor lacks project write authority")
@@ -763,8 +768,15 @@ class PromotionService:
         candidate, state = self._candidate(candidate_id)
         private_source = candidate["source"]
         target_source = self._target_source(state)
-        lock_keys = [self.engine._memory_key(candidate_id), self.engine._entity_key(target_source)]
-        with self.engine._entity_locks.acquire_many(lock_keys):
+        lock_keys = [
+            self.engine._memory_key(candidate_id),
+            self.engine._entity_key(private_source),
+            self.engine._entity_key(target_source),
+        ]
+        with (
+            self.engine._entity_locks.acquire_many(lock_keys),
+            self.key_store.promotion_authority_lock(),
+        ):
             candidate, state = self._candidate(candidate_id)  # authoritative re-read
             if state.status is PromotionStatus.PROMOTED and state.target_memory_id is not None:
                 try:
@@ -821,7 +833,7 @@ class PromotionService:
                     texts=[text],
                     sources=[target_source],
                     deduplicate=False,
-                    trusted_authorship=TrustedAuthorship.principal(state.owner, "manual"),
+                    trusted_authorship=TrustedAuthorship.principal(state.owner, "promotion"),
                 )
                 if not ids:
                     raise RuntimeError("promotion target add returned no memory")
