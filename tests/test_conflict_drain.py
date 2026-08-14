@@ -11,6 +11,7 @@ import pytest
 
 import memory_engine as memory_engine_module
 from memory_engine import MemoryEngine
+from project_memory import TrustedAuthorship, is_project_source
 
 DIM = 8
 
@@ -50,8 +51,11 @@ def _iso(days_ago: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
 
 
-def _add(engine, text, days_ago, **extra):
-    mid = engine.add_memories([text], ["learning/x"])[0]
+def _add(engine, text, days_ago, source="learning/x", **extra):
+    kwargs = {}
+    if is_project_source(source):
+        kwargs["trusted_authorship"] = TrustedAuthorship.principal("alice", "manual")
+    mid = engine.add_memories([text], [source], **kwargs)[0]
     meta = engine._get_meta_by_id(mid)
     meta["created_at"] = _iso(days_ago)
     meta.update(extra)
@@ -91,6 +95,47 @@ def test_newest_wins_archives_older_side(engine):
     # second run is a no-op: the queue actually drains
     again = engine.resolve_conflicts(dry_run=False)
     assert again["resolved_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "flagger_source, other_source",
+    [
+        ("project/private/knowledge", "project/shared/knowledge"),
+        ("person/alice/shared-demo/knowledge", "person/bob/shared-demo/knowledge"),
+    ],
+)
+def test_cross_source_conflict_requires_review_without_archiving_or_linking(
+    engine, flagger_source, other_source
+):
+    old_id = _add(
+        engine,
+        "relay identity is dk-fplguru",
+        30,
+        source=other_source,
+    )
+    new_id = _add(
+        engine,
+        "relay identity is dk-local-llm",
+        1,
+        source=flagger_source,
+    )
+    engine._get_meta_by_id(new_id)["conflicts_with"] = old_id
+
+    out = engine.resolve_conflicts(dry_run=False)
+
+    assert out["resolved_count"] == 0
+    assert out["needs_review"] == [
+        {"id": new_id, "conflicts_with": old_id, "reason": "cross_source"}
+    ]
+    assert not engine._get_meta_by_id(old_id).get("archived")
+    flagger = engine._get_meta_by_id(new_id)
+    assert not flagger.get("archived")
+    assert flagger["conflicts_with"] == old_id
+    assert flagger["conflict_review"] == "cross_source"
+    assert not any(
+        link.get("to_id") == old_id and link.get("type") == "supersedes"
+        for link in flagger.get("links", [])
+    )
 
 
 def test_older_flagger_loses_to_newer_existing_memory(engine):

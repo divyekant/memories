@@ -67,6 +67,28 @@ if [ -z "$CWD" ]; then
 fi
 
 PROJECT=$(_memories_resolve_project "$CWD" 2>/dev/null || basename "$CWD")
+PROJECT_CONTEXT_JSON=$(_memories_project_context "$CWD" 2>/dev/null || printf '{"active":false}')
+PROJECT_CONTEXT_ACTIVE=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && declare -F _memories_project_context_declared >/dev/null && _memories_project_context_declared "$PROJECT_CONTEXT_JSON"; then
+  PROJECT_UNAVAILABLE_MESSAGE=$(_memories_project_unavailable_message "$PROJECT_CONTEXT_JSON")
+  _log_warn "$PROJECT_UNAVAILABLE_MESSAGE"
+  jq -n --arg message "$PROJECT_UNAVAILABLE_MESSAGE" '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$message}}'
+  exit 0
+fi
+PROJECT_CONTEXT_ID=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.project_id // empty' 2>/dev/null || true)
+PROJECT_CONTEXT_PRINCIPAL=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.principal_id // empty' 2>/dev/null || true)
+PROJECT_CONTEXT_LEGACY_PREFIXES=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '(.legacy_source_prefixes // []) | join(",")' 2>/dev/null || true)
+PROJECT_CONTEXT_PREFIXES=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -c '.prefixes // []' 2>/dev/null || printf '[]')
+PROJECT_CONTEXT_PREFIXES_UNRESTRICTED=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.prefixes_unrestricted // false' 2>/dev/null || printf 'false')
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  PROJECT="$PROJECT_CONTEXT_ID"
+  MEMORIES_SOURCE_PREFIXES=$(_memories_project_recall_prefixes "$PROJECT_CONTEXT_ID" "$PROJECT_CONTEXT_PRINCIPAL" "$PROJECT_CONTEXT_LEGACY_PREFIXES" "$PROJECT_CONTEXT_PREFIXES" "$PROJECT_CONTEXT_PREFIXES_UNRESTRICTED" | tr '\n' ',' | sed 's/,$//')
+  [ -n "$MEMORIES_SOURCE_PREFIXES" ] || exit 0
+fi
+PROJECT_SHARING_GUIDANCE=""
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  PROJECT_SHARING_GUIDANCE="Collaborative project memory: apply the durable-sharing test (another contributor will need this fact without the current session). Use memory_add exactly once with project/$PROJECT_CONTEXT_ID/<decisions|knowledge|state|operations> for deliberate shared facts. Automatic extraction remains private in person/$PROJECT_CONTEXT_PRINCIPAL/$PROJECT_CONTEXT_ID/knowledge; never infer project/... ."
+fi
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   exit 0
 fi
@@ -105,7 +127,11 @@ _note_auth_status() {
 }
 
 search_memories() {
-  _search_memories_multi "$@"
+  if [ "${PROJECT_CONTEXT_ACTIVE:-false}" = "true" ] && [ -n "${2:-}" ]; then
+    _search_memories_multi "$@" | _memories_filter_search_response_for_prefix "$2"
+  else
+    _search_memories_multi "$@"
+  fi
 }
 
 query_for_prefix() {
@@ -129,6 +155,17 @@ query_for_prefix() {
 RAW_RESPONSES=""
 SCOPED_PREFIX_LIST=""
 SEARCH_COUNT=0
+WIP_PREFIX="wip/$PROJECT"
+WIP_CONFIGURED=false
+WIP_SEARCHED=false
+WIP_RESULTS='{"results":[],"count":0}'
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  IFS=',' read -r -a configured_wip_prefixes <<< "$MEMORIES_SOURCE_PREFIXES"
+  for configured_wip_prefix in "${configured_wip_prefixes[@]}"; do
+    configured_wip_prefix=$(printf '%s' "$configured_wip_prefix" | xargs)
+    [ "$configured_wip_prefix" = "$WIP_PREFIX" ] && WIP_CONFIGURED=true
+  done
+fi
 IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
 prefix_idx=0
 for raw_prefix in "${prefix_templates[@]}"; do
@@ -152,6 +189,10 @@ for raw_prefix in "${prefix_templates[@]}"; do
 
   SEARCH_COUNT=$((SEARCH_COUNT + 1))
   response=$(search_memories "$query" "$prefix" "$limit" "$MEMORIES_RECALL_SCOPED_THRESHOLD")
+  if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ] && [ "$prefix" = "$WIP_PREFIX" ]; then
+    WIP_SEARCHED=true
+    [ -n "$response" ] && WIP_RESULTS="$response"
+  fi
   _note_auth_status "$response"
   if [ -n "$response" ]; then
     RAW_RESPONSES=$(printf '%s\n%s' "$RAW_RESPONSES" "$response")
@@ -163,15 +204,22 @@ for raw_prefix in "${prefix_templates[@]}"; do
   SCOPED_PREFIX_LIST="$SCOPED_PREFIX_LIST$prefix"
 done
 
-RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$RECALL_LIMIT" '
-  map(select(type == "object") | (.results // []))
-  | add
-  | unique_by(.id)
-  | sort_by(-(.similarity // .rrf_score // 0))
-  | .[0:$limit]
-' 2>/dev/null) || RESULTS_JSON="[]"
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | _memories_merge_search_results true "$RECALL_LIMIT" 2>/dev/null) || RESULTS_JSON="[]"
+else
+  RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$RECALL_LIMIT" '
+    map(select(type == "object") | (.results // []))
+    | add
+    | unique_by(.id)
+    | sort_by(-(.similarity // .rrf_score // 0))
+    | .[0:$limit]
+  ' 2>/dev/null) || RESULTS_JSON="[]"
+fi
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  RESULTS_JSON=$(printf '%s' "$RESULTS_JSON" | _memories_label_project_results "$PROJECT_CONTEXT_ID" 2>/dev/null) || RESULTS_JSON="[]"
+fi
 
-if [ "$RESULTS_JSON" = "[]" ]; then
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ "$RESULTS_JSON" = "[]" ]; then
   if [ "$(_hook_deadline_exhausted)" = "true" ]; then
     _log_warn "Hook budget exhausted — skipping the unscoped fallback search"
   else
@@ -186,7 +234,7 @@ CONTEXT_RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
   if length == 0 then
     empty
   else
-    map("- [\(.source)] candidate memory id=\(.id // .memory_id // "unknown") found at session start; call memory_search with this source prefix before using it.") | join("\n")
+    map(("- [\(.source)]" + (if (.provenance_label // "") != "" then " " + .provenance_label else "" end) + " candidate memory id=\(.id // .memory_id // "unknown") found at session start; call memory_search with this source prefix before using it.")) | join("\n")
   end
 ' 2>/dev/null) || true
 
@@ -194,12 +242,14 @@ _log_info "Recalled $(printf '%s' "$RESULTS_JSON" | jq -r 'length' 2>/dev/null |
 
 # Dedicated deferred-work surfacing
 WIP_QUERY="deferred incomplete blocked todo revisit wip"
-if [ "$(_hook_deadline_exhausted)" = "true" ]; then
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ] && [ "$WIP_SEARCHED" = "true" ]; then
+  : # Reuse the authorized scoped response collected above.
+elif [ "$(_hook_deadline_exhausted)" = "true" ]; then
   _log_warn "Hook budget exhausted — skipping the deferred-work (WIP) search"
   WIP_RESULTS='{"results":[],"count":0}'
-else
+elif [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] || [ "$WIP_CONFIGURED" = "true" ]; then
   SEARCH_COUNT=$((SEARCH_COUNT + 1))
-  WIP_RESULTS=$(search_memories "$WIP_QUERY" "wip/$PROJECT" 5 0.3)
+  WIP_RESULTS=$(search_memories "$WIP_QUERY" "$WIP_PREFIX" 5 0.3)
   _note_auth_status "$WIP_RESULTS"
 fi
 WIP_COUNT=$(echo "$WIP_RESULTS" | jq -r '.count // 0')
@@ -263,6 +313,11 @@ When memories show deferred/blocked work, say "not yet" or "deferred" directly.
 Preserve boundary conditions (until/unless/because) verbatim.
 Do not ask the user to reconfirm a remembered decision.
 EOF
+if [ -n "$PROJECT_SHARING_GUIDANCE" ]; then
+  PLAYBOOK="$PLAYBOOK
+
+$PROJECT_SHARING_GUIDANCE"
+fi
 
 # Credential diagnostic: /health is unauthenticated, so report a rejected
 # search key separately from a backend reachability warning.

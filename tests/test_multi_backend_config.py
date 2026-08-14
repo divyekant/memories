@@ -165,3 +165,36 @@ routing:
             assert rc == 0
             data = json.loads(stdout)
             assert len(data) == 1
+
+    def test_project_context_uses_one_backend_only_and_does_not_change_legacy_routing(self, tmp_path):
+        """Collaborative activation is fail-closed, while ordinary routing still fans out."""
+        project_dir = tmp_path / "project"
+        (project_dir / ".memories").mkdir(parents=True)
+        (project_dir / ".memories" / "project.yaml").write_text(
+            "project_id: shared-demo\nshared_memory: true\n"
+        )
+        config = """backends:
+  alpha:
+    url: http://alpha:8900
+    api_key: a
+  beta:
+    url: http://beta:8900
+    api_key: b
+"""
+        stdout, _, rc = _run_lib_function(
+            'CWD="$PROJECT_DIR"; _memories_project_context "$PROJECT_DIR"',
+            env={"PROJECT_DIR": str(project_dir), "MEMORIES_URL": ""},
+            config_content=config,
+        )
+        assert rc == 0
+        context = json.loads(stdout)
+        assert context["active"] is False
+        assert context["reason"] == "multiple_backends"
+
+        stdout, _, rc = _run_lib_function(
+            'CWD="$PROJECT_DIR"; _get_backends_for_op "search"',
+            env={"PROJECT_DIR": str(project_dir), "MEMORIES_URL": ""},
+            config_content=config,
+        )
+        assert rc == 0
+        assert len(json.loads(stdout)) == 2

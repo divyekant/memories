@@ -12,13 +12,13 @@ class EntityLockManager:
 
     def __init__(self) -> None:
         self._guard = threading.Lock()
-        self._locks: dict[str, threading.Lock] = {}
+        self._locks: dict[str, threading.RLock] = {}
 
-    def _get_lock(self, key: str) -> threading.Lock:
+    def _get_lock(self, key: str) -> threading.RLock:
         with self._guard:
             lock = self._locks.get(key)
             if lock is None:
-                lock = threading.Lock()
+                lock = threading.RLock()
                 self._locks[key] = lock
             return lock
 
@@ -28,7 +28,7 @@ class EntityLockManager:
         if not normalized:
             normalized = ["__default__"]
 
-        held: List[threading.Lock] = []
+        held: List[threading.RLock] = []
         try:
             for key in normalized:
                 lock = self._get_lock(key)
@@ -38,4 +38,3 @@ class EntityLockManager:
         finally:
             for lock in reversed(held):
                 lock.release()
-

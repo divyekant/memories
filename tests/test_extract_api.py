@@ -5,6 +5,9 @@ import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
+from auth_context import AuthContext
+from project_memory import ProjectMemoryPolicyError
+
 
 class _StubEmbedder:
     """Instant fake embedder so lifespan can boot a real (cheap) engine."""
@@ -119,6 +122,41 @@ class TestExtractEndpoint:
         mock_engine.is_novel.assert_called_once()
         mock_engine.add_memories.assert_called_once()
 
+    def test_fallback_extract_passes_managed_trusted_authorship(self, client, monkeypatch):
+        test_client, mock_engine = client
+        import app as app_module
+
+        monkeypatch.setattr(
+            app_module,
+            "_get_auth",
+            lambda request: AuthContext(
+                role="read-write",
+                prefixes=["project/demo/"],
+                key_type="managed",
+                principal_id="alice",
+            ),
+        )
+        mock_engine.is_novel.return_value = (True, None)
+        mock_engine.add_memories.return_value = [123]
+        with patch("app.extract_provider", None), \
+             patch("app.run_extraction", None), \
+             patch("app.EXTRACT_FALLBACK_ADD_ENABLED", True):
+            response = test_client.post(
+                "/memory/extract",
+                json={
+                    "messages": "User: We decided to use qdrant as the default vector store for production.",
+                    "source": "project/demo/decisions",
+                    "context": "stop",
+                },
+                headers={"X-API-Key": "test-key", "X-Memories-Client": "codex"},
+            )
+            assert response.status_code == 202
+            state = self._wait_for_terminal_job(test_client, response.json()["job_id"])
+            assert state["status"] == "completed"
+
+        trusted = mock_engine.add_memories.call_args.kwargs["trusted_authorship"]
+        assert trusted.author == "alice"
+
     def test_extract_fallback_add_skips_when_no_fact_candidate(self, client):
         test_client, mock_engine = client
         with patch("app.extract_provider", None), \
@@ -174,6 +212,46 @@ class TestExtractEndpoint:
             job_state = self._wait_for_terminal_job(test_client, data["job_id"])
             assert job_state["status"] == "completed"
             assert job_state["result"]["extracted_count"] == 1
+
+    def test_queued_extract_preserves_managed_trusted_authorship(self, client, monkeypatch):
+        test_client, mock_engine = client
+        import app as app_module
+
+        monkeypatch.setattr(
+            app_module,
+            "_get_auth",
+            lambda request: AuthContext(
+                role="read-write",
+                prefixes=["project/demo/"],
+                key_type="managed",
+                principal_id="alice",
+            ),
+        )
+        mock_result = {
+            "actions": [],
+            "extracted_count": 0,
+            "stored_count": 0,
+            "updated_count": 0,
+            "deleted_count": 0,
+        }
+        with patch("app.extract_provider", MagicMock()), \
+             patch("app.run_extraction", return_value=mock_result) as run_mock:
+            response = test_client.post(
+                "/memory/extract",
+                json={
+                    "messages": "User: a project decision",
+                    "source": "project/demo/decisions",
+                    "context": "stop",
+                },
+                headers={"X-API-Key": "test-key", "X-Memories-Client": "codex"},
+            )
+            assert response.status_code == 202
+            job_id = response.json()["job_id"]
+            state = self._wait_for_terminal_job(test_client, job_id)
+
+        assert state["status"] == "completed"
+        trusted = run_mock.call_args.kwargs["trusted_authorship"]
+        assert trusted.author == "alice"
 
     def test_extract_runtime_failure_uses_fallback_when_enabled(self, client):
         test_client, mock_engine = client
@@ -301,6 +379,67 @@ class TestSupersedeEndpoint:
             headers={"X-API-Key": "test-key"},
         )
         assert response.status_code == 404
+
+
+class TestExtractCommitAuthorship:
+    def test_extract_commit_passes_managed_trusted_authorship(self, client, monkeypatch):
+        test_client, mock_engine = client
+        import app as app_module
+
+        monkeypatch.setattr(
+            app_module,
+            "_get_auth",
+            lambda request: AuthContext(
+                role="read-write",
+                prefixes=["project/demo/"],
+                key_type="managed",
+                principal_id="alice",
+            ),
+        )
+        with patch(
+            "llm_extract.execute_actions",
+            return_value={"stored_count": 1, "updated_count": 0, "deleted_count": 0, "conflict_count": 0},
+        ) as execute_mock:
+            response = test_client.post(
+                "/memory/extract/commit",
+                json={
+                    "source": "project/demo/decisions",
+                    "actions": [
+                        {
+                            "approved": True,
+                            "fact": {"text": "a decision", "category": "decision"},
+                            "fact_index": 0,
+                        }
+                    ],
+                },
+                headers={"X-API-Key": "test-key", "X-Memories-Client": "codex"},
+            )
+
+        assert response.status_code == 200
+        assert execute_mock.call_args.kwargs["trusted_authorship"].author == "alice"
+
+    def test_extract_commit_project_policy_error_is_422(self, client):
+        test_client, mock_engine = client
+        with patch(
+            "llm_extract.execute_actions",
+            side_effect=ProjectMemoryPolicyError("project policy"),
+        ):
+            response = test_client.post(
+                "/memory/extract/commit",
+                json={
+                    "source": "project/demo/decisions",
+                    "actions": [
+                        {
+                            "approved": True,
+                            "fact": {"text": "a decision", "category": "decision"},
+                            "fact_index": 0,
+                        }
+                    ],
+                },
+                headers={"X-API-Key": "test-key"},
+            )
+
+        assert response.status_code == 422
 
 
 class TestExtractStatusEndpoint:

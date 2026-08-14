@@ -32,6 +32,7 @@ class AuthContext:
     key_type: str  # "env", "managed", "none"
     key_id: Optional[str] = None
     key_name: Optional[str] = None
+    principal_id: Optional[str] = None
 
     # -- constructors --------------------------------------------------------
 
@@ -82,4 +83,11 @@ class AuthContext:
             resp["id"] = self.key_id
         if self.key_name is not None:
             resp["name"] = self.key_name
+        if self.principal_id is not None:
+            resp["principal_id"] = self.principal_id
+        elif self.key_type == "managed":
+            # Managed keys may predate principal assignment.  Expose that
+            # state explicitly so clients can distinguish it from an env or
+            # unrestricted admin context, which has no principal field.
+            resp["principal_id"] = None
         return resp

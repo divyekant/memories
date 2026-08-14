@@ -63,6 +63,22 @@ PROJECT=$(_memories_resolve_project "$CWD" 2>/dev/null || basename "$CWD")
 if [ -z "$PROJECT" ] || [ "$PROJECT" = "/" ] || [ "$PROJECT" = "." ]; then
   exit 0
 fi
+PROJECT_CONTEXT_JSON=$(_memories_project_context "$CWD" 2>/dev/null || printf '{"active":false}')
+PROJECT_CONTEXT_ACTIVE=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && declare -F _memories_project_context_declared >/dev/null && _memories_project_context_declared "$PROJECT_CONTEXT_JSON"; then
+  _log_warn "Collaborative project identity unavailable; skipping subagent memory recall"
+  exit 0
+fi
+PROJECT_CONTEXT_ID=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.project_id // empty' 2>/dev/null || true)
+PROJECT_CONTEXT_PRINCIPAL=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.principal_id // empty' 2>/dev/null || true)
+PROJECT_CONTEXT_LEGACY_PREFIXES=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '(.legacy_source_prefixes // []) | join(",")' 2>/dev/null || true)
+PROJECT_CONTEXT_PREFIXES=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -c '.prefixes // []' 2>/dev/null || printf '[]')
+PROJECT_CONTEXT_PREFIXES_UNRESTRICTED=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.prefixes_unrestricted // false' 2>/dev/null || printf 'false')
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  PROJECT="$PROJECT_CONTEXT_ID"
+  MEMORIES_SOURCE_PREFIXES=$(_memories_project_recall_prefixes "$PROJECT_CONTEXT_ID" "$PROJECT_CONTEXT_PRINCIPAL" "$PROJECT_CONTEXT_LEGACY_PREFIXES" "$PROJECT_CONTEXT_PREFIXES" "$PROJECT_CONTEXT_PREFIXES_UNRESTRICTED" | tr '\n' ',' | sed 's/,$//')
+  [ -n "$MEMORIES_SOURCE_PREFIXES" ] || exit 0
+fi
 
 # Quick health check — don't block subagent spawn if service is down.
 # Probes the ROUTED search backend set, not backend #1 in raw declaration
@@ -76,7 +92,11 @@ fi
 _log_info "Subagent recall for project=$PROJECT agent_type=$AGENT_TYPE"
 
 search_memories() {
-  _search_memories_multi "$@"
+  if [ "${PROJECT_CONTEXT_ACTIVE:-false}" = "true" ] && [ -n "${2:-}" ]; then
+    _search_memories_multi "$@" | _memories_filter_search_response_for_prefix "$2"
+  else
+    _search_memories_multi "$@"
+  fi
 }
 
 # Tailor queries by agent type for better relevance
@@ -127,16 +147,23 @@ for raw_prefix in "${prefix_templates[@]}"; do
   fi
 done
 
-RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$MEMORIES_SUBAGENT_RECALL_LIMIT" '
-  map(select(type == "object") | (.results // []))
-  | add
-  | unique_by(.id)
-  | sort_by(-(.similarity // .rrf_score // 0))
-  | .[0:$limit]
-' 2>/dev/null) || RESULTS_JSON="[]"
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | _memories_merge_search_results true "$MEMORIES_SUBAGENT_RECALL_LIMIT" 2>/dev/null) || RESULTS_JSON="[]"
+else
+  RESULTS_JSON=$(printf '%s\n' "$RAW_RESPONSES" | jq -sr --argjson limit "$MEMORIES_SUBAGENT_RECALL_LIMIT" '
+    map(select(type == "object") | (.results // []))
+    | add
+    | unique_by(.id)
+    | sort_by(-(.similarity // .rrf_score // 0))
+    | .[0:$limit]
+  ' 2>/dev/null) || RESULTS_JSON="[]"
+fi
+if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
+  RESULTS_JSON=$(printf '%s' "$RESULTS_JSON" | _memories_label_project_results "$PROJECT_CONTEXT_ID" 2>/dev/null) || RESULTS_JSON="[]"
+fi
 
 # Fallback to unscoped search if nothing found
-if [ "$RESULTS_JSON" = "[]" ]; then
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ "$RESULTS_JSON" = "[]" ]; then
   if [ "$(_hook_deadline_exhausted)" = "true" ]; then
     _log_warn "Hook budget exhausted — skipping the unscoped fallback search"
   else
@@ -150,7 +177,7 @@ RESULTS=$(printf '%s' "$RESULTS_JSON" | jq -r '
   if length == 0 then
     empty
   else
-    map("- [\(.source)] \(.text)") | join("\n")
+    map(("- [\(.source)]" + (if (.provenance_label // "") != "" then " " + .provenance_label else "" end) + " \(.text)")) | join("\n")
   end
 ' 2>/dev/null) || true
 

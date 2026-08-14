@@ -8,9 +8,11 @@ archived (never deleted) with a supersedes link.
 
 import numpy as np
 import pytest
+from unittest.mock import MagicMock
 
 import memory_engine as memory_engine_module
 from memory_engine import MemoryEngine
+from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
 
 DIM = 8
 
@@ -170,6 +172,109 @@ class TestAddWithDoctrine:
         out = engine.add_with_doctrine(UNRELATED, "learning/deploys")
         assert out["action"] == "added"
 
+    def test_trusted_collision_is_scoped_to_exact_destination_source(self, engine):
+        alice = TrustedAuthorship.principal("alice")
+        bob = TrustedAuthorship.principal("bob")
+        first = engine.add_with_doctrine(
+            T78,
+            "project/acme/decisions",
+            trusted_authorship=alice,
+        )
+
+        out = engine.add_with_doctrine(
+            T79,
+            "project/other/decisions",
+            trusted_authorship=bob,
+        )
+
+        assert out["action"] == "added"
+        assert out.get("blocked_by") is None
+        assert not engine._get_meta_by_id(first["id"]).get("archived")
+
+    def test_trusted_supersede_cannot_cross_destination_source(self, engine):
+        old_id = engine.add_memories(
+            [T78],
+            ["project/acme/decisions"],
+            trusted_authorship=TrustedAuthorship.principal("alice"),
+        )[0]
+
+        with pytest.raises(ProjectMemoryPolicyError, match="source"):
+            engine.supersede(
+                old_id,
+                T79,
+                source="project/other/decisions",
+                trusted_authorship=TrustedAuthorship.principal("bob"),
+            )
+
+        assert not engine._get_meta_by_id(old_id).get("archived")
+
+    def test_env_supersede_cannot_cross_structured_namespace(self, engine):
+        old_id = engine.add_memories(
+            [T78],
+            ["project/acme/decisions"],
+            trusted_authorship=TrustedAuthorship.principal("alice"),
+        )[0]
+
+        with pytest.raises(ProjectMemoryPolicyError, match="namespace"):
+            engine.supersede(old_id, T79, source="legacy/acme")
+
+        assert not engine._get_meta_by_id(old_id).get("archived")
+
+    def test_env_supersede_can_keep_exact_structured_person_source(self, engine):
+        old_id = engine.add_memories(
+            [T78],
+            ["person/alice/acme/knowledge"],
+        )[0]
+
+        result = engine.supersede(
+            old_id,
+            T79,
+            source="person/alice/acme/knowledge",
+        )
+
+        assert engine._get_meta_by_id(old_id)["archived"] is True
+        assert engine._get_meta_by_id(result["new_id"])["source"] == "person/alice/acme/knowledge"
+
+    def test_trusted_supersede_can_move_between_authorized_legacy_sources(self, engine):
+        trusted = TrustedAuthorship.principal("alice")
+        old_id = engine.add_memories(
+            [T78],
+            ["codex/acme"],
+            trusted_authorship=trusted,
+        )[0]
+
+        result = engine.supersede(
+            old_id,
+            T79,
+            source="claude-code/acme",
+            trusted_authorship=trusted,
+        )
+
+        assert engine._get_meta_by_id(old_id)["archived"] is True
+        replacement = engine._get_meta_by_id(result["new_id"])
+        assert replacement["source"] == "claude-code/acme"
+        assert replacement["author"] == "alice"
+
+    def test_supersede_revalidates_the_old_source_after_acquiring_its_lock(self, engine, monkeypatch):
+        from contextlib import contextmanager
+
+        old_id = engine.add_memories([T78], ["legacy/acme"])[0]
+        original_acquire = engine._entity_locks.acquire_many
+
+        @contextmanager
+        def racing_acquire(keys):
+            with original_acquire(keys):
+                if engine._memory_key(old_id) in keys:
+                    engine._get_meta_by_id(old_id)["source"] = "project/acme/decisions"
+                yield
+
+        monkeypatch.setattr(engine._entity_locks, "acquire_many", racing_acquire)
+
+        with pytest.raises(ProjectMemoryPolicyError):
+            engine.supersede(old_id, T79, source="legacy/acme")
+
+        assert not engine._get_meta_by_id(old_id).get("archived")
+
     def test_invalid_mode_rejected(self, engine):
         with pytest.raises(ValueError):
             engine.add_with_doctrine(T78, "learning/health", on_duplicate="merge")
@@ -185,3 +290,156 @@ class TestAddWithDoctrine:
         # excluded from search; against live T79 it sits in the supersede band.
         assert third["action"] == "superseded"
         assert third["superseded"] == second["id"]
+
+
+class TestMaintenanceDeduplicationIsolation:
+    def test_deduplicate_pairs_and_deletes_only_within_exact_source(self, engine):
+        trusted = TrustedAuthorship.principal("alice")
+        project_id, private_id, private_duplicate_id = engine.add_memories(
+            [T78, T78, T78],
+            [
+                "project/acme/knowledge",
+                "person/alice/acme/knowledge",
+                "person/alice/acme/knowledge",
+            ],
+            deduplicate=False,
+            trusted_authorship=trusted,
+        )
+
+        dry_run = engine.deduplicate(threshold=0.99, dry_run=True)
+        assert dry_run["duplicate_pairs"] == 1
+        assert {
+            dry_run["pairs"][0]["id_a"],
+            dry_run["pairs"][0]["id_b"],
+        } == {private_id, private_duplicate_id}
+
+        result = engine.deduplicate(threshold=0.99, dry_run=False)
+        assert result["duplicate_pairs"] == 1
+        assert result["removed"] == 1
+        assert engine._id_exists(project_id)
+        assert engine._id_exists(private_id)
+        assert not engine._id_exists(private_duplicate_id)
+
+
+class TestBoundaryScopedSearch:
+    def test_boundary_scope_fetches_valid_project_after_higher_ranked_sibling(self, engine):
+        trusted = TrustedAuthorship.principal("alice")
+        sibling_id, project_id = engine.add_memories(
+            [T78, T79],
+            ["project/acme-extra/knowledge", "project/acme/knowledge"],
+            deduplicate=False,
+            trusted_authorship=trusted,
+        )
+
+        vector = engine.search(
+            T78,
+            k=1,
+            source_prefix="project/acme",
+            source_boundary=True,
+        )
+        assert [item["id"] for item in vector] == [project_id]
+
+        hybrid = engine.hybrid_search(
+            T78,
+            k=2,
+            source_prefix="project/acme",
+            source_boundary=True,
+            graph_weight=0,
+        )
+        assert hybrid
+        assert {item["source"] for item in hybrid} == {"project/acme/knowledge"}
+        assert sibling_id not in {item["id"] for item in hybrid}
+
+    def test_novelty_search_skips_ineligible_top_hit_for_lower_authorized_legacy_match(self, engine):
+        structured = {
+            "id": 10,
+            "text": "Structured blocker",
+            "source": "project/acme/knowledge",
+            "similarity": 0.99,
+        }
+        unauthorized = {
+            "id": 11,
+            "text": "Other legacy blocker",
+            "source": "claude-code/other",
+            "similarity": 0.98,
+        }
+        authorized = {
+            "id": 12,
+            "text": "Authorized legacy duplicate",
+            "source": "claude-code/acme",
+            "similarity": 0.97,
+        }
+        engine.search = MagicMock(return_value=[structured, unauthorized, authorized])
+
+        novel, match = engine.is_novel(
+            "Authorized legacy duplicate",
+            threshold=0.9,
+            allowed_source_prefixes=["codex/acme", "claude-code/acme", "project/acme"],
+            exclude_reserved_sources=True,
+        )
+
+        assert novel is False
+        assert match["id"] == 12
+        assert engine.search.call_args.kwargs == {
+            "k": 1,
+            "allowed_prefixes": ["codex/acme", "claude-code/acme", "project/acme"],
+            "exclude_reserved_sources": True,
+            "reinforce_results": False,
+        }
+
+    def test_exact_source_novelty_lookup_keeps_single_candidate_search(self, engine):
+        match = {
+            "id": 10,
+            "text": "Exact blocker",
+            "source": "project/acme/knowledge",
+            "similarity": 0.99,
+        }
+        engine.search = MagicMock(return_value=[match])
+
+        novel, result = engine.is_novel(
+            "Exact blocker",
+            threshold=0.9,
+            source_exact="project/acme/knowledge",
+        )
+
+        assert novel is False
+        assert result["id"] == 10
+        assert engine.search.call_args.kwargs == {
+            "k": 1,
+            "source_exact": "project/acme/knowledge",
+        }
+
+
+class TestMergeLockRevalidation:
+    def test_merge_revalidates_sources_after_acquiring_stable_memory_locks(self, engine, monkeypatch):
+        from contextlib import contextmanager
+
+        first_id, second_id = engine.add_memories(
+            [T78, T79],
+            ["legacy/acme", "legacy/acme"],
+        )
+        original_acquire = engine._entity_locks.acquire_many
+        raced = False
+
+        @contextmanager
+        def racing_acquire(keys):
+            nonlocal raced
+            with original_acquire(keys):
+                if not raced and engine._memory_key(second_id) in keys:
+                    raced = True
+                    engine._get_meta_by_id(second_id)["source"] = "project/other/decisions"
+                yield
+
+        monkeypatch.setattr(engine._entity_locks, "acquire_many", racing_acquire)
+
+        with pytest.raises(ProjectMemoryPolicyError):
+            engine.merge_memories(
+                [first_id, second_id],
+                "Merged fact",
+                "legacy/acme",
+            )
+
+        assert engine._id_exists(first_id)
+        assert engine._id_exists(second_id)
+        assert not engine._get_meta_by_id(first_id).get("archived")
+        assert not engine._get_meta_by_id(second_id).get("archived")

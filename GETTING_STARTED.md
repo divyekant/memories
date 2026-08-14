@@ -112,6 +112,32 @@ Any MCP-capable client can be wired manually with:
 For guided LLM setup, use:
 - [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md)
 
+### Shared project memory (Phase 1)
+
+For a two-person project, configure both local or cloud clients against the
+same Memories host and use separate managed keys. Commit this identity-only
+file at the repository boundary:
+
+```yaml
+# .memories/project.yaml
+project_id: fplguru
+shared_memory: true
+```
+
+An administrator then creates one `read-write` key per stable principal (for
+example, `dk` and `darshan`) with that person's
+`person/<principal>/fplguru` prefix plus the shared `project/fplguru` prefix.
+Verify each key with `GET /api/keys/me`; it must be `type: "managed"` and carry
+the expected `principal_id`. This repository declaration never grants access,
+and collaborative mode fails closed when more than one backend is configured.
+
+Read the [shared project memory playbook](docs/memory-playbook.md) for the
+exact `/api/keys` payloads, explicit `memory_add` rule, fresh-session
+read/write isolation checks, attribution/origin verification, narrowing and
+revocation, and legacy-prefix migration. Run its synthetic probe only after
+the feature is deployed and isolation passes; do not seed production memory
+as part of setup or code implementation.
+
 ### Manual: `install.sh` (deprecated)
 
 `install.sh` still works this release but is superseded by the published npm

@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from auth_context import AuthContext
+from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +115,24 @@ class TestMergeMemoriesEngine:
         meta_a = engine._get_meta_by_id(0)
         assert meta_a.get("archived") is True
         assert result["archived"] == [0, 1]
+
+    def test_env_merge_cannot_cross_structured_namespace(self, engine):
+        project_id = engine.add_memories(
+            ["project fact"],
+            ["project/acme/decisions"],
+            trusted_authorship=TrustedAuthorship.principal("alice"),
+        )[0]
+        legacy_id = engine.add_memories(["legacy fact"], ["legacy/acme"])[0]
+
+        with pytest.raises(ProjectMemoryPolicyError, match="namespace"):
+            engine.merge_memories(
+                ids=[project_id, legacy_id],
+                merged_text="combined",
+                source="legacy/acme",
+            )
+
+        assert not engine._get_meta_by_id(project_id).get("archived")
+        assert not engine._get_meta_by_id(legacy_id).get("archived")
 
 
 # ---------------------------------------------------------------------------
@@ -223,3 +243,36 @@ class TestMergeAPI:
             json={"ids": [1, 2], "merged_text": "merged with pinned", "source": "test/src"},
         )
         assert resp.status_code == 200
+
+    def test_managed_merge_passes_trusted_authorship(self, client, monkeypatch):
+        tc, mock = client
+        import app as app_module
+
+        mock.merge_memories.return_value = {"id": 3, "archived": [1, 2]}
+        mock.get_memory.side_effect = lambda mid: {
+            1: {"id": 1, "text": "A", "source": "project/demo/decisions"},
+            2: {"id": 2, "text": "B", "source": "project/demo/decisions"},
+        }[mid]
+        monkeypatch.setattr(
+            app_module,
+            "_get_auth",
+            lambda request: AuthContext(
+                role="read-write",
+                prefixes=["project/demo/"],
+                key_type="managed",
+                principal_id="alice",
+            ),
+        )
+
+        response = tc.post(
+            "/memory/merge",
+            json={
+                "ids": [1, 2],
+                "merged_text": "combined",
+                "source": "project/demo/decisions",
+            },
+            headers={"X-Memories-Client": "codex"},
+        )
+
+        assert response.status_code == 200
+        assert mock.merge_memories.call_args.kwargs["trusted_authorship"].author == "alice"

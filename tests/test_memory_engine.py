@@ -7,6 +7,7 @@ import pytest
 from pathlib import Path
 
 from memory_engine import MemoryEngine
+from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
 
 
 @pytest.fixture
@@ -59,6 +60,64 @@ class TestAddAndSearch:
         results = populated_engine.search("test", k=1000)
         assert len(results) <= populated_engine.stats_light()["total_memories"]
 
+    def test_hybrid_search_ranks_one_allowed_prefix_union(self, engine):
+        engine.add_memories(
+            texts=[
+                "deployment decision uses port 9000",
+                "private note confirms deployment port 9000",
+                "unrelated namespace also mentions deployment port 9000",
+            ],
+            sources=[
+                "codex/shared/decisions",
+                "person/alice/shared/knowledge",
+                "codex/other/knowledge",
+            ],
+        )
+
+        results = engine.hybrid_search(
+            "deployment port 9000",
+            k=10,
+            allowed_prefixes=[
+                "codex/shared/decisions",
+                "person/alice/shared",
+            ],
+            graph_weight=0.1,
+        )
+
+        assert {result["source"] for result in results} == {
+            "codex/shared/decisions",
+            "person/alice/shared/knowledge",
+        }
+
+    def test_hybrid_search_explain_honors_allowed_prefix_union(self, engine):
+        engine.add_memories(
+            texts=[
+                "shared deployment decision",
+                "private deployment detail",
+                "unrelated deployment detail",
+            ],
+            sources=[
+                "codex/shared/decisions",
+                "person/alice/shared/knowledge",
+                "codex/other/knowledge",
+            ],
+        )
+
+        explained = engine.hybrid_search_explain(
+            "deployment",
+            k=10,
+            allowed_prefixes=[
+                "codex/shared",
+                "person/alice/shared",
+            ],
+            graph_weight=0.1,
+        )
+
+        assert {result["source"] for result in explained["results"]} == {
+            "codex/shared/decisions",
+            "person/alice/shared/knowledge",
+        }
+
     def test_add_sets_created_at_and_updated_at(self, engine):
         ids = engine.add_memories(["timestamp test"], ["test/ts"])
         meta = engine.metadata[ids[0]]
@@ -68,6 +127,65 @@ class TestAddAndSearch:
         # Backward compat alias
         assert "timestamp" in meta
         assert meta["timestamp"] == meta["created_at"]
+
+    def test_project_source_requires_trusted_authorship(self, engine):
+        with pytest.raises(ProjectMemoryPolicyError):
+            engine.add_memories(
+                texts=["shared fact"],
+                sources=["project/fplguru/knowledge"],
+            )
+
+        assert engine.metadata == []
+        assert engine.qdrant_store.count() == 0
+
+    def test_client_cannot_override_trusted_authorship_metadata(self, engine):
+        ids = engine.add_memories(
+            texts=["shared fact"],
+            sources=["project/fplguru/knowledge"],
+            metadata_list=[
+                {
+                    "author": "mallory",
+                    "contributors": ["mallory"],
+                    "origin_client": "  spoofed-client ",
+                    "source_memory_ids": [999],
+                    "custom": "kept",
+                }
+            ],
+            trusted_authorship=TrustedAuthorship.principal("alice", " Codex "),
+        )
+
+        meta = engine.metadata[ids[0]]
+        assert meta["author"] == "alice"
+        assert meta["origin_client"] == "codex"
+        assert "contributors" not in meta
+        assert "source_memory_ids" not in meta
+        assert meta["custom"] == "kept"
+
+    def test_system_authorship_stamps_contributors_and_source_memory_ids(self, engine):
+        ids = engine.add_memories(
+            texts=["derived shared fact"],
+            sources=["project/fplguru/knowledge"],
+            metadata_list=[{"author": "mallory", "origin_client": "bad"}],
+            trusted_authorship=TrustedAuthorship.system(
+                contributors=["alice", "bob"],
+                source_memory_ids=[11, 12],
+                origin_client="hook",
+            ),
+        )
+
+        meta = engine.metadata[ids[0]]
+        assert meta["author"] == "system"
+        assert meta["contributors"] == ["alice", "bob"]
+        assert meta["source_memory_ids"] == [11, 12]
+        assert meta["origin_client"] == "hook"
+
+    def test_malformed_reserved_project_source_is_rejected(self, engine):
+        with pytest.raises(ProjectMemoryPolicyError, match="project sources must be"):
+            engine.add_memories(
+                texts=["legacy-looking fact"],
+                sources=["project/fplguru/custom"],
+                metadata_list=[{"origin_client": "  unknown-client "}],
+            )
 
 
 class TestHybridSearch:
@@ -112,6 +230,50 @@ class TestDelete:
         assert result["missing_ids"] == [999]
         assert populated_engine.stats_light()["total_memories"] == count_before - 2
 
+    @pytest.mark.parametrize("bulk", [False, True], ids=["single", "bulk"])
+    def test_delete_retries_with_stable_id_and_current_source_locks(
+        self, populated_engine, monkeypatch, bulk
+    ):
+        """A source move before lock acquisition must invalidate the lock snapshot."""
+        from contextlib import contextmanager
+
+        memory_id = 0
+        old_key = populated_engine._entity_key(
+            populated_engine._get_meta_by_id(memory_id).get("source", "")
+        )
+        new_source = "moved/project"
+        new_key = populated_engine._entity_key(new_source)
+        memory_key = populated_engine._memory_key(memory_id)
+        original_acquire = populated_engine._entity_locks.acquire_many
+        acquired = []
+        raced = False
+
+        @contextmanager
+        def racing_acquire(keys):
+            nonlocal raced
+            normalized = set(keys)
+            acquired.append(normalized)
+            if not raced and old_key in normalized:
+                raced = True
+                populated_engine._get_meta_by_id(memory_id)["source"] = new_source
+            with original_acquire(keys):
+                yield
+
+        monkeypatch.setattr(
+            populated_engine._entity_locks, "acquire_many", racing_acquire
+        )
+
+        if bulk:
+            result = populated_engine.delete_memories([memory_id])
+            assert result["deleted_ids"] == [memory_id]
+        else:
+            result = populated_engine.delete_memory(memory_id)
+            assert result["deleted_id"] == memory_id
+
+        assert raced
+        assert any({memory_key, new_key}.issubset(keys) for keys in acquired)
+        assert not populated_engine._id_exists(memory_id)
+
     def test_delete_by_prefix(self, populated_engine):
         result = populated_engine.delete_by_prefix("lang")
         assert result["deleted_count"] == 2
@@ -128,6 +290,39 @@ class TestNovelty:
         )
         assert is_new is False
         assert match is not None
+
+    def test_exact_source_filter_scopes_search_and_novelty(self, populated_engine):
+        query = "Python is a great programming language"
+        scoped = populated_engine.search(query, k=5, source_exact="lang.md")
+        assert scoped
+        assert all(result["source"] == "lang.md" for result in scoped)
+
+        is_new, match = populated_engine.is_novel(
+            query,
+            threshold=0.5,
+            source_exact="other/source",
+        )
+        assert is_new is True
+        assert match is None
+
+    def test_trusted_dedup_does_not_cross_exact_sources(self, engine):
+        alice = TrustedAuthorship.principal("alice")
+        bob = TrustedAuthorship.principal("bob")
+        engine.add_memories(
+            ["The shared deployment decision"],
+            ["project/acme/decisions"],
+            trusted_authorship=alice,
+        )
+
+        added = engine.add_memories(
+            ["The shared deployment decision"],
+            ["project/other/decisions"],
+            deduplicate=True,
+            trusted_authorship=bob,
+        )
+
+        assert added
+        assert engine._get_meta_by_id(added[0])["source"] == "project/other/decisions"
 
 
 class TestFetchAndUpsert:
@@ -264,6 +459,30 @@ class TestListMemories:
     def test_list_with_source_filter(self, populated_engine):
         result = populated_engine.list_memories(source_filter="lang.md")
         assert result["total"] == 2
+
+    def test_list_and_count_with_source_boundary_exclude_sibling_prefix(self, engine):
+        engine.add_memories(
+            texts=["project", "sibling"],
+            sources=["codex/shared/knowledge", "codex/shared-extra/knowledge"],
+        )
+
+        listed = engine.list_memories(source_filter="codex/shared", source_boundary=True)
+
+        assert [memory["text"] for memory in listed["memories"]] == ["project"]
+        assert engine.count_memories(source_prefix="codex/shared", source_boundary=True) == 1
+
+    def test_filtered_count_can_include_archived_browse_rows(self, engine):
+        ids = engine.add_memories(
+            texts=["active", "archived"],
+            sources=["codex/shared/knowledge", "codex/shared/knowledge"],
+        )
+        engine.update_memory(ids[1], archived=True)
+
+        assert engine.count_by_filter(
+            source_prefix="codex/shared",
+            source_boundary=True,
+            include_archived=True,
+        ) == 2
 
 
 class TestPersistence:

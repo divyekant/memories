@@ -11,6 +11,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { execFileSync } from "node:child_process";
 import fs from "fs";
 import path from "path";
 import yaml from "js-yaml";
@@ -36,7 +37,102 @@ function memoryId(memory) {
 }
 
 function memoryDate(memory) {
-  return memory.document_at || memory.date || memory.created_at || "";
+  // Content chronology must not be rewritten by a pin/archive/metadata touch.
+  // updated_at is only a last-resort compatibility fallback for records that
+  // have no content-bearing date at all.
+  return memory.document_at || memory.date || memory.created_at || memory.timestamp || memory.updated_at || "";
+}
+
+function evidenceScore(memory) {
+  const value = memory?.similarity ?? memory?.rrf_score ?? 0;
+  const score = Number(value);
+  return Number.isFinite(score) ? score : 0;
+}
+
+function evidenceCompact(memory, relation) {
+  return {
+    id: memory?.id,
+    source: memory?.source || "",
+    date: memoryDate(memory || {}),
+    text: memory?.text || "",
+    relation,
+    score: evidenceScore(memory),
+    is_latest: Boolean(memory?.is_latest),
+    archived: Boolean(memory?.archived),
+  };
+}
+
+function evidenceFollowUps(query) {
+  const clean = String(query || "").trim().replace(/\s+/g, " ");
+  if (!clean) return [];
+  const candidates = [clean];
+  if (!/^latest\s/i.test(clean)) candidates.push(`latest ${clean}`);
+  if (!/^current\s/i.test(clean)) candidates.push(`current ${clean}`);
+  if (!/^what changed\b/i.test(clean)) candidates.push(`what changed about ${clean}`);
+  return [...new Map(candidates.map((item) => [item.toLowerCase(), item])).values()];
+}
+
+function buildEvidencePacket(query, results) {
+  if (!(results || []).length) {
+    return {
+      current_answer: null,
+      supporting_memories: [],
+      older_evidence: [],
+      older_conflicting_memories: [],
+      source_date_trail: [],
+      confidence: { level: "missing", reasons: ["No memories were retrieved for this query."] },
+      follow_up_queries: evidenceFollowUps(query),
+    };
+  }
+  const preferRecency = /\b(latest|current|now|recent|changed|newest|today|yesterday)\b/i.test(query);
+  const rank = (memory) => {
+    const time = chronologicalValue(memory);
+    const dated = Number.isFinite(time) ? 1 : 0;
+    return preferRecency
+      ? [dated, time, evidenceScore(memory), memory?.is_latest ? 1 : 0]
+      : [evidenceScore(memory), dated, time, memory?.is_latest ? 1 : 0];
+  };
+  const ranked = [...results].sort((a, b) => {
+    const left = rank(a);
+    const right = rank(b);
+    for (let i = 0; i < left.length; i += 1) {
+      if (left[i] !== right[i]) return right[i] - left[i];
+    }
+    return 0;
+  });
+  const current = ranked[0];
+  const currentTime = chronologicalValue(current);
+  const supporting = [];
+  const older = [];
+  for (const memory of ranked.slice(1)) {
+    const time = chronologicalValue(memory);
+    if (Number.isFinite(currentTime) && Number.isFinite(time) && time < currentTime) {
+      older.push(evidenceCompact(memory, "older"));
+    } else if (memory.archived) {
+      older.push(evidenceCompact(memory, "archived"));
+    } else if (!Number.isFinite(currentTime) && Number.isFinite(time)) {
+      older.push(evidenceCompact(memory, "dated_unranked"));
+    } else {
+      supporting.push(evidenceCompact(memory, "supporting"));
+    }
+  }
+  const reasons = [
+    memoryDate(current) ? "Current candidate has a source date." : "Current candidate has no source date.",
+  ];
+  if (older.length) reasons.push("Packet includes older evidence or separately dated evidence that may be superseded.");
+  if (current.is_latest) reasons.push("Current candidate is explicitly marked is_latest.");
+  const level = !memoryDate(current) ? "low" : older.length ? "medium" : "high";
+  const currentCompact = evidenceCompact(current, "current");
+  const trail = [currentCompact, ...supporting, ...older];
+  return {
+    current_answer: currentCompact,
+    supporting_memories: supporting.slice(0, 5),
+    older_evidence: older.slice(0, 5),
+    older_conflicting_memories: older.slice(0, 5),
+    source_date_trail: trail.slice(0, 10),
+    confidence: { level, reasons },
+    follow_up_queries: evidenceFollowUps(query),
+  };
 }
 
 // Render a legible relevance tag for one search result.
@@ -91,66 +187,410 @@ function timelineQueryVariants(query) {
   return [...new Set(variants.filter(Boolean))];
 }
 
+// -- Collaborative project context ------------------------------------------
+
+// Keep the client-side declaration deliberately smaller than the server's
+// namespace policy.  A repository can opt in to the shared namespace, but it
+// cannot grant itself access or choose a principal; both are resolved below
+// from the authenticated backend.
+const PROJECT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+const PROJECT_DECLARATION_KEYS = new Set(["project_id", "shared_memory"]);
+const PROJECT_SOURCE_RE = /^project\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/(decisions|knowledge|state|operations)$/;
+
+function projectFailure(reason, diagnostic) {
+  return { ok: false, reason, diagnostic };
+}
+
+/**
+ * Parse the strict `.memories/project.yaml` declaration.
+ *
+ * This is intentionally a pure helper so hooks and future MCP tool routing
+ * can share the same contract.  Only the two currently implemented fields are
+ * accepted; an apparently useful future field must not silently activate a
+ * mode whose behavior is not implemented yet.
+ */
+export function parseProjectDeclaration(source) {
+  let value;
+  try {
+    value = yaml.load(String(source ?? ""));
+  } catch (error) {
+    return projectFailure("malformed", `project declaration is not valid YAML: ${error.message}`);
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return projectFailure("malformed", "project declaration must be a YAML mapping");
+  }
+
+  const keys = Object.keys(value);
+  const unknown = keys.filter((key) => !PROJECT_DECLARATION_KEYS.has(key));
+  if (unknown.length) {
+    return projectFailure("unknown_field", `unknown project declaration field: ${unknown.sort().join(", ")}`);
+  }
+  const missing = [...PROJECT_DECLARATION_KEYS].filter((key) => !Object.prototype.hasOwnProperty.call(value, key));
+  if (missing.length) {
+    return projectFailure("missing_field", `missing project declaration field: ${missing.sort().join(", ")}`);
+  }
+  if (typeof value.project_id !== "string" || !PROJECT_SLUG_RE.test(value.project_id)) {
+    return projectFailure("invalid_project_id", "project_id must be a lowercase path-safe slug");
+  }
+  if (value.shared_memory !== true) {
+    return projectFailure("shared_memory_not_true", "shared_memory must be the YAML boolean true");
+  }
+
+  return { ok: true, projectId: value.project_id, sharedMemory: true };
+}
+
+/**
+ * Resolve a checkout's main repository root.  `git rev-parse
+ * --git-common-dir` points worktrees back at the main repository's `.git`, so
+ * the declaration remains shared by the main checkout and every worktree.
+ */
+export function resolveProjectRoot(cwd = process.cwd()) {
+  const candidate = path.resolve(String(cwd || process.cwd()));
+  try {
+    const common = execFileSync("git", ["-C", candidate, "rev-parse", "--git-common-dir"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (common) {
+      const commonPath = path.isAbsolute(common) ? common : path.resolve(candidate, common);
+      if (path.basename(commonPath) === ".git") {
+        const root = path.dirname(commonPath);
+        if (root && root !== path.parse(root).root) return root;
+      }
+    }
+  } catch {
+    // A non-git checkout keeps the current directory boundary.  Missing git
+    // metadata must never make an unrelated parent declaration authoritative.
+  }
+  return candidate;
+}
+
+export function projectDeclarationPath(cwd = process.cwd()) {
+  const root = resolveProjectRoot(cwd);
+  const declaration = path.join(root, ".memories", "project.yaml");
+  return fs.existsSync(declaration) ? declaration : null;
+}
+
+/** Load and strictly parse the declaration at a checkout boundary. */
+export function loadProjectDeclaration(options = {}) {
+  const cwd = typeof options === "string" ? options : options?.cwd || process.cwd();
+  const declaration = projectDeclarationPath(cwd);
+  if (!declaration) return projectFailure("missing", "no .memories/project.yaml at the repository boundary");
+  try {
+    return parseProjectDeclaration(fs.readFileSync(declaration, "utf8"));
+  } catch (error) {
+    return projectFailure("unreadable", `cannot read project declaration: ${error.message}`);
+  }
+}
+
+function interpolateConfigValue(value) {
+  const text = value || "";
+  const match = text.match(/\$\{(\w+)\}/);
+  return match ? (process.env[match[1]] || text) : text;
+}
+
+/**
+ * Load backend configuration using the same precedence as buildServer's
+ * legacy routing.  Keeping this as a helper lets project activation count the
+ * configured backends without changing fan-out or scenario routing itself.
+ */
+export function loadBackendConfig({ cwd = process.cwd(), url, apiKey, skipFileConfig = false } = {}) {
+  if (skipFileConfig) {
+    return {
+      backends: [{ name: "default", url: url || "http://localhost:8900", apiKey: apiKey || "", scenario: "" }],
+      routing: {},
+      configOrigin: "options",
+      configured: url !== undefined || apiKey !== undefined,
+    };
+  }
+
+  const explicitFile = process.env.MEMORIES_BACKENDS_FILE;
+  const configPaths = explicitFile
+    ? [explicitFile]
+    : [
+        path.join(cwd, ".memories", "backends.yaml"),
+        path.join(process.env.HOME || "", ".config", "memories", "backends.yaml"),
+      ];
+
+  for (const configPath of configPaths) {
+    if (!fs.existsSync(configPath)) continue;
+    const raw = yaml.load(fs.readFileSync(configPath, "utf8"));
+    const backends = Object.entries(raw.backends || {}).map(([name, cfg]) => ({
+      name,
+      url: interpolateConfigValue(cfg.url || ""),
+      apiKey: interpolateConfigValue(cfg.api_key || ""),
+      scenario: cfg.scenario || "",
+    }));
+    return { backends, routing: raw.routing || {}, configOrigin: configPath, configured: true };
+  }
+
+  return {
+    backends: [{ name: "default", url: url || "http://localhost:8900", apiKey: apiKey || "", scenario: "" }],
+    routing: {},
+    configOrigin: url !== undefined || apiKey !== undefined ? "options" : "fallback",
+    configured: url !== undefined || apiKey !== undefined,
+  };
+}
+
+function strictBackendConfigFailure(reason, diagnostic) {
+  return { backends: [], routing: {}, error: { reason, diagnostic } };
+}
+
+/**
+ * Load only an explicitly configured backend set for collaborative mode.
+ * Unlike legacy routing, this view never invents localhost when no config is
+ * present: a repository declaration must not cause an unauthenticated probe.
+ */
+function loadStrictBackendConfig({ cwd = process.cwd(), url, apiKey, skipFileConfig = false } = {}) {
+  if (skipFileConfig) {
+    if (url === undefined && apiKey === undefined) {
+      return strictBackendConfigFailure("no_backends", "no backend configuration is available");
+    }
+    return {
+      backends: [{ name: "default", url: url || "", apiKey: apiKey || "", scenario: "" }],
+      routing: {},
+    };
+  }
+
+  const explicitFile = process.env.MEMORIES_BACKENDS_FILE;
+  const configPaths = explicitFile
+    ? [explicitFile]
+    : [
+        path.join(cwd, ".memories", "backends.yaml"),
+        path.join(process.env.HOME || "", ".config", "memories", "backends.yaml"),
+      ];
+  const configPath = configPaths.find((candidate) => fs.existsSync(candidate));
+  if (!configPath) {
+    if (explicitFile) {
+      return strictBackendConfigFailure("no_backends", "no backend configuration is available");
+    }
+    if (url !== undefined || apiKey !== undefined) {
+      return {
+        backends: [{ name: "default", url: url || "", apiKey: apiKey || "", scenario: "" }],
+        routing: {},
+      };
+    }
+    return strictBackendConfigFailure("no_backends", "no backend configuration is available");
+  }
+
+  let raw;
+  try {
+    raw = yaml.load(fs.readFileSync(configPath, "utf8"));
+  } catch (error) {
+    return strictBackendConfigFailure("backend_config_invalid", `backend configuration is not valid YAML: ${error.message}`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return strictBackendConfigFailure("backend_config_invalid", "backend configuration must be a YAML mapping");
+  }
+  if (!Object.prototype.hasOwnProperty.call(raw, "backends")) {
+    return strictBackendConfigFailure("no_backends", "backend configuration does not define any backends");
+  }
+  if (!raw.backends || typeof raw.backends !== "object" || Array.isArray(raw.backends)) {
+    return strictBackendConfigFailure("backend_config_invalid", "backend configuration backends must be a YAML mapping");
+  }
+  try {
+    const backends = Object.entries(raw.backends).map(([name, cfg]) => {
+      if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+        throw new Error(`backend ${name} must be a YAML mapping`);
+      }
+      return {
+        name,
+        url: interpolateConfigValue(cfg.url || ""),
+        apiKey: interpolateConfigValue(cfg.api_key || ""),
+        scenario: cfg.scenario || "",
+      };
+    });
+    return { backends, routing: raw.routing || {} };
+  } catch (error) {
+    return strictBackendConfigFailure("backend_config_invalid", `backend configuration is invalid: ${error.message}`);
+  }
+}
+
+function contextFailure(reason, diagnostic) {
+  return {
+    active: false,
+    reason,
+    diagnostic,
+  };
+}
+
+/**
+ * Keep legacy continuity narrow when collaborative mode is active.  The
+ * authenticated key's prefixes are the authorization source; repository
+ * configuration never grants a new prefix.  A legacy prefix is eligible only
+ * when its second path segment names this project; an explicitly
+ * authorized descendant such as codex/demo/knowledge remains eligible.
+ * Project and person namespaces are routed explicitly before this list and
+ * must never be treated as legacy continuity.  Family/wildcard prefixes are
+ * intentionally excluded because they would widen recall beyond this project.
+ */
+export function deriveLegacyProjectPrefixes(projectId, authorizedPrefixes) {
+  if (!Array.isArray(authorizedPrefixes)) return [];
+  const result = [];
+  const seen = new Set();
+  for (const raw of authorizedPrefixes) {
+    if (typeof raw !== "string") continue;
+    const original = raw.trim();
+    if (!original) continue;
+    const prefix = original.replaceAll("{project}", projectId);
+    if (!prefix || prefix.includes("*") || prefix.endsWith("/")) continue;
+    const segments = prefix.split("/");
+    if (segments.length < 2 || segments[1] !== projectId) continue;
+    if (segments[0] === "project" || segments[0] === "person") continue;
+    if ([...seen].some((existing) => prefix === existing || prefix.startsWith(`${existing}/`))) continue;
+    for (const existing of [...result]) {
+      if (!existing.startsWith(`${prefix}/`)) continue;
+      seen.delete(existing);
+      result.splice(result.indexOf(existing), 1);
+    }
+    seen.add(prefix);
+    result.push(prefix);
+  }
+  return result;
+}
+
+/**
+ * Resolve collaborative mode for a checkout and one authenticated backend.
+ * The `/api/keys/me` request is deliberately last: invalid declarations and
+ * ambiguous backend sets must not probe a host or accidentally turn a
+ * repository declaration into authorization.
+ */
+export async function resolveProjectContext(options = {}) {
+  const {
+    cwd = process.cwd(),
+    url,
+    apiKey,
+    backends: suppliedBackends,
+    backendConfig: suppliedBackendConfig,
+    fetchImpl = globalThis.fetch,
+    skipFileConfig = false,
+    principalTimeoutMs = 2000,
+    declaration: suppliedDeclaration,
+  } = options;
+  const declaration = suppliedDeclaration || loadProjectDeclaration(cwd);
+  if (!declaration.ok) return contextFailure(declaration.reason, declaration.diagnostic);
+
+  const config = suppliedBackendConfig
+    || (suppliedBackends
+    ? { backends: suppliedBackends }
+    : loadStrictBackendConfig({ cwd: resolveProjectRoot(cwd), url, apiKey, skipFileConfig }));
+  if (config.error) return contextFailure(config.error.reason, config.error.diagnostic);
+  if (config.configured === false) {
+    return contextFailure("no_backends", "no backend configuration is available");
+  }
+  const backends = Array.isArray(config.backends) ? config.backends : [];
+  if (backends.length !== 1) {
+    return contextFailure(
+      backends.length === 0 ? "no_backends" : "multiple_backends",
+      `collaborative project mode requires exactly one configured backend (found ${backends.length})`,
+    );
+  }
+
+  const backend = backends[0] || {};
+  const backendUrl = String(backend.url || "").replace(/\/+$/, "");
+  if (!backendUrl || typeof fetchImpl !== "function") {
+    return contextFailure("principal_unreachable", "the configured backend cannot be reached");
+  }
+
+  const headers = {};
+  const backendKey = backend.apiKey ?? backend.api_key ?? "";
+  if (backendKey) headers["X-API-Key"] = backendKey;
+  let response;
+  let identity;
+  let lookupStage = "request";
+  const timeoutMs = Number.isFinite(principalTimeoutMs) && principalTimeoutMs > 0
+    ? principalTimeoutMs
+    : 2000;
+  const controller = new AbortController();
+  let timeout;
+  const deadline = new Promise((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error("principal lookup timeout"));
+    }, timeoutMs);
+  });
+  try {
+    response = await Promise.race([
+      fetchImpl(`${backendUrl}/api/keys/me`, {
+        method: "GET",
+        headers,
+        redirect: "manual",
+        signal: controller.signal,
+      }),
+      deadline,
+    ]);
+    if (!response?.ok || [301, 302, 303, 307, 308].includes(response?.status)) {
+      return contextFailure("principal_unreachable", `authenticated principal lookup returned HTTP ${response?.status ?? "unknown"}`);
+    }
+    lookupStage = "body";
+    identity = await Promise.race([response.json(), deadline]);
+  } catch (error) {
+    if (controller.signal.aborted) {
+      return contextFailure(
+        "principal_unreachable",
+        `authenticated principal lookup timed out after ${timeoutMs}ms`,
+      );
+    }
+    if (lookupStage === "body") {
+      return contextFailure("principal_unreachable", `authenticated principal lookup returned invalid JSON: ${error.message}`);
+    }
+    return contextFailure("principal_unreachable", `authenticated principal lookup failed: ${error.message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (identity?.type !== "managed") {
+    const reason = identity?.type === "env" || identity?.type === "none" ? "env_principal" : "invalid_principal_type";
+    return contextFailure(reason, "authenticated principal lookup did not return a managed principal");
+  }
+  const principalId = identity?.principal_id;
+  if (!principalId) {
+    return contextFailure("missing_principal", "authenticated backend response did not include principal_id");
+  }
+  if (typeof principalId !== "string" || !PROJECT_SLUG_RE.test(principalId)) {
+    return contextFailure("invalid_principal", "authenticated principal_id must be a lowercase path-safe slug");
+  }
+
+  const prefixesUnrestricted = identity?.role === "admin"
+    || identity?.prefixes === undefined
+    || identity?.prefixes === null;
+  const prefixes = prefixesUnrestricted ? [] : identity.prefixes;
+  if (!Array.isArray(prefixes) || prefixes.some((prefix) => typeof prefix !== "string")) {
+    return contextFailure("invalid_prefixes", "authenticated principal lookup returned invalid source prefixes");
+  }
+  const legacySourcePrefixes = deriveLegacyProjectPrefixes(declaration.projectId, prefixes);
+
+  return {
+    active: true,
+    reason: "active",
+    projectId: declaration.projectId,
+    project_id: declaration.projectId,
+    principalId,
+    principal_id: principalId,
+    sharedMemory: true,
+    shared_memory: true,
+    backend: backend.name || "default",
+    backendName: backend.name || "default",
+    backendUrl,
+    backendConfigOrigin: config.configOrigin || null,
+    prefixes: [...prefixes],
+    prefixesUnrestricted,
+    legacySourcePrefixes,
+    legacy_source_prefixes: [...legacySourcePrefixes],
+  };
+}
+
 // -- Server factory -----------------------------------------------------------
 
-export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = false, version } = {}) {
+export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = false, version, cwd = process.cwd() } = {}) {
   const fetchFn = fetchImpl || fetch;
+  const projectDeclaration = loadProjectDeclaration(cwd);
+  const collaborativeProjectPresent = projectDeclaration.reason !== "missing";
 
   // -- Config Loading ----------------------------------------------------------
 
   function loadBackends() {
-    // skipFileConfig: true means this caller's url/apiKey are the whole
-    // story — never touch .memories/backends.yaml or
-    // ~/.config/memories/backends.yaml, even if they exist on the host. This
-    // is for entry points (e.g. remote/server.mjs) whose backend is fully
-    // specified by their own config/env and must never be silently
-    // overridden by a file that happens to be lying around on disk.
-    if (skipFileConfig) {
-      return {
-        backends: [{
-          name: "default",
-          url: url || "http://localhost:8900",
-          apiKey: apiKey || "",
-          scenario: "",
-        }],
-        routing: {},
-      };
-    }
-
-    // Resolution: MEMORIES_BACKENDS_FILE -> project -> global -> ctx fallback
-    // If MEMORIES_BACKENDS_FILE is explicitly set (even to a nonexistent path),
-    // skip project/global config resolution — this allows callers (like the eval
-    // harness) to force single-backend mode by setting the env var.
-    const explicitFile = process.env.MEMORIES_BACKENDS_FILE;
-    const configPaths = explicitFile
-      ? [explicitFile]  // Only check the explicit path, skip project/global
-      : [
-          path.join(process.cwd(), ".memories", "backends.yaml"),
-          path.join(process.env.HOME || "", ".config", "memories", "backends.yaml"),
-        ];
-
-    for (const p of configPaths) {
-      if (fs.existsSync(p)) {
-        const raw = yaml.load(fs.readFileSync(p, "utf8"));
-        const interp = (v) => { const m = (v || "").match(/\$\{(\w+)\}/); return m ? (process.env[m[1]] || v) : v; };
-        const backends = Object.entries(raw.backends || {}).map(([name, cfg]) => {
-          return { name, url: interp(cfg.url || ""), apiKey: interp(cfg.api_key || ""), scenario: cfg.scenario || "" };
-        });
-        const routing = raw.routing || {};
-        return { backends, routing };
-      }
-    }
-
-    // Fallback to ctx args
-    return {
-      backends: [{
-        name: "default",
-        url: url || "http://localhost:8900",
-        apiKey: apiKey || "",
-        scenario: "",
-      }],
-      routing: {},
-    };
+    return loadBackendConfig({ cwd, url, apiKey, skipFileConfig });
   }
 
   const config = loadBackends();
@@ -257,6 +697,142 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     return { results: deduped, count: deduped.length };
   }
 
+  function projectProvenanceLabel(result, projectId) {
+    if (!result || typeof result !== "object") return "";
+    const source = String(result.source || "");
+    if (!source.startsWith(`project/${projectId}/`)) return "";
+    const clean = (value) => String(value)
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+    const labels = [];
+    if (result.author !== undefined && result.author !== null && String(result.author) !== "") {
+      labels.push(`author=${clean(result.author)}`);
+    }
+    if (result.origin_client !== undefined && result.origin_client !== null && String(result.origin_client) !== "") {
+      labels.push(`origin-client=${clean(result.origin_client)}`);
+    }
+    return labels.length ? `[${labels.join(", ")}]` : "";
+  }
+
+  function projectReadPrefixes(projectContext) {
+    return [
+      `project/${projectContext.projectId}`,
+      `person/${projectContext.principalId}/${projectContext.projectId}`,
+      ...(projectContext.legacySourcePrefixes || []),
+    ];
+  }
+
+  function projectBrowsePrefixes(projectContext) {
+    const desired = projectReadPrefixes(projectContext);
+    if (projectContext.prefixesUnrestricted) return desired;
+    const authorized = (projectContext.prefixes || []).flatMap((raw) => {
+      if (typeof raw !== "string") return [];
+      let prefix = raw.trim().replaceAll("{project}", projectContext.projectId);
+      if (prefix.endsWith("/*")) prefix = prefix.slice(0, -2);
+      prefix = prefix.replace(/\/+$/, "");
+      if (!prefix || prefix.split("/").includes("..")) return [];
+      return [prefix];
+    });
+    const intersects = [];
+    for (const scope of desired) {
+      for (const prefix of authorized) {
+        if (scope === prefix || scope.startsWith(`${prefix}/`)) {
+          intersects.push(scope);
+        } else if (prefix.startsWith(`${scope}/`)) {
+          intersects.push(prefix);
+        }
+      }
+    }
+    const unique = [];
+    for (const prefix of intersects) {
+      if (unique.some((existing) => prefix === existing || prefix.startsWith(`${existing}/`))) continue;
+      for (let index = unique.length - 1; index >= 0; index -= 1) {
+        if (unique[index].startsWith(`${prefix}/`)) unique.splice(index, 1);
+      }
+      unique.push(prefix);
+    }
+    return unique;
+  }
+
+  async function projectSearchRequest(body, projectContext) {
+    const prefixes = projectBrowsePrefixes(projectContext);
+    if (prefixes.length === 0) return { results: [], count: 0 };
+    const scopedBody = { ...body, source_prefixes: prefixes };
+    delete scopedBody.source_prefix;
+    const data = await memoriesRequest("/search", {
+      method: "POST",
+      body: JSON.stringify(scopedBody),
+    }, "search");
+    const results = (data.results || []).filter((result) => {
+      const source = String(result?.source || "");
+      return prefixes.some((prefix) => source === prefix || source.startsWith(`${prefix}/`));
+    });
+    const capped = results.slice(0, body.k);
+    return { results: capped, count: capped.length };
+  }
+
+  async function projectScopeCounts(projectContext) {
+    const prefixes = projectBrowsePrefixes(projectContext);
+    return Promise.all(prefixes.map(async (prefix) => {
+      const data = await memoriesRequest(
+        `/memories/count?source=${encodeURIComponent(prefix)}&source_boundary=true`,
+        {},
+        "manage",
+      );
+      return { prefix, count: Number(data.count) || 0 };
+    }));
+  }
+
+  async function projectListRequest(offset, limit, projectContext) {
+    const scopes = await projectScopeCounts(projectContext);
+    const total = scopes.reduce((sum, scope) => sum + scope.count, 0);
+    let skipped = offset;
+    let remaining = limit;
+    const pages = [];
+    for (const scope of scopes) {
+      if (remaining === 0) break;
+      if (skipped >= scope.count) {
+        skipped -= scope.count;
+        continue;
+      }
+      const pageLimit = Math.min(remaining, scope.count - skipped);
+      pages.push({ prefix: scope.prefix, offset: skipped, limit: pageLimit });
+      remaining -= pageLimit;
+      skipped = 0;
+    }
+    const responses = await Promise.all(pages.map(async ({ prefix, offset: pageOffset, limit: pageLimit }) => {
+      const data = await memoriesRequest(
+        `/memories?offset=${pageOffset}&limit=${pageLimit}&source=${encodeURIComponent(prefix)}&source_boundary=true`,
+        {},
+        "manage",
+      );
+      return (data.memories || []).filter((memory) => {
+        const source = String(memory?.source || "");
+        return source === prefix || source.startsWith(`${prefix}/`);
+      });
+    }));
+    const seen = new Set();
+    const memories = [];
+    for (const scoped of responses) {
+      for (const memory of scoped) {
+        const key = memory?.id !== undefined && memory?.id !== null
+          ? `id:${memory.id}:source:${memory.source || ""}`
+          : `text:${memory?.text || ""}:source:${memory?.source || ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        memories.push(memory);
+      }
+    }
+    return {
+      memories,
+      total,
+      offset,
+      limit,
+    };
+  }
+
   // -- Server ------------------------------------------------------------------
 
   const server = new McpServer({
@@ -265,6 +841,107 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
   }, {
     instructions: MEMORIES_MCP_INSTRUCTIONS,
   });
+
+  // Expose a lazy, memoized context lookup for project-aware tool behavior.
+  // Keeping the lookup lazy means legacy callers never incur a `/api/keys/me`
+  // request.  Pass the already-loaded config object so project mode and normal
+  // routing cannot resolve different worktree/main-repository backends.
+  let projectContextPromise;
+  server.resolveProjectContext = async () => {
+    if (!projectContextPromise) {
+      projectContextPromise = resolveProjectContext({
+        cwd,
+        url,
+        apiKey,
+        backendConfig: config,
+        fetchImpl: fetchFn,
+        skipFileConfig,
+        declaration: projectDeclaration,
+      });
+    }
+    const pending = projectContextPromise;
+    try {
+      const context = await pending;
+      // A missing/invalid declaration is fixed for this server lifetime (the
+      // declaration was also loaded once above).  Retry inactive resolution
+      // only for a checkout that actually declared collaborative mode, where
+      // backend identity or configuration can recover independently.
+      if (!context.active && collaborativeProjectPresent && projectContextPromise === pending) {
+        projectContextPromise = undefined;
+      }
+      return context;
+    } catch (error) {
+      if (projectContextPromise === pending) projectContextPromise = undefined;
+      throw error;
+    }
+  };
+
+  function unavailableProjectContextResult(context) {
+    if (!collaborativeProjectPresent || context.active) return null;
+    return {
+      content: [{
+        type: "text",
+        text: `Collaborative project memory is unavailable until authenticated project identity resolves: ${context.diagnostic || context.reason || "unknown error"}`,
+      }],
+      isError: true,
+    };
+  }
+
+  async function projectWriteUnavailable(source) {
+    if (!String(source || "").startsWith("project/") || !collaborativeProjectPresent) {
+      return null;
+    }
+    const projectContext = await server.resolveProjectContext();
+    const unavailable = unavailableProjectContextResult(projectContext);
+    if (unavailable) return unavailable;
+    if (!source.startsWith(`project/${projectContext.projectId}/`)) {
+      return {
+        content: [{
+          type: "text",
+          text: `Project memory source must target the declared project: project/${projectContext.projectId}/<kind>`,
+        }],
+        isError: true,
+      };
+    }
+    return null;
+  }
+
+  async function memoriesAddRequest(reqPath, body) {
+    const unavailable = await projectWriteUnavailable(body?.source);
+    if (unavailable) return { unavailable };
+    const data = await memoriesRequest(reqPath, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }, "add");
+    return { data };
+  }
+
+  async function projectSupersedeUnavailable(id, source) {
+    if (!collaborativeProjectPresent) return null;
+    const projectContext = await server.resolveProjectContext();
+    const unavailable = unavailableProjectContextResult(projectContext);
+    if (unavailable) return unavailable;
+
+    // Supersede inherits the stored source when the caller omits one. Read it
+    // only after collaborative identity has resolved to exactly one backend,
+    // then gate both the existing and requested destinations.
+    const existing = await memoriesRequest(`/memory/${id}`, {}, "manage");
+    for (const candidate of [existing?.source, source].filter(Boolean)) {
+      if (
+        String(candidate).startsWith("project/")
+        && !String(candidate).startsWith(`project/${projectContext.projectId}/`)
+      ) {
+        return {
+          content: [{
+            type: "text",
+            text: `Project memory source must target the declared project: project/${projectContext.projectId}/<kind>`,
+          }],
+          isError: true,
+        };
+      }
+    }
+    return null;
+  }
 
   // -- Tools -------------------------------------------------------------------
 
@@ -298,10 +975,15 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       if (reference_date) body.reference_date = reference_date;
       if (include_archived) body.include_archived = true;
 
-      const data = await memoriesRequest("/search", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, "search");
+      const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
+      const data = projectContext.active && source_prefix === undefined
+        ? await projectSearchRequest(body, projectContext)
+        : await memoriesRequest("/search", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }, "search");
 
       if (data.count === 0) {
         return { content: [{ type: "text", text: `No memories found for: "${query}"` }] };
@@ -314,7 +996,9 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
           const id = memoryId(r);
           const date = memoryDate(r);
           const dateText = date ? ` ${date}` : "";
-          return `[${i + 1}] id=${id}${relevanceTag(r)} ${r.source || "unknown-source"}${dateText}\n${snippet(r.text)}\nUse memory_get id=${id} for full text.`;
+          const provenance = projectContext.active ? projectProvenanceLabel(r, projectContext.projectId) : "";
+          const source = `${provenance ? `${provenance} ` : ""}${r.source || "unknown-source"}`;
+          return `[${i + 1}] id=${id}${relevanceTag(r)} ${source}${dateText}\n${snippet(r.text)}\nUse memory_get id=${id} for full text.`;
         });
 
         return {
@@ -328,7 +1012,9 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       const lines = data.results.map((r, i) => {
         const d = memoryDate(r);
         const dateTag = d ? ` [${String(d).slice(0, 10)}]` : "";
-        return `[${i + 1}] id=${memoryId(r)}${relevanceTag(r)}${dateTag} ${r.source}\n${r.text}`;
+        const provenance = projectContext.active ? projectProvenanceLabel(r, projectContext.projectId) : "";
+        const source = `${provenance ? `${provenance} ` : ""}${r.source || "unknown-source"}`;
+        return `[${i + 1}] id=${memoryId(r)}${relevanceTag(r)}${dateTag} ${source}\n${r.text}`;
       });
 
       return {
@@ -359,6 +1045,9 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       user_facts_only: z.boolean().default(false).describe("Keep only results containing user: transcript facts. Use for questions about what the user did, took, bought, visited, or decided."),
     },
     async ({ query, k = 20, hybrid = true, threshold, source_prefix, feedback_weight, confidence_weight, graph_weight, since, until, reference_date, include_archived, user_facts_only = false }) => {
+      const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
       const seen = new Set();
       const merged = [];
       const searches = timelineQueryVariants(query).map(async (variant) => {
@@ -373,10 +1062,12 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
         if (reference_date) body.reference_date = reference_date;
         if (include_archived) body.include_archived = true;
 
-        const data = await memoriesRequest("/search", {
-          method: "POST",
-          body: JSON.stringify(body),
-        }, "search");
+        const data = projectContext.active && source_prefix === undefined
+          ? await projectSearchRequest(body, projectContext)
+          : await memoriesRequest("/search", {
+            method: "POST",
+            body: JSON.stringify(body),
+          }, "search");
         return data.results || [];
       });
       for (const results of await Promise.all(searches)) {
@@ -460,10 +1151,19 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       if (reference_date) body.reference_date = reference_date;
       if (include_archived) body.include_archived = true;
 
-      const data = await memoriesRequest("/search/evidence", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, "search");
+      const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
+      let data;
+      if (projectContext.active && source_prefix === undefined) {
+        const scoped = await projectSearchRequest(body, projectContext);
+        data = { evidence_packet: buildEvidencePacket(query, scoped.results || []) };
+      } else {
+        data = await memoriesRequest("/search/evidence", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }, "search");
+      }
 
       const packet = data.evidence_packet || {};
       const lines = [];
@@ -514,10 +1214,17 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
 
   server.tool(
     "memory_add",
-    "Store a new memory. Memories persist across sessions and are searchable by meaning. Use for decisions, patterns, learnings, bug fixes, preferences.",
+    "Store a new memory. Memories persist across sessions and are searchable by meaning. Use for decisions, patterns, learnings, bug fixes, preferences. For a deliberate collaborative project write, use this existing memory_add tool exactly once with source project/<project>/<kind>, where kind must be exactly decisions, knowledge, state, or operations; first apply the durable-sharing test (another contributor will need this fact without the current session). ACLs remain server-authoritative.",
     {
       text: z.string().min(1).describe("The memory content to store"),
-      source: z.string().min(1).describe("Source identifier (e.g. 'project/decisions.md', 'bug-fix/redis')"),
+      source: z.string().min(1).superRefine((value, ctx) => {
+        if (value.startsWith("project/") && !PROJECT_SOURCE_RE.test(value)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "project sources must be project/<project>/<decisions|knowledge|state|operations>",
+          });
+        }
+      }).describe("Source identifier (e.g. 'project/shared-demo/decisions', 'bug-fix/redis')"),
       deduplicate: z.boolean().default(true).describe("Legacy flag; ignored when on_duplicate is set"),
       on_duplicate: z.enum(["supersede", "skip", "add"]).default("supersede").describe("supersede (default): a colliding similar memory is replaced — the old version is archived with a supersedes link, so corrections like 'weight is now 79kg' update instead of being dropped as duplicates. skip: keep the existing memory and report which id blocked the write. add: store unconditionally."),
       document_at: z.string().optional().describe("ISO 8601 date for when the content was created (e.g. session date). Enables temporal search."),
@@ -525,10 +1232,9 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     async ({ text, source, deduplicate = true, on_duplicate = "supersede", document_at }) => {
       const body = { text, source, on_duplicate };
       if (document_at) body.metadata = { document_at };
-      const data = await memoriesRequest("/memory/add", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, "add");
+      const addResult = await memoriesAddRequest("/memory/add", body);
+      if (addResult.unavailable) return addResult.unavailable;
+      const data = addResult.data;
 
       let msg;
       if (data.action === "superseded") {
@@ -556,6 +1262,8 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       document_at: z.string().optional().describe("ISO 8601 date for when the corrected fact became true"),
     },
     async ({ id, text, source, document_at }) => {
+      const unavailable = await projectSupersedeUnavailable(id, source);
+      if (unavailable) return unavailable;
       const body = { text };
       if (source) body.source = source;
       if (document_at) body.metadata = { document_at };
@@ -622,10 +1330,17 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       source: z.string().optional().describe("Filter by source prefix (e.g. 'project/decisions' matches 'project/decisions/2024.md')"),
     },
     async ({ offset = 0, limit = 20, source }) => {
-      let url = `/memories?offset=${offset}&limit=${limit}`;
-      if (source) url += `&source=${encodeURIComponent(source)}`;
-
-      const data = await memoriesRequest(url, {}, "manage");
+      const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
+      let data;
+      if (projectContext.active && source === undefined) {
+        data = await projectListRequest(offset, limit, projectContext);
+      } else {
+        let url = `/memories?offset=${offset}&limit=${limit}`;
+        if (source) url += `&source=${encodeURIComponent(source)}`;
+        data = await memoriesRequest(url, {}, "manage");
+      }
 
       if (data.total === 0) {
         return { content: [{ type: "text", text: "No memories found." }] };
@@ -673,11 +1388,21 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       source: z.string().optional().describe("Source prefix filter (e.g. 'project/docs')"),
     },
     async ({ source }) => {
-      let url = "/memories/count";
-      if (source) url += `?source=${encodeURIComponent(source)}`;
-
-      const data = await memoriesRequest(url, {}, "manage");
-      const label = source ? `memories with source prefix "${source}"` : "total memories";
+      const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
+      let data;
+      let label;
+      if (projectContext.active && source === undefined) {
+        const scopes = await projectScopeCounts(projectContext);
+        data = { count: scopes.reduce((sum, scope) => sum + scope.count, 0) };
+        label = `memories in project "${projectContext.projectId}"`;
+      } else {
+        let url = "/memories/count";
+        if (source) url += `?source=${encodeURIComponent(source)}`;
+        data = await memoriesRequest(url, {}, "manage");
+        label = source ? `memories with source prefix "${source}"` : "total memories";
+      }
       return {
         content: [{
           type: "text",
@@ -788,17 +1513,30 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
 
   server.tool(
     "memory_extract",
-    "Extract and store memories from conversation text using LLM-based AUDN (Add/Update/Delete/Noop/Conflict). Costs ~$0.001 per call. Use when decisions change, deferred work completes, or rich conversation contains multiple facts worth remembering. Returns what was added, updated, deleted, conflicted, or skipped.",
+    "Extract and store memories from conversation text using LLM-based AUDN (Add/Update/Delete/Noop/Conflict). Costs ~$0.001 per call. Use when decisions change, deferred work completes, or rich conversation contains multiple facts worth remembering. Automatic extraction remains private: in collaborative mode it writes only person/<principal>/<project>/knowledge and never infers project/.... For an intentional shared fact, use memory_add exactly once with one of the four project kinds after applying the durable-sharing test. Returns what was added, updated, deleted, conflicted, or skipped.",
     {
       messages: z.string().min(1).describe("Conversation text to extract memories from"),
-      source: z.string().min(1).describe("Source identifier (e.g. 'claude-code/myapp')"),
+      source: z.string().min(1).superRefine((value, ctx) => {
+        if (value.startsWith("project/")) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "automatic extraction cannot write project/...; use memory_add exactly once with project/<project>/<decisions|knowledge|state|operations>",
+          });
+        }
+      }).describe("Private extraction source; project/... writes must use memory_add exactly once"),
       context: z.enum(["stop", "pre_compact", "session_end"]).default("stop")
         .describe("Extraction intensity: 'stop' (standard), 'pre_compact' (aggressive), 'session_end'"),
       document_at: z.string().optional().describe("ISO 8601 date for when the conversation happened. All extracted memories inherit this timestamp."),
     },
     async ({ messages, source, context = "stop", document_at }) => {
+      const projectContext = await server.resolveProjectContext();
+      const unavailable = unavailableProjectContextResult(projectContext);
+      if (unavailable) return unavailable;
+      const effectiveSource = projectContext.active
+        ? `person/${projectContext.principalId}/${projectContext.projectId}/knowledge`
+        : source;
       // Submit extraction job
-      const body = { messages, source, context };
+      const body = { messages, source: effectiveSource, context };
       if (document_at) body.document_at = document_at;
       const submitData = await memoriesRequest("/memory/extract", {
         method: "POST",
@@ -860,16 +1598,22 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     "Flag a memory that should have been captured by extraction but wasn't.",
     {
       text: z.string().min(1).describe("The fact that should have been remembered"),
-      source: z.string().min(1).describe("Source identifier"),
+      source: z.string().min(1).superRefine((value, ctx) => {
+        if (value.startsWith("project/") && !PROJECT_SOURCE_RE.test(value)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "project sources must be project/<project>/<decisions|knowledge|state|operations>",
+          });
+        }
+      }).describe("Source identifier"),
       context: z.string().optional().describe("Optional context"),
     },
     async ({ text, source, context }) => {
       const body = { text, source };
       if (context) body.context = context;
-      const data = await memoriesRequest("/memory/missed", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, "add");
+      const addResult = await memoriesAddRequest("/memory/missed", body);
+      if (addResult.unavailable) return addResult.unavailable;
+      const data = addResult.data;
       return {
         content: [{
           type: "text",

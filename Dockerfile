@@ -72,6 +72,7 @@ COPY usage_tracker.py .
 COPY consolidator.py .
 COPY key_store.py .
 COPY auth_context.py .
+COPY project_memory.py .
 COPY event_bus.py .
 COPY audit_log.py .
 COPY query_intent.py .

@@ -271,7 +271,11 @@ class TestExtractionOriginMetadata:
 
         mock_engine = MagicMock()
         mock_engine.add_memories.return_value = [101]
-        mock_engine.get_memory.return_value = {"id": 42, "source": "test", "text": "old"}
+        mock_engine.get_memory.return_value = {
+            "id": 42,
+            "source": "claude-code/proj",
+            "text": "old",
+        }
 
         actions = [{"action": "UPDATE", "fact_index": 0, "old_id": 42, "new_text": "updated"}]
         facts = [{"text": "original", "category": "decision"}]
@@ -292,6 +296,11 @@ class TestExtractionOriginMetadata:
 
         mock_engine = MagicMock()
         mock_engine.add_memories.return_value = [102]
+        mock_engine.get_memory.return_value = {
+            "id": 10,
+            "source": "test/src",
+            "text": "Existing fact",
+        }
 
         actions = [{"action": "CONFLICT", "fact_index": 0, "old_id": 10}]
         facts = [{"text": "Conflicting fact", "category": "detail"}]

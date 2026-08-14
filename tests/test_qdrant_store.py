@@ -32,6 +32,11 @@ class FakeQdrantClient:
             self._points[int(p.id)] = p
         return {"status": "ok"}
 
+    def overwrite_payload(self, collection_name, payload, points, wait, ordering):
+        for pid in points:
+            self._points[int(pid)].payload = dict(payload)
+        return {"status": "ok"}
+
     def query_points(self, collection_name, query, limit, score_threshold, with_payload, with_vectors, consistency, query_filter=None):
         points = [
             SimpleNamespace(id=pid, payload=pt.payload, score=0.95)
@@ -96,6 +101,26 @@ def test_upsert_and_search_roundtrip():
     assert hits[0]["payload"]["text"] == "hello"
 
 
+def test_replace_payload_removes_keys_omitted_from_replacement():
+    fake = FakeQdrantClient()
+    store = QdrantStore(settings=_settings(), client=fake)
+    store.ensure_collection(dim=384)
+    store.upsert_points(
+        [
+            {
+                "id": 1,
+                "vector": [0.1] * 384,
+                "payload": {"text": "hello", "source": "legacy", "contributors": ["old"]},
+            }
+        ]
+    )
+
+    store.replace_payload(1, {"text": "hello", "source": "project/demo/knowledge"})
+
+    hits = store.search([0.1] * 384, limit=5)
+    assert hits[0]["payload"] == {"text": "hello", "source": "project/demo/knowledge"}
+
+
 def test_delete_points_removes_data():
     fake = FakeQdrantClient()
     store = QdrantStore(settings=_settings(), client=fake)
@@ -106,4 +131,3 @@ def test_delete_points_removes_data():
     store.delete_points([1])
     hits = store.search([0.1] * 384, limit=5)
     assert hits == []
-
