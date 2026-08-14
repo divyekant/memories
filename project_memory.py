@@ -24,7 +24,7 @@ ALLOWED_ORIGIN_CLIENTS = frozenset(
 # particular, a caller may not use metadata to impersonate an author or to
 # attach provenance that has not been authenticated by the server.
 RESERVED_METADATA_FIELDS = frozenset(
-    {"author", "contributors", "origin_client", "source_memory_ids"}
+    {"author", "contributors", "origin_client", "source_memory_ids", "promotion"}
 )
 
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
