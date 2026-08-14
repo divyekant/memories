@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -37,11 +38,30 @@ test('legacy project prefixes retain authorized kind-level descendants', () => {
 });
 
 test('project declaration parser accepts only the strict shared-memory contract', () => {
+  const offFingerprint = createHash('sha256')
+    .update('{"project_id":"shared-demo","shared_memory":true,"promotion":{"mode":"off"}}')
+    .digest('hex');
   const fixtures = [
     {
       name: 'valid',
       source: 'project_id: shared-demo\nshared_memory: true\n',
-      expected: { ok: true, projectId: 'shared-demo', sharedMemory: true },
+      expected: {
+        ok: true,
+        projectId: 'shared-demo',
+        sharedMemory: true,
+        promotionMode: 'off',
+        declarationFingerprint: offFingerprint,
+      },
+    },
+    {
+      name: 'explicit shadow mode',
+      source: 'project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n',
+      expectedMode: 'shadow',
+    },
+    {
+      name: 'explicit auto mode',
+      source: 'project_id: shared-demo\nshared_memory: true\npromotion: {mode: auto}\n',
+      expectedMode: 'auto',
     },
     {
       name: 'missing shared_memory',
@@ -55,8 +75,28 @@ test('project declaration parser accepts only the strict shared-memory contract'
     },
     {
       name: 'unknown field',
-      source: 'project_id: shared-demo\nshared_memory: true\npromotion: true\n',
+      source: 'project_id: shared-demo\nshared_memory: true\nfuture: true\n',
       expectedReason: 'unknown_field',
+    },
+    {
+      name: 'unknown nested field',
+      source: 'project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n  future: true\n',
+      expectedReason: 'unknown_field',
+    },
+    {
+      name: 'promotion is not a mapping',
+      source: 'project_id: shared-demo\nshared_memory: true\npromotion: true\n',
+      expectedReason: 'promotion_not_mapping',
+    },
+    {
+      name: 'promotion mode is unsupported',
+      source: 'project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: someday\n',
+      expectedReason: 'unsupported_promotion_mode',
+    },
+    {
+      name: 'promotion mode is missing',
+      source: 'project_id: shared-demo\nshared_memory: true\npromotion: {}\n',
+      expectedReason: 'missing_field',
     },
     {
       name: 'false opt in',
@@ -79,11 +119,27 @@ test('project declaration parser accepts only the strict shared-memory contract'
     const parsed = parseProjectDeclaration(fixture.source);
     if (fixture.expected) {
       assert.deepEqual(parsed, fixture.expected, fixture.name);
+    } else if (fixture.expectedMode) {
+      assert.equal(parsed.ok, true, fixture.name);
+      assert.equal(parsed.promotionMode, fixture.expectedMode, fixture.name);
+      assert.match(parsed.declarationFingerprint, /^[0-9a-f]{64}$/, fixture.name);
     } else {
       assert.equal(parsed.ok, false, fixture.name);
       assert.equal(parsed.reason, fixture.expectedReason, fixture.name);
     }
   }
+});
+
+test('project declaration fingerprints are semantic and comments are ignored', () => {
+  const base = parseProjectDeclaration('project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n');
+  const reformatted = parseProjectDeclaration(
+    '# declaration\nproject_id: shared-demo # project\n\nshared_memory: true\npromotion: { mode: shadow } # rollout\n',
+  );
+  const changed = parseProjectDeclaration('project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: auto\n');
+  assert.equal(base.ok, true);
+  assert.deepEqual(reformatted, base);
+  assert.equal(changed.ok, true);
+  assert.notEqual(changed.declarationFingerprint, base.declarationFingerprint);
 });
 
 test('project declaration hash comment semantics match both packaged hooks', async () => {
@@ -131,7 +187,10 @@ test('project declaration resolves from the main repository boundary for worktre
   git(['worktree', 'add', '-q', '-b', 'fixture-worktree', worktree]);
 
   const declaration = await loadProjectDeclaration({ cwd: worktree });
-  assert.deepEqual(declaration, { ok: true, projectId: 'shared-demo', sharedMemory: true });
+  assert.equal(declaration.ok, true);
+  assert.equal(declaration.projectId, 'shared-demo');
+  assert.equal(declaration.promotionMode, 'off');
+  assert.match(declaration.declarationFingerprint, /^[0-9a-f]{64}$/);
 });
 
 test('project context resolves a managed principal only after strict config and one backend', async () => {
@@ -151,6 +210,8 @@ test('project context resolves a managed principal only after strict config and 
   assert.equal(context.active, true);
   assert.equal(context.projectId, 'shared-demo');
   assert.equal(context.principalId, 'alice');
+  assert.equal(context.promotionMode, 'off');
+  assert.match(context.declarationFingerprint, /^[0-9a-f]{64}$/);
   assert.equal(seen.length, 1);
   assert.equal(seen[0].url, 'http://backend.test/api/keys/me');
   assert.equal(seen[0].options.headers['X-API-Key'], 'secret');
@@ -805,6 +866,43 @@ test('active memory_extract substitutes the private project source and rejects p
     assert.equal(extracted.isError, undefined);
     const extractPost = calls.find((call) => call.url.endsWith('/memory/extract'));
     assert.equal(extractPost.body.source, 'person/alice/shared-demo/knowledge');
+    assert.deepEqual(extractPost.body.promotion_context, {
+      project_id: 'shared-demo',
+      mode: 'off',
+      declaration_fingerprint: parseProjectDeclaration('project_id: shared-demo\nshared_memory: true\n').declarationFingerprint,
+    });
+    assert.equal(calls.filter((call) => call.url.endsWith('/api/keys/me')).length, 1);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('active extraction omits promotion context when the exact private source is not authorized', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-extract-unauthorized-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n');
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    const requestUrl = String(url);
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url: requestUrl, body });
+    if (requestUrl.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({ type: 'managed', principal_id: 'alice', prefixes: ['project/shared-demo'] }), { status: 200 });
+    }
+    if (requestUrl.endsWith('/memory/extract')) return new Response(JSON.stringify({ job_id: 'job-unauthorized' }), { status: 200 });
+    return new Response(JSON.stringify({ status: 'completed', result: { extracted_count: 0, stored_count: 0, updated_count: 0, deleted_count: 0, actions: [] } }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const extracted = await client.callTool({ name: 'memory_extract', arguments: { messages: 'private', source: 'codex/shared-demo' } });
+    assert.equal(extracted.isError, undefined);
+    const extractPost = calls.find((call) => call.url.endsWith('/memory/extract'));
+    assert.equal(extractPost.body.source, 'person/alice/shared-demo/knowledge');
+    assert.equal(Object.hasOwn(extractPost.body, 'promotion_context'), false);
     assert.equal(calls.filter((call) => call.url.endsWith('/api/keys/me')).length, 1);
   } finally {
     await client.close();

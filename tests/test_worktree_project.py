@@ -9,14 +9,15 @@ like `infallible-elion-cdc047` and is memory-blind.
 import subprocess
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIBS = [
-    REPO_ROOT / "plugin" / "hooks" / "_lib.sh",
-    REPO_ROOT / "integrations" / "codex" / "hooks" / "_lib.sh",
+    REPO_ROOT / "mcp-server" / "assets" / "claude-code" / "hooks" / "_lib.sh",
+    REPO_ROOT / "mcp-server" / "assets" / "codex" / "hooks" / "_lib.sh",
 ]
 
 
@@ -58,9 +59,12 @@ def _fake_curl(bin_dir: Path) -> None:
 def project_declarations() -> dict[str, str]:
     return {
         "valid": "project_id: shared-demo\nshared_memory: true\n",
+        "shadow": "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n",
         "missing": "project_id: shared-demo\n",
         "malformed": "project_id: [shared-demo\nshared_memory: true\n",
         "unknown": "project_id: shared-demo\nshared_memory: true\npromotion: true\n",
+        "unknown_nested": "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n  future: true\n",
+        "unsupported_mode": "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: someday\n",
         "false": "project_id: shared-demo\nshared_memory: false\n",
         "invalid_slug": "project_id: Shared Demo\nshared_memory: true\n",
         "hash_without_comment_separator": "project_id: shared-demo#suffix\nshared_memory: true\n",
@@ -128,7 +132,7 @@ def test_empty_cwd_resolves_to_unknown(lib: Path) -> None:
 
 
 @pytest.mark.parametrize("lib", LIBS, ids=["claude-code-lib", "codex-lib"])
-@pytest.mark.parametrize("fixture_name", ["valid", "missing", "malformed", "unknown", "false", "invalid_slug", "hash_without_comment_separator"])
+@pytest.mark.parametrize("fixture_name", ["valid", "shadow", "missing", "malformed", "unknown", "unknown_nested", "unsupported_mode", "false", "invalid_slug", "hash_without_comment_separator"])
 def test_project_declaration_fixtures_are_strict(
     lib: Path,
     fixture_name: str,
@@ -144,14 +148,22 @@ def test_project_declaration_fixtures_are_strict(
         env={"MEMORIES_URL": "", "MEMORIES_API_KEY": ""},
     )
     assert context["active"] is False
-    if fixture_name == "valid":
+    if fixture_name in {"valid", "shadow"}:
         # A valid declaration still fails closed without an authenticated
         # managed principal; the declaration itself must not grant access.
         assert context["reason"] in {"no_backends", "missing_principal", "principal_unreachable"}
     elif fixture_name == "hash_without_comment_separator":
         assert context["reason"] == "invalid_project_id"
     else:
-        assert context["reason"] in {"missing_field", "malformed", "unknown_field", "shared_memory_not_true", "invalid_project_id"}
+        assert context["reason"] in {
+            "missing_field",
+            "malformed",
+            "unknown_field",
+            "promotion_not_mapping",
+            "unsupported_promotion_mode",
+            "shared_memory_not_true",
+            "invalid_project_id",
+        }
 
 
 @pytest.mark.parametrize("lib", LIBS, ids=["claude-code-lib", "codex-lib"])
@@ -162,7 +174,9 @@ def test_project_declaration_in_worktree_uses_main_repository_boundary(
 ) -> None:
     memories_dir = repo_with_worktree["repo"] / ".memories"
     memories_dir.mkdir(exist_ok=True)
-    (memories_dir / "project.yaml").write_text("project_id: shared-demo\nshared_memory: true\n")
+    (memories_dir / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n"
+    )
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_curl(bin_dir)
@@ -180,6 +194,8 @@ def test_project_declaration_in_worktree_uses_main_repository_boundary(
     assert context["reason"] == "active"
     assert context["project_id"] == "shared-demo"
     assert context["principal_id"] == "alice"
+    assert context["promotion_mode"] == "shadow"
+    assert re.fullmatch(r"[0-9a-f]{64}", str(context["declaration_fingerprint"]))
 
 
 @pytest.mark.parametrize("lib", LIBS, ids=["claude-code-lib", "codex-lib"])

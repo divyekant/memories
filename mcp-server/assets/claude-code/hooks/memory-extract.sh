@@ -64,6 +64,7 @@ SOURCE="${_EXTRACT_SRC//\{project\}/$PROJECT}"
 if PROJECT_SOURCE=$(_memories_project_extract_source "$PROJECT_CONTEXT_ACTIVE" "$PROJECT_CONTEXT_ID" "$PROJECT_CONTEXT_PRINCIPAL"); then
   SOURCE="$PROJECT_SOURCE"
 fi
+PROMOTION_CONTEXT_JSON=$(_memories_project_promotion_context "$PROJECT_CONTEXT_JSON" "$SOURCE" 2>/dev/null || true)
 
 MESSAGES=""
 
@@ -119,4 +120,4 @@ MESSAGES="${MESSAGES:0:$MSG_CAP}"
 
 _log_info "Extracting from $PROJECT (${#MESSAGES} chars, source=$SOURCE)"
 
-_extract_multi "$MESSAGES" "$SOURCE" "stop"
+_extract_multi "$MESSAGES" "$SOURCE" "stop" "$PROMOTION_CONTEXT_JSON"

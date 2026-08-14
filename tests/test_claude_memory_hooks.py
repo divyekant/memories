@@ -19,8 +19,8 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HOOKS_DIR = REPO_ROOT / "integrations" / "claude-code" / "hooks"
-CODEX_HOOKS_DIR = Path(__file__).resolve().parents[1] / "integrations" / "codex" / "hooks"
+HOOKS_DIR = REPO_ROOT / "mcp-server" / "assets" / "claude-code" / "hooks"
+CODEX_HOOKS_DIR = REPO_ROOT / "mcp-server" / "assets" / "codex" / "hooks"
 QUERY_SCRIPT = HOOKS_DIR / "memory-query.sh"
 RECALL_SCRIPT = HOOKS_DIR / "memory-recall.sh"
 REHYDRATE_SCRIPT = HOOKS_DIR / "memory-rehydrate.sh"
@@ -48,9 +48,13 @@ def _parse_project_declaration(lib: Path, declaration: Path) -> dict[str, object
 def test_packaged_claude_and_codex_project_declaration_contracts_match(tmp_path: Path) -> None:
     fixtures = {
         "valid": "project_id: shared-demo\nshared_memory: true\n",
+        "shadow": "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n",
+        "auto_flow": "project_id: shared-demo\nshared_memory: true\npromotion: {mode: auto}\n",
         "missing": "project_id: shared-demo\n",
         "malformed": "project_id: [shared-demo\nshared_memory: true\n",
         "unknown": "project_id: shared-demo\nshared_memory: true\npromotion: true\n",
+        "unknown_nested": "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n  future: true\n",
+        "unsupported_mode": "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: someday\n",
         "false": "project_id: shared-demo\nshared_memory: false\n",
         "invalid_slug": "project_id: Shared Demo\nshared_memory: true\n",
         "hash_without_comment_separator": "project_id: shared-demo#suffix\nshared_memory: true\n",
@@ -64,8 +68,37 @@ def test_packaged_claude_and_codex_project_declaration_contracts_match(tmp_path:
         if name == "valid":
             assert claude["ok"] is True
             assert claude["project_id"] == "shared-demo"
+            assert claude["promotion_mode"] == "off"
+            assert re.fullmatch(r"[0-9a-f]{64}", str(claude["declaration_fingerprint"]))
+        elif name in {"shadow", "auto_flow"}:
+            assert claude["ok"] is True
+            assert claude["promotion_mode"] == ("shadow" if name == "shadow" else "auto")
+            assert re.fullmatch(r"[0-9a-f]{64}", str(claude["declaration_fingerprint"]))
         else:
             assert claude["ok"] is False
+
+
+def test_project_declaration_comments_do_not_change_fingerprint_and_mode_does(
+    tmp_path: Path,
+) -> None:
+    declarations = {
+        "base": "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n",
+        "comments": (
+            "# policy\nproject_id: shared-demo # project\n\n"
+            "shared_memory: true\npromotion: { mode: shadow } # rollout\n"
+        ),
+        "changed": "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: auto\n",
+    }
+    for lib in (HOOKS_DIR / "_lib.sh", CODEX_HOOKS_DIR / "_lib.sh"):
+        parsed = {}
+        for name, contents in declarations.items():
+            declaration = tmp_path / f"{name}-{lib.parent.parent.name}.yaml"
+            declaration.write_text(contents)
+            parsed[name] = _parse_project_declaration(lib, declaration)
+        assert parsed["base"]["ok"] is True
+        assert parsed["comments"] == parsed["base"]
+        assert parsed["changed"]["ok"] is True
+        assert parsed["changed"]["declaration_fingerprint"] != parsed["base"]["declaration_fingerprint"]
 
 
 @pytest.mark.parametrize(
@@ -2032,6 +2065,97 @@ def test_collaborative_extraction_is_private_person_knowledge_for_both_clients(
     assert source == "person/alice/shared-demo/knowledge"
     assert not source.startswith("project/")
     assert source != expected_legacy_source
+
+
+@pytest.mark.parametrize(
+    ("script", "mode", "declaration"),
+    [
+        (
+            HOOKS_DIR / "memory-extract.sh",
+            "off",
+            "project_id: shared-demo\nshared_memory: true\n",
+        ),
+        (
+            CODEX_HOOKS_DIR / "memory-extract.sh",
+            "shadow",
+            "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n",
+        ),
+    ],
+)
+def test_extraction_sends_resolved_promotion_context_once_for_authorized_person_source(
+    tmp_path: Path, script: Path, mode: str, declaration: str
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(declaration)
+    transcript = project_dir / "transcript.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "user", "message": {"content": "Keep this durable."}})
+        + "\n"
+        + json.dumps({"type": "assistant", "message": {"content": "Decision captured."}})
+        + "\n"
+    )
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        {"cwd": str(project_dir), "transcript_path": str(transcript)},
+        [
+            {
+                "url_suffix": "/api/keys/me",
+                "response": {
+                    "type": "managed",
+                    "principal_id": "alice",
+                    "prefixes": ["person/alice/shared-demo"],
+                },
+            },
+            {"url_suffix": "/memory/extract", "response": {"job_id": "extract-1"}},
+        ],
+    )
+
+    assert result.returncode == 0, result.stderr
+    extract_calls = [call for call in calls if str(call["url"]).endswith("/memory/extract")]
+    assert len(extract_calls) == 1
+    body = extract_calls[0]["body"]
+    assert body["source"] == "person/alice/shared-demo/knowledge"
+    context = body["promotion_context"]
+    assert context["project_id"] == "shared-demo"
+    assert context["mode"] == mode
+    assert re.fullmatch(r"[0-9a-f]{64}", str(context["declaration_fingerprint"]))
+    assert len([call for call in calls if str(call["url"]).endswith("/api/keys/me")]) == 1
+
+
+@pytest.mark.parametrize("script", [HOOKS_DIR / "memory-extract.sh", CODEX_HOOKS_DIR / "memory-extract.sh"])
+def test_extraction_omits_promotion_context_without_exact_person_authority(
+    tmp_path: Path, script: Path
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: auto\n"
+    )
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        {"cwd": str(project_dir), "last_assistant_message": "Keep this durable."},
+        [
+            {
+                "url_suffix": "/api/keys/me",
+                "response": {
+                    "type": "managed",
+                    "principal_id": "alice",
+                    "prefixes": ["project/shared-demo"],
+                },
+            },
+            {"url_suffix": "/memory/extract", "response": {"job_id": "extract-2"}},
+        ],
+    )
+
+    assert result.returncode == 0, result.stderr
+    extract_calls = [call for call in calls if str(call["url"]).endswith("/memory/extract")]
+    assert len(extract_calls) == 1
+    assert extract_calls[0]["body"]["source"] == "person/alice/shared-demo/knowledge"
+    assert "promotion_context" not in extract_calls[0]["body"]
+    assert len([call for call in calls if str(call["url"]).endswith("/api/keys/me")]) == 1
 
 
 @pytest.mark.parametrize(
