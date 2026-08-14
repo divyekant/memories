@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [5.16.0] - 2026-08-14
+
+### Added
+- **Private-first project-memory promotion (Phase 2).** Automatic extraction
+  still commits facts to `person/<principal>/<project>/knowledge` first. A
+  typed, server-owned proposal and a separate reviewer can then promote only
+  confirmed, shareable facts into the exact `project/<project>/<kind>`
+  namespace under managed-principal authorization and per-candidate locks.
+- **Safe rollout and operator controls.** Promotion is inert by default, with
+  host and repository `off`/`shadow`/`auto` caps, an immediate host kill
+  switch, owner/admin review APIs, text-free metrics and audit events,
+  idempotent reconciliation, and a provider-backed activation evaluator.
+
+### Changed
+- **Shadow remains mutation-free.** Shadow records sanitized would-promote
+  outcomes only on the private candidate. Switching to `auto` never bulk
+  publishes the shadow backlog; every existing shadow approval needs an
+  explicit owner or administrator release.
+- **Promotion lifecycle state is maintenance-protected.** Project memories and
+  active, deferred, failed, unreviewable, or retained promotion candidates are
+  excluded from automatic pruning, consolidation, and lifecycle enforcement.
+  Exact canonical digest equality is the only automatic shared-record reuse;
+  semantic near-duplicates coexist for later review.
+
+### Security
+- Promotion revalidates current project mode, declaration identity, managed
+  principal access, source ownership, reviewer policy identity, and content
+  safety at the final locked mutation boundary. Raw transcripts and evidence
+  excerpts are not persisted, and another principal's shared text cannot steer
+  a candidate's reviewer context.
+
 ## [5.15.1] - 2026-08-14
 
 ### Fixed
