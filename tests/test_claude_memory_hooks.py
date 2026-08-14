@@ -2071,7 +2071,11 @@ def test_collaborative_recall_orders_shared_private_then_legacy_and_labels_prove
             "response": {
                 "type": "managed",
                 "principal_id": "alice",
-                "prefixes": legacy_prefixes,
+                "prefixes": [
+                    "project/shared-demo",
+                    "person/alice/shared-demo",
+                    *legacy_prefixes,
+                ],
             },
         },
         {
@@ -2191,7 +2195,11 @@ def test_collaborative_query_keeps_project_sources_ahead_of_legacy_and_labels_th
             "response": {
                 "type": "managed",
                 "principal_id": "alice",
-                "prefixes": legacy_prefixes,
+                "prefixes": [
+                    "project/shared-demo",
+                    "person/alice/shared-demo",
+                    *legacy_prefixes,
+                ],
             },
         },
         {
@@ -2292,7 +2300,7 @@ def test_collaborative_query_searches_prefixes_concurrently(
             "response": {
                 "type": "managed",
                 "principal_id": "alice",
-                "prefixes": prefixes[2:],
+                "prefixes": prefixes,
             },
         }
     ]
@@ -2342,7 +2350,7 @@ def test_collaborative_rehydrate_searches_prefixes_concurrently(tmp_path: Path) 
             "response": {
                 "type": "managed",
                 "principal_id": "alice",
-                "prefixes": prefixes[2:],
+                "prefixes": prefixes,
             },
         }
     ]
@@ -2388,7 +2396,6 @@ def test_collaborative_rehydrate_honors_postcompact_end_to_end_deadline(tmp_path
             "response": {
                 "type": "managed",
                 "principal_id": "alice",
-                "prefixes": [],
             },
         }
     ]
@@ -2544,6 +2551,65 @@ def test_active_project_hooks_use_only_authenticated_legacy_prefixes(
     assert "claude-code/shared-demo" not in search_prefixes
     assert "learning/shared-demo" not in search_prefixes
     assert "wip/shared-demo" not in search_prefixes
+
+
+@pytest.mark.parametrize(
+    ("script", "payload"),
+    [
+        (RECALL_SCRIPT, {}),
+        (QUERY_SCRIPT, {"prompt": "Please explain the shared project architecture."}),
+        (REHYDRATE_SCRIPT, {"compact_summary": "shared project architecture"}),
+        (HOOKS_DIR / "memory-subagent-recall.sh", {"agent_type": "Plan"}),
+        (CODEX_HOOKS_DIR / "memory-recall.sh", {}),
+        (CODEX_HOOKS_DIR / "memory-query.sh", {"prompt": "Please explain the shared project architecture."}),
+    ],
+    ids=lambda value: value.name if isinstance(value, Path) else "payload",
+)
+def test_active_project_hooks_intersect_recall_roots_with_kind_level_acl(
+    tmp_path: Path, script: Path, payload: dict[str, object]
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\n"
+    )
+    authorized_prefix = "person/alice/shared-demo/knowledge"
+    responses = [
+        {
+            "url_suffix": "/api/keys/me",
+            "response": {
+                "type": "managed",
+                "principal_id": "alice",
+                "prefixes": [authorized_prefix],
+            },
+        },
+        {
+            "url_suffix": "/search",
+            "source_prefix": authorized_prefix,
+            "response": {"results": [], "count": 0},
+        },
+    ]
+
+    result, calls, _ = _run_hook(
+        script,
+        tmp_path,
+        {"cwd": str(project_dir), **payload},
+        responses,
+    )
+
+    assert result.returncode == 0, result.stderr
+    search_prefixes = [
+        call["body"].get("source_prefix", "")
+        for call in calls
+        if str(call["url"]).endswith("/search")
+    ]
+    assert search_prefixes
+    assert set(search_prefixes) == {authorized_prefix}
+    assert all(
+        call["body"].get("source_boundary") is True
+        for call in calls
+        if str(call["url"]).endswith("/search")
+    )
 
 
 @pytest.mark.parametrize(
@@ -2784,6 +2850,32 @@ def test_project_helpers_allowlist_prefixes_and_deduplicate_stable_records(
     assert prefix_result.stdout.splitlines() == [
         "project/demo",
         "person/alice/demo",
+        "claude-code/demo",
+    ]
+
+    restricted_result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; _memories_project_recall_prefixes demo alice "claude-code/demo" "$2" false',
+            "_",
+            str(lib),
+            json.dumps(
+                [
+                    "project/demo/knowledge",
+                    "person/alice/demo/state",
+                    "claude-code/demo",
+                ]
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert restricted_result.returncode == 0, restricted_result.stderr
+    assert restricted_result.stdout.splitlines() == [
+        "project/demo/knowledge",
+        "person/alice/demo/state",
         "claude-code/demo",
     ]
 

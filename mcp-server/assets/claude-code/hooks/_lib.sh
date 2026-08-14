@@ -573,11 +573,20 @@ _memories_project_context() {
     jq -nc '{active:false,reason:"invalid_principal",diagnostic:"authenticated principal_id must be a lowercase path-safe slug"}'
     return 0
   fi
-  local project_id identity_prefixes legacy_prefixes
+  local project_id identity_prefixes legacy_prefixes prefixes_unrestricted
   project_id=$(printf '%s' "$parsed" | jq -r '.project_id')
   local backend_name
   backend_name=$(printf '%s' "$backend" | jq -r '.name // "default"')
-  identity_prefixes=$(printf '%s' "$identity" | jq -c '.prefixes // []' 2>/dev/null || printf '[]')
+  prefixes_unrestricted=$(printf '%s' "$identity" | jq -r '(.role == "admin") or (.prefixes == null)' 2>/dev/null || printf 'false')
+  if [ "$prefixes_unrestricted" = "true" ]; then
+    identity_prefixes='[]'
+  else
+    if ! printf '%s' "$identity" | jq -e '(.prefixes | type == "array") and all(.prefixes[]; type == "string")' >/dev/null 2>&1; then
+      jq -nc '{active:false,reason:"invalid_prefixes",diagnostic:"authenticated principal lookup returned invalid source prefixes"}'
+      return 0
+    fi
+    identity_prefixes=$(printf '%s' "$identity" | jq -c '.prefixes')
+  fi
   legacy_prefixes=$(printf '%s' "$identity_prefixes" | jq -c --arg project "$project_id" '
     reduce .[]? as $raw ([ ];
       ($raw | if type == "string" then (gsub("^[[:space:]]+|[[:space:]]+$"; "") | gsub("\\{project\\}"; $project)) else "" end) as $prefix
@@ -588,8 +597,8 @@ _memories_project_context() {
     )
   ' 2>/dev/null || printf '[]')
   jq -nc --arg project "$project_id" --arg principal "$principal" --arg backend "$backend_name" \
-    --arg url "$url" --arg origin "$config_origin" --argjson prefixes "$identity_prefixes" --argjson legacy "$legacy_prefixes" \
-    '{active:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,backend:$backend,backend_name:$backend,backend_url:$url,config_origin:$origin,prefixes:$prefixes,legacy_source_prefixes:$legacy}'
+    --arg url "$url" --arg origin "$config_origin" --argjson prefixes "$identity_prefixes" --argjson unrestricted "$prefixes_unrestricted" --argjson legacy "$legacy_prefixes" \
+    '{active:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,backend:$backend,backend_name:$backend,backend_url:$url,config_origin:$origin,prefixes:$prefixes,prefixes_unrestricted:$unrestricted,legacy_source_prefixes:$legacy}'
 }
 
 _memories_project_unavailable_message() {
@@ -619,7 +628,7 @@ _memories_project_unavailable_message() {
 }
 
 _memories_project_recall_prefixes() {
-  local project="${1:-}" principal="${2:-}" configured="${3:-}" raw prefix existing duplicate
+  local project="${1:-}" principal="${2:-}" configured="${3:-}" identity_prefixes="${4:-[]}" unrestricted="${5:-true}" raw prefix existing duplicate desired_json
   local -a prefixes=() configured_prefixes=()
   [ -n "$project" ] && prefixes+=("project/$project")
   [ -n "$project" ] && [ -n "$principal" ] && prefixes+=("person/$principal/$project")
@@ -644,7 +653,39 @@ _memories_project_recall_prefixes() {
       [ "$duplicate" -eq 0 ] && prefixes+=("$prefix")
     done
   fi
-  printf '%s\n' "${prefixes[@]}"
+  if [ "$unrestricted" = "true" ]; then
+    printf '%s\n' "${prefixes[@]}"
+    return 0
+  fi
+  desired_json=$(printf '%s\n' "${prefixes[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))') || return 0
+  jq -nr --arg project "$project" --argjson desired "$desired_json" --argjson authorized "$identity_prefixes" '
+    def normalize:
+      if type != "string" then ""
+      else
+        gsub("^[[:space:]]+|[[:space:]]+$"; "")
+        | gsub("\\{project\\}"; $project)
+        | if endswith("/*") then .[0:-2] else . end
+        | gsub("/+$"; "")
+        | if . == "" or (split("/") | index("..") != null) then "" else . end
+      end;
+    reduce $desired[] as $scope ([ ];
+      reduce $authorized[] as $raw (.;
+        ($raw | normalize) as $prefix
+        | (if $prefix == "" then ""
+           elif $scope == $prefix or ($scope | startswith($prefix + "/")) then $scope
+           elif ($prefix | startswith($scope + "/")) then $prefix
+           else ""
+           end) as $candidate
+        | if $candidate == "" or any(.[];
+              . as $existing
+              | ($candidate == $existing or ($candidate | startswith($existing + "/"))))
+          then .
+          else ([.[] | select((. | startswith($candidate + "/")) | not)] + [$candidate])
+          end
+      )
+    )
+    | .[]
+  ' 2>/dev/null
 }
 
 _memories_project_extract_source() {

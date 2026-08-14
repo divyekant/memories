@@ -68,9 +68,11 @@ fi
 PROJECT_CONTEXT_ID=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.project_id // empty' 2>/dev/null || true)
 PROJECT_CONTEXT_PRINCIPAL=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.principal_id // empty' 2>/dev/null || true)
 PROJECT_CONTEXT_LEGACY_PREFIXES=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '(.legacy_source_prefixes // []) | join(",")' 2>/dev/null || true)
+PROJECT_CONTEXT_PREFIXES=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -c '.prefixes // []' 2>/dev/null || printf '[]')
+PROJECT_CONTEXT_PREFIXES_UNRESTRICTED=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.prefixes_unrestricted // false' 2>/dev/null || printf 'false')
 if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
   PROJECT="$PROJECT_CONTEXT_ID"
-  MEMORIES_SOURCE_PREFIXES=$(_memories_project_recall_prefixes "$PROJECT_CONTEXT_ID" "$PROJECT_CONTEXT_PRINCIPAL" "$PROJECT_CONTEXT_LEGACY_PREFIXES" | tr '\n' ',' | sed 's/,$//')
+  MEMORIES_SOURCE_PREFIXES=$(_memories_project_recall_prefixes "$PROJECT_CONTEXT_ID" "$PROJECT_CONTEXT_PRINCIPAL" "$PROJECT_CONTEXT_LEGACY_PREFIXES" "$PROJECT_CONTEXT_PREFIXES" "$PROJECT_CONTEXT_PREFIXES_UNRESTRICTED" | tr '\n' ',' | sed 's/,$//')
 fi
 PROJECT_SHARING_GUIDANCE=""
 if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
