@@ -137,6 +137,13 @@ class PromotionConfig:
                 "relevance_threshold",
                 _finite_number(self.relevance_threshold, "relevance_threshold"),
             )
+        if (
+            self.host_mode is not PromotionMode.OFF
+            and self.relevance_threshold is None
+        ):
+            raise ValueError(
+                "relevance_threshold is required when host_mode is shadow or auto"
+            )
         object.__setattr__(
             self,
             "near_duplicate_threshold",

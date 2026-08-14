@@ -115,6 +115,14 @@ def test_config_parsing_is_strict_and_fails_closed(monkeypatch):
         load_promotion_config()
 
 
+@pytest.mark.parametrize("mode", [PromotionMode.SHADOW, PromotionMode.AUTO])
+def test_active_config_requires_measured_relevance_threshold(mode):
+    with pytest.raises(ValueError, match="relevance_threshold"):
+        PromotionConfig(host_mode=mode)
+
+    assert PromotionConfig(host_mode=PromotionMode.OFF).relevance_threshold is None
+
+
 def test_context_keeps_classifier_and_reviewer_identities_independent():
     context = PromotionContext(
         project_id="fplguru",
