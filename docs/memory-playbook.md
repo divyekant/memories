@@ -272,3 +272,129 @@ There is no automatic promotion, no implicit membership inferred from Git or
 `.memories/project.yaml`, no cross-backend federation, and no server-to-server
 replication in Phase 1. If the project has multiple configured backends,
 shared mode is disabled rather than guessing which host is authoritative.
+
+## 7. Phase 2 promotion activation gate (off by default)
+
+Phase 2 adds a private-first, model-reviewed promotion path, but this
+repository remains inert until the release evidence gates below are met. The
+host cap defaults to off and is an operator setting, not an authorization
+grant:
+
+```bash
+PROJECT_PROMOTION_MODE=off
+```
+
+Do not change the host cap while installing or validating the release. `off`
+means no new review and no new shared target. It does not delete existing
+shared memories and it still permits idempotent finalization of a target that
+was already created before a crash, plus linkage verification for a previously
+promoted candidate.
+
+### Upgrade order and isolation prerequisite
+
+Upgrade the backend first. The pruning-safety prerequisite is a deployed
+v5.15.1 (or newer) backend with the standalone `project/` pruning hotfix; test
+that every `project/` source, including malformed legacy paths, is excluded
+from both scheduled and manual pruning/consolidation. Keep the host at
+`PROJECT_PROMOTION_MODE=off` while this check is performed.
+
+Only after the backend health, version, and pruning checks pass should the
+client hooks/MCP packages be upgraded. Restart each client and verify that it
+still reaches the same one backend. Client configuration cannot compensate for
+an unsafe or stale backend.
+
+The managed-key isolation check is mandatory before any shadow run:
+
+- configure exactly one backend for the repository;
+- use one server-issued key per stable principal, and confirm
+  `GET /api/keys/me` reports `type: "managed"`, the expected `principal_id`,
+  role, and only the reviewed private plus project prefixes;
+- from fresh sessions, confirm each principal can read the shared project
+  prefix but receives `403` for the other principal's private memory;
+- confirm a narrowed or revoked key cannot read or write the shared project;
+- record no private text, credentials, prompts, or evidence excerpts in the
+  operator report.
+
+An environment/admin key, a key without a stable principal, or a multi-backend
+configuration fails closed. Do not proceed by widening a key after an
+isolation failure.
+
+### Explicit repository shadow
+
+Shadow is explicit and project-scoped. After backend and key isolation pass,
+an operator may configure the reviewed repository declaration and set:
+
+```bash
+PROJECT_PROMOTION_MODE=shadow
+```
+
+The declaration remains identity-only and must contain exactly the two Phase 1
+fields. Do not add .memories/project.yaml to this implementation PR, do not
+activate FPLGuru, and do not treat Git repository membership as authorization.
+Shadow may record a reviewer decision and a would-promote outcome, but it must
+never write a new `project/...` target. Keep `PROJECT_PROMOTION_MODE=off` for
+all non-shadow repositories.
+
+Run the versioned offline fixture gate from the repository root:
+
+```bash
+uv run python eval/run_promotion_eval.py \
+  --fixtures eval/fixtures/project_promotion_v1.jsonl \
+  --output /tmp/promotion-eval.json
+```
+
+The exact fixture invocation is also:
+`run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl`.
+
+The report is deterministic and machine-readable. It includes weighted
+precision and recall, high-risk unsafe count, route and decision counts,
+provider/model/policy versions, per-risk-class confusion, and routing rates at
+`0.30`, `0.40`, `0.50`, `0.70`, and higher thresholds. It never includes
+conversation text. The fixture gate requires at least 100 weighted fixtures,
+precision of at least 95%, recall of at least 85%, and zero unsafe high-risk
+promotions. A nonzero command exit or a machine-readable failure keeps the
+host off.
+
+### Live evidence gates and reset rules
+
+The fixture gate is necessary but does not authorize production. A separate
+live shadow evidence record must show all of the following before any reviewed
+change to `auto`:
+
+- two weeks of uninterrupted, real dual-principal FPLGuru shadow activity;
+- 50 total reviewed candidates;
+- 30 manually inspected would-promote outcomes;
+- five would-promote outcomes from each principal;
+- zero unsafe live would-promote outcomes.
+
+Fewer than 30 would-promote outcomes extends shadow. Fewer than roughly ten
+after two weeks is a routing-threshold review, not safety evidence. A change to
+the classifier/reviewer prompt or policy, provider, or model invalidates prior
+shadow approvals and resets the two-week and volume gates. Re-run the fixture
+command, accept the new policy identity, and begin a fresh live evidence
+record. An old approval is never reused merely because its text is unchanged.
+
+The implementation PR does not create or satisfy the separate FPLGuru shadow
+evidence record; the live record is not created by this PR. That record must contain only reviewed aggregate outcomes and
+the exact backend/client/policy versions; it is a later operator artifact.
+
+### Alerts and rollback
+
+Monitor the unreviewable signals without exposing candidate text:
+
+- page on at least five newly `unreviewable` candidates within one hour;
+- raise an informational aged-backlog signal when any unresolved item reaches
+  seven days.
+
+For either a privacy concern, unsafe would-promote outcome, provider/policy
+drift, key isolation failure, or alert investigation, roll back by setting the
+host cap to `PROJECT_PROMOTION_MODE=off` and verify the setting on the backend.
+This stops new review and shared-target creation immediately. Allow only the
+idempotent finalization/linkage repair of already-created targets, preserve the
+private candidate, and investigate with the audit identifiers.
+
+Phase 2 has no bulk dismissal API, no project consolidation or semantic merge,
+and no automatic seed. Do not seed or manually promote project history until
+the fixture, isolation, live shadow, and rollback gates are independently
+reviewed. A reviewed manual seed, if later authorized, is a separate
+post-deployment action and is not evidence that the implementation PR passed.
