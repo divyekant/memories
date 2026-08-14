@@ -372,12 +372,44 @@ class TestConsolidation:
 class TestPruning:
     """Tests for find_prune_candidates()."""
 
+    def test_pruning_skips_every_project_prefix_but_not_person_memory(self):
+        from consolidator import find_prune_candidates
+
+        stale_date = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+        candidates = find_prune_candidates(
+            all_memories=[
+                _make_memory(
+                    1,
+                    "Shared project knowledge",
+                    source="project/fplguru/knowledge",
+                    created_at=stale_date,
+                ),
+                _make_memory(
+                    2,
+                    "Legacy project note",
+                    source="project/notes",
+                    created_at=stale_date,
+                ),
+                _make_memory(
+                    3,
+                    "Private memory",
+                    source="person/alice/fplguru/knowledge",
+                    created_at=stale_date,
+                ),
+            ],
+            unretrieved_ids=[1, 2, 3],
+        )
+
+        assert [item["id"] for item in candidates] == [3]
+
     def test_identifies_old_unretrieved_detail(self):
         from consolidator import find_prune_candidates
 
         old_date = (datetime.now(timezone.utc) - timedelta(days=112)).isoformat()
-        m0 = _make_memory(0, "Old detail", category="detail", created_at=old_date)
-        m1 = _make_memory(1, "Recent detail", category="detail")
+        m0 = _make_memory(
+            0, "Old detail", source="legacy/decisions", category="detail", created_at=old_date
+        )
+        m1 = _make_memory(1, "Recent detail", source="legacy/decisions", category="detail")
 
         candidates = find_prune_candidates(
             all_memories=[m0, m1],
@@ -394,7 +426,9 @@ class TestPruning:
         from consolidator import find_prune_candidates
 
         old_date = (datetime.now(timezone.utc) - timedelta(days=112)).isoformat()
-        m0 = _make_memory(0, "Old decision", category="decision", created_at=old_date)
+        m0 = _make_memory(
+            0, "Old decision", source="legacy/decisions", category="decision", created_at=old_date
+        )
 
         candidates = find_prune_candidates(
             all_memories=[m0],
@@ -410,7 +444,13 @@ class TestPruning:
         from consolidator import find_prune_candidates
 
         old_date = (datetime.now(timezone.utc) - timedelta(days=150)).isoformat()
-        m0 = _make_memory(0, "Very old decision", category="decision", created_at=old_date)
+        m0 = _make_memory(
+            0,
+            "Very old decision",
+            source="legacy/decisions",
+            category="decision",
+            created_at=old_date,
+        )
 
         candidates = find_prune_candidates(
             all_memories=[m0],
@@ -426,7 +466,9 @@ class TestPruning:
         from consolidator import find_prune_candidates
 
         old_date = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
-        m0 = _make_memory(0, "Old but retrieved", category="detail", created_at=old_date)
+        m0 = _make_memory(
+            0, "Old but retrieved", source="legacy/decisions", category="detail", created_at=old_date
+        )
 
         candidates = find_prune_candidates(
             all_memories=[m0],
@@ -441,7 +483,9 @@ class TestPruning:
         from consolidator import find_prune_candidates
 
         old_date = (datetime.now(timezone.utc) - timedelta(days=112)).isoformat()
-        m0 = _make_memory(0, "Old learning", category="learning", created_at=old_date)
+        m0 = _make_memory(
+            0, "Old learning", source="legacy/decisions", category="learning", created_at=old_date
+        )
 
         candidates = find_prune_candidates(
             all_memories=[m0],
@@ -461,7 +505,13 @@ class TestPruning:
         old_date = (datetime.now(timezone.utc) - timedelta(days=100)).strftime(
             "%Y-%m-%dT%H:%M:%S.%fZ"
         )
-        m0 = _make_memory(0, "Old detail with Z", category="detail", created_at=old_date)
+        m0 = _make_memory(
+            0,
+            "Old detail with Z",
+            source="legacy/decisions",
+            category="detail",
+            created_at=old_date,
+        )
 
         candidates = find_prune_candidates(
             all_memories=[m0],
@@ -475,7 +525,7 @@ class TestPruning:
         from consolidator import find_prune_candidates
 
         old_date = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
-        m0 = _make_memory(0, "No category", created_at=old_date)
+        m0 = _make_memory(0, "No category", source="legacy/decisions", created_at=old_date)
         del m0["category"]
 
         candidates = find_prune_candidates(

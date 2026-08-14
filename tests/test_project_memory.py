@@ -10,6 +10,7 @@ from project_memory import (
     PROJECT_KINDS,
     ProjectMemoryPolicyError,
     TrustedAuthorship,
+    is_project_namespace_prefix,
     is_project_source,
     normalize_origin_client,
     parse_memory_source,
@@ -58,6 +59,18 @@ def test_parse_memory_source_accepts_strict_project_namespaces(
 def test_parse_memory_source_leaves_invalid_similar_sources_legacy(source):
     assert parse_memory_source(source) is None
     assert not is_project_source(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "project/fplguru/knowledge",
+        "project/notes",
+        "project/decisions.md",
+    ],
+)
+def test_project_namespace_prefix_includes_strict_and_legacy(source):
+    assert is_project_namespace_prefix(source) is True
 
 
 def test_project_kinds_are_exactly_the_declared_four():

@@ -11,7 +11,11 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from project_memory import TrustedAuthorship, is_reserved_namespace_source
+from project_memory import (
+    TrustedAuthorship,
+    is_project_namespace_prefix,
+    is_reserved_namespace_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +336,8 @@ def find_prune_candidates(
 
     for mem in all_memories:
         if not mem:
+            continue
+        if is_project_namespace_prefix(mem.get("source")):
             continue
         # Pinned memories are operator-protected; archived memories are
         # supersede-chain version history. Neither is ever prunable.

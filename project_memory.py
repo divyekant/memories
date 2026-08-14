@@ -105,6 +105,12 @@ def is_project_source(source: Any) -> bool:
     return parsed is not None and parsed.is_project
 
 
+def is_project_namespace_prefix(source: Any) -> bool:
+    """Return whether *source* begins with the reserved project namespace."""
+
+    return isinstance(source, str) and source.startswith("project/")
+
+
 def is_person_source(source: Any) -> bool:
     """Return ``True`` only for a strict ``person/<principal>/<id>/<kind>``."""
 
