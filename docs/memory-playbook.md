@@ -324,12 +324,22 @@ isolation failure.
 Shadow is explicit and project-scoped. After backend and key isolation pass,
 an operator may configure the reviewed repository declaration and set:
 
-```bash
-PROJECT_PROMOTION_MODE=shadow
+```yaml
+# .memories/project.yaml (later rollout change, not this implementation PR)
+project_id: fplguru
+shared_memory: true
+promotion:
+  mode: shadow
 ```
 
-The declaration remains identity-only and must contain exactly the two Phase 1
-fields. Do not add .memories/project.yaml to this implementation PR, do not
+Set the host cap and the threshold selected from the fixture routing report:
+
+```bash
+PROJECT_PROMOTION_MODE=shadow
+PROJECT_PROMOTION_RELEVANCE_THRESHOLD=<measured-threshold>
+```
+
+Do not add .memories/project.yaml to this implementation PR, do not
 activate FPLGuru, and do not treat Git repository membership as authorization.
 Shadow may record a reviewer decision and a would-promote outcome, but it must
 never write a new `project/...` target. Keep `PROJECT_PROMOTION_MODE=off` for
@@ -340,11 +350,12 @@ Run the versioned offline fixture gate from the repository root:
 ```bash
 uv run python eval/run_promotion_eval.py \
   --fixtures eval/fixtures/project_promotion_v1.jsonl \
+  --threshold <candidate-threshold> \
   --output /tmp/promotion-eval.json
 ```
 
 The exact fixture invocation is also:
-`run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl`.
+`run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --threshold <candidate-threshold>`.
 
 The report is deterministic and machine-readable. It includes weighted
 precision and recall, high-risk unsafe count, route and decision counts,

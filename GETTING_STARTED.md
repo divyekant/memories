@@ -157,7 +157,7 @@ deny new shared writes. A multi-backend or unmanaged/admin key fails closed.
 The exact offline fixture gate is:
 
 ```bash
-uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --output /tmp/promotion-eval.json
+uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --threshold <candidate-threshold> --output /tmp/promotion-eval.json
 ```
 
 It requires at least 100 weighted fixtures, 95% precision, 85% recall, and
@@ -168,8 +168,9 @@ zero unsafe live outcomes. Any policy/provider/model change resets the live
 time and volume gates. A rate alert fires for five new `unreviewable` items in
 one hour; an aged-backlog signal fires at seven days.
 
-Use `PROJECT_PROMOTION_MODE=shadow` only for the explicitly reviewed
-repository. Roll back with `PROJECT_PROMOTION_MODE=off`; no new review or
+Use repository `promotion.mode: shadow`, `PROJECT_PROMOTION_MODE=shadow`, and
+the measured `PROJECT_PROMOTION_RELEVANCE_THRESHOLD` only for the explicitly
+reviewed repository. Roll back with `PROJECT_PROMOTION_MODE=off`; no new review or
 shared target may start, although already-created targets can be finalized
 idempotently. There is no bulk dismissal API, project consolidation, or seed
 until the gates pass. Do not add `.memories/project.yaml` or activate FPLGuru

@@ -210,14 +210,16 @@ keys with stable `principal_id`; each principal can read the shared prefix but
 cannot read the other principal's private prefix. An admin/environment key,
 missing principal, revoked key, or multi-backend setup fails closed.
 
-After those checks, a reviewed repository may explicitly use
-`PROJECT_PROMOTION_MODE=shadow`. Shadow records would-promote evidence but
+After those checks, a reviewed repository must explicitly add
+`promotion: {mode: shadow}` to `.memories/project.yaml`, set
+`PROJECT_PROMOTION_MODE=shadow`, and set the measured
+`PROJECT_PROMOTION_RELEVANCE_THRESHOLD`. Shadow records would-promote evidence but
 never writes a new shared target. Do not add `.memories/project.yaml`, activate
 FPLGuru, or seed project history in this implementation PR. The exact offline
 fixture command is:
 
 ```bash
-uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --output /tmp/promotion-eval.json
+uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --threshold <candidate-threshold> --output /tmp/promotion-eval.json
 ```
 
 The versioned suite must have at least 100 weighted fixtures, at least 95%
