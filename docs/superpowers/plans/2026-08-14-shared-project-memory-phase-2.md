@@ -238,7 +238,11 @@ class PromotionConfig:
 
 - [ ] **Step 4: Reserve one typed metadata envelope**
 
-Add `promotion` to `RESERVED_METADATA_FIELDS` and add server-owned `promotion` to `ALLOWED_ORIGIN_CLIENTS`. Accept workflow metadata only from a `PromotionState` object passed through an internal typed engine argument in Task 4; ordinary API metadata and patches continue stripping it.
+Add `promotion` to `RESERVED_METADATA_FIELDS`; do not change the fixed
+`ALLOWED_ORIGIN_CLIENTS` value set, which validates `origin_client` labels
+rather than metadata keys. Accept workflow metadata only from a
+`PromotionState` object passed through an internal typed engine argument in
+Task 4; ordinary API metadata and patches continue stripping it.
 
 - [ ] **Step 5: Make the provider factory independently configurable without changing old callers**
 
