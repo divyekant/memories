@@ -817,27 +817,46 @@ class MemoryEngine:
 
     def delete_memory(self, memory_id: int, force: bool = False) -> Dict[str, Any]:
         """Delete a single memory by ID. Pinned memories require force=True."""
-        if not self._id_exists(memory_id):
-            raise ValueError(f"Memory ID {memory_id} not found")
-        if not force and self._get_meta_by_id(memory_id).get("pinned"):
-            raise ValueError(f"Memory ID {memory_id} is pinned; pass force=true to delete it")
-        key = self._entity_key(self._get_meta_by_id(memory_id).get("source", ""))
-        with self._entity_locks.acquire_many([key]):
-            with self._write_lock:
-                if not self._id_exists(memory_id):
-                    raise ValueError(f"Memory ID {memory_id} not found")
+        while True:
+            if not self._id_exists(memory_id):
+                raise ValueError(f"Memory ID {memory_id} not found")
+            current = self._get_meta_by_id(memory_id)
+            if not force and current.get("pinned"):
+                raise ValueError(
+                    f"Memory ID {memory_id} is pinned; pass force=true to delete it"
+                )
+            keys = [
+                self._memory_key(memory_id),
+                self._entity_key(current.get("source", "")),
+            ]
+            with self._entity_locks.acquire_many(keys):
+                with self._write_lock:
+                    if not self._id_exists(memory_id):
+                        raise ValueError(f"Memory ID {memory_id} not found")
 
-                self._backup(prefix="pre_delete")
+                    locked = self._get_meta_by_id(memory_id)
+                    current_source_key = self._entity_key(locked.get("source", ""))
+                    if current_source_key not in set(keys):
+                        # The record moved before the stale source lock was
+                        # acquired. Retry while retaining the stable ID lock.
+                        continue
+                    if not force and locked.get("pinned"):
+                        raise ValueError(
+                            f"Memory ID {memory_id} is pinned; pass force=true to delete it"
+                        )
 
-                # Scrub incoming links referencing this memory
-                self._scrub_links_to(memory_id)
+                    self._backup(prefix="pre_delete")
 
-                deleted = dict(self._get_meta_by_id(memory_id))
-                self._delete_ids_targeted({memory_id})
+                    # Scrub incoming links referencing this memory
+                    self._scrub_links_to(memory_id)
 
-                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
-                self.save()
-                self._rebuild_bm25()
+                    deleted = dict(locked)
+                    self._delete_ids_targeted({memory_id})
+
+                    self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    self.save()
+                    self._rebuild_bm25()
+                    break
 
         event_bus.emit("memory.deleted", {"id": memory_id, "source": deleted.get("source", "")})
         return {"deleted_id": memory_id, "deleted_text": deleted["text"][:100]}
@@ -877,40 +896,79 @@ class MemoryEngine:
         if not unique_ids:
             return {"deleted_count": 0, "deleted_ids": [], "missing_ids": []}
 
-        existing = [mid for mid in unique_ids if self._id_exists(mid)]
-        # Pinned memories never participate in bulk deletes.
-        pinned = [mid for mid in existing if self._get_meta_by_id(mid).get("pinned")]
-        if pinned:
-            logger.info("delete_memories: skipping %d pinned ids: %s", len(pinned), pinned[:10])
-            existing = [mid for mid in existing if mid not in set(pinned)]
-        existing_set = set(existing)
-        missing = [mid for mid in unique_ids if mid not in existing_set and mid not in set(pinned)]
-        if not existing:
-            return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing, "skipped_pinned": pinned}
+        while True:
+            existing = [mid for mid in unique_ids if self._id_exists(mid)]
+            if not existing:
+                return {
+                    "deleted_count": 0,
+                    "deleted_ids": [],
+                    "missing_ids": unique_ids,
+                    "skipped_pinned": [],
+                }
 
-        if len(unique_ids) > 10 and not skip_snapshot:
-            self._snapshot_before_delete("pre_delete_batch")
+            keys = [self._memory_key(mid) for mid in existing]
+            keys.extend(
+                self._entity_key(self._get_meta_by_id(mid).get("source", ""))
+                for mid in existing
+            )
+            with self._entity_locks.acquire_many(keys):
+                with self._write_lock:
+                    existing_now = [mid for mid in existing if self._id_exists(mid)]
+                    required_keys = {
+                        self._memory_key(mid) for mid in existing_now
+                    }
+                    required_keys.update(
+                        self._entity_key(
+                            self._get_meta_by_id(mid).get("source", "")
+                        )
+                        for mid in existing_now
+                    )
+                    if not required_keys.issubset(set(keys)):
+                        # At least one record moved before its stale source
+                        # lock was acquired. Retry with authoritative domains.
+                        continue
 
-        keys = [self._entity_key(self._get_meta_by_id(mid).get("source", "")) for mid in existing]
-        with self._entity_locks.acquire_many(keys):
-            with self._write_lock:
-                existing_now = [mid for mid in existing if self._id_exists(mid)]
-                if not existing_now:
-                    return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing}
+                    pinned = [
+                        mid
+                        for mid in existing_now
+                        if self._get_meta_by_id(mid).get("pinned")
+                    ]
+                    if pinned:
+                        logger.info(
+                            "delete_memories: skipping %d pinned ids: %s",
+                            len(pinned),
+                            pinned[:10],
+                        )
+                    pinned_set = set(pinned)
+                    deleted_ids = [
+                        mid for mid in existing_now if mid not in pinned_set
+                    ]
+                    existing_now_set = set(existing_now)
+                    missing = [
+                        mid for mid in unique_ids if mid not in existing_now_set
+                    ]
+                    if not deleted_ids:
+                        return {
+                            "deleted_count": 0,
+                            "deleted_ids": [],
+                            "missing_ids": missing,
+                            "skipped_pinned": pinned,
+                        }
 
-                self._backup(prefix="pre_delete_batch")
+                    if len(unique_ids) > 10 and not skip_snapshot:
+                        self._snapshot_before_delete("pre_delete_batch")
+                    self._backup(prefix="pre_delete_batch")
+                    self._delete_ids_targeted(set(deleted_ids))
 
-                self._delete_ids_targeted(set(existing_now))
+                    self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    self.save()
+                    self._rebuild_bm25()
 
-                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
-                self.save()
-                self._rebuild_bm25()
-
-        return {
-            "deleted_count": len(existing),
-            "deleted_ids": existing,
-            "missing_ids": missing,
-        }
+                    return {
+                        "deleted_count": len(deleted_ids),
+                        "deleted_ids": deleted_ids,
+                        "missing_ids": missing,
+                    }
 
     def supersede(
         self,

@@ -230,6 +230,50 @@ class TestDelete:
         assert result["missing_ids"] == [999]
         assert populated_engine.stats_light()["total_memories"] == count_before - 2
 
+    @pytest.mark.parametrize("bulk", [False, True], ids=["single", "bulk"])
+    def test_delete_retries_with_stable_id_and_current_source_locks(
+        self, populated_engine, monkeypatch, bulk
+    ):
+        """A source move before lock acquisition must invalidate the lock snapshot."""
+        from contextlib import contextmanager
+
+        memory_id = 0
+        old_key = populated_engine._entity_key(
+            populated_engine._get_meta_by_id(memory_id).get("source", "")
+        )
+        new_source = "moved/project"
+        new_key = populated_engine._entity_key(new_source)
+        memory_key = populated_engine._memory_key(memory_id)
+        original_acquire = populated_engine._entity_locks.acquire_many
+        acquired = []
+        raced = False
+
+        @contextmanager
+        def racing_acquire(keys):
+            nonlocal raced
+            normalized = set(keys)
+            acquired.append(normalized)
+            if not raced and old_key in normalized:
+                raced = True
+                populated_engine._get_meta_by_id(memory_id)["source"] = new_source
+            with original_acquire(keys):
+                yield
+
+        monkeypatch.setattr(
+            populated_engine._entity_locks, "acquire_many", racing_acquire
+        )
+
+        if bulk:
+            result = populated_engine.delete_memories([memory_id])
+            assert result["deleted_ids"] == [memory_id]
+        else:
+            result = populated_engine.delete_memory(memory_id)
+            assert result["deleted_id"] == memory_id
+
+        assert raced
+        assert any({memory_key, new_key}.issubset(keys) for keys in acquired)
+        assert not populated_engine._id_exists(memory_id)
+
     def test_delete_by_prefix(self, populated_engine):
         result = populated_engine.delete_by_prefix("lang")
         assert result["deleted_count"] == 2
