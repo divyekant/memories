@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import dataclasses
 
@@ -40,12 +40,14 @@ from project_memory import (
     is_reserved_namespace_source,
     is_substantive_authored_content_replacement,
     normalize_origin_client,
+    is_valid_slug,
     validate_namespace_preserving_replacement,
     validate_project_write,
 )
 from project_promotion import (
     PromotionMode,
     PromotionState,
+    PromotionStatus,
     promotion_state_from_memory,
 )
 
@@ -1710,6 +1712,151 @@ class MemoryEngine:
             else:
                 missing_ids.append(memory_id)
         return {"memories": memories, "missing_ids": missing_ids}
+
+    def update_promotion_state(
+        self,
+        memory_id: int,
+        state: PromotionState,
+        *,
+        expected_source: str,
+        expected_statuses: Iterable[PromotionStatus | str],
+    ) -> Dict[str, Any]:
+        """CAS-update the server-owned promotion envelope on one memory.
+
+        Promotion workers may hold stale candidate snapshots while another
+        worker or an owner decision changes the same record.  The stable
+        memory lock and the re-read inside the write lock make the status and
+        exact private source check a single compare-and-set operation.  No
+        caller metadata is accepted here; only a typed ``PromotionState`` can
+        cross this internal boundary.
+        """
+        _validate_trusted_promotion(state)
+        if state.capture_mode is PromotionMode.OFF:
+            raise ProjectMemoryPolicyError(
+                "promotion state cannot be updated from off mode"
+            )
+        if not isinstance(memory_id, int) or isinstance(memory_id, bool):
+            raise ValueError("memory_id must be an integer")
+        if not isinstance(expected_source, str) or not expected_source:
+            raise ValueError("expected_source must be a non-empty string")
+        parsed_expected = parse_memory_source(expected_source)
+        if (
+            parsed_expected is None
+            or not parsed_expected.is_person
+            or parsed_expected.kind != "knowledge"
+        ):
+            raise ProjectMemoryPolicyError(
+                "promotion state requires the exact private project knowledge source"
+            )
+
+        expected: set[PromotionStatus] = set()
+        for status in expected_statuses:
+            try:
+                expected.add(
+                    status if isinstance(status, PromotionStatus) else PromotionStatus(status)
+                )
+            except (TypeError, ValueError):
+                raise ValueError("invalid expected promotion status") from None
+        if not expected:
+            raise ValueError("expected_statuses must not be empty")
+
+        with self._entity_locks.acquire_many(
+            [self._memory_key(memory_id), self._entity_key(expected_source)]
+        ):
+            with self._write_lock:
+                if not self._id_exists(memory_id):
+                    raise ValueError(f"Memory ID {memory_id} not found")
+                meta = self._get_meta_by_id(memory_id)
+                current_source = meta.get("source", "")
+                if current_source != expected_source:
+                    raise ValueError("promotion source compare-and-set failed")
+                current_state = promotion_state_from_memory(meta)
+                if current_state is None:
+                    raise ValueError("promotion state is missing or malformed")
+                if current_state.status not in expected:
+                    raise ValueError("promotion state compare-and-set failed")
+                if state.owner != parsed_expected.principal_id or state.project_id != parsed_expected.project_id:
+                    raise ProjectMemoryPolicyError(
+                        "promotion state owner does not match the private source"
+                    )
+
+                meta.update(state.as_metadata())
+                meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+                self.qdrant_store.replace_payload(memory_id, self._point_payload(meta))
+                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self.save()
+                return {
+                    "id": memory_id,
+                    "updated_fields": ["promotion"],
+                    "promotion": dict(meta["promotion"]),
+                }
+
+    def append_project_provenance(
+        self,
+        memory_id: int,
+        *,
+        contributor: str,
+        source_memory_id: Any,
+        expected_source: str,
+    ) -> Dict[str, Any]:
+        """Append only server-owned provenance to an exact project target.
+
+        This operation intentionally does not accept authorship or arbitrary
+        metadata.  The target's original ``author`` and ``origin_client`` are
+        left untouched while contributor and source-memory unions are updated
+        under the target/source locks.
+        """
+        if not isinstance(memory_id, int) or isinstance(memory_id, bool):
+            raise ValueError("memory_id must be an integer")
+        if not isinstance(contributor, str) or not is_valid_slug(contributor):
+            raise ProjectMemoryPolicyError("contributor must be a valid principal slug")
+        if not isinstance(expected_source, str):
+            raise ValueError("expected_source must be a string")
+        parsed = parse_memory_source(expected_source)
+        if parsed is None or not parsed.is_project:
+            raise ProjectMemoryPolicyError(
+                "project provenance requires an exact project/<project>/<kind> source"
+            )
+        if isinstance(source_memory_id, bool):
+            raise ValueError("source_memory_id must be a scalar memory identifier")
+        try:
+            hash(source_memory_id)
+        except TypeError:
+            raise ValueError("source_memory_id must be a scalar") from None
+
+        with self._entity_locks.acquire_many(
+            [self._memory_key(memory_id), self._entity_key(expected_source)]
+        ):
+            with self._write_lock:
+                if not self._id_exists(memory_id):
+                    raise ValueError(f"Memory ID {memory_id} not found")
+                meta = self._get_meta_by_id(memory_id)
+                if meta.get("source", "") != expected_source:
+                    raise ValueError("project provenance source compare-and-set failed")
+
+                contributors = meta.get("contributors", [])
+                source_ids = meta.get("source_memory_ids", [])
+                if not isinstance(contributors, list) or not isinstance(source_ids, list):
+                    raise ValueError("project provenance is malformed")
+                contributors = list(contributors)
+                source_ids = list(source_ids)
+                if contributor not in contributors:
+                    contributors.append(contributor)
+                if source_memory_id not in source_ids:
+                    source_ids.append(source_memory_id)
+                meta["contributors"] = contributors
+                meta["source_memory_ids"] = source_ids
+                meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+                self.qdrant_store.replace_payload(memory_id, self._point_payload(meta))
+                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self.save()
+                return {
+                    "id": memory_id,
+                    "updated_fields": ["contributors", "source_memory_ids"],
+                    "author": meta.get("author"),
+                    "contributors": list(contributors),
+                    "source_memory_ids": list(source_ids),
+                }
 
     def update_memory(
         self,

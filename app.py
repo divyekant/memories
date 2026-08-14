@@ -53,6 +53,7 @@ from project_promotion import (
     load_promotion_config,
     resolve_effective_mode,
 )
+from promotion_service import PromotionService
 
 # -- Logging ------------------------------------------------------------------
 
@@ -182,6 +183,7 @@ def _load_runtime_promotion_config() -> PromotionConfig:
 
 
 promotion_config: PromotionConfig = _load_runtime_promotion_config()
+promotion_service: Optional[PromotionService] = None
 
 extract_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=EXTRACT_QUEUE_MAX)
 extract_jobs: Dict[str, Dict[str, Any]] = {}
@@ -822,6 +824,14 @@ def _ensure_extract_workers_started() -> None:
     logger.info("Extraction queue enabled with %d worker(s)", len(extract_workers))
 
 
+def _review_promotion_candidates(candidates: list[dict], evidence: Any) -> Any:
+    """Hand private-first candidates to the synchronous narrow reviewer."""
+    if promotion_service is None:
+        return None
+    evidence_text = evidence.get("messages", "") if isinstance(evidence, dict) else evidence
+    return promotion_service.review_captured(candidates, evidence_text)
+
+
 async def _extract_worker(worker_id: int) -> None:
     logger.info("Extraction worker started: id=%d", worker_id)
     while True:
@@ -840,6 +850,14 @@ async def _extract_worker(worker_id: int) -> None:
             job_state["queue_depth"] = extract_queue.qsize()
 
         try:
+            extraction_kwargs = _with_promotion_context(
+                _with_trusted_authorship(
+                    {}, request_data.get("trusted_authorship")
+                ),
+                request_data.get("promotion_context"),
+            )
+            if request_data.get("promotion_context") is not None and promotion_service is not None:
+                extraction_kwargs["promotion_callback"] = _review_promotion_candidates
             result = await run_in_threadpool(
                 run_extraction,
                 extract_provider,
@@ -851,12 +869,7 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data.get("debug", False),
                 request_data.get("profile"),
                 request_data.get("document_at"),
-                **_with_promotion_context(
-                    _with_trusted_authorship(
-                        {}, request_data.get("trusted_authorship")
-                    ),
-                    request_data.get("promotion_context"),
-                ),
+                **extraction_kwargs,
             )
             is_dry_run = request_data.get("profile", {}).get("dry_run", False)
             if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result) and not is_dry_run:
@@ -1196,7 +1209,7 @@ async def _maintenance_scheduler():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global memory
+    global memory, promotion_service
     logger.info("Starting Memories service...")
     _embed_provider = os.getenv("EMBED_PROVIDER", "onnx").strip().lower()
     _embed_model = os.getenv("EMBED_MODEL", "").strip()
@@ -1242,6 +1255,12 @@ async def lifespan(app: FastAPI):
     global key_store
     key_store = KeyStore(os.path.join(DATA_DIR, "keys.db"))
     logger.info("Key store initialized")
+    promotion_service = PromotionService(
+        memory,
+        key_store,
+        config=promotion_config,
+        extract_provider=extract_provider,
+    )
     _ensure_extract_workers_started()
     background_tasks: List[asyncio.Task] = [
         asyncio.create_task(_periodic_job_cleanup(), name="job-cleanup"),

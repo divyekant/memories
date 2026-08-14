@@ -15,6 +15,12 @@ from project_memory import (
     normalize_origin_client,
     parse_memory_source,
 )
+from project_promotion import (
+    PromotionMode,
+    PromotionProposal,
+    PromotionState,
+    PromotionStatus,
+)
 
 
 @pytest.fixture
@@ -582,3 +588,80 @@ def test_project_secret_is_rejected_before_storage(engine):
             trusted_authorship=TrustedAuthorship.principal("alice"),
         )
     assert engine.metadata == []
+
+
+def _candidate_state(status=PromotionStatus.CANDIDATE):
+    return PromotionState(
+        status=status,
+        owner="alice",
+        project_id="fplguru",
+        declaration_fingerprint="d" * 64,
+        classifier_provider="anthropic",
+        classifier_model="extract-model",
+        reviewer_provider="anthropic",
+        reviewer_model="review-model",
+        capture_mode=PromotionMode.AUTO,
+        route="ordinary",
+        proposal=PromotionProposal(
+            project_relevance=0.95,
+            visibility="project",
+            assertion_status="confirmed",
+            project_kind="knowledge",
+            confidence=0.95,
+            reason="confirmed",
+            classifier_version="classifier-v1",
+        ),
+        review=None,
+        evidence_fingerprint="e" * 64,
+        captured_at="2026-08-14T12:00:00+00:00",
+    )
+
+
+def test_promotion_state_update_is_locked_compare_and_set(engine):
+    candidate_id = engine.add_memories(
+        ["private candidate"],
+        ["person/alice/fplguru/knowledge"],
+        trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+        trusted_promotion=_candidate_state(),
+    )[0]
+    next_state = _candidate_state(PromotionStatus.DEFERRED)
+
+    result = engine.update_promotion_state(
+        candidate_id,
+        next_state,
+        expected_source="person/alice/fplguru/knowledge",
+        expected_statuses=[PromotionStatus.CANDIDATE],
+    )
+    assert result["promotion"]["status"] == "deferred"
+    with pytest.raises(ValueError, match="compare-and-set"):
+        engine.update_promotion_state(
+            candidate_id,
+            _candidate_state(PromotionStatus.REJECTED),
+            expected_source="person/alice/fplguru/knowledge",
+            expected_statuses=[PromotionStatus.CANDIDATE],
+        )
+
+
+def test_project_provenance_append_is_reserved_and_preserves_original_author(engine):
+    target_id = engine.add_memories(
+        ["shared fact"],
+        ["project/fplguru/knowledge"],
+        trusted_authorship=TrustedAuthorship.principal("alice", "manual"),
+    )[0]
+
+    engine.append_project_provenance(
+        target_id,
+        contributor="bob",
+        source_memory_id=42,
+        expected_source="project/fplguru/knowledge",
+    )
+    engine.append_project_provenance(
+        target_id,
+        contributor="bob",
+        source_memory_id=42,
+        expected_source="project/fplguru/knowledge",
+    )
+    meta = engine.get_memory(target_id)
+    assert meta["author"] == "alice"
+    assert meta["contributors"] == ["bob"]
+    assert meta["source_memory_ids"] == [42]

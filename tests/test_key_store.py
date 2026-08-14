@@ -345,3 +345,29 @@ class TestListKeys:
         assert len(keys) == 1
         assert "key" not in keys[0]
         assert "key_hash" not in keys[0]
+
+
+class TestPrincipalCanWrite:
+    def setup_method(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.ks = KeyStore(os.path.join(self.tmpdir, "keys.db"))
+
+    def test_requires_nonrevoked_managed_write_acl_for_exact_source(self):
+        key = self.ks.create_key(
+            "Alice", "read-write", ["project/fplguru"], principal_id="alice"
+        )
+
+        assert self.ks.principal_can_write("alice", "project/fplguru/knowledge") is True
+        assert self.ks.principal_can_write("alice", "project/other/knowledge") is False
+        self.ks.revoke(key["id"])
+        assert self.ks.principal_can_write("alice", "project/fplguru/knowledge") is False
+
+    def test_read_only_unmanaged_and_admin_prefixes_are_handled_safely(self):
+        self.ks.create_key("read", "read-only", ["project/fplguru"], principal_id="read")
+        self.ks.create_key("admin", "admin", [], principal_id="admin")
+        self.ks.create_key("Display Name", "read-write", ["project/fplguru"], principal_id=None)
+
+        assert self.ks.principal_can_write("read", "project/fplguru/knowledge") is False
+        assert self.ks.principal_can_write("admin", "project/fplguru/knowledge") is True
+        assert self.ks.principal_can_write("display", "project/fplguru/knowledge") is False
+        assert self.ks.principal_can_write("../alice", "project/fplguru/knowledge") is False

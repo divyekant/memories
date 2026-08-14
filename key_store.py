@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from auth_context import source_matches_prefixes
 from project_memory import is_valid_slug
 
 logger = logging.getLogger(__name__)
@@ -204,6 +205,45 @@ class KeyStore:
             "usage_count": row["usage_count"],
             "revoked": row["revoked"],
         }
+
+    def principal_can_write(self, principal_id: str, source: str) -> bool:
+        """Return whether a live managed principal key can write ``source``.
+
+        Promotion runs outside a request carrying the raw key, so it must
+        re-check the authoritative key table at the mutation boundary.  This
+        deliberately ignores environment keys and read-only keys, and tests
+        the exact requested source against each live key's prefix ACL rather
+        than trusting a candidate's stored metadata.
+        """
+        if not is_valid_slug(principal_id) or not isinstance(source, str):
+            return False
+
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT role, prefixes FROM api_keys "
+                "WHERE principal_id = ? AND revoked = 0 "
+                "AND role IN ('read-write', 'admin')",
+                (principal_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        for row in rows:
+            if row["role"] == "admin":
+                return True
+            try:
+                prefixes = json.loads(row["prefixes"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(prefixes, list):
+                safe_prefixes = [prefix for prefix in prefixes if isinstance(prefix, str)]
+                try:
+                    if source_matches_prefixes(source, safe_prefixes):
+                        return True
+                except (AttributeError, TypeError):
+                    continue
+        return False
 
     def list_keys(self) -> list[dict[str, Any]]:
         """List all keys (including revoked), without exposing raw key or hash."""
