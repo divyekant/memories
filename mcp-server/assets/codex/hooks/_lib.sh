@@ -3,6 +3,12 @@
 
 MEMORIES_LOG="${MEMORIES_LOG:-$HOME/.config/memories/hook.log}"
 
+# Private in-process binding for active project extraction.  This is populated
+# only when the extraction hook invokes _memories_project_context in its own
+# shell; it is deliberately absent from the emitted context JSON and hook
+# arguments so credentials cannot cross that boundary.
+_MEMORIES_PROJECT_BACKEND_SNAPSHOT=""
+
 _log() {
   local level="$1" msg="$2"
   local logdir
@@ -603,6 +609,7 @@ _memories_project_backend_config() {
 _memories_project_context() {
   local cwd="${1:-${CWD:-$PWD}}"
   local file parsed
+  _MEMORIES_PROJECT_BACKEND_SNAPSHOT=""
   file=$(_memories_project_file "$cwd" 2>/dev/null) || {
     jq -nc '{active:false,declaration_present:false,reason:"missing",diagnostic:"no .memories/project.yaml at the repository boundary"}'
     return 0
@@ -614,8 +621,8 @@ _memories_project_context() {
   fi
 
   # Load exactly the backend set the hooks already use for this payload cwd.
-  # This function runs in command-substitution scope, so its temporary cache
-  # cannot alter the caller's legacy routing state.
+  # Query/recall invoke this in command-substitution scope, so the private
+  # binding below cannot alter their legacy routing state.
   local project_config backends count backend url key response http_status body identity principal config_origin call_budget
   project_config=$(_memories_project_backend_config "$cwd" 2>/dev/null) || project_config='{"backends":[]}'
   if [ "$(printf '%s' "$project_config" | jq -r '.error.reason // empty' 2>/dev/null)" ]; then
@@ -732,12 +739,21 @@ _memories_project_context() {
         end
     )
   ' 2>/dev/null || printf '[]')
+  # Keep the authenticated backend and credential available only in this
+  # process for the extraction caller.  The public context stays
+  # credential-free; callers that run this function in command substitution
+  # simply lose the private binding, which is harmless for query/recall.
+  _MEMORIES_PROJECT_BACKEND_SNAPSHOT=$(printf '%s' "$backend" | jq -c \
+    --arg url "$url" --arg key "$key" --arg key_env "$backend_api_key_env" \
+    --argjson env_backed "$backend_env_backed" \
+    '. + {url:$url,api_key:$key,api_key_env:$key_env,env_backed:$env_backed,scenario:(.scenario // "")}' 2>/dev/null) || \
+    _MEMORIES_PROJECT_BACKEND_SNAPSHOT=""
   jq -nc --arg project "$project_id" --arg principal "$principal" --arg backend "$backend_name" \
-    --arg url "$url" --arg key "$key" --arg key_env "$backend_api_key_env" --argjson env_backed "$backend_env_backed" \
+    --arg url "$url" \
     --arg origin "$config_origin" --arg mode "$promotion_mode" --arg fp "$declaration_fingerprint" \
     --arg person "$person_source" --argjson person_authorized "$person_source_authorized" \
     --argjson prefixes "$identity_prefixes" --argjson unrestricted "$prefixes_unrestricted" --argjson legacy "$legacy_prefixes" \
-    '{active:true,declaration_present:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,promotionMode:$mode,promotion_mode:$mode,declarationFingerprint:$fp,declaration_fingerprint:$fp,personSource:$person,person_source:$person,personSourceAuthorized:$person_authorized,person_source_authorized:$person_authorized,backend:$backend,backend_name:$backend,backend_url:$url,backend_api_key:$key,backend_api_key_env:$key_env,backend_env_backed:$env_backed,config_origin:$origin,prefixes:$prefixes,prefixes_unrestricted:$unrestricted,legacy_source_prefixes:$legacy}'
+    '{active:true,declaration_present:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,promotionMode:$mode,promotion_mode:$mode,declarationFingerprint:$fp,declaration_fingerprint:$fp,personSource:$person,person_source:$person,personSourceAuthorized:$person_authorized,person_source_authorized:$person_authorized,backend:$backend,backend_name:$backend,backend_url:$url,config_origin:$origin,prefixes:$prefixes,prefixes_unrestricted:$unrestricted,legacy_source_prefixes:$legacy}'
 }
 
 _memories_project_unavailable_message() {
@@ -1713,30 +1729,19 @@ _extract_multi() {
   local source="$2"
   local context="${3:-stop}"
   local promotion_context="${4:-}"
-  local resolved_context="${5:-}"
 
-  local backends resolved_active resolved_backend_url resolved_backend_name resolved_backend_key
-  local resolved_backend_key_env resolved_backend_env_backed
-  resolved_active=$(printf '%s' "$resolved_context" | jq -r '.active // false' 2>/dev/null || printf 'false')
-  if [ "$resolved_active" = "true" ]; then
+  local backends
+  if [ -n "${_MEMORIES_PROJECT_BACKEND_SNAPSHOT:-}" ]; then
     # Active project extraction must use the exact backend and credential that
     # authenticated the project context.  Do not rediscover routing after
     # /api/keys/me; a changed config must not reroute or change credentials.
-    resolved_backend_url=$(printf '%s' "$resolved_context" | jq -r '.backend_url // empty' 2>/dev/null || true)
-    resolved_backend_name=$(printf '%s' "$resolved_context" | jq -r '.backend_name // .backend // empty' 2>/dev/null || true)
-    resolved_backend_key=$(printf '%s' "$resolved_context" | jq -r '.backend_api_key // empty' 2>/dev/null || true)
-    resolved_backend_key_env=$(printf '%s' "$resolved_context" | jq -r '.backend_api_key_env // empty' 2>/dev/null || true)
-    resolved_backend_env_backed=$(printf '%s' "$resolved_context" | jq -r '.backend_env_backed // false' 2>/dev/null || printf 'false')
-    if [ -n "$resolved_backend_url" ] && [ -n "$resolved_backend_name" ]; then
-      backends=$(jq -nc --arg name "$resolved_backend_name" --arg url "$resolved_backend_url" \
-        --arg key "$resolved_backend_key" --arg key_env "$resolved_backend_key_env" \
-        --argjson env_backed "$resolved_backend_env_backed" \
-        '[{name:$name,url:$url,api_key:$key,api_key_env:$key_env,env_backed:$env_backed,scenario:""}]')
-    else
-      # An active context without its authenticated binding is unsafe to
-      # broaden through legacy routing; fail closed for this extraction.
-      backends='[]'
-    fi
+    backends=$(printf '%s' "$_MEMORIES_PROJECT_BACKEND_SNAPSHOT" | jq -c '[.]')
+    # Do not retain the credential beyond the one extraction routing decision.
+    _MEMORIES_PROJECT_BACKEND_SNAPSHOT=""
+  elif [ "${PROJECT_CONTEXT_ACTIVE:-false}" = "true" ]; then
+    # An active context without its private authenticated binding is unsafe to
+    # broaden through legacy routing; fail closed for this extraction.
+    backends='[]'
   else
     backends=$(_get_backends_for_op "extract")
   fi

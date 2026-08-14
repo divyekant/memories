@@ -193,6 +193,76 @@ def test_present_invalid_project_declarations_are_fail_closed_for_both_clients(
         assert not [call for call in calls if str(call["url"]).endswith("/memory/extract")]
 
 
+@pytest.mark.parametrize("lib", [HOOKS_DIR / "_lib.sh", CODEX_HOOKS_DIR / "_lib.sh"])
+def test_project_context_never_serializes_backend_credentials(tmp_path: Path, lib: Path) -> None:
+    project_dir = tmp_path / "shared-demo"
+    memories_dir = project_dir / ".memories"
+    memories_dir.mkdir(parents=True)
+    (memories_dir / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n"
+    )
+    (memories_dir / "backends.yaml").write_text(
+        "backends:\n"
+        "  accepted:\n"
+        "    url: http://accepted.test\n"
+        "    api_key: never-serialize-this-secret\n"
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_fake_curl(bin_dir)
+    calls_file = tmp_path / "curl-calls.jsonl"
+    responses_file = tmp_path / "curl-responses.json"
+    responses_file.write_text(
+        json.dumps(
+            [
+                {
+                    "url_suffix": "/api/keys/me",
+                    "response": {
+                        "type": "managed",
+                        "principal_id": "alice",
+                        "prefixes": ["person/alice/shared-demo"],
+                    },
+                }
+            ]
+        )
+    )
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "MEMORIES_URL": "http://placeholder.test",
+        "MEMORIES_API_KEY": "",
+        "MEMORIES_BACKENDS_FILE": "",
+        "CLAUDE_PROJECT_DIR": "",
+        "FAKE_CURL_CALLS": str(calls_file),
+        "FAKE_CURL_RESPONSES": str(responses_file),
+        "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+    }
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1" 2>/dev/null; _memories_project_context "$2"',
+            "_",
+            str(lib),
+            str(project_dir),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    context = json.loads(result.stdout)
+    assert context["active"] is True
+    assert "backend_api_key" not in context
+    assert "backend_api_key_env" not in context
+    assert "api_key" not in context
+    assert "apiKey" not in context
+    assert "token" not in context
+    assert "never-serialize-this-secret" not in result.stdout
+    assert "never-serialize-this-secret" not in result.stderr
+
+
 def _write_fake_curl(bin_dir: Path) -> Path:
     script = bin_dir / "curl"
     script.write_text(
@@ -2238,6 +2308,15 @@ def test_active_extraction_reuses_authenticated_backend_and_credential_binding(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls_file = tmp_path / "curl-calls.jsonl"
+    trace_file = tmp_path / "extract-args.log"
+    bash_env = tmp_path / "bash-env"
+    bash_env.write_text(
+        "set -T\n"
+        "if [ -n \"${MEMORIES_TRACE_ARGS:-}\" ]; then\n"
+        "  trap 'if [ \"${FUNCNAME[0]:-}\" = \"_extract_multi\" ]; then "
+        "printf \"%s\\n\" \"$*\" >> \"$MEMORIES_TRACE_ARGS\"; fi' DEBUG\n"
+        "fi\n"
+    )
     curl = bin_dir / "curl"
     curl.write_text(
         "#!/usr/bin/env bash\n"
@@ -2276,6 +2355,8 @@ def test_active_extraction_reuses_authenticated_backend_and_credential_binding(
         "CLAUDE_PROJECT_DIR": "",
         "FAKE_CURL_CALLS": str(calls_file),
         "MUTATE_BACKENDS_FILE": str(backends_file),
+        "BASH_ENV": str(bash_env),
+        "MEMORIES_TRACE_ARGS": str(trace_file),
         "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
     }
     result = subprocess.run(
@@ -2298,6 +2379,9 @@ def test_active_extraction_reuses_authenticated_backend_and_credential_binding(
     assert extract_calls[0]["header"] == "X-API-Key: accepted-key"
     assert extract_calls[0]["body"]["promotion_context"]["mode"] == "shadow"
     assert all("changed.test" not in call["url"] for call in calls)
+    trace = trace_file.read_text() if trace_file.exists() else ""
+    assert "accepted-key" not in trace
+    assert "accepted-key" not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(
