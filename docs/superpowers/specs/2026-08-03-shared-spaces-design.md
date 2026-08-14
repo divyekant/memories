@@ -265,6 +265,10 @@ This avoids partially implementing federation. Safe federated shared projects re
 
 The product direction remains: promotion is a project setting, and an explicitly collaborative project defaults to automatic promotion once that feature is enabled. Phase 1 intentionally does not accept that setting or implement the behavior.
 
+The proposed Phase 2 design is tracked separately in
+[Shared Project Memory — Phase 2 Promotion and Reconciliation](2026-08-13-shared-project-memory-phase-2-promotion.md).
+That proposal is review material, not part of the adopted Phase 1 contract.
+
 A separate follow-up spec is required before implementation. It must resolve all of these points:
 
 1. Separate enforceable structural gates—valid project context, current write authorization, secret/credential patterns, and raw-transcript markers—from semantic model judgments such as personal preference or durable project relevance.
