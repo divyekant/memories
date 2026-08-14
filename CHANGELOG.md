@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [5.15.0] - 2026-08-13
+
 ### Added
 - **Shared project memory (Phase 1).** A strict repository declaration,
   managed principal identities, and server-authoritative authorship now let
