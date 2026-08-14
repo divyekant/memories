@@ -3222,16 +3222,29 @@ class MemoryEngine:
     # Browse / List
     # ------------------------------------------------------------------
 
-    def count_memories(self, source_prefix: Optional[str] = None) -> int:
+    def count_memories(
+        self,
+        source_prefix: Optional[str] = None,
+        source_boundary: bool = False,
+    ) -> int:
         """Count memories, optionally filtered by source prefix."""
         if not source_prefix:
             return len(self.metadata)
-        return sum(1 for m in self.metadata if m.get("source", "").startswith(source_prefix))
+        return sum(
+            1
+            for m in self.metadata
+            if self._source_matches_scope(
+                str(m.get("source", "")),
+                source_prefix,
+                source_boundary,
+            )
+        )
 
     def count_by_filter(
         self,
         source_prefix: Optional[str] = None,
         allowed_prefixes: Optional[List[str]] = None,
+        source_boundary: bool = False,
     ) -> int:
         """Count memories using Qdrant-level filtering (O(1) vs O(n) scan).
 
@@ -3240,6 +3253,7 @@ class MemoryEngine:
         query_filter = self._build_source_filter(
             source_prefix=source_prefix,
             allowed_prefixes=allowed_prefixes,
+            source_boundary=source_boundary,
         )
         if query_filter is None:
             return len(self.metadata)
@@ -3250,11 +3264,20 @@ class MemoryEngine:
         offset: int = 0,
         limit: int = 20,
         source_filter: Optional[str] = None,
+        source_boundary: bool = False,
     ) -> Dict[str, Any]:
         """List memories with pagination and optional source filter."""
         filtered = self.metadata
         if source_filter:
-            filtered = [m for m in filtered if m.get("source", "").startswith(source_filter)]
+            filtered = [
+                m
+                for m in filtered
+                if self._source_matches_scope(
+                    str(m.get("source", "")),
+                    source_filter,
+                    source_boundary,
+                )
+            ]
 
         total = len(filtered)
         page = [self._enrich_with_confidence(dict(m)) for m in filtered[offset : offset + limit]]

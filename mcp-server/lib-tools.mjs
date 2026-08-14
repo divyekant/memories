@@ -545,9 +545,10 @@ export async function resolveProjectContext(options = {}) {
     return contextFailure("invalid_principal", "authenticated principal_id must be a lowercase path-safe slug");
   }
 
-  const prefixes = identity?.prefixes === undefined || identity?.prefixes === null
-    ? []
-    : identity.prefixes;
+  const prefixesUnrestricted = identity?.role === "admin"
+    || identity?.prefixes === undefined
+    || identity?.prefixes === null;
+  const prefixes = prefixesUnrestricted ? [] : identity.prefixes;
   if (!Array.isArray(prefixes) || prefixes.some((prefix) => typeof prefix !== "string")) {
     return contextFailure("invalid_prefixes", "authenticated principal lookup returned invalid source prefixes");
   }
@@ -567,6 +568,7 @@ export async function resolveProjectContext(options = {}) {
     backendUrl,
     backendConfigOrigin: config.configOrigin || null,
     prefixes: [...prefixes],
+    prefixesUnrestricted,
     legacySourcePrefixes,
     legacy_source_prefixes: [...legacySourcePrefixes],
   };
@@ -716,6 +718,38 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     ];
   }
 
+  function projectBrowsePrefixes(projectContext) {
+    const desired = projectReadPrefixes(projectContext);
+    if (projectContext.prefixesUnrestricted) return desired;
+    const authorized = (projectContext.prefixes || []).flatMap((raw) => {
+      if (typeof raw !== "string") return [];
+      let prefix = raw.trim().replaceAll("{project}", projectContext.projectId);
+      if (prefix.endsWith("/*")) prefix = prefix.slice(0, -2);
+      prefix = prefix.replace(/\/+$/, "");
+      if (!prefix || prefix.split("/").includes("..")) return [];
+      return [prefix];
+    });
+    const intersects = [];
+    for (const scope of desired) {
+      for (const prefix of authorized) {
+        if (scope === prefix || scope.startsWith(`${prefix}/`)) {
+          intersects.push(scope);
+        } else if (prefix.startsWith(`${scope}/`)) {
+          intersects.push(prefix);
+        }
+      }
+    }
+    const unique = [];
+    for (const prefix of intersects) {
+      if (unique.some((existing) => prefix === existing || prefix.startsWith(`${existing}/`))) continue;
+      for (let index = unique.length - 1; index >= 0; index -= 1) {
+        if (unique[index].startsWith(`${prefix}/`)) unique.splice(index, 1);
+      }
+      unique.push(prefix);
+    }
+    return unique;
+  }
+
   async function projectSearchRequest(body, projectContext) {
     const prefixes = projectReadPrefixes(projectContext);
     const responses = await Promise.all(prefixes.map(async (prefix) => {
@@ -747,11 +781,38 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
     return { results: capped, count: capped.length };
   }
 
-  async function projectListRequest(offset, limit, projectContext) {
-    const prefixes = projectReadPrefixes(projectContext);
-    const responses = await Promise.all(prefixes.map(async (prefix) => {
+  async function projectScopeCounts(projectContext) {
+    const prefixes = projectBrowsePrefixes(projectContext);
+    return Promise.all(prefixes.map(async (prefix) => {
       const data = await memoriesRequest(
-        `/memories?offset=0&limit=5000&source=${encodeURIComponent(prefix)}`,
+        `/memories/count?source=${encodeURIComponent(prefix)}&source_boundary=true`,
+        {},
+        "manage",
+      );
+      return { prefix, count: Number(data.count) || 0 };
+    }));
+  }
+
+  async function projectListRequest(offset, limit, projectContext) {
+    const scopes = await projectScopeCounts(projectContext);
+    const total = scopes.reduce((sum, scope) => sum + scope.count, 0);
+    let skipped = offset;
+    let remaining = limit;
+    const pages = [];
+    for (const scope of scopes) {
+      if (remaining === 0) break;
+      if (skipped >= scope.count) {
+        skipped -= scope.count;
+        continue;
+      }
+      const pageLimit = Math.min(remaining, scope.count - skipped);
+      pages.push({ prefix: scope.prefix, offset: skipped, limit: pageLimit });
+      remaining -= pageLimit;
+      skipped = 0;
+    }
+    const responses = await Promise.all(pages.map(async ({ prefix, offset: pageOffset, limit: pageLimit }) => {
+      const data = await memoriesRequest(
+        `/memories?offset=${pageOffset}&limit=${pageLimit}&source=${encodeURIComponent(prefix)}&source_boundary=true`,
         {},
         "manage",
       );
@@ -773,8 +834,8 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       }
     }
     return {
-      memories: memories.slice(offset, offset + limit),
-      total: memories.length,
+      memories,
+      total,
       offset,
       limit,
     };
@@ -1341,8 +1402,8 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
       let data;
       let label;
       if (projectContext.active && source === undefined) {
-        const scoped = await projectListRequest(0, 5000, projectContext);
-        data = { count: scoped.total };
+        const scopes = await projectScopeCounts(projectContext);
+        data = { count: scopes.reduce((sum, scope) => sum + scope.count, 0) };
         label = `memories in project "${projectContext.projectId}"`;
       } else {
         let url = "/memories/count";

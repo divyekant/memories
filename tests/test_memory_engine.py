@@ -358,6 +358,17 @@ class TestListMemories:
         result = populated_engine.list_memories(source_filter="lang.md")
         assert result["total"] == 2
 
+    def test_list_and_count_with_source_boundary_exclude_sibling_prefix(self, engine):
+        engine.add_memories(
+            texts=["project", "sibling"],
+            sources=["codex/shared/knowledge", "codex/shared-extra/knowledge"],
+        )
+
+        listed = engine.list_memories(source_filter="codex/shared", source_boundary=True)
+
+        assert [memory["text"] for memory in listed["memories"]] == ["project"]
+        assert engine.count_memories(source_prefix="codex/shared", source_boundary=True) == 1
+
 
 class TestPersistence:
     def test_save_and_load(self, engine, tmp_path):

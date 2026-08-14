@@ -80,6 +80,39 @@ def test_search_passes_opt_in_source_boundary_to_engine(client):
     assert mock_engine.search.call_args.kwargs["source_boundary"] is True
 
 
+def test_browse_endpoints_pass_opt_in_source_boundary_to_engine(client):
+    test_client, mock_engine = client
+    mock_engine.count_memories.return_value = 1
+    mock_engine.list_memories.return_value = {
+        "memories": [{"id": 1, "source": "project/shared/knowledge", "text": "fact"}],
+        "total": 1,
+        "offset": 0,
+        "limit": 20,
+    }
+
+    count_response = test_client.get(
+        "/memories/count?source=project/shared&source_boundary=true",
+        headers={"X-API-Key": "test-key"},
+    )
+    list_response = test_client.get(
+        "/memories?source=project/shared&source_boundary=true",
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert count_response.status_code == 200
+    assert list_response.status_code == 200
+    mock_engine.count_memories.assert_called_once_with(
+        source_prefix="project/shared",
+        source_boundary=True,
+    )
+    mock_engine.list_memories.assert_called_once_with(
+        offset=0,
+        limit=20,
+        source_filter="project/shared",
+        source_boundary=True,
+    )
+
+
 def test_delete_batch_endpoint_deletes_multiple_ids(client):
     test_client, _ = client
     response = test_client.post(

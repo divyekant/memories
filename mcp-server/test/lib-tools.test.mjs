@@ -373,7 +373,13 @@ test('active memory_list without a source browses only project, current-person, 
         { id: 3, source: 'codex/shared-demo', text: 'Legacy fact' },
       ],
     };
-    const memories = bySource[source] || [];
+    const scopedMemories = bySource[source] || [];
+    const memories = requestUrl.searchParams.get('source_boundary') === 'true'
+      ? scopedMemories.filter((memory) => memory.source === source || memory.source.startsWith(`${source}/`))
+      : scopedMemories;
+    if (requestUrl.pathname.endsWith('/memories/count')) {
+      return new Response(JSON.stringify({ count: memories.length }), { status: 200 });
+    }
     return new Response(JSON.stringify({ memories, total: memories.length, offset: 0, limit: 50 }), { status: 200 });
   };
   const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
@@ -384,6 +390,9 @@ test('active memory_list without a source browses only project, current-person, 
     const result = await client.callTool({ name: 'memory_list', arguments: { limit: 20 } });
     const rendered = result.content.map((item) => item.text || '').join('\n');
     assert.deepEqual(browseSources, [
+      'project/shared-demo',
+      'person/alice/shared-demo',
+      'codex/shared-demo',
       'project/shared-demo',
       'person/alice/shared-demo',
       'codex/shared-demo',
@@ -402,6 +411,160 @@ test('active memory_list without a source browses only project, current-person, 
       'codex/shared-demo',
     ]);
     assert.match(countResult.content[0].text, /^3 memories in project "shared-demo"\.$/);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('active memory_list intersects collaborative scopes with the managed key ACL', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-list-acl-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const prefixes = [
+    'project/shared-demo/decisions',
+    'person/alice/shared-demo/knowledge',
+  ];
+  const browseSources = [];
+  const canRead = (source) => prefixes.some((prefix) => source === prefix || source.startsWith(`${prefix}/`));
+  const fetchImpl = async (url) => {
+    const requestUrl = new URL(String(url));
+    if (requestUrl.pathname.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({ type: 'managed', principal_id: 'alice', prefixes }), { status: 200 });
+    }
+    const source = requestUrl.searchParams.get('source');
+    browseSources.push(source);
+    if (!canRead(source)) {
+      return new Response(JSON.stringify({ detail: 'forbidden' }), { status: 403 });
+    }
+    if (requestUrl.pathname.endsWith('/memories/count')) {
+      return new Response(JSON.stringify({ count: 1 }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      memories: [{ id: browseSources.length, source, text: `Fact from ${source}` }],
+      total: 1,
+      offset: 0,
+      limit: 20,
+    }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({ name: 'memory_list', arguments: { limit: 20 } });
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(browseSources, [...prefixes, ...prefixes]);
+    const rendered = result.content.map((item) => item.text || '').join('\n');
+    assert.match(rendered, /project\/shared-demo\/decisions/);
+    assert.match(rendered, /person\/alice\/shared-demo\/knowledge/);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('active memory_list preserves managed admin access even with an empty prefix list', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-list-admin-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const browseSources = [];
+  const fetchImpl = async (url) => {
+    const requestUrl = new URL(String(url));
+    if (requestUrl.pathname.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({
+        type: 'managed',
+        role: 'admin',
+        principal_id: 'alice',
+        prefixes: [],
+      }), { status: 200 });
+    }
+    const source = requestUrl.searchParams.get('source');
+    browseSources.push(source);
+    if (requestUrl.pathname.endsWith('/memories/count')) {
+      return new Response(JSON.stringify({ count: 1 }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      memories: [{ id: browseSources.length, source: `${source}/knowledge`, text: `Fact from ${source}` }],
+      total: 1,
+      offset: 0,
+      limit: 20,
+    }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({ name: 'memory_list', arguments: { limit: 20 } });
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(browseSources, [
+      'project/shared-demo',
+      'person/alice/shared-demo',
+      'project/shared-demo',
+      'person/alice/shared-demo',
+    ]);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('active memory_list and memory_count use server pagination beyond five thousand records', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mem-project-list-page-'));
+  await mkdir(join(dir, '.memories'), { recursive: true });
+  await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const calls = [];
+  const total = 6001;
+  const fetchImpl = async (url) => {
+    const requestUrl = new URL(String(url));
+    if (requestUrl.pathname.endsWith('/api/keys/me')) {
+      return new Response(JSON.stringify({
+        type: 'managed',
+        principal_id: 'alice',
+        prefixes: ['project/shared-demo/'],
+      }), { status: 200 });
+    }
+    calls.push({
+      path: requestUrl.pathname,
+      source: requestUrl.searchParams.get('source'),
+      offset: requestUrl.searchParams.get('offset'),
+      limit: requestUrl.searchParams.get('limit'),
+      sourceBoundary: requestUrl.searchParams.get('source_boundary'),
+    });
+    if (requestUrl.pathname.endsWith('/memories/count')) {
+      return new Response(JSON.stringify({ count: total }), { status: 200 });
+    }
+    const offset = Number(requestUrl.searchParams.get('offset'));
+    const limit = Number(requestUrl.searchParams.get('limit'));
+    const memories = Array.from({ length: Math.min(limit, total - offset) }, (_, index) => ({
+      id: offset + index,
+      source: 'project/shared-demo/knowledge',
+      text: `Fact ${offset + index}`,
+    }));
+    return new Response(JSON.stringify({ memories, total, offset, limit }), { status: 200 });
+  };
+  const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    const result = await client.callTool({ name: 'memory_list', arguments: { offset: 5999, limit: 2 } });
+    assert.equal(result.isError, undefined);
+    assert.match(result.content[0].text, /Memories \(6000-6001 of 6001\)/);
+    assert.match(result.content[0].text, /Fact 5999/);
+    assert.match(result.content[0].text, /Fact 6000/);
+
+    calls.length = 0;
+    const countResult = await client.callTool({ name: 'memory_count', arguments: {} });
+    assert.match(countResult.content[0].text, /^6001 memories in project "shared-demo"\.$/);
+    assert.deepEqual(calls, [{
+      path: '/memories/count',
+      source: 'project/shared-demo',
+      offset: null,
+      limit: null,
+      sourceBoundary: 'true',
+    }]);
   } finally {
     await client.close();
     await server.close();

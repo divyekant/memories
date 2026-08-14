@@ -366,7 +366,11 @@ def _require_admin(auth: AuthContext) -> None:
         raise HTTPException(status_code=403, detail="Admin key required")
 
 
-def _count_accessible_memories(auth: AuthContext, source_prefix: Optional[str] = None) -> Optional[int]:
+def _count_accessible_memories(
+    auth: AuthContext,
+    source_prefix: Optional[str] = None,
+    source_boundary: bool = False,
+) -> Optional[int]:
     """Count memories visible to this auth context.
 
     Uses Qdrant-level filtered count when available (O(1) via payload index),
@@ -382,6 +386,7 @@ def _count_accessible_memories(auth: AuthContext, source_prefix: Optional[str] =
             result = count_by_filter(
                 source_prefix=source_prefix,
                 allowed_prefixes=auth.prefixes,
+                source_boundary=source_boundary,
             )
             if isinstance(result, int):
                 return result
@@ -398,7 +403,11 @@ def _count_accessible_memories(auth: AuthContext, source_prefix: Optional[str] =
         if not isinstance(record, dict):
             continue
         source = str(record.get("source", ""))
-        if source_prefix and not source.startswith(source_prefix):
+        if source_prefix and not (
+            source == source_prefix
+            or (not source_boundary and source.startswith(source_prefix))
+            or (source_boundary and source.startswith(source_prefix + "/"))
+        ):
             continue
         if auth.can_read(source):
             total += 1
@@ -2961,6 +2970,7 @@ async def is_novel(request_body: IsNovelRequest, request: Request):
 async def count_memories(
     request: Request,
     source: Optional[str] = Query(None, max_length=500),
+    source_boundary: bool = Query(False),
 ):
     """Count memories, optionally filtered by source prefix."""
     auth = _get_auth(request)
@@ -2968,9 +2978,16 @@ async def count_memories(
         raise HTTPException(status_code=403, detail=f"Key does not have read access to source: {source}")
 
     if auth.prefixes is None:
-        count = memory.count_memories(source_prefix=source)
+        count_kwargs: Dict[str, Any] = {"source_prefix": source}
+        if source_boundary:
+            count_kwargs["source_boundary"] = True
+        count = memory.count_memories(**count_kwargs)
     else:
-        scoped_count = _count_accessible_memories(auth, source_prefix=source)
+        scoped_count = _count_accessible_memories(
+            auth,
+            source_prefix=source,
+            source_boundary=source_boundary,
+        )
         count = scoped_count if scoped_count is not None else 0
     return {"count": count}
 
@@ -2981,6 +2998,7 @@ async def list_memories(
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=5000),
     source: Optional[str] = Query(None, max_length=500),
+    source_boundary: bool = Query(False),
     pinned: Optional[bool] = Query(None),
 ):
     """List memories with pagination and optional source/pinned filter"""
@@ -2988,13 +3006,24 @@ async def list_memories(
     if source and not auth.can_read(source):
         raise HTTPException(status_code=403, detail=f"Key does not have read access to source: {source}")
 
-    result = memory.list_memories(offset=offset, limit=limit, source_filter=source)
+    list_kwargs: Dict[str, Any] = {
+        "offset": offset,
+        "limit": limit,
+        "source_filter": source,
+    }
+    if source_boundary:
+        list_kwargs["source_boundary"] = True
+    result = memory.list_memories(**list_kwargs)
     filtered_memories = auth.filter_results(result.get("memories", []))
     if pinned is not None:
         filtered_memories = [m for m in filtered_memories if m.get("pinned") == pinned]
     result["memories"] = filtered_memories
     if auth.prefixes is not None:
-        scoped_total = _count_accessible_memories(auth, source_prefix=source)
+        scoped_total = _count_accessible_memories(
+            auth,
+            source_prefix=source,
+            source_boundary=source_boundary,
+        )
         result["total"] = scoped_total if scoped_total is not None else len(filtered_memories)
     return result
 
