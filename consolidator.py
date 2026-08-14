@@ -15,7 +15,9 @@ from project_memory import (
     TrustedAuthorship,
     is_project_namespace_prefix,
     is_reserved_namespace_source,
+    parse_memory_source,
 )
+from project_promotion import is_promotion_maintenance_protected
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,7 @@ def find_clusters(
     similarity_threshold: float = 0.75,
     min_cluster_size: int = 3,
     max_candidates: int = 500,
+    rejected_retention_days: int = 90,
 ) -> List[List[Dict]]:
     """Group memories by semantic similarity into clusters.
 
@@ -71,6 +74,14 @@ def find_clusters(
         if not m:
             continue
         if m.get("pinned") or m.get("archived"):
+            continue
+        parsed_source = parse_memory_source(m.get("source"))
+        if parsed_source is not None and parsed_source.is_project:
+            continue
+        if is_promotion_maintenance_protected(
+            m,
+            rejected_retention_days=rejected_retention_days,
+        ):
             continue
         if source_prefix and not m.get("source", "").startswith(source_prefix):
             continue
@@ -317,6 +328,7 @@ def find_prune_candidates(
     unretrieved_ids: List[int],
     detail_days: int = 60,
     decision_days: int = 120,
+    rejected_retention_days: int = 90,
 ) -> List[Dict]:
     """Identify stale, unretrieved memories that are candidates for pruning.
 
@@ -338,6 +350,12 @@ def find_prune_candidates(
         if not mem:
             continue
         if is_project_namespace_prefix(mem.get("source")):
+            continue
+        if is_promotion_maintenance_protected(
+            mem,
+            now=now,
+            rejected_retention_days=rejected_retention_days,
+        ):
             continue
         # Pinned memories are operator-protected; archived memories are
         # supersede-chain version history. Neither is ever prunable.

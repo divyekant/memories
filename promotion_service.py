@@ -11,10 +11,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+from collections import Counter
 import json
 import logging
 import math
 import re
+import threading
+import time
 from typing import Any, Callable, Iterable, Mapping
 
 from auth_context import AuthContext
@@ -40,6 +43,7 @@ from project_promotion import (
     canonical_project_text,
     load_promotion_config,
     project_text_digest,
+    is_promotion_maintenance_protected,
     promotion_state_from_memory,
     resolve_effective_mode,
 )
@@ -392,6 +396,7 @@ class PromotionService:
         self.current_context = current_context
         self.project_mode = project_mode
         self.declaration_fingerprint = declaration_fingerprint
+        self._reconcile_lock = threading.Lock()
         if reviewer is None:
             reviewer_name = config.review_provider or getattr(extract_provider, "provider_name", None)
             reviewer_model = config.review_model or getattr(extract_provider, "model", None)
@@ -874,6 +879,206 @@ class PromotionService:
             expected_statuses=[state.status],
         )
         return self._candidate_view(self.engine.get_memory(candidate_id), next_state)
+
+    # -- maintenance and observability ----------------------------------
+
+    def reconcile(
+        self,
+        *,
+        max_candidates: int,
+        budget_seconds: float,
+    ) -> dict[str, Any]:
+        """Repair and advance a bounded cohort without persisting evidence."""
+        if (
+            isinstance(max_candidates, bool)
+            or not isinstance(max_candidates, int)
+            or max_candidates < 1
+        ):
+            raise ValueError("max_candidates must be a positive integer")
+        if (
+            isinstance(budget_seconds, bool)
+            or not isinstance(budget_seconds, (int, float))
+            or not math.isfinite(float(budget_seconds))
+            or budget_seconds <= 0
+        ):
+            raise ValueError("budget_seconds must be positive")
+        result = {
+            "processed": 0,
+            "promoted": 0,
+            "repaired": 0,
+            "unreviewable": 0,
+            "skipped": 0,
+            "errors": 0,
+            "budget_exhausted": False,
+            "busy": False,
+        }
+        if not self._reconcile_lock.acquire(blocking=False):
+            result["busy"] = True
+            return result
+        deadline = time.monotonic() + float(budget_seconds)
+        try:
+            candidate_ids = []
+            for memory in list(getattr(self.engine, "metadata", ())):
+                if not isinstance(memory, Mapping):
+                    continue
+                state = promotion_state_from_memory(memory)
+                memory_id = memory.get("id")
+                if state is not None and isinstance(memory_id, int):
+                    candidate_ids.append(memory_id)
+            candidate_ids.sort()
+            for candidate_id in candidate_ids:
+                if result["processed"] >= max_candidates:
+                    break
+                if time.monotonic() >= deadline:
+                    result["budget_exhausted"] = True
+                    break
+                result["processed"] += 1
+                try:
+                    candidate, state = self._candidate(candidate_id)
+                    linked = self._find_target_by_source_memory(state, candidate_id)
+                    if linked is not None or state.status is PromotionStatus.PROMOTED:
+                        self.promote(candidate_id)
+                        result["repaired"] += 1
+                        continue
+                    if (
+                        state.status is PromotionStatus.SHADOW_APPROVED
+                        and self._effective_mode(state) is PromotionMode.AUTO
+                        and self._policy_is_current(state)
+                    ):
+                        self.promote(candidate_id)
+                        result["promoted"] += 1
+                        continue
+                    if (
+                        state.status in {PromotionStatus.CANDIDATE, PromotionStatus.FAILED}
+                        and state.review is not None
+                        and state.review.decision is ReviewDecision.APPROVE
+                        and self._effective_mode(state) is PromotionMode.AUTO
+                        and self._policy_is_current(state)
+                    ):
+                        self.promote(candidate_id)
+                        result["promoted"] += 1
+                        continue
+                    if state.status in {PromotionStatus.CANDIDATE, PromotionStatus.FAILED} and state.review is None:
+                        review = _safe_review(
+                            ReviewDecision.DEFER,
+                            0.0,
+                            "review evidence unavailable",
+                            reviewer_version=self._current_reviewer_version(state.project_id),
+                        )
+                        next_state = replace(
+                            state,
+                            status=PromotionStatus.UNREVIEWABLE,
+                            review=review,
+                            attempt_count=state.attempt_count + 1,
+                        )
+                        self.engine.update_promotion_state(
+                            candidate_id,
+                            next_state,
+                            expected_source=candidate["source"],
+                            expected_statuses=[state.status],
+                        )
+                        result["unreviewable"] += 1
+                        continue
+                    result["skipped"] += 1
+                except Exception as exc:
+                    result["errors"] += 1
+                    logger.warning(
+                        "Promotion reconciliation left candidate %s private: %s",
+                        candidate_id,
+                        exc,
+                    )
+            return result
+        finally:
+            self._reconcile_lock.release()
+
+    def metrics_snapshot(self) -> dict[str, Any]:
+        """Return workflow-derived counters and alerts without private payloads."""
+        now = datetime.now(timezone.utc)
+        statuses: Counter[str] = Counter()
+        routes: Counter[str] = Counter()
+        principals: Counter[str] = Counter()
+        policies: Counter[str] = Counter()
+        project_kinds: Counter[str] = Counter()
+        unreviewable_recent = 0
+        oldest_unreviewable_hours = 0.0
+        retention_expirations = 0
+        exact_reuse_count = 0
+        promoted_count = 0
+
+        for memory in list(getattr(self.engine, "metadata", ())):
+            if not isinstance(memory, Mapping):
+                continue
+            parsed = parse_memory_source(memory.get("source"))
+            if parsed is not None and parsed.is_project and not memory.get("archived"):
+                project_kinds[parsed.kind or "unknown"] += 1
+                source_ids = memory.get("source_memory_ids", [])
+                if isinstance(source_ids, list) and len(source_ids) > 1:
+                    exact_reuse_count += 1
+            state = promotion_state_from_memory(memory)
+            if state is None:
+                continue
+            statuses[state.status.value] += 1
+            routes[state.route or "none"] += 1
+            principals[state.owner] += 1
+            reviewer_version = (
+                state.review.reviewer_version
+                if state.review is not None
+                else state.reviewer_version
+            )
+            policies[f"{state.proposal.classifier_version if state.proposal else 'none'}|{reviewer_version}"] += 1
+            if state.status is PromotionStatus.PROMOTED:
+                promoted_count += 1
+            if state.status is PromotionStatus.REJECTED and not is_promotion_maintenance_protected(
+                memory,
+                now=now,
+                rejected_retention_days=self.config.rejected_retention_days,
+            ):
+                retention_expirations += 1
+            if state.status is PromotionStatus.UNREVIEWABLE:
+                try:
+                    captured = datetime.fromisoformat(state.captured_at.replace("Z", "+00:00"))
+                    if captured.tzinfo is None:
+                        captured = captured.replace(tzinfo=timezone.utc)
+                    age_hours = max(0.0, (now - captured).total_seconds() / 3600)
+                    oldest_unreviewable_hours = max(oldest_unreviewable_hours, age_hours)
+                    transition_value = memory.get("updated_at") or state.captured_at
+                    transitioned = datetime.fromisoformat(str(transition_value).replace("Z", "+00:00"))
+                    if transitioned.tzinfo is None:
+                        transitioned = transitioned.replace(tzinfo=timezone.utc)
+                    transition_age_hours = max(
+                        0.0,
+                        (now - transitioned).total_seconds() / 3600,
+                    )
+                    if transition_age_hours <= self.config.unreviewable_rate_window_hours:
+                        unreviewable_recent += 1
+                except (TypeError, ValueError):
+                    pass
+
+        return {
+            "status_counts": dict(statuses),
+            "outcomes_by_route": dict(routes),
+            "outcomes_by_principal": dict(principals),
+            "outcomes_by_policy": dict(policies),
+            "project_count_by_kind": dict(project_kinds),
+            "exact_reuse_count": exact_reuse_count,
+            "exact_reuse_rate": (
+                exact_reuse_count / promoted_count if promoted_count else 0.0
+            ),
+            "semantic_near_duplicate_count": 0,
+            "semantic_near_duplicate_rate": 0.0,
+            "unreviewable_count": statuses.get(PromotionStatus.UNREVIEWABLE.value, 0),
+            "oldest_unreviewable_age_hours": round(oldest_unreviewable_hours, 3),
+            "terminal_retention_expirations": retention_expirations,
+            "alerts": {
+                "unreviewable_rate_alert": (
+                    unreviewable_recent >= self.config.unreviewable_rate_count
+                ),
+                "unreviewable_backlog_alert": (
+                    oldest_unreviewable_hours
+                    >= self.config.unreviewable_backlog_age_hours
+                ),
+            },
+        }
 
     # -- promotion ------------------------------------------------------
 

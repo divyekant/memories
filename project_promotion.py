@@ -9,6 +9,7 @@ or its policy identity after it has crossed a persistence boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import hashlib
 import json
@@ -586,6 +587,44 @@ def promotion_state_from_memory(memory: Mapping[str, Any]) -> PromotionState | N
         return None
 
 
+def is_promotion_maintenance_protected(
+    memory: Mapping[str, Any],
+    now: datetime | None = None,
+    rejected_retention_days: int = 90,
+) -> bool:
+    """Return whether workflow state must be excluded from destructive upkeep."""
+    state = promotion_state_from_memory(memory)
+    if state is None:
+        return False
+    if state.status in {
+        PromotionStatus.CANDIDATE,
+        PromotionStatus.SHADOW_APPROVED,
+        PromotionStatus.DEFERRED,
+        PromotionStatus.FAILED,
+        PromotionStatus.UNREVIEWABLE,
+    }:
+        return True
+    if state.status is not PromotionStatus.REJECTED:
+        return False
+    if isinstance(rejected_retention_days, bool) or rejected_retention_days < 0:
+        return True
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    timestamp = (
+        state.review.reviewed_at
+        if state.review is not None
+        else memory.get("updated_at") or state.captured_at
+    )
+    try:
+        rejected_at = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return True
+    if rejected_at.tzinfo is None:
+        rejected_at = rejected_at.replace(tzinfo=timezone.utc)
+    return reference - rejected_at <= timedelta(days=rejected_retention_days)
+
+
 def canonical_project_text(text: str) -> str:
     """Canonicalize only Unicode, line-ending, and whitespace differences."""
 
@@ -759,6 +798,7 @@ __all__ = [
     "ReviewDecision",
     "REVIEWER_VERSION",
     "canonical_project_text",
+    "is_promotion_maintenance_protected",
     "load_promotion_config",
     "parse_proposal",
     "project_text_digest",

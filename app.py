@@ -1093,7 +1093,10 @@ def _run_scheduled_consolidation():
     logger.info("Maintenance started: consolidation, RSS=%.0fMB", rss_start)
 
     from consolidator import find_clusters, consolidate_cluster
-    clusters = find_clusters(memory)
+    clusters = find_clusters(
+        memory,
+        rejected_retention_days=promotion_config.rejected_retention_days,
+    )
     for cluster in clusters:
         consolidate_cluster(extract_provider, memory, cluster, dry_run=False)
 
@@ -1131,7 +1134,11 @@ def _run_scheduled_pruning():
     all_mems = [m for m in memory.metadata if m]
     all_ids = [m["id"] for m in all_mems]
     unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
-    candidates = find_prune_candidates(all_mems, unretrieved)
+    candidates = find_prune_candidates(
+        all_mems,
+        unretrieved,
+        rejected_retention_days=promotion_config.rejected_retention_days,
+    )
     deleted = 0
     skipped = 0
     for c in candidates:
@@ -1177,11 +1184,22 @@ def _run_scheduled_conflict_drain():
     return result["resolved_count"]
 
 
+def _run_scheduled_promotion_reconciliation():
+    """Run one bounded promotion repair pass inside the maintenance worker."""
+    if promotion_service is None:
+        return {"processed": 0, "skipped": True}
+    return promotion_service.reconcile(
+        max_candidates=promotion_config.reconcile_batch,
+        budget_seconds=promotion_config.reconcile_budget_seconds,
+    )
+
+
 async def _maintenance_scheduler():
     """Run consolidation + conflict drain daily and pruning weekly."""
     _last_consolidation_date = None
     _last_prune_date = None
     _last_conflict_date = None
+    _last_promotion_date = None
     while True:
         now = datetime.now(timezone.utc)
         today = now.date()
@@ -1203,6 +1221,22 @@ async def _maintenance_scheduler():
                 logger.info("Scheduled conflict drain complete: %d resolved", n)
             except Exception:
                 logger.exception("Scheduled conflict drain failed")
+        # Promotion reconciliation: daily at 3:45 AM UTC. This pass remains
+        # useful with the host cap off because it can repair an already-created
+        # target without initiating a new shared write.
+        if now.hour == 3 and 45 <= now.minute < 50 and _last_promotion_date != today:
+            _last_promotion_date = today
+            try:
+                logger.info("Running scheduled promotion reconciliation")
+                result = await run_in_threadpool(
+                    _run_scheduled_promotion_reconciliation
+                )
+                logger.info(
+                    "Scheduled promotion reconciliation complete: %d processed",
+                    int(result.get("processed", 0)),
+                )
+            except Exception:
+                logger.exception("Scheduled promotion reconciliation failed")
         # Pruning: Sunday at 4 AM UTC (once per week)
         if now.weekday() == 6 and now.hour == 4 and now.minute < 5 and _last_prune_date != today:
             _last_prune_date = today
@@ -1862,7 +1896,7 @@ async def metrics(request: Request):
     _record_memory_sample(current_total)
 
     snapshot = _build_metrics_snapshot()
-    return {
+    response = {
         "uptime_sec": int(time.time() - metrics_started_at),
         "extract": {
             "queue_depth": extract_queue.qsize(),
@@ -1880,6 +1914,9 @@ async def metrics(request: Request):
         "requests": snapshot["requests"],
         "routes": snapshot["routes"],
     }
+    if promotion_service is not None:
+        response["promotion"] = promotion_service.metrics_snapshot()
+    return response
 
 
 @app.get("/usage")
@@ -2326,7 +2363,11 @@ async def consolidate(
     if not extract_provider:
         raise HTTPException(503, "No LLM provider configured for consolidation")
     from consolidator import find_clusters, consolidate_cluster
-    clusters = find_clusters(memory, source_prefix=source_prefix)
+    clusters = find_clusters(
+        memory,
+        source_prefix=source_prefix,
+        rejected_retention_days=promotion_config.rejected_retention_days,
+    )
     results = []
     try:
         for cluster in clusters:
@@ -2350,7 +2391,11 @@ async def prune(request: Request, dry_run: bool = Query(True)):
     all_ids = [m["id"] for m in all_mems]
     unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
     from consolidator import find_prune_candidates
-    candidates = find_prune_candidates(all_mems, unretrieved)
+    candidates = find_prune_candidates(
+        all_mems,
+        unretrieved,
+        rejected_retention_days=promotion_config.rejected_retention_days,
+    )
     pruned = 0
     if not dry_run:
         for c in candidates:
