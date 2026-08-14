@@ -10,7 +10,7 @@ provider credentials.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections import Counter
 import json
 import logging
@@ -593,6 +593,11 @@ class PromotionService:
             status=status,
             review=review,
             attempt_count=state.attempt_count + 1,
+            rejected_until=(
+                (datetime.now(timezone.utc) + timedelta(days=self.config.rejected_retention_days)).isoformat()
+                if status is PromotionStatus.REJECTED
+                else state.rejected_until
+            ),
         )
         result = self.engine.update_promotion_state(
             candidate_id,
@@ -717,6 +722,10 @@ class PromotionService:
         expected_status: PromotionStatus | None = None
         if status is not None:
             expected_status = status if isinstance(status, PromotionStatus) else PromotionStatus(status)
+        if since is not None and since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        if until is not None and until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
         visible: list[dict[str, Any]] = []
         for raw_candidate in getattr(self.engine, "metadata", ()):
             if not isinstance(raw_candidate, Mapping):
@@ -871,6 +880,10 @@ class PromotionService:
             status=PromotionStatus.REJECTED,
             review=review,
             attempt_count=state.attempt_count + 1,
+            rejected_until=(
+                datetime.now(timezone.utc)
+                + timedelta(days=self.config.rejected_retention_days)
+            ).isoformat(),
         )
         self.engine.update_promotion_state(
             candidate_id,

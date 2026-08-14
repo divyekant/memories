@@ -611,6 +611,16 @@ def is_promotion_maintenance_protected(
     reference = now or datetime.now(timezone.utc)
     if reference.tzinfo is None:
         reference = reference.replace(tzinfo=timezone.utc)
+    if state.rejected_until is not None:
+        try:
+            rejected_until = datetime.fromisoformat(
+                state.rejected_until.replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            return True
+        if rejected_until.tzinfo is None:
+            rejected_until = rejected_until.replace(tzinfo=timezone.utc)
+        return reference <= rejected_until
     timestamp = (
         state.review.reviewed_at
         if state.review is not None
