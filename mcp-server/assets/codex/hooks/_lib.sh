@@ -3,6 +3,12 @@
 
 MEMORIES_LOG="${MEMORIES_LOG:-$HOME/.config/memories/hook.log}"
 
+# Private in-process binding for active project extraction.  This is populated
+# only when the extraction hook invokes _memories_project_context in its own
+# shell; it is deliberately absent from the emitted context JSON and hook
+# arguments so credentials cannot cross that boundary.
+_MEMORIES_PROJECT_BACKEND_SNAPSHOT=""
+
 _log() {
   local level="$1" msg="$2"
   local logdir
@@ -215,6 +221,31 @@ _memories_resolve_project() {
 # parser deliberately small and dependency-free because packaged hooks may be
 # copied away from the MCP npm install (and therefore cannot assume Node or
 # js-yaml is present).
+_memories_yaml_strip_comment() {
+  local value="${1:-}" i=0 ch prev="" quote="" cut=""
+  value=$(printf '%s' "$value" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
+  while [ "$i" -lt "${#value}" ]; do
+    ch="${value:$i:1}"
+    if [ -n "$quote" ]; then
+      if [ "$ch" = "$quote" ] && [ "$prev" != "\\" ]; then
+        quote=""
+      fi
+    else
+      case "$ch" in
+        \"|\') quote="$ch" ;;
+        \#)
+          case "$prev" in
+            " "|$'\t') cut="${value:0:$i}"; value="$cut"; break ;;
+          esac
+          ;;
+      esac
+    fi
+    prev="$ch"
+    i=$((i + 1))
+  done
+  printf '%s' "$(printf '%s' "$value" | sed -E 's/[[:space:]]+$//')"
+}
+
 _memories_parse_project_yaml() {
   local file="$1"
   [ -f "$file" ] || {
@@ -222,31 +253,70 @@ _memories_parse_project_yaml() {
     return 0
   }
 
-  local project_id="" shared_memory="" seen_project=0 seen_shared=0 seen_any=0
-  local raw line key value
+  local project_id="" shared_memory="" promotion_mode="off"
+  local seen_project=0 seen_shared=0 seen_promotion=0 seen_any=0
+  local in_promotion=0 seen_mode=0
+  local raw line key value nested_key nested_value inner
   while IFS= read -r raw || [ -n "$raw" ]; do
     line="${raw%$'\r'}"
     line=$(printf '%s' "$line" | sed 's/[[:space:]]*$//')
     case "$line" in
-      ''|'#'*) continue ;;
+      ''|'#'*|[[:space:]]'#'*) continue ;;
     esac
-    # Top-level scalar mappings only; nested YAML is not part of the contract.
+    case "$line" in
+      *$'\t'*)
+        jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration contains malformed indentation"}'
+        return 0
+        ;;
+    esac
+    if [ "$in_promotion" -eq 1 ]; then
+      case "$line" in
+        [[:space:]]*)
+          if ! printf '%s' "$line" | grep -qE '^[[:space:]]+[A-Za-z_][A-Za-z0-9_-]*:'; then
+            jq -nc '{ok:false,reason:"malformed",diagnostic:"project promotion must be a YAML mapping"}'
+            return 0
+          fi
+          nested_key=$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/:.*//')
+          nested_value=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*[^:]*:[[:space:]]*//')
+          nested_value=$(_memories_yaml_strip_comment "$nested_value")
+          case "$nested_key" in
+            mode)
+              [ "$seen_mode" -eq 0 ] || {
+                jq -nc '{ok:false,reason:"malformed",diagnostic:"promotion.mode is declared more than once"}'
+                return 0
+              }
+              seen_mode=1
+              promotion_mode="$nested_value"
+              ;;
+            *)
+              jq -nc --arg key "$nested_key" '{ok:false,reason:"unknown_field",diagnostic:("unknown project promotion field: " + $key)}'
+              return 0
+              ;;
+          esac
+          continue
+          ;;
+        *)
+          [ "$seen_mode" -eq 1 ] || {
+            jq -nc '{ok:false,reason:"missing_field",diagnostic:"missing project promotion field: mode"}'
+            return 0
+          }
+          in_promotion=0
+          ;;
+      esac
+    fi
     case "$line" in
       [[:space:]]*)
         jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration must contain only top-level fields"}'
         return 0
         ;;
     esac
-    if ! printf '%s' "$line" | grep -qE '^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*[^:]*([[:space:]]+#.*)?$'; then
+    if ! printf '%s' "$line" | grep -qE '^[A-Za-z_][A-Za-z0-9_-]*:'; then
       jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration contains malformed YAML"}'
       return 0
     fi
     key=$(printf '%s' "$line" | sed 's/:.*//')
-    value=$(printf '%s' "$line" | sed -E 's/^[^:]*:[[:space:]]*//;s/[[:space:]]*$//')
-    case "$value" in
-      \"*\"|\'*\' ) ;;
-      *) value=$(printf '%s' "$value" | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//') ;;
-    esac
+    value=$(printf '%s' "$line" | sed -E 's/^[^:]*:[[:space:]]*//')
+    value=$(_memories_yaml_strip_comment "$value")
     seen_any=1
     case "$key" in
       project_id)
@@ -265,13 +335,46 @@ _memories_parse_project_yaml() {
         seen_shared=1
         shared_memory="$value"
         ;;
+      promotion)
+        [ "$seen_promotion" -eq 0 ] || {
+          jq -nc '{ok:false,reason:"malformed",diagnostic:"promotion is declared more than once"}'
+          return 0
+        }
+        seen_promotion=1
+        case "$value" in
+          "") in_promotion=1 ;;
+          \{*\})
+            inner="${value:1:${#value}-2}"
+            inner=$(printf '%s' "$inner" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
+            [ -n "$inner" ] || {
+              jq -nc '{ok:false,reason:"missing_field",diagnostic:"missing project promotion field: mode"}'
+              return 0
+            }
+            if ! printf '%s' "$inner" | grep -qE '^mode[[:space:]]*:[[:space:]]*[^,}]+$'; then
+              jq -nc '{ok:false,reason:"unknown_field",diagnostic:"unknown project promotion field"}'
+              return 0
+            fi
+            nested_value=$(printf '%s' "$inner" | sed -E 's/^mode[[:space:]]*:[[:space:]]*//')
+            nested_value=$(_memories_yaml_strip_comment "$nested_value")
+            promotion_mode="$nested_value"
+            seen_mode=1
+            ;;
+          *)
+            jq -nc '{ok:false,reason:"promotion_not_mapping",diagnostic:"promotion must be a YAML mapping"}'
+            return 0
+            ;;
+        esac
+        ;;
       *)
         jq -nc --arg key "$key" '{ok:false,reason:"unknown_field",diagnostic:("unknown project declaration field: " + $key)}'
         return 0
         ;;
     esac
   done < "$file"
-
+  [ "$in_promotion" -eq 0 ] || [ "$seen_mode" -eq 1 ] || {
+    jq -nc '{ok:false,reason:"missing_field",diagnostic:"missing project promotion field: mode"}'
+    return 0
+  }
   [ "$seen_any" -eq 1 ] || {
     jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration must be a YAML mapping"}'
     return 0
@@ -281,9 +384,12 @@ _memories_parse_project_yaml() {
       '{ok:false,reason:"missing_field",diagnostic:("missing project declaration field: " + $missing)}'
     return 0
   fi
-  local project_quoted=0
+  local project_quoted=0 canonical fingerprint
   case "$project_id" in
     \"*\"|\'*\') project_quoted=1; project_id="${project_id:1:${#project_id}-2}" ;;
+  esac
+  case "$promotion_mode" in
+    \"*\"|\'*\') promotion_mode="${promotion_mode:1:${#promotion_mode}-2}" ;;
   esac
   case "$project_id" in
     \[*|\{*)
@@ -307,11 +413,29 @@ _memories_parse_project_yaml() {
   case "$shared_memory" in
     true|True|TRUE|'!!bool true'|'!!bool True'|'!!bool TRUE') ;;
     *)
-    jq -nc '{ok:false,reason:"shared_memory_not_true",diagnostic:"shared_memory must be the YAML boolean true"}'
-    return 0
-    ;;
+      jq -nc '{ok:false,reason:"shared_memory_not_true",diagnostic:"shared_memory must be the YAML boolean true"}'
+      return 0
+      ;;
   esac
-  jq -nc --arg id "$project_id" '{ok:true,projectId:$id,project_id:$id,sharedMemory:true,shared_memory:true}'
+  case "$promotion_mode" in
+    off|shadow|auto) ;;
+    *)
+      jq -nc '{ok:false,reason:"unsupported_promotion_mode",diagnostic:"promotion.mode must be off, shadow, or auto"}'
+      return 0
+      ;;
+  esac
+  canonical=$(jq -nc --arg id "$project_id" --arg mode "$promotion_mode" \
+    '{project_id:$id,shared_memory:true,promotion:{mode:$mode}}') || {
+      jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration fingerprint could not be computed"}'
+      return 0
+    }
+  fingerprint=$(_hash_for_metrics "$canonical")
+  [ -n "$fingerprint" ] || {
+    jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration fingerprint could not be computed"}'
+    return 0
+  }
+  jq -nc --arg id "$project_id" --arg mode "$promotion_mode" --arg fp "$fingerprint" \
+    '{ok:true,projectId:$id,project_id:$id,sharedMemory:true,shared_memory:true,promotionMode:$mode,promotion_mode:$mode,declarationFingerprint:$fp,declaration_fingerprint:$fp}'
 }
 
 _memories_project_file() {
@@ -328,19 +452,17 @@ _memories_project_file() {
 # a second time on every invocation while preserving fail-closed behavior for
 # a valid declaration whose backend identity is unavailable.
 _memories_project_context_declared() {
-  local context="${1:-}" active reason
+  local context="${1:-}" active reason declaration_present
   [ -n "$context" ] || context='{}'
   active=$(printf '%s' "$context" | jq -r '.active // false' 2>/dev/null) || return 1
   [ "$active" = "true" ] && return 0
-  reason=$(printf '%s' "$context" | jq -r '.reason // "missing"' 2>/dev/null) || return 1
-  case "$reason" in
-    missing|malformed|unreadable|unknown_field|missing_field|invalid_project_id|shared_memory_not_true)
-      return 1
-      ;;
-    *)
-      return 0
-      ;;
+  declaration_present=$(printf '%s' "$context" | jq -r '.declaration_present // empty' 2>/dev/null) || return 1
+  case "$declaration_present" in
+    true) return 0 ;;
+    false) return 1 ;;
   esac
+  reason=$(printf '%s' "$context" | jq -r '.reason // "missing"' 2>/dev/null) || return 1
+  [ "$reason" != "missing" ]
 }
 
 _memories_project_backends_file() {
@@ -487,34 +609,35 @@ _memories_project_backend_config() {
 _memories_project_context() {
   local cwd="${1:-${CWD:-$PWD}}"
   local file parsed
+  _MEMORIES_PROJECT_BACKEND_SNAPSHOT=""
   file=$(_memories_project_file "$cwd" 2>/dev/null) || {
-    jq -nc '{active:false,reason:"missing",diagnostic:"no .memories/project.yaml at the repository boundary"}'
+    jq -nc '{active:false,declaration_present:false,reason:"missing",diagnostic:"no .memories/project.yaml at the repository boundary"}'
     return 0
   }
   parsed=$(_memories_parse_project_yaml "$file")
   if [ "$(printf '%s' "$parsed" | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
-    printf '%s' "$parsed" | jq -c '{active:false,reason:(.reason // "malformed"),diagnostic:(.diagnostic // "invalid project declaration")}'
+    printf '%s' "$parsed" | jq -c '{active:false,declaration_present:true,reason:(.reason // "malformed"),diagnostic:(.diagnostic // "invalid project declaration")}'
     return 0
   fi
 
   # Load exactly the backend set the hooks already use for this payload cwd.
-  # This function runs in command-substitution scope, so its temporary cache
-  # cannot alter the caller's legacy routing state.
+  # Query/recall invoke this in command-substitution scope, so the private
+  # binding below cannot alter their legacy routing state.
   local project_config backends count backend url key response http_status body identity principal config_origin call_budget
   project_config=$(_memories_project_backend_config "$cwd" 2>/dev/null) || project_config='{"backends":[]}'
   if [ "$(printf '%s' "$project_config" | jq -r '.error.reason // empty' 2>/dev/null)" ]; then
-    printf '%s' "$project_config" | jq -c '{active:false,reason:.error.reason,diagnostic:.error.diagnostic}'
+    printf '%s' "$project_config" | jq -c '{active:false,declaration_present:true,reason:.error.reason,diagnostic:.error.diagnostic}'
     return 0
   fi
   backends=$(printf '%s' "$project_config" | jq -c '.backends // []' 2>/dev/null) || backends="[]"
   count=$(printf '%s' "$backends" | jq 'length' 2>/dev/null) || count=0
   if [ "$count" -eq 0 ]; then
-    jq -nc '{active:false,reason:"no_backends",diagnostic:"no backend configuration is available"}'
+    jq -nc '{active:false,declaration_present:true,reason:"no_backends",diagnostic:"no backend configuration is available"}'
     return 0
   fi
   if [ "$count" -ne 1 ]; then
     jq -nc --arg diag "collaborative project mode requires exactly one configured backend (found $count)" \
-      '{active:false,reason:"multiple_backends",diagnostic:$diag}'
+      '{active:false,declaration_present:true,reason:"multiple_backends",diagnostic:$diag}'
     return 0
   fi
   backend=$(printf '%s' "$backends" | jq -c '.[0]')
@@ -522,14 +645,14 @@ _memories_project_context() {
   url=$(printf '%s' "$backend" | jq -r '.url // empty')
   key=$(printf '%s' "$backend" | jq -r '.api_key // .apiKey // empty')
   [ -n "$url" ] || {
-    jq -nc '{active:false,reason:"principal_unreachable",diagnostic:"the configured backend cannot be reached"}'
+    jq -nc '{active:false,declaration_present:true,reason:"principal_unreachable",diagnostic:"the configured backend cannot be reached"}'
     return 0
   }
 
   call_budget=2
   if declare -F _hook_call_budget >/dev/null 2>&1; then
     call_budget=$(_hook_call_budget 2) || {
-      jq -nc '{active:false,reason:"budget_exhausted",diagnostic:"hook budget exhausted before authenticated principal lookup"}'
+      jq -nc '{active:false,declaration_present:true,reason:"budget_exhausted",diagnostic:"hook budget exhausted before authenticated principal lookup"}'
       return 0
     }
   fi
@@ -550,42 +673,58 @@ _memories_project_context() {
       jq -nc --arg diag "authenticated principal lookup returned HTTP 401" \
         --arg name "$backend_name" --arg url "$url" --arg api_key_env "$api_key_env" \
         --argjson env_backed "$env_backed" \
-        '{active:false,reason:"principal_unauthorized",diagnostic:$diag,auth_failed:true,auth_failed_backends:[{name:$name,url:$url,api_key_env:$api_key_env,env_backed:$env_backed}]}'
+        '{active:false,declaration_present:true,reason:"principal_unauthorized",diagnostic:$diag,auth_failed:true,auth_failed_backends:[{name:$name,url:$url,api_key_env:$api_key_env,env_backed:$env_backed}]}'
       return 0
       ;;
-    *) jq -nc --arg diag "authenticated principal lookup returned HTTP ${http_status:-unknown}" '{active:false,reason:"principal_unreachable",diagnostic:$diag}'; return 0 ;;
+    *) jq -nc --arg diag "authenticated principal lookup returned HTTP ${http_status:-unknown}" '{active:false,declaration_present:true,reason:"principal_unreachable",diagnostic:$diag}'; return 0 ;;
   esac
   identity=$(printf '%s' "$body" | jq -c . 2>/dev/null) || {
-    jq -nc '{active:false,reason:"principal_unreachable",diagnostic:"authenticated principal lookup returned invalid JSON"}'
+    jq -nc '{active:false,declaration_present:true,reason:"principal_unreachable",diagnostic:"authenticated principal lookup returned invalid JSON"}'
     return 0
   }
   case "$(printf '%s' "$identity" | jq -r '.type // empty')" in
     managed) ;;
-    env|none) jq -nc '{active:false,reason:"env_principal",diagnostic:"environment or unconfigured admin identity cannot activate collaborative mode"}'; return 0 ;;
-    *) jq -nc '{active:false,reason:"invalid_principal_type",diagnostic:"authenticated principal lookup did not return a managed principal"}'; return 0 ;;
+    env|none) jq -nc '{active:false,declaration_present:true,reason:"env_principal",diagnostic:"environment or unconfigured admin identity cannot activate collaborative mode"}'; return 0 ;;
+    *) jq -nc '{active:false,declaration_present:true,reason:"invalid_principal_type",diagnostic:"authenticated principal lookup did not return a managed principal"}'; return 0 ;;
   esac
   principal=$(printf '%s' "$identity" | jq -r '.principal_id // empty')
   if [ -z "$principal" ]; then
-    jq -nc '{active:false,reason:"missing_principal",diagnostic:"authenticated backend response did not include principal_id"}'
+    jq -nc '{active:false,declaration_present:true,reason:"missing_principal",diagnostic:"authenticated backend response did not include principal_id"}'
     return 0
   fi
   if ! printf '%s' "$principal" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'; then
-    jq -nc '{active:false,reason:"invalid_principal",diagnostic:"authenticated principal_id must be a lowercase path-safe slug"}'
+    jq -nc '{active:false,declaration_present:true,reason:"invalid_principal",diagnostic:"authenticated principal_id must be a lowercase path-safe slug"}'
     return 0
   fi
-  local project_id identity_prefixes legacy_prefixes prefixes_unrestricted
+  local project_id promotion_mode declaration_fingerprint identity_prefixes legacy_prefixes prefixes_unrestricted
+  local person_source person_source_authorized
   project_id=$(printf '%s' "$parsed" | jq -r '.project_id')
-  local backend_name
+  promotion_mode=$(printf '%s' "$parsed" | jq -r '.promotion_mode // "off"')
+  declaration_fingerprint=$(printf '%s' "$parsed" | jq -r '.declaration_fingerprint // empty')
+  local backend_name backend_api_key_env backend_env_backed
   backend_name=$(printf '%s' "$backend" | jq -r '.name // "default"')
+  backend_api_key_env=$(printf '%s' "$backend" | jq -r '.api_key_env // empty')
+  backend_env_backed=$(printf '%s' "$backend" | jq -r '.env_backed // false')
   prefixes_unrestricted=$(printf '%s' "$identity" | jq -r '(.role == "admin") or (.prefixes == null)' 2>/dev/null || printf 'false')
   if [ "$prefixes_unrestricted" = "true" ]; then
     identity_prefixes='[]'
   else
     if ! printf '%s' "$identity" | jq -e '(.prefixes | type == "array") and all(.prefixes[]; type == "string")' >/dev/null 2>&1; then
-      jq -nc '{active:false,reason:"invalid_prefixes",diagnostic:"authenticated principal lookup returned invalid source prefixes"}'
+      jq -nc '{active:false,declaration_present:true,reason:"invalid_prefixes",diagnostic:"authenticated principal lookup returned invalid source prefixes"}'
       return 0
     fi
     identity_prefixes=$(printf '%s' "$identity" | jq -c '.prefixes')
+  fi
+  person_source="person/$principal/$project_id/knowledge"
+  if [ "$prefixes_unrestricted" = "true" ]; then
+    person_source_authorized="true"
+  else
+    person_source_authorized=$(printf '%s' "$identity_prefixes" | jq -r --arg source "$person_source" '
+      any(.[];
+        (. | gsub("^[[:space:]]+|[[:space:]]+$"; "") | sub("/\\*$"; "") | sub("/+$"; "")) as $prefix
+        | ($prefix != "" and ($prefix == $source or ($source | startswith($prefix + "/"))))
+      )
+    ' 2>/dev/null || printf 'false')
   fi
   legacy_prefixes=$(printf '%s' "$identity_prefixes" | jq -c --arg project "$project_id" '
     reduce .[]? as $raw ([ ];
@@ -600,9 +739,21 @@ _memories_project_context() {
         end
     )
   ' 2>/dev/null || printf '[]')
+  # Keep the authenticated backend and credential available only in this
+  # process for the extraction caller.  The public context stays
+  # credential-free; callers that run this function in command substitution
+  # simply lose the private binding, which is harmless for query/recall.
+  _MEMORIES_PROJECT_BACKEND_SNAPSHOT=$(printf '%s' "$backend" | jq -c \
+    --arg url "$url" --arg key "$key" --arg key_env "$backend_api_key_env" \
+    --argjson env_backed "$backend_env_backed" \
+    '. + {url:$url,api_key:$key,api_key_env:$key_env,env_backed:$env_backed,scenario:(.scenario // "")}' 2>/dev/null) || \
+    _MEMORIES_PROJECT_BACKEND_SNAPSHOT=""
   jq -nc --arg project "$project_id" --arg principal "$principal" --arg backend "$backend_name" \
-    --arg url "$url" --arg origin "$config_origin" --argjson prefixes "$identity_prefixes" --argjson unrestricted "$prefixes_unrestricted" --argjson legacy "$legacy_prefixes" \
-    '{active:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,backend:$backend,backend_name:$backend,backend_url:$url,config_origin:$origin,prefixes:$prefixes,prefixes_unrestricted:$unrestricted,legacy_source_prefixes:$legacy}'
+    --arg url "$url" \
+    --arg origin "$config_origin" --arg mode "$promotion_mode" --arg fp "$declaration_fingerprint" \
+    --arg person "$person_source" --argjson person_authorized "$person_source_authorized" \
+    --argjson prefixes "$identity_prefixes" --argjson unrestricted "$prefixes_unrestricted" --argjson legacy "$legacy_prefixes" \
+    '{active:true,declaration_present:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,promotionMode:$mode,promotion_mode:$mode,declarationFingerprint:$fp,declaration_fingerprint:$fp,personSource:$person,person_source:$person,personSourceAuthorized:$person_authorized,person_source_authorized:$person_authorized,backend:$backend,backend_name:$backend,backend_url:$url,config_origin:$origin,prefixes:$prefixes,prefixes_unrestricted:$unrestricted,legacy_source_prefixes:$legacy}'
 }
 
 _memories_project_unavailable_message() {
@@ -700,6 +851,28 @@ _memories_project_extract_source() {
   [ "$active" = "true" ] || return 1
   [ -n "$project" ] && [ -n "$principal" ] || return 1
   printf 'person/%s/%s/knowledge\n' "$principal" "$project"
+}
+
+# Build promotion context only from the already-authenticated project result.
+# This helper performs no backend or principal lookup; _extract_multi adds the
+# field only when its routed set is the same single backend that produced this
+# context.
+_memories_project_promotion_context() {
+  local context="${1:-}" source="${2:-}" active project mode fingerprint person authorized
+  [ -n "$context" ] || return 1
+  active=$(printf '%s' "$context" | jq -r '.active // false' 2>/dev/null) || return 1
+  [ "$active" = "true" ] || return 1
+  project=$(printf '%s' "$context" | jq -r '.project_id // empty' 2>/dev/null) || return 1
+  mode=$(printf '%s' "$context" | jq -r '.promotion_mode // .promotionMode // empty' 2>/dev/null) || return 1
+  fingerprint=$(printf '%s' "$context" | jq -r '.declaration_fingerprint // .declarationFingerprint // empty' 2>/dev/null) || return 1
+  person=$(printf '%s' "$context" | jq -r '.person_source // .personSource // empty' 2>/dev/null) || return 1
+  authorized=$(printf '%s' "$context" | jq -r '(.person_source_authorized // .personSourceAuthorized // false)' 2>/dev/null) || return 1
+  [ "$authorized" = "true" ] || return 1
+  [ "$source" = "$person" ] || return 1
+  [ "$person" = "person/$(printf '%s' "$context" | jq -r '.principal_id // empty')/$project/knowledge" ] || return 1
+  case "$mode" in off|shadow|auto) ;; *) return 1 ;; esac
+  printf '%s' "$context" | jq -c --arg project "$project" --arg mode "$mode" --arg fp "$fingerprint" \
+    '{project_id:$project,mode:$mode,declaration_fingerprint:$fp,backend_url:(.backend_url // ""),backend_name:(.backend_name // .backend // "")}'
 }
 
 _memories_filter_search_response_for_prefix() {
@@ -1555,15 +1728,47 @@ _extract_multi() {
   local messages="$1"
   local source="$2"
   local context="${3:-stop}"
+  local promotion_context="${4:-}"
 
   local backends
-  backends=$(_get_backends_for_op "extract")
+  if [ -n "${_MEMORIES_PROJECT_BACKEND_SNAPSHOT:-}" ]; then
+    # Active project extraction must use the exact backend and credential that
+    # authenticated the project context.  Do not rediscover routing after
+    # /api/keys/me; a changed config must not reroute or change credentials.
+    backends=$(printf '%s' "$_MEMORIES_PROJECT_BACKEND_SNAPSHOT" | jq -c '[.]')
+    # Do not retain the credential beyond the one extraction routing decision.
+    _MEMORIES_PROJECT_BACKEND_SNAPSHOT=""
+  elif [ "${PROJECT_CONTEXT_ACTIVE:-false}" = "true" ]; then
+    # An active context without its private authenticated binding is unsafe to
+    # broaden through legacy routing; fail closed for this extraction.
+    backends='[]'
+  else
+    backends=$(_get_backends_for_op "extract")
+  fi
   # Pass current timestamp as document_at for temporal reasoning
   local doc_at
   doc_at=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
   local body
   body=$(jq -nc --arg m "$messages" --arg s "$source" --arg c "$context" --arg d "$doc_at" \
     '{messages: $m, source: $s, context: $c, document_at: $d}')
+
+  # Only attach promotion context when extraction is still bound to the exact
+  # single backend that authenticated the project. A routed fan-out cannot
+  # safely reuse one principal lookup, so it retains the legacy body.
+  local backend_count promotion_backend_url promotion_backend_name routed_backend_url routed_backend_name
+  backend_count=$(printf '%s' "$backends" | jq 'length' 2>/dev/null || printf '0')
+  if [ "$backend_count" -eq 1 ] && [ -n "$promotion_context" ] \
+    && printf '%s' "$promotion_context" | jq -e '(.project_id | type == "string") and (.mode | type == "string") and (.declaration_fingerprint | type == "string")' >/dev/null 2>&1; then
+    promotion_backend_url=$(printf '%s' "$promotion_context" | jq -r '.backend_url // empty' 2>/dev/null || true)
+    promotion_backend_name=$(printf '%s' "$promotion_context" | jq -r '.backend_name // .backend // empty' 2>/dev/null || true)
+    routed_backend_url=$(printf '%s' "$backends" | jq -r '.[0].url // empty' 2>/dev/null || true)
+    routed_backend_name=$(printf '%s' "$backends" | jq -r '.[0].name // "default"' 2>/dev/null || true)
+    if [ -n "$promotion_backend_url" ] && [ "$promotion_backend_url" = "$routed_backend_url" ] \
+      && { [ -z "$promotion_backend_name" ] || [ "$promotion_backend_name" = "$routed_backend_name" ]; }; then
+      body=$(printf '%s' "$body" | jq -c --argjson promotion "$promotion_context" \
+        '. + {promotion_context:{project_id:$promotion.project_id,mode:$promotion.mode,declaration_fingerprint:$promotion.declaration_fingerprint}}')
+    fi
+  fi
 
   echo "$backends" | jq -c '.[]' | while read -r backend; do
     local url key name

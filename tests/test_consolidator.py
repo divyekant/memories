@@ -5,6 +5,14 @@ from unittest.mock import MagicMock, call
 
 from llm_provider import CompletionResult
 from project_memory import TrustedAuthorship
+from project_promotion import (
+    PromotionMode,
+    PromotionReview,
+    PromotionState,
+    PromotionStatus,
+    ReviewDecision,
+    is_promotion_maintenance_protected,
+)
 
 
 def _cr(text, input_tokens=10, output_tokens=5):
@@ -25,6 +33,71 @@ def _make_memory(id, text, source="project/decisions", category="detail",
         "updated_at": ts,
         "timestamp": ts,
     }
+
+
+def _workflow_memory(status, *, age_days=400):
+    ts = datetime.now(timezone.utc) - timedelta(days=age_days)
+    review = None
+    if status == PromotionStatus.REJECTED:
+        review = PromotionReview(
+            decision=ReviewDecision.REJECT,
+            confidence=1.0,
+            reason="dismissed",
+            reviewer_version="reviewer-v1",
+            reviewed_at=ts.isoformat(),
+        )
+    state = PromotionState(
+        status=status,
+        owner="alice",
+        project_id="fplguru",
+        declaration_fingerprint="d" * 64,
+        classifier_provider="anthropic",
+        classifier_model="extract-model",
+        reviewer_provider="anthropic",
+        reviewer_model="review-model",
+        reviewer_version="reviewer-v1",
+        capture_mode=PromotionMode.SHADOW,
+        route="ordinary",
+        proposal=None,
+        review=review,
+        evidence_fingerprint="e" * 64,
+        captured_at=ts.isoformat(),
+    )
+    memory = _make_memory(
+        700,
+        "Private workflow fact",
+        source="person/alice/fplguru/knowledge",
+        created_at=ts.isoformat(),
+    )
+    memory.update(state.as_metadata())
+    return memory
+
+
+def test_live_promotion_workflow_is_not_clustered_or_pruned():
+    from consolidator import find_clusters, find_prune_candidates
+
+    for status in (
+        PromotionStatus.CANDIDATE,
+        PromotionStatus.SHADOW_APPROVED,
+        PromotionStatus.DEFERRED,
+        PromotionStatus.FAILED,
+        PromotionStatus.UNREVIEWABLE,
+    ):
+        memory = _workflow_memory(status)
+        engine = MagicMock(metadata=[memory])
+        assert find_clusters(engine, min_cluster_size=1) == []
+        engine.search.assert_not_called()
+        assert find_prune_candidates([memory], [memory["id"]]) == []
+
+
+def test_rejected_workflow_returns_to_private_lifecycle_after_retention():
+    now = datetime.now(timezone.utc)
+    assert is_promotion_maintenance_protected(
+        _workflow_memory(PromotionStatus.REJECTED, age_days=89), now, 90
+    )
+    assert not is_promotion_maintenance_protected(
+        _workflow_memory(PromotionStatus.REJECTED, age_days=91), now, 90
+    )
 
 
 class TestClusterDetection:
@@ -121,11 +194,7 @@ class TestClusterDetection:
         )
 
         assert clusters == []
-        assert calls
-        assert {call["source_exact"] for call in calls} == {
-            "project/acme/decisions",
-            "project/other/decisions",
-        }
+        assert calls == []
 
     def test_legacy_clusters_can_span_clients_without_absorbing_reserved_sources(self):
         from consolidator import find_clusters

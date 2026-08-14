@@ -138,6 +138,57 @@ revocation, and legacy-prefix migration. Run its synthetic probe only after
 the feature is deployed and isolation passes; do not seed production memory
 as part of setup or code implementation.
 
+### Phase 2 promotion gate (still off)
+
+The Phase 2 promotion path is not enabled by setup. Upgrade the backend first,
+confirm the v5.15.1 pruning-safety hotfix, and only then upgrade clients. Keep
+the host cap at:
+
+```bash
+PROJECT_PROMOTION_MODE=off
+```
+
+Before an explicit repository shadow, verify exactly one backend and fresh
+sessions using separate managed keys. Each `/api/keys/me` response must show
+`type: "managed"`, the expected `principal_id`, and only its reviewed private
+plus shared prefixes; private reads must remain isolated and revocation must
+deny new shared writes. A multi-backend or unmanaged/admin key fails closed.
+
+The exact provider-backed fixture gate is:
+
+```bash
+uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --threshold <candidate-threshold> --output /tmp/promotion-eval.json
+```
+
+It requires three consecutive retained attempts at the same exact
+provider/model/policy/threshold identity. Every attempt needs at least 100
+weighted fixtures and 100 distinct transcripts, 95% precision, 85% recall,
+zero unsafe high-risk promotions, and zero high-risk approve reviews before
+deterministic vetoes.
+Live `auto` consideration additionally
+requires two weeks, 50 total reviewed candidates, 30 manually inspected
+would-promote outcomes, five would-promote outcomes from each principal, and
+zero unsafe live outcomes. Any policy/provider/model change resets the live
+time and volume gates. A rate alert fires for five new `unreviewable` items in
+one hour; an aged-backlog signal fires at seven days.
+
+Use repository `promotion.mode: shadow`, `PROJECT_PROMOTION_MODE=shadow`, and
+the measured `PROJECT_PROMOTION_RELEVANCE_THRESHOLD` only for the explicitly
+reviewed repository. Roll back with `PROJECT_PROMOTION_MODE=off`; no new review or
+shared target may start, although already-created targets can be finalized
+idempotently. There is no bulk dismissal API, project consolidation, or seed
+until the gates pass. Do not add `.memories/project.yaml` or activate FPLGuru
+as part of setup. The separate FPLGuru shadow evidence record is not created
+or satisfied by this PR; follow the [full playbook](docs/memory-playbook.md)
+for the later operator record.
+
+Switching both caps to `auto` does not publish old `shadow_approved` items.
+Approve those individually in small, observed cohorts; only newly captured
+auto candidates can promote automatically. After a backend restart, promotion
+stays private until a managed project extraction authenticates and reports the
+current declaration. An authenticated repository `off` declaration still
+stops delayed review and new shared-target creation.
+
 ### Manual: `install.sh` (deprecated)
 
 `install.sh` still works this release but is superseded by the published npm

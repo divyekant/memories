@@ -14,17 +14,18 @@ import logging
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from auth_context import AuthContext
 from embedder_reloader import EmbedderAutoReloadController
@@ -36,12 +37,25 @@ from usage_tracker import UsageTracker, NullTracker
 from extraction_profiles import ExtractionProfiles
 from transcript_hygiene import clean_transcript
 from project_memory import (
+    PROJECT_KINDS,
     ProjectMemoryPolicyError,
     TrustedAuthorship,
     is_reserved_namespace_source,
     is_substantive_authored_content_replacement,
     validate_namespace_preserving_replacement,
+    is_valid_slug,
+    parse_memory_source,
 )
+from project_promotion import (
+    CLASSIFIER_VERSION,
+    REVIEWER_VERSION,
+    PromotionConfig,
+    PromotionContext,
+    PromotionMode,
+    load_promotion_config,
+    resolve_effective_mode,
+)
+from promotion_service import PromotionService
 
 # -- Logging ------------------------------------------------------------------
 
@@ -159,6 +173,19 @@ EXTRACT_FALLBACK_NOVELTY_THRESHOLD = min(
     1.0,
     _env_float("EXTRACT_FALLBACK_NOVELTY_THRESHOLD", 0.88, minimum=0.0),
 )
+
+
+def _load_runtime_promotion_config() -> PromotionConfig:
+    """Load the host promotion cap; malformed operator config fails closed."""
+    try:
+        return load_promotion_config()
+    except (TypeError, ValueError) as exc:
+        logger.warning("Project promotion disabled by invalid configuration: %s", exc)
+        return PromotionConfig()
+
+
+promotion_config: PromotionConfig = _load_runtime_promotion_config()
+promotion_service: Optional[PromotionService] = None
 
 extract_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=EXTRACT_QUEUE_MAX)
 extract_jobs: Dict[str, Dict[str, Any]] = {}
@@ -325,7 +352,22 @@ def _with_trusted_authorship(
     return kwargs
 
 
-def _audit(request: Request, action: str, resource_id: str = "", source: str = "") -> None:
+def _with_promotion_context(
+    kwargs: Dict[str, Any], promotion_context: Optional[PromotionContext]
+) -> Dict[str, Any]:
+    """Add server-validated promotion context without changing legacy calls."""
+    if promotion_context is not None:
+        kwargs["promotion_context"] = promotion_context
+    return kwargs
+
+
+def _audit(
+    request: Request,
+    action: str,
+    resource_id: str = "",
+    source: str = "",
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
     """Log an audit entry from the current request context."""
     auth = _get_auth(request)
     ip = request.client.host if request.client else ""
@@ -336,6 +378,7 @@ def _audit(request: Request, action: str, resource_id: str = "", source: str = "
         resource_id=resource_id,
         source_prefix=source,
         ip=ip,
+        metadata=metadata,
     )
 
 
@@ -790,6 +833,14 @@ def _ensure_extract_workers_started() -> None:
     logger.info("Extraction queue enabled with %d worker(s)", len(extract_workers))
 
 
+def _review_promotion_candidates(candidates: list[dict], evidence: Any) -> Any:
+    """Hand private-first candidates to the synchronous narrow reviewer."""
+    if promotion_service is None:
+        return None
+    evidence_text = evidence.get("messages", "") if isinstance(evidence, dict) else evidence
+    return promotion_service.review_captured(candidates, evidence_text)
+
+
 async def _extract_worker(worker_id: int) -> None:
     logger.info("Extraction worker started: id=%d", worker_id)
     while True:
@@ -808,6 +859,14 @@ async def _extract_worker(worker_id: int) -> None:
             job_state["queue_depth"] = extract_queue.qsize()
 
         try:
+            extraction_kwargs = _with_promotion_context(
+                _with_trusted_authorship(
+                    {}, request_data.get("trusted_authorship")
+                ),
+                request_data.get("promotion_context"),
+            )
+            if request_data.get("promotion_context") is not None and promotion_service is not None:
+                extraction_kwargs["promotion_callback"] = _review_promotion_candidates
             result = await run_in_threadpool(
                 run_extraction,
                 extract_provider,
@@ -819,7 +878,7 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data.get("debug", False),
                 request_data.get("profile"),
                 request_data.get("document_at"),
-                **_with_trusted_authorship({}, request_data.get("trusted_authorship")),
+                **extraction_kwargs,
             )
             is_dry_run = request_data.get("profile", {}).get("dry_run", False)
             if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result) and not is_dry_run:
@@ -1035,7 +1094,10 @@ def _run_scheduled_consolidation():
     logger.info("Maintenance started: consolidation, RSS=%.0fMB", rss_start)
 
     from consolidator import find_clusters, consolidate_cluster
-    clusters = find_clusters(memory)
+    clusters = find_clusters(
+        memory,
+        rejected_retention_days=promotion_config.rejected_retention_days,
+    )
     for cluster in clusters:
         consolidate_cluster(extract_provider, memory, cluster, dry_run=False)
 
@@ -1073,7 +1135,11 @@ def _run_scheduled_pruning():
     all_mems = [m for m in memory.metadata if m]
     all_ids = [m["id"] for m in all_mems]
     unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
-    candidates = find_prune_candidates(all_mems, unretrieved)
+    candidates = find_prune_candidates(
+        all_mems,
+        unretrieved,
+        rejected_retention_days=promotion_config.rejected_retention_days,
+    )
     deleted = 0
     skipped = 0
     for c in candidates:
@@ -1119,11 +1185,22 @@ def _run_scheduled_conflict_drain():
     return result["resolved_count"]
 
 
+def _run_scheduled_promotion_reconciliation():
+    """Run one bounded promotion repair pass inside the maintenance worker."""
+    if promotion_service is None:
+        return {"processed": 0, "skipped": True}
+    return promotion_service.reconcile(
+        max_candidates=promotion_config.reconcile_batch,
+        budget_seconds=promotion_config.reconcile_budget_seconds,
+    )
+
+
 async def _maintenance_scheduler():
     """Run consolidation + conflict drain daily and pruning weekly."""
     _last_consolidation_date = None
     _last_prune_date = None
     _last_conflict_date = None
+    _last_promotion_date = None
     while True:
         now = datetime.now(timezone.utc)
         today = now.date()
@@ -1145,6 +1222,22 @@ async def _maintenance_scheduler():
                 logger.info("Scheduled conflict drain complete: %d resolved", n)
             except Exception:
                 logger.exception("Scheduled conflict drain failed")
+        # Promotion reconciliation: daily at 3:45 AM UTC. This pass remains
+        # useful with the host cap off because it can repair an already-created
+        # target without initiating a new shared write.
+        if now.hour == 3 and 45 <= now.minute < 50 and _last_promotion_date != today:
+            _last_promotion_date = today
+            try:
+                logger.info("Running scheduled promotion reconciliation")
+                result = await run_in_threadpool(
+                    _run_scheduled_promotion_reconciliation
+                )
+                logger.info(
+                    "Scheduled promotion reconciliation complete: %d processed",
+                    int(result.get("processed", 0)),
+                )
+            except Exception:
+                logger.exception("Scheduled promotion reconciliation failed")
         # Pruning: Sunday at 4 AM UTC (once per week)
         if now.weekday() == 6 and now.hour == 4 and now.minute < 5 and _last_prune_date != today:
             _last_prune_date = today
@@ -1159,7 +1252,7 @@ async def _maintenance_scheduler():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global memory
+    global memory, promotion_service
     logger.info("Starting Memories service...")
     _embed_provider = os.getenv("EMBED_PROVIDER", "onnx").strip().lower()
     _embed_model = os.getenv("EMBED_MODEL", "").strip()
@@ -1205,6 +1298,13 @@ async def lifespan(app: FastAPI):
     global key_store
     key_store = KeyStore(os.path.join(DATA_DIR, "keys.db"))
     logger.info("Key store initialized")
+    promotion_service = PromotionService(
+        memory,
+        key_store,
+        config=promotion_config,
+        extract_provider=extract_provider,
+        audit_log=audit_log,
+    )
     _ensure_extract_workers_started()
     background_tasks: List[asyncio.Task] = [
         asyncio.create_task(_periodic_job_cleanup(), name="job-cleanup"),
@@ -1238,7 +1338,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Memories API",
-    version="5.15.1",
+    version="5.16.0",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
 )
@@ -1519,6 +1619,141 @@ class ArchiveBatchRequest(BaseModel):
     ids: List[int] = Field(..., min_length=1, max_length=1000)
 
 
+class PromotionRequestContext(BaseModel):
+    """Untrusted client declaration carried alongside extraction input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        pattern=r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+    )
+    mode: Literal["off", "shadow", "auto"]
+    declaration_fingerprint: str = Field(
+        ...,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
+class PromotionApproveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(..., min_length=1, max_length=2000)
+    shared_text: Optional[str] = Field(default=None, min_length=1, max_length=12000)
+
+
+class PromotionRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(..., min_length=1, max_length=2000)
+
+
+def build_promotion_context(
+    auth: AuthContext,
+    source: str,
+    request_context: Optional[PromotionRequestContext],
+    config: PromotionConfig,
+    declaration_observer: Optional[Callable[..., None]] = None,
+) -> Optional[PromotionContext]:
+    """Build a server-owned promotion context after all fail-closed gates."""
+    if not isinstance(auth, AuthContext) or not isinstance(config, PromotionConfig):
+        return None
+    if not isinstance(request_context, PromotionRequestContext):
+        return None
+    if auth.key_type != "managed" or auth.role not in {"read-write", "admin"}:
+        return None
+    if not auth.principal_id or not is_valid_slug(auth.principal_id):
+        return None
+
+    try:
+        declared_mode = PromotionMode(request_context.mode)
+    except (TypeError, ValueError):
+        return None
+    if config.host_mode not in {
+        PromotionMode.OFF,
+        PromotionMode.SHADOW,
+        PromotionMode.AUTO,
+    }:
+        return None
+    effective_mode = resolve_effective_mode(config.host_mode, declared_mode)
+
+    parsed = parse_memory_source(source)
+    if parsed is None or not parsed.is_person or parsed.kind != "knowledge":
+        return None
+    if parsed.principal_id != auth.principal_id:
+        return None
+    if parsed.project_id != request_context.project_id:
+        return None
+    private_source = f"person/{auth.principal_id}/{request_context.project_id}/knowledge"
+    project_source = f"project/{request_context.project_id}/knowledge"
+    if source != private_source:
+        return None
+    # The same managed key must be able to write both exact policy domains.
+    if not auth.can_write(private_source) or not auth.can_write(project_source):
+        return None
+    allowed_project_kinds = tuple(
+        kind
+        for kind in sorted(PROJECT_KINDS)
+        if auth.can_write(f"project/{request_context.project_id}/{kind}")
+    )
+    if not allowed_project_kinds:
+        return None
+    # Off is an explicit, valid no-op.  Register the authenticated declaration
+    # so it can stop delayed work, but never extend extraction payloads.
+    if effective_mode is PromotionMode.OFF:
+        if declaration_observer is not None:
+            try:
+                declaration_observer(
+                    project_id=request_context.project_id,
+                    mode=declared_mode,
+                    declaration_fingerprint=request_context.declaration_fingerprint,
+                )
+            except Exception:
+                logger.warning("Promotion declaration registration failed", exc_info=True)
+        return None
+
+    classifier_provider = getattr(extract_provider, "provider_name", None)
+    classifier_model = getattr(extract_provider, "model", None)
+    if not isinstance(classifier_provider, str) or not classifier_provider.strip():
+        return None
+    if not isinstance(classifier_model, str) or not classifier_model.strip():
+        return None
+    reviewer_provider = config.review_provider or classifier_provider
+    reviewer_model = config.review_model or classifier_model
+    try:
+        context = PromotionContext(
+            project_id=request_context.project_id,
+            principal_id=auth.principal_id,
+            declared_mode=declared_mode,
+            effective_mode=effective_mode,
+            declaration_fingerprint=request_context.declaration_fingerprint,
+            classifier_version=CLASSIFIER_VERSION,
+            classifier_provider=classifier_provider,
+            classifier_model=classifier_model,
+            reviewer_version=REVIEWER_VERSION,
+            reviewer_provider=reviewer_provider,
+            reviewer_model=reviewer_model,
+            allowed_project_kinds=allowed_project_kinds,
+        )
+    except (TypeError, ValueError):
+        return None
+    if declaration_observer is not None:
+        try:
+            declaration_observer(
+                project_id=request_context.project_id,
+                mode=declared_mode,
+                declaration_fingerprint=request_context.declaration_fingerprint,
+            )
+        except Exception:
+            logger.warning("Promotion declaration registration failed", exc_info=True)
+            return None
+    return context
+
+
 class ExtractRequest(BaseModel):
     messages: str = Field(
         ...,
@@ -1531,6 +1766,10 @@ class ExtractRequest(BaseModel):
     debug: bool = Field(default=False, description="When True, return detailed extraction trace")
     dry_run: bool = Field(default=False, description="Return actions without executing")
     document_at: Optional[str] = Field(default=None, description="ISO 8601 date for when the source content was created. Propagated to all extracted memories.")
+    promotion_context: Optional[PromotionRequestContext] = Field(
+        default=None,
+        description="Untrusted repository promotion declaration; server authorization remains authoritative.",
+    )
 
 
 class ExtractCommitRequest(BaseModel):
@@ -1576,7 +1815,7 @@ async def health(request: Request):
 
     Unauthenticated callers get minimal response; authenticated callers get full stats.
     """
-    base = {"status": "ok", "service": "memories", "version": "5.15.1"}
+    base = {"status": "ok", "service": "memories", "version": "5.16.0"}
     # Only include detailed stats for authenticated callers
     if not API_KEY or hmac.compare_digest(
         request.headers.get("X-API-Key", "").encode(), API_KEY.encode()
@@ -1688,7 +1927,7 @@ async def metrics(request: Request):
     _record_memory_sample(current_total)
 
     snapshot = _build_metrics_snapshot()
-    return {
+    response = {
         "uptime_sec": int(time.time() - metrics_started_at),
         "extract": {
             "queue_depth": extract_queue.qsize(),
@@ -1706,6 +1945,9 @@ async def metrics(request: Request):
         "requests": snapshot["requests"],
         "routes": snapshot["routes"],
     }
+    if promotion_service is not None:
+        response["promotion"] = promotion_service.metrics_snapshot()
+    return response
 
 
 @app.get("/usage")
@@ -1895,6 +2137,123 @@ async def get_audit_log(
     return {"entries": entries, "count": len(entries), "total": audit_log.count(action=action, key_id=key_id, resource_id=resource_id)}
 
 
+def _promotion_service_or_503() -> PromotionService:
+    if promotion_service is None:
+        raise HTTPException(status_code=503, detail="Promotion service is unavailable")
+    return promotion_service
+
+
+@app.get("/promotions")
+async def list_promotions(
+    request: Request,
+    project_id: Optional[str] = Query(default=None, pattern=r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"),
+    owner: Optional[str] = Query(default=None, pattern=r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"),
+    state: Optional[str] = Query(default=None),
+    since: Optional[datetime] = Query(default=None),
+    until: Optional[datetime] = Query(default=None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """List promotion workflow records visible to the owner or an admin."""
+    auth = _get_auth(request)
+    service = _promotion_service_or_503()
+    try:
+        items = service.list_candidates(
+            auth,
+            project_id=project_id,
+            owner=owner,
+            status=state,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"promotions": items, "count": len(items), "limit": limit, "offset": offset}
+
+
+@app.get("/promotions/{candidate_id}")
+async def get_promotion(candidate_id: int, request: Request):
+    """Fetch one private promotion candidate without leaking other owners."""
+    try:
+        return _promotion_service_or_503().get_candidate(candidate_id, _get_auth(request))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Promotion candidate not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@app.post("/promotions/{candidate_id}/approve")
+async def approve_promotion(
+    candidate_id: int,
+    request_body: PromotionApproveRequest,
+    request: Request,
+):
+    """Approve one owned candidate through the same locked promotion path."""
+    auth = _get_auth(request)
+    try:
+        result = _promotion_service_or_503().approve_candidate(
+            candidate_id,
+            actor=auth,
+            reason=request_body.reason,
+            shared_text=request_body.shared_text,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Promotion candidate not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _audit(
+        request,
+        "promotion.approved",
+        resource_id=str(candidate_id),
+        metadata={
+            "reason": request_body.reason,
+            "result_status": result.get("status"),
+            "target_memory_id": result.get("target_memory_id"),
+            "manual": True,
+        },
+    )
+    return result
+
+
+@app.post("/promotions/{candidate_id}/reject")
+async def reject_promotion(
+    candidate_id: int,
+    request_body: PromotionRejectRequest,
+    request: Request,
+):
+    """Reject or explicitly dismiss one owned private candidate."""
+    auth = _get_auth(request)
+    try:
+        result = _promotion_service_or_503().reject_candidate(
+            candidate_id,
+            actor=auth,
+            reason=request_body.reason,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Promotion candidate not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _audit(
+        request,
+        "promotion.rejected",
+        resource_id=str(candidate_id),
+        metadata={
+            "reason": request_body.reason,
+            "result_status": result.get("status"),
+            "manual": True,
+        },
+    )
+    return result
+
+
 @app.post("/audit/purge")
 async def purge_audit_log(
     request: Request,
@@ -2035,7 +2394,11 @@ async def consolidate(
     if not extract_provider:
         raise HTTPException(503, "No LLM provider configured for consolidation")
     from consolidator import find_clusters, consolidate_cluster
-    clusters = find_clusters(memory, source_prefix=source_prefix)
+    clusters = find_clusters(
+        memory,
+        source_prefix=source_prefix,
+        rejected_retention_days=promotion_config.rejected_retention_days,
+    )
     results = []
     try:
         for cluster in clusters:
@@ -2059,7 +2422,11 @@ async def prune(request: Request, dry_run: bool = Query(True)):
     all_ids = [m["id"] for m in all_mems]
     unretrieved = usage_tracker.get_unretrieved_memory_ids(all_ids)
     from consolidator import find_prune_candidates
-    candidates = find_prune_candidates(all_mems, unretrieved)
+    candidates = find_prune_candidates(
+        all_mems,
+        unretrieved,
+        rejected_retention_days=promotion_config.rejected_retention_days,
+    )
     pruned = 0
     if not dry_run:
         for c in candidates:
@@ -3491,6 +3858,18 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
         if auth.role != "admin" and auth.prefixes is not None:
             raise HTTPException(status_code=400, detail="source is required for scoped keys")
 
+    request_promotion_context = build_promotion_context(
+        auth,
+        request_body.source,
+        request_body.promotion_context,
+        promotion_config,
+        (
+            promotion_service.observe_declaration
+            if promotion_service is not None
+            else None
+        ),
+    )
+
     if extract_provider is None or run_extraction is None:
         if not EXTRACT_FALLBACK_ADD_ENABLED:
             raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
@@ -3586,20 +3965,25 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
         "auth_key_id": auth.key_id,
         "trusted_authorship": trusted_authorship,
     }
+    request_payload = {
+        "messages": request_body.messages,
+        "source": request_body.source,
+        "context": request_body.context,
+        # Admin managed keys are unrestricted even though KeyStore stores an
+        # empty prefix list for them.  Preserve that distinction for the
+        # extraction worker's source gate and promotion ACL check.
+        "allowed_prefixes": None if auth.role == "admin" else auth.prefixes,
+        "debug": request_body.debug,
+        "profile": profile,
+        "document_at": request_body.document_at,
+        "trusted_authorship": trusted_authorship,
+    }
+    _with_promotion_context(request_payload, request_promotion_context)
     try:
         extract_queue.put_nowait(
             {
                 "job_id": job_id,
-                "request": {
-                    "messages": request_body.messages,
-                    "source": request_body.source,
-                    "context": request_body.context,
-                    "allowed_prefixes": auth.prefixes,
-                    "debug": request_body.debug,
-                    "profile": profile,
-                    "document_at": request_body.document_at,
-                    "trusted_authorship": trusted_authorship,
-                },
+                "request": request_payload,
             }
         )
     except asyncio.QueueFull:

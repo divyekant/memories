@@ -90,6 +90,49 @@ class TestManagedKeys:
         resp = client.post("/search", json={"query": "test"}, headers={"X-API-Key": created["key"]})
         assert resp.status_code == 401
 
+    def test_promotion_context_rejects_env_and_accepts_managed_principal(self, app_with_keys):
+        import app as app_module
+        from auth_context import AuthContext
+        from project_promotion import PromotionConfig, PromotionMode
+
+        request_context = app_module.PromotionRequestContext(
+            project_id="demo",
+            mode="auto",
+            declaration_fingerprint="a" * 64,
+        )
+        provider = MagicMock(provider_name="anthropic", model="claude-haiku")
+        with patch.object(app_module, "extract_provider", provider):
+            assert app_module.build_promotion_context(
+                AuthContext(
+                    role="admin",
+                    prefixes=None,
+                    key_type="env",
+                    principal_id=None,
+                ),
+                "person/alice/demo/knowledge",
+                request_context,
+                PromotionConfig(
+                    host_mode=PromotionMode.AUTO,
+                    relevance_threshold=0.8,
+                ),
+            ) is None
+            context = app_module.build_promotion_context(
+                AuthContext(
+                    role="admin",
+                    prefixes=None,
+                    key_type="managed",
+                    principal_id="alice",
+                ),
+                "person/alice/demo/knowledge",
+                request_context,
+                PromotionConfig(
+                    host_mode=PromotionMode.AUTO,
+                    relevance_threshold=0.8,
+                ),
+            )
+
+        assert context is not None
+
 
 class TestPrefixFilteringOnSearch:
     def test_search_results_filtered_by_prefix(self, app_with_keys):

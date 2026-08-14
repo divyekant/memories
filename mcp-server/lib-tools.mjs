@@ -12,6 +12,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "fs";
 import path from "path";
 import yaml from "js-yaml";
@@ -194,7 +195,9 @@ function timelineQueryVariants(query) {
 // cannot grant itself access or choose a principal; both are resolved below
 // from the authenticated backend.
 const PROJECT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
-const PROJECT_DECLARATION_KEYS = new Set(["project_id", "shared_memory"]);
+const PROJECT_DECLARATION_KEYS = new Set(["project_id", "shared_memory", "promotion"]);
+const PROJECT_PROMOTION_KEYS = new Set(["mode"]);
+const PROJECT_PROMOTION_MODES = new Set(["off", "shadow", "auto"]);
 const PROJECT_SOURCE_RE = /^project\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/(decisions|knowledge|state|operations)$/;
 
 function projectFailure(reason, diagnostic) {
@@ -205,7 +208,7 @@ function projectFailure(reason, diagnostic) {
  * Parse the strict `.memories/project.yaml` declaration.
  *
  * This is intentionally a pure helper so hooks and future MCP tool routing
- * can share the same contract.  Only the two currently implemented fields are
+ * can share the same contract.  Only the currently implemented fields are
  * accepted; an apparently useful future field must not silently activate a
  * mode whose behavior is not implemented yet.
  */
@@ -226,7 +229,8 @@ export function parseProjectDeclaration(source) {
   if (unknown.length) {
     return projectFailure("unknown_field", `unknown project declaration field: ${unknown.sort().join(", ")}`);
   }
-  const missing = [...PROJECT_DECLARATION_KEYS].filter((key) => !Object.prototype.hasOwnProperty.call(value, key));
+  const missing = ["project_id", "shared_memory"]
+    .filter((key) => !Object.prototype.hasOwnProperty.call(value, key));
   if (missing.length) {
     return projectFailure("missing_field", `missing project declaration field: ${missing.sort().join(", ")}`);
   }
@@ -237,7 +241,41 @@ export function parseProjectDeclaration(source) {
     return projectFailure("shared_memory_not_true", "shared_memory must be the YAML boolean true");
   }
 
-  return { ok: true, projectId: value.project_id, sharedMemory: true };
+  let promotionMode = "off";
+  if (Object.prototype.hasOwnProperty.call(value, "promotion")) {
+    const promotion = value.promotion;
+    if (!promotion || typeof promotion !== "object" || Array.isArray(promotion)) {
+      return projectFailure("promotion_not_mapping", "promotion must be a YAML mapping");
+    }
+    const nestedUnknown = Object.keys(promotion).filter((key) => !PROJECT_PROMOTION_KEYS.has(key));
+    if (nestedUnknown.length) {
+      return projectFailure("unknown_field", `unknown project promotion field: ${nestedUnknown.sort().join(", ")}`);
+    }
+    if (!Object.prototype.hasOwnProperty.call(promotion, "mode")) {
+      return projectFailure("missing_field", "missing project promotion field: mode");
+    }
+    if (typeof promotion.mode !== "string" || !PROJECT_PROMOTION_MODES.has(promotion.mode)) {
+      return projectFailure("unsupported_promotion_mode", "promotion.mode must be off, shadow, or auto");
+    }
+    promotionMode = promotion.mode;
+  }
+
+  // Hash the semantic declaration, including the resolved default.  This
+  // makes omitted promotion and explicit promotion: {mode: off} equivalent,
+  // while preserving a stable audit value across formatting/comment changes.
+  const canonical = JSON.stringify({
+    project_id: value.project_id,
+    shared_memory: true,
+    promotion: { mode: promotionMode },
+  });
+  const declarationFingerprint = createHash("sha256").update(canonical).digest("hex");
+  return {
+    ok: true,
+    projectId: value.project_id,
+    sharedMemory: true,
+    promotionMode,
+    declarationFingerprint,
+  };
 }
 
 /**
@@ -450,6 +488,15 @@ export function deriveLegacyProjectPrefixes(projectId, authorizedPrefixes) {
   return result;
 }
 
+function exactPersonSourceAuthorized(source, prefixes, unrestricted) {
+  if (unrestricted || !Array.isArray(prefixes)) return unrestricted === true;
+  return prefixes.some((raw) => {
+    if (typeof raw !== "string") return false;
+    let prefix = raw.trim().replace(/\/\*$/, "").replace(/\/+$/, "");
+    return prefix === source || source.startsWith(`${prefix}/`);
+  });
+}
+
 /**
  * Resolve collaborative mode for a checkout and one authenticated backend.
  * The `/api/keys/me` request is deliberately last: invalid declarations and
@@ -470,6 +517,18 @@ export async function resolveProjectContext(options = {}) {
   } = options;
   const declaration = suppliedDeclaration || loadProjectDeclaration(cwd);
   if (!declaration.ok) return contextFailure(declaration.reason, declaration.diagnostic);
+
+  // Keep callers that provide an already-parsed legacy declaration compatible
+  // while ensuring every authenticated context still carries the new audit
+  // fields. Normal declarations arrive from parseProjectDeclaration above.
+  const promotionMode = declaration.promotionMode || "off";
+  const declarationFingerprint = declaration.declarationFingerprint || createHash("sha256")
+    .update(JSON.stringify({
+      project_id: declaration.projectId,
+      shared_memory: true,
+      promotion: { mode: promotionMode },
+    }))
+    .digest("hex");
 
   const config = suppliedBackendConfig
     || (suppliedBackends
@@ -559,6 +618,12 @@ export async function resolveProjectContext(options = {}) {
     return contextFailure("invalid_prefixes", "authenticated principal lookup returned invalid source prefixes");
   }
   const legacySourcePrefixes = deriveLegacyProjectPrefixes(declaration.projectId, prefixes);
+  const personSource = `person/${principalId}/${declaration.projectId}/knowledge`;
+  const personSourceAuthorized = exactPersonSourceAuthorized(
+    personSource,
+    prefixes,
+    prefixesUnrestricted,
+  );
 
   return {
     active: true,
@@ -569,6 +634,14 @@ export async function resolveProjectContext(options = {}) {
     principal_id: principalId,
     sharedMemory: true,
     shared_memory: true,
+    promotionMode,
+    promotion_mode: promotionMode,
+    declarationFingerprint,
+    declaration_fingerprint: declarationFingerprint,
+    personSource,
+    person_source: personSource,
+    personSourceAuthorized,
+    person_source_authorized: personSourceAuthorized,
     backend: backend.name || "default",
     backendName: backend.name || "default",
     backendUrl,
@@ -1537,6 +1610,17 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
         : source;
       // Submit extraction job
       const body = { messages, source: effectiveSource, context };
+      if (
+        projectContext.active
+        && projectContext.personSourceAuthorized === true
+        && projectContext.personSource === effectiveSource
+      ) {
+        body.promotion_context = {
+          project_id: projectContext.projectId,
+          mode: projectContext.promotionMode,
+          declaration_fingerprint: projectContext.declarationFingerprint,
+        };
+      }
       if (document_at) body.document_at = document_at;
       const submitData = await memoriesRequest("/memory/extract", {
         method: "POST",

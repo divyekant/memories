@@ -73,6 +73,8 @@ COPY consolidator.py .
 COPY key_store.py .
 COPY auth_context.py .
 COPY project_memory.py .
+COPY project_promotion.py .
+COPY promotion_service.py .
 COPY event_bus.py .
 COPY audit_log.py .
 COPY query_intent.py .
