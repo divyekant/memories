@@ -104,15 +104,17 @@ def test_project_declaration_comments_do_not_change_fingerprint_and_mode_does(
 @pytest.mark.parametrize(
     ("context", "expected"),
     [
-        ({"active": True, "reason": "active"}, True),
-        ({"active": False, "reason": "principal_unreachable"}, True),
-        ({"active": False, "reason": "missing_principal"}, True),
-        ({"active": False, "reason": "missing"}, False),
-        ({"active": False, "reason": "malformed"}, False),
-        ({"active": False, "reason": "unknown_field"}, False),
+        ({"active": True, "reason": "active", "declaration_present": True}, True),
+        ({"active": False, "reason": "principal_unreachable", "declaration_present": True}, True),
+        ({"active": False, "reason": "missing_principal", "declaration_present": True}, True),
+        ({"active": False, "reason": "missing", "declaration_present": False}, False),
+        ({"active": False, "reason": "malformed", "declaration_present": True}, True),
+        ({"active": False, "reason": "unknown_field", "declaration_present": True}, True),
+        ({"active": False, "reason": "promotion_not_mapping", "declaration_present": True}, True),
+        ({"active": False, "reason": "unsupported_promotion_mode", "declaration_present": True}, True),
     ],
 )
-def test_project_context_encodes_whether_a_valid_declaration_exists(
+def test_project_context_encodes_whether_declaration_is_present(
     context: dict[str, object], expected: bool
 ) -> None:
     outputs = []
@@ -132,6 +134,63 @@ def test_project_context_encodes_whether_a_valid_declaration_exists(
         )
         outputs.append(result.returncode == 0)
     assert outputs == [expected, expected]
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "project_id: shared-demo\nshared_memory: true\npromotion: true\n",
+        "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: someday\n",
+    ],
+)
+def test_present_invalid_project_declarations_are_fail_closed_for_both_clients(
+    tmp_path: Path, declaration: str
+) -> None:
+    project_dir = tmp_path / "shared-demo"
+    (project_dir / ".memories").mkdir(parents=True)
+    (project_dir / ".memories" / "project.yaml").write_text(declaration)
+    for lib in (HOOKS_DIR / "_lib.sh", CODEX_HOOKS_DIR / "_lib.sh"):
+        context_result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1" 2>/dev/null; _memories_project_context "$2"',
+                "_",
+                str(lib),
+                str(project_dir),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert context_result.returncode == 0, context_result.stderr
+        context = json.loads(context_result.stdout)
+        assert context["active"] is False
+        assert context["declaration_present"] is True
+        assert context["reason"] in {"promotion_not_mapping", "unsupported_promotion_mode"}
+        declared = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1" 2>/dev/null; _memories_project_context_declared "$2"',
+                "_",
+                str(lib),
+                json.dumps(context),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert declared.returncode == 0, declared.stderr
+    for script in (EXTRACT_SCRIPT, CODEX_HOOKS_DIR / "memory-extract.sh"):
+        result, calls, _ = _run_hook(
+            script,
+            tmp_path,
+            {"cwd": str(project_dir), "last_assistant_message": "Keep this durable."},
+            responses=[],
+        )
+        assert result.returncode == 0, result.stderr
+        assert not [call for call in calls if str(call["url"]).endswith("/memory/extract")]
 
 
 def _write_fake_curl(bin_dir: Path) -> Path:
@@ -2158,6 +2217,89 @@ def test_extraction_omits_promotion_context_without_exact_person_authority(
     assert len([call for call in calls if str(call["url"]).endswith("/api/keys/me")]) == 1
 
 
+@pytest.mark.parametrize("script", [EXTRACT_SCRIPT, CODEX_HOOKS_DIR / "memory-extract.sh"])
+def test_active_extraction_reuses_authenticated_backend_and_credential_binding(
+    tmp_path: Path, script: Path
+) -> None:
+    """A config mutation after /api/keys/me cannot reroute active extraction."""
+    project_dir = tmp_path / "shared-demo"
+    memories_dir = project_dir / ".memories"
+    memories_dir.mkdir(parents=True)
+    (memories_dir / "project.yaml").write_text(
+        "project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n"
+    )
+    backends_file = memories_dir / "backends.yaml"
+    backends_file.write_text(
+        "backends:\n"
+        "  accepted:\n"
+        "    url: http://accepted.test\n"
+        "    api_key: accepted-key\n"
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls_file = tmp_path / "curl-calls.jsonl"
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        "url=\"\" body=\"\" header=\"\" pending=\"\"\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ -n \"$pending\" ]; then\n"
+        "    if [ \"$pending\" = header ]; then header=\"$arg\"; else body=\"$arg\"; fi\n"
+        "    pending=\"\"\n"
+        "    continue\n"
+        "  fi\n"
+        "  case \"$arg\" in\n"
+        "    -H) pending=header ;;\n"
+        "    -d|--data|--data-raw|--data-binary) pending=data ;;\n"
+        "    http://*|https://*) url=\"$arg\" ;;\n"
+        "  esac\n"
+        "done\n"
+        "jq -nc --arg url \"$url\" --arg body \"$body\" --arg header \"$header\" "
+        "'{url:$url,header:$header,body:(try ($body|fromjson) catch null)}' >> \"$FAKE_CURL_CALLS\"\n"
+        "case \"$url\" in\n"
+        "  */api/keys/me)\n"
+        "    printf '%s\\n' 'backends:' '  changed:' '    url: http://changed.test' '    api_key: changed-key' > \"$MUTATE_BACKENDS_FILE\"\n"
+        "    printf '%s\\n200' '{\"type\":\"managed\",\"principal_id\":\"alice\",\"prefixes\":[\"person/alice/shared-demo\"]}'\n"
+        "    ;;\n"
+        "  */memory/extract) printf '%s' '{\"job_id\":\"bound\"}' ;;\n"
+        "  *) printf '%s' '{}' ;;\n"
+        "esac\n"
+    )
+    curl.chmod(0o755)
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "MEMORIES_URL": "http://placeholder.test",
+        "MEMORIES_API_KEY": "",
+        "MEMORIES_BACKENDS_FILE": "",
+        "CLAUDE_PROJECT_DIR": "",
+        "FAKE_CURL_CALLS": str(calls_file),
+        "MUTATE_BACKENDS_FILE": str(backends_file),
+        "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+    }
+    result = subprocess.run(
+        [str(script)],
+        input=json.dumps(
+            {"cwd": str(project_dir), "last_assistant_message": "Keep this durable."}
+        ),
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in calls_file.read_text().splitlines() if line.strip()]
+    principal_calls = [call for call in calls if call["url"].endswith("/api/keys/me")]
+    extract_calls = [call for call in calls if call["url"].endswith("/memory/extract")]
+    assert len(principal_calls) == 1
+    assert len(extract_calls) == 1
+    assert extract_calls[0]["url"] == "http://accepted.test/memory/extract"
+    assert extract_calls[0]["header"] == "X-API-Key: accepted-key"
+    assert extract_calls[0]["body"]["promotion_context"]["mode"] == "shadow"
+    assert all("changed.test" not in call["url"] for call in calls)
+
+
 @pytest.mark.parametrize(
     ("script", "legacy_prefixes"),
     [
@@ -2987,14 +3129,32 @@ def test_active_recall_only_runs_wip_when_configured_and_deduplicates_it(
     assert len(wip_calls) == 1, "configured WIP must be searched once, not once per path"
 
 
-def test_inactive_hooks_keep_legacy_prefixes_and_extraction_source(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("script", "expected_source"),
+    [
+        (EXTRACT_SCRIPT, "claude-code/memories"),
+        (CODEX_HOOKS_DIR / "memory-extract.sh", "codex/memories"),
+    ],
+)
+def test_inactive_hooks_keep_legacy_prefixes_and_extraction_payload(
+    tmp_path: Path, script: Path, expected_source: str
+) -> None:
     payload = {"cwd": "/Users/example/memories", "last_assistant_message": "Assistant: keep this."}
     result, calls, _ = _run_hook(
-        CODEX_HOOKS_DIR / "memory-extract.sh", tmp_path, payload, responses=[]
+        script, tmp_path, payload, responses=[]
     )
     assert result.returncode == 0, result.stderr
     extract_calls = [call for call in calls if str(call["url"]).endswith("/memory/extract")]
-    assert extract_calls[0]["body"]["source"] == "codex/memories"
+    assert len(extract_calls) == 1
+    body = dict(extract_calls[0]["body"])
+    document_at = body.pop("document_at")
+    assert body == {
+        "messages": "Assistant: keep this.",
+        "source": expected_source,
+        "context": "stop",
+    }
+    assert isinstance(document_at, str)
+    assert "promotion_context" not in body
 
     result, calls, _ = _run_hook(
         RECALL_SCRIPT, tmp_path, {"cwd": "/Users/example/memories"}, responses=[]

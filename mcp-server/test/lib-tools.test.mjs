@@ -152,6 +152,9 @@ test('project declaration hash comment semantics match both packaged hooks', asy
   for (const source of [
     'project_id: shared-demo#suffix\nshared_memory: true\n',
     'project_id: shared-demo # suffix\nshared_memory: true\n',
+    'project_id: shared-demo\nshared_memory: true\npromotion:\n  mode: shadow\n',
+    '# rollout\nproject_id: shared-demo\nshared_memory: true\npromotion: { mode: shadow }\n',
+    'project_id: shared-demo\nshared_memory: true\npromotion: { mode: auto }\n',
   ]) {
     await writeFile(declaration, source);
     const nodeParsed = parseProjectDeclaration(source);
@@ -164,6 +167,7 @@ test('project declaration hash comment semantics match both packaged hooks', asy
       assert.equal(shellParsed.reason, nodeParsed.reason, source);
       if (nodeParsed.ok) {
         assert.equal(shellParsed.project_id, nodeParsed.projectId, source);
+        assert.equal(shellParsed.declaration_fingerprint, nodeParsed.declarationFingerprint, source);
       }
     }
   }

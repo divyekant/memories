@@ -120,4 +120,4 @@ MESSAGES="${MESSAGES:0:$MSG_CAP}"
 
 _log_info "Extracting from $PROJECT (${#MESSAGES} chars, source=$SOURCE)"
 
-_extract_multi "$MESSAGES" "$SOURCE" "stop" "$PROMOTION_CONTEXT_JSON"
+_extract_multi "$MESSAGES" "$SOURCE" "stop" "$PROMOTION_CONTEXT_JSON" "$PROJECT_CONTEXT_JSON"

@@ -446,19 +446,17 @@ _memories_project_file() {
 # a second time on every invocation while preserving fail-closed behavior for
 # a valid declaration whose backend identity is unavailable.
 _memories_project_context_declared() {
-  local context="${1:-}" active reason
+  local context="${1:-}" active reason declaration_present
   [ -n "$context" ] || context='{}'
   active=$(printf '%s' "$context" | jq -r '.active // false' 2>/dev/null) || return 1
   [ "$active" = "true" ] && return 0
-  reason=$(printf '%s' "$context" | jq -r '.reason // "missing"' 2>/dev/null) || return 1
-  case "$reason" in
-    missing|malformed|unreadable|unknown_field|missing_field|invalid_project_id|shared_memory_not_true)
-      return 1
-      ;;
-    *)
-      return 0
-      ;;
+  declaration_present=$(printf '%s' "$context" | jq -r '.declaration_present // empty' 2>/dev/null) || return 1
+  case "$declaration_present" in
+    true) return 0 ;;
+    false) return 1 ;;
   esac
+  reason=$(printf '%s' "$context" | jq -r '.reason // "missing"' 2>/dev/null) || return 1
+  [ "$reason" != "missing" ]
 }
 
 _memories_project_backends_file() {
@@ -606,12 +604,12 @@ _memories_project_context() {
   local cwd="${1:-${CWD:-$PWD}}"
   local file parsed
   file=$(_memories_project_file "$cwd" 2>/dev/null) || {
-    jq -nc '{active:false,reason:"missing",diagnostic:"no .memories/project.yaml at the repository boundary"}'
+    jq -nc '{active:false,declaration_present:false,reason:"missing",diagnostic:"no .memories/project.yaml at the repository boundary"}'
     return 0
   }
   parsed=$(_memories_parse_project_yaml "$file")
   if [ "$(printf '%s' "$parsed" | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
-    printf '%s' "$parsed" | jq -c '{active:false,reason:(.reason // "malformed"),diagnostic:(.diagnostic // "invalid project declaration")}'
+    printf '%s' "$parsed" | jq -c '{active:false,declaration_present:true,reason:(.reason // "malformed"),diagnostic:(.diagnostic // "invalid project declaration")}'
     return 0
   fi
 
@@ -621,18 +619,18 @@ _memories_project_context() {
   local project_config backends count backend url key response http_status body identity principal config_origin call_budget
   project_config=$(_memories_project_backend_config "$cwd" 2>/dev/null) || project_config='{"backends":[]}'
   if [ "$(printf '%s' "$project_config" | jq -r '.error.reason // empty' 2>/dev/null)" ]; then
-    printf '%s' "$project_config" | jq -c '{active:false,reason:.error.reason,diagnostic:.error.diagnostic}'
+    printf '%s' "$project_config" | jq -c '{active:false,declaration_present:true,reason:.error.reason,diagnostic:.error.diagnostic}'
     return 0
   fi
   backends=$(printf '%s' "$project_config" | jq -c '.backends // []' 2>/dev/null) || backends="[]"
   count=$(printf '%s' "$backends" | jq 'length' 2>/dev/null) || count=0
   if [ "$count" -eq 0 ]; then
-    jq -nc '{active:false,reason:"no_backends",diagnostic:"no backend configuration is available"}'
+    jq -nc '{active:false,declaration_present:true,reason:"no_backends",diagnostic:"no backend configuration is available"}'
     return 0
   fi
   if [ "$count" -ne 1 ]; then
     jq -nc --arg diag "collaborative project mode requires exactly one configured backend (found $count)" \
-      '{active:false,reason:"multiple_backends",diagnostic:$diag}'
+      '{active:false,declaration_present:true,reason:"multiple_backends",diagnostic:$diag}'
     return 0
   fi
   backend=$(printf '%s' "$backends" | jq -c '.[0]')
@@ -640,14 +638,14 @@ _memories_project_context() {
   url=$(printf '%s' "$backend" | jq -r '.url // empty')
   key=$(printf '%s' "$backend" | jq -r '.api_key // .apiKey // empty')
   [ -n "$url" ] || {
-    jq -nc '{active:false,reason:"principal_unreachable",diagnostic:"the configured backend cannot be reached"}'
+    jq -nc '{active:false,declaration_present:true,reason:"principal_unreachable",diagnostic:"the configured backend cannot be reached"}'
     return 0
   }
 
   call_budget=2
   if declare -F _hook_call_budget >/dev/null 2>&1; then
     call_budget=$(_hook_call_budget 2) || {
-      jq -nc '{active:false,reason:"budget_exhausted",diagnostic:"hook budget exhausted before authenticated principal lookup"}'
+      jq -nc '{active:false,declaration_present:true,reason:"budget_exhausted",diagnostic:"hook budget exhausted before authenticated principal lookup"}'
       return 0
     }
   fi
@@ -668,27 +666,27 @@ _memories_project_context() {
       jq -nc --arg diag "authenticated principal lookup returned HTTP 401" \
         --arg name "$backend_name" --arg url "$url" --arg api_key_env "$api_key_env" \
         --argjson env_backed "$env_backed" \
-        '{active:false,reason:"principal_unauthorized",diagnostic:$diag,auth_failed:true,auth_failed_backends:[{name:$name,url:$url,api_key_env:$api_key_env,env_backed:$env_backed}]}'
+        '{active:false,declaration_present:true,reason:"principal_unauthorized",diagnostic:$diag,auth_failed:true,auth_failed_backends:[{name:$name,url:$url,api_key_env:$api_key_env,env_backed:$env_backed}]}'
       return 0
       ;;
-    *) jq -nc --arg diag "authenticated principal lookup returned HTTP ${http_status:-unknown}" '{active:false,reason:"principal_unreachable",diagnostic:$diag}'; return 0 ;;
+    *) jq -nc --arg diag "authenticated principal lookup returned HTTP ${http_status:-unknown}" '{active:false,declaration_present:true,reason:"principal_unreachable",diagnostic:$diag}'; return 0 ;;
   esac
   identity=$(printf '%s' "$body" | jq -c . 2>/dev/null) || {
-    jq -nc '{active:false,reason:"principal_unreachable",diagnostic:"authenticated principal lookup returned invalid JSON"}'
+    jq -nc '{active:false,declaration_present:true,reason:"principal_unreachable",diagnostic:"authenticated principal lookup returned invalid JSON"}'
     return 0
   }
   case "$(printf '%s' "$identity" | jq -r '.type // empty')" in
     managed) ;;
-    env|none) jq -nc '{active:false,reason:"env_principal",diagnostic:"environment or unconfigured admin identity cannot activate collaborative mode"}'; return 0 ;;
-    *) jq -nc '{active:false,reason:"invalid_principal_type",diagnostic:"authenticated principal lookup did not return a managed principal"}'; return 0 ;;
+    env|none) jq -nc '{active:false,declaration_present:true,reason:"env_principal",diagnostic:"environment or unconfigured admin identity cannot activate collaborative mode"}'; return 0 ;;
+    *) jq -nc '{active:false,declaration_present:true,reason:"invalid_principal_type",diagnostic:"authenticated principal lookup did not return a managed principal"}'; return 0 ;;
   esac
   principal=$(printf '%s' "$identity" | jq -r '.principal_id // empty')
   if [ -z "$principal" ]; then
-    jq -nc '{active:false,reason:"missing_principal",diagnostic:"authenticated backend response did not include principal_id"}'
+    jq -nc '{active:false,declaration_present:true,reason:"missing_principal",diagnostic:"authenticated backend response did not include principal_id"}'
     return 0
   fi
   if ! printf '%s' "$principal" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'; then
-    jq -nc '{active:false,reason:"invalid_principal",diagnostic:"authenticated principal_id must be a lowercase path-safe slug"}'
+    jq -nc '{active:false,declaration_present:true,reason:"invalid_principal",diagnostic:"authenticated principal_id must be a lowercase path-safe slug"}'
     return 0
   fi
   local project_id promotion_mode declaration_fingerprint identity_prefixes legacy_prefixes prefixes_unrestricted
@@ -696,14 +694,16 @@ _memories_project_context() {
   project_id=$(printf '%s' "$parsed" | jq -r '.project_id')
   promotion_mode=$(printf '%s' "$parsed" | jq -r '.promotion_mode // "off"')
   declaration_fingerprint=$(printf '%s' "$parsed" | jq -r '.declaration_fingerprint // empty')
-  local backend_name
+  local backend_name backend_api_key_env backend_env_backed
   backend_name=$(printf '%s' "$backend" | jq -r '.name // "default"')
+  backend_api_key_env=$(printf '%s' "$backend" | jq -r '.api_key_env // empty')
+  backend_env_backed=$(printf '%s' "$backend" | jq -r '.env_backed // false')
   prefixes_unrestricted=$(printf '%s' "$identity" | jq -r '(.role == "admin") or (.prefixes == null)' 2>/dev/null || printf 'false')
   if [ "$prefixes_unrestricted" = "true" ]; then
     identity_prefixes='[]'
   else
     if ! printf '%s' "$identity" | jq -e '(.prefixes | type == "array") and all(.prefixes[]; type == "string")' >/dev/null 2>&1; then
-      jq -nc '{active:false,reason:"invalid_prefixes",diagnostic:"authenticated principal lookup returned invalid source prefixes"}'
+      jq -nc '{active:false,declaration_present:true,reason:"invalid_prefixes",diagnostic:"authenticated principal lookup returned invalid source prefixes"}'
       return 0
     fi
     identity_prefixes=$(printf '%s' "$identity" | jq -c '.prefixes')
@@ -733,10 +733,11 @@ _memories_project_context() {
     )
   ' 2>/dev/null || printf '[]')
   jq -nc --arg project "$project_id" --arg principal "$principal" --arg backend "$backend_name" \
-    --arg url "$url" --arg origin "$config_origin" --arg mode "$promotion_mode" --arg fp "$declaration_fingerprint" \
+    --arg url "$url" --arg key "$key" --arg key_env "$backend_api_key_env" --argjson env_backed "$backend_env_backed" \
+    --arg origin "$config_origin" --arg mode "$promotion_mode" --arg fp "$declaration_fingerprint" \
     --arg person "$person_source" --argjson person_authorized "$person_source_authorized" \
     --argjson prefixes "$identity_prefixes" --argjson unrestricted "$prefixes_unrestricted" --argjson legacy "$legacy_prefixes" \
-    '{active:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,promotionMode:$mode,promotion_mode:$mode,declarationFingerprint:$fp,declaration_fingerprint:$fp,personSource:$person,person_source:$person,personSourceAuthorized:$person_authorized,person_source_authorized:$person_authorized,backend:$backend,backend_name:$backend,backend_url:$url,config_origin:$origin,prefixes:$prefixes,prefixes_unrestricted:$unrestricted,legacy_source_prefixes:$legacy}'
+    '{active:true,declaration_present:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,promotionMode:$mode,promotion_mode:$mode,declarationFingerprint:$fp,declaration_fingerprint:$fp,personSource:$person,person_source:$person,personSourceAuthorized:$person_authorized,person_source_authorized:$person_authorized,backend:$backend,backend_name:$backend,backend_url:$url,backend_api_key:$key,backend_api_key_env:$key_env,backend_env_backed:$env_backed,config_origin:$origin,prefixes:$prefixes,prefixes_unrestricted:$unrestricted,legacy_source_prefixes:$legacy}'
 }
 
 _memories_project_unavailable_message() {
@@ -1712,9 +1713,33 @@ _extract_multi() {
   local source="$2"
   local context="${3:-stop}"
   local promotion_context="${4:-}"
+  local resolved_context="${5:-}"
 
-  local backends
-  backends=$(_get_backends_for_op "extract")
+  local backends resolved_active resolved_backend_url resolved_backend_name resolved_backend_key
+  local resolved_backend_key_env resolved_backend_env_backed
+  resolved_active=$(printf '%s' "$resolved_context" | jq -r '.active // false' 2>/dev/null || printf 'false')
+  if [ "$resolved_active" = "true" ]; then
+    # Active project extraction must use the exact backend and credential that
+    # authenticated the project context.  Do not rediscover routing after
+    # /api/keys/me; a changed config must not reroute or change credentials.
+    resolved_backend_url=$(printf '%s' "$resolved_context" | jq -r '.backend_url // empty' 2>/dev/null || true)
+    resolved_backend_name=$(printf '%s' "$resolved_context" | jq -r '.backend_name // .backend // empty' 2>/dev/null || true)
+    resolved_backend_key=$(printf '%s' "$resolved_context" | jq -r '.backend_api_key // empty' 2>/dev/null || true)
+    resolved_backend_key_env=$(printf '%s' "$resolved_context" | jq -r '.backend_api_key_env // empty' 2>/dev/null || true)
+    resolved_backend_env_backed=$(printf '%s' "$resolved_context" | jq -r '.backend_env_backed // false' 2>/dev/null || printf 'false')
+    if [ -n "$resolved_backend_url" ] && [ -n "$resolved_backend_name" ]; then
+      backends=$(jq -nc --arg name "$resolved_backend_name" --arg url "$resolved_backend_url" \
+        --arg key "$resolved_backend_key" --arg key_env "$resolved_backend_key_env" \
+        --argjson env_backed "$resolved_backend_env_backed" \
+        '[{name:$name,url:$url,api_key:$key,api_key_env:$key_env,env_backed:$env_backed,scenario:""}]')
+    else
+      # An active context without its authenticated binding is unsafe to
+      # broaden through legacy routing; fail closed for this extraction.
+      backends='[]'
+    fi
+  else
+    backends=$(_get_backends_for_op "extract")
+  fi
   # Pass current timestamp as document_at for temporal reasoning
   local doc_at
   doc_at=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
