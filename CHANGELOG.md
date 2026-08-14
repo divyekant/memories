@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [5.15.1] - 2026-08-14
+
+### Fixed
+- **Shared project memories are never selected for automatic pruning.** Both
+  scheduled and manual pruning now exclude every `project/` namespace,
+  including malformed historical project paths, while personal and legacy
+  retention behavior remains unchanged.
+
 ## [5.15.0] - 2026-08-13
 
 ### Added
