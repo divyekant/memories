@@ -443,31 +443,46 @@ class OMLXProvider(LLMProvider):
             return False
 
 
-def get_provider() -> LLMProvider | None:
+def get_provider(
+    provider_name: str | None = None,
+    model: str | None = None,
+) -> LLMProvider | None:
     """Factory: create an LLM provider from environment variables.
 
     Returns None if EXTRACT_PROVIDER is not set (extraction disabled).
     Raises ValueError for invalid configuration.
     """
-    provider_name = os.environ.get("EXTRACT_PROVIDER", "").strip().lower()
-    if not provider_name:
+    effective_provider = (
+        provider_name
+        if provider_name is not None
+        else os.environ.get("EXTRACT_PROVIDER", "")
+    )
+    if not isinstance(effective_provider, str):
+        raise ValueError("provider_name must be a string or None")
+    effective_provider = effective_provider.strip().lower()
+    if not effective_provider:
         return None
 
-    model = os.environ.get("EXTRACT_MODEL", "").strip() or None
+    effective_model = (
+        model if model is not None else os.environ.get("EXTRACT_MODEL", "")
+    )
+    if not isinstance(effective_model, str):
+        raise ValueError("model must be a string or None")
+    effective_model = effective_model.strip() or None
 
-    if provider_name == "anthropic":
+    if effective_provider == "anthropic":
         api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY required when EXTRACT_PROVIDER=anthropic")
-        return AnthropicProvider(api_key=api_key, model=model)
+        return AnthropicProvider(api_key=api_key, model=effective_model)
 
-    elif provider_name == "openai":
+    elif effective_provider == "openai":
         api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         if not api_key:
             raise ValueError("OPENAI_API_KEY required when EXTRACT_PROVIDER=openai")
-        return OpenAIProvider(api_key=api_key, model=model)
+        return OpenAIProvider(api_key=api_key, model=effective_model)
 
-    elif provider_name == "chatgpt-subscription":
+    elif effective_provider == "chatgpt-subscription":
         refresh_token = os.environ.get("CHATGPT_REFRESH_TOKEN", "").strip()
         client_id = os.environ.get("CHATGPT_CLIENT_ID", "").strip()
         if not refresh_token:
@@ -475,15 +490,24 @@ def get_provider() -> LLMProvider | None:
         if not client_id:
             raise ValueError("CHATGPT_CLIENT_ID required when EXTRACT_PROVIDER=chatgpt-subscription")
         return ChatGPTSubscriptionProvider(
-            refresh_token=refresh_token, client_id=client_id, model=model,
+            refresh_token=refresh_token, client_id=client_id, model=effective_model,
         )
 
-    elif provider_name == "ollama":
+    elif effective_provider == "ollama":
         base_url = os.environ.get("OLLAMA_URL", "").strip() or None
-        return OllamaProvider(base_url=base_url, model=model)
+        return OllamaProvider(base_url=base_url, model=effective_model)
+
+    elif effective_provider == "omlx":
+        base_url = os.environ.get("OMLX_URL", "").strip() or None
+        api_key = os.environ.get("OMLX_API_KEY", "").strip() or None
+        return OMLXProvider(
+            base_url=base_url,
+            api_key=api_key,
+            model=effective_model,
+        )
 
     else:
         raise ValueError(
-            f"Unknown EXTRACT_PROVIDER: '{provider_name}'. "
-            "Use: anthropic, openai, chatgpt-subscription, or ollama"
+            f"Unknown EXTRACT_PROVIDER: '{effective_provider}'. "
+            "Use: anthropic, openai, chatgpt-subscription, ollama, or omlx"
         )

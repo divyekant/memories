@@ -44,7 +44,19 @@ INPUT=$(cat)
 
 CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
 PROJECT=$(_memories_resolve_project "$CWD" 2>/dev/null || basename "$CWD")
-PROJECT_CONTEXT_JSON=$(_memories_project_context "${CWD:-}" 2>/dev/null || printf '{"active":false}')
+PROJECT_CONTEXT_FILE=$(mktemp "${TMPDIR:-/tmp}/memories-project-context.XXXXXX") || PROJECT_CONTEXT_FILE=""
+if [ -n "$PROJECT_CONTEXT_FILE" ]; then
+  if ! _memories_project_context "${CWD:-}" >"$PROJECT_CONTEXT_FILE" 2>/dev/null; then
+    printf '%s' '{"active":false}' >"$PROJECT_CONTEXT_FILE"
+    _MEMORIES_PROJECT_BACKEND_SNAPSHOT=""
+  fi
+  PROJECT_CONTEXT_JSON=$(cat "$PROJECT_CONTEXT_FILE" 2>/dev/null || printf '{"active":false}')
+  rm -f "$PROJECT_CONTEXT_FILE"
+else
+  _memories_project_context "${CWD:-}" >/dev/null 2>/dev/null || true
+  _MEMORIES_PROJECT_BACKEND_SNAPSHOT=""
+  PROJECT_CONTEXT_JSON='{"active":false}'
+fi
 PROJECT_CONTEXT_ACTIVE=$(printf '%s' "$PROJECT_CONTEXT_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')
 if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && declare -F _memories_project_context_declared >/dev/null && _memories_project_context_declared "$PROJECT_CONTEXT_JSON"; then
   _log_warn "Collaborative project identity unavailable; skipping automatic extraction"
@@ -64,6 +76,7 @@ SOURCE="${_EXTRACT_SRC//\{project\}/$PROJECT}"
 if PROJECT_SOURCE=$(_memories_project_extract_source "$PROJECT_CONTEXT_ACTIVE" "$PROJECT_CONTEXT_ID" "$PROJECT_CONTEXT_PRINCIPAL"); then
   SOURCE="$PROJECT_SOURCE"
 fi
+PROMOTION_CONTEXT_JSON=$(_memories_project_promotion_context "$PROJECT_CONTEXT_JSON" "$SOURCE" 2>/dev/null || true)
 
 MESSAGES=""
 
@@ -119,4 +132,4 @@ MESSAGES="${MESSAGES:0:$MSG_CAP}"
 
 _log_info "Extracting from $PROJECT (${#MESSAGES} chars, source=$SOURCE)"
 
-_extract_multi "$MESSAGES" "$SOURCE" "stop"
+_extract_multi "$MESSAGES" "$SOURCE" "stop" "$PROMOTION_CONTEXT_JSON"

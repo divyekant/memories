@@ -2,10 +2,41 @@
 import os
 import pytest
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from llm_provider import CompletionResult
 from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
+from project_promotion import PromotionContext, PromotionMode
+
+
+def test_promotion_proposal_rejects_project_kind_outside_authenticated_acl():
+    from llm_extract import _promotion_proposal
+
+    context = PromotionContext(
+        project_id="demo",
+        principal_id="alice",
+        declared_mode=PromotionMode.AUTO,
+        effective_mode=PromotionMode.AUTO,
+        declaration_fingerprint="a" * 64,
+        classifier_version="classifier-v1",
+        classifier_provider="anthropic",
+        classifier_model="claude-haiku",
+        reviewer_version="reviewer-v1",
+        reviewer_provider="anthropic",
+        reviewer_model="claude-haiku",
+        allowed_project_kinds=("knowledge",),
+    )
+    fact = {
+        "project_relevance": 0.99,
+        "visibility": "project",
+        "assertion_status": "confirmed",
+        "project_kind": "decisions",
+        "confidence": 0.99,
+        "reason": "provider-selected destination",
+    }
+
+    assert _promotion_proposal(fact, context) is None
 
 
 def _cr(text, input_tokens=10, output_tokens=5):
@@ -71,6 +102,88 @@ class TestFactExtraction:
         assert len(facts) == EXTRACT_MAX_FACTS
         assert all(len(f["text"]) <= EXTRACT_MAX_FACT_CHARS for f in facts)
         assert all(f["text"].endswith("...") for f in facts)
+
+    def test_active_promotion_fields_are_additive_and_missing_fields_stay_private(self):
+        from llm_extract import extract_facts
+
+        mock_provider = MagicMock()
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {
+                "category": "DECISION",
+                "text": "Use Qdrant for durable memory",
+                "project_relevance": 0.95,
+                "visibility": "project",
+                "assertion_status": "confirmed",
+                "project_kind": "knowledge",
+                "confidence": 0.92,
+                "reason": "Confirmed project invariant",
+            },
+            {"category": "DETAIL", "text": "Private note"},
+        ]))
+        context = PromotionContext(
+            project_id="demo",
+            principal_id="alice",
+            declared_mode=PromotionMode.AUTO,
+            effective_mode=PromotionMode.AUTO,
+            declaration_fingerprint="a" * 64,
+            classifier_version="classifier-v1",
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_version="reviewer-v1",
+            reviewer_provider="anthropic",
+            reviewer_model="claude-haiku",
+        )
+
+        facts = extract_facts(
+            mock_provider,
+            "We decided to use Qdrant.",
+            source="person/alice/demo/knowledge",
+            promotion_context=context,
+        )
+
+        assert facts[0]["project_relevance"] == 0.95
+        assert "project_relevance" not in facts[1]
+
+    def test_off_promotion_context_preserves_legacy_fact_schema(self):
+        from llm_extract import extract_facts
+
+        mock_provider = MagicMock()
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {
+                "category": "DECISION",
+                "text": "Use Qdrant for durable memory",
+                "project_relevance": 0.95,
+                "visibility": "project",
+                "assertion_status": "confirmed",
+                "project_kind": "knowledge",
+                "confidence": 0.92,
+                "reason": "Confirmed project invariant",
+            }
+        ]))
+        context = PromotionContext(
+            project_id="demo",
+            principal_id="alice",
+            declared_mode=PromotionMode.OFF,
+            effective_mode=PromotionMode.OFF,
+            declaration_fingerprint="a" * 64,
+            classifier_version="classifier-v1",
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_version="reviewer-v1",
+            reviewer_provider="anthropic",
+            reviewer_model="claude-haiku",
+        )
+
+        facts = extract_facts(
+            mock_provider,
+            "We decided to use Qdrant.",
+            source="person/alice/demo/knowledge",
+            promotion_context=context,
+        )
+
+        assert facts == [{"category": "decision", "text": "Use Qdrant for durable memory"}]
+        system_prompt = mock_provider.complete.call_args.args[0]
+        assert "project_relevance" not in system_prompt
 
 
 class TestCategoryExtraction:
@@ -665,6 +778,332 @@ class TestExecuteActions:
         call_kwargs = mock_engine.add_memories.call_args
         assert call_kwargs.kwargs.get("metadata_list") == [{"category": "decision"}]
 
+    def test_active_promotion_add_persists_candidate_before_callback(self, monkeypatch):
+        from llm_extract import execute_actions
+
+        monkeypatch.setenv("PROJECT_PROMOTION_RELEVANCE_THRESHOLD", "0.8")
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [100]
+        context = PromotionContext(
+            project_id="demo",
+            principal_id="alice",
+            declared_mode=PromotionMode.AUTO,
+            effective_mode=PromotionMode.AUTO,
+            declaration_fingerprint="a" * 64,
+            classifier_version="classifier-v1",
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_version="reviewer-v1",
+            reviewer_provider="anthropic",
+            reviewer_model="claude-haiku",
+        )
+        facts = [{
+            "text": "The project uses Qdrant for durable memory.",
+            "category": "decision",
+            "project_relevance": 0.95,
+            "visibility": "project",
+            "assertion_status": "confirmed",
+            "project_kind": "knowledge",
+            "confidence": 0.94,
+            "reason": "Confirmed project invariant",
+        }]
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": 0}],
+            facts,
+            source="person/alice/demo/knowledge",
+            allowed_prefixes=["person/alice/demo", "project/demo"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            promotion_context=context,
+        )
+
+        assert result["promotion_candidates"] == [
+            {"candidate_id": 100, "fact_index": 0, "route": "ordinary"}
+        ]
+        promotion = mock_engine.add_memories.call_args.kwargs["trusted_promotion"]
+        assert promotion.status.value == "candidate"
+        assert promotion.reviewer_version == context.reviewer_version
+        from project_promotion import promotion_state_from_memory
+        restored = promotion_state_from_memory({"id": 100, **promotion.as_metadata()})
+        assert restored is not None
+        assert restored.reviewer_version == context.reviewer_version
+
+    def test_active_promotion_malformed_proposal_stays_private_without_candidate(self, monkeypatch):
+        from llm_extract import execute_actions
+
+        monkeypatch.setenv("PROJECT_PROMOTION_RELEVANCE_THRESHOLD", "0.8")
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [101]
+        context = PromotionContext(
+            project_id="demo",
+            principal_id="alice",
+            declared_mode=PromotionMode.AUTO,
+            effective_mode=PromotionMode.AUTO,
+            declaration_fingerprint="a" * 64,
+            classifier_version="classifier-v1",
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_version="reviewer-v1",
+            reviewer_provider="anthropic",
+            reviewer_model="claude-haiku",
+        )
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{
+                "text": "Private or incomplete project note",
+                "category": "detail",
+                "project_relevance": "high",
+                "visibility": "project",
+                "assertion_status": "confirmed",
+                "project_kind": "knowledge",
+                "confidence": 0.91,
+                "reason": "not a numeric relevance score",
+            }],
+            source="person/alice/demo/knowledge",
+            allowed_prefixes=["person/alice/demo", "project/demo"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            promotion_context=context,
+        )
+
+        assert result["promotion_candidates"] == []
+        promotion = mock_engine.add_memories.call_args.kwargs["trusted_promotion"]
+        assert promotion.status.value == "private"
+
+    def test_active_promotion_delete_noop_and_unconfirmed_conflict_have_no_candidate(
+        self, monkeypatch
+    ):
+        from llm_extract import execute_actions
+
+        monkeypatch.setenv("PROJECT_PROMOTION_RELEVANCE_THRESHOLD", "0.8")
+        mock_engine = MagicMock()
+        mock_engine.get_memory.return_value = {
+            "id": 7,
+            "source": "person/alice/demo/knowledge",
+            "text": "Existing fact",
+        }
+        mock_engine.add_memories.return_value = [102]
+        context = PromotionContext(
+            project_id="demo",
+            principal_id="alice",
+            declared_mode=PromotionMode.AUTO,
+            effective_mode=PromotionMode.AUTO,
+            declaration_fingerprint="a" * 64,
+            classifier_version="classifier-v1",
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_version="reviewer-v1",
+            reviewer_provider="anthropic",
+            reviewer_model="claude-haiku",
+        )
+        fact = {
+            "text": "A disputed project fact",
+            "category": "detail",
+            "project_relevance": 0.95,
+            "visibility": "project",
+            "assertion_status": "tentative",
+            "project_kind": "knowledge",
+            "confidence": 0.94,
+            "reason": "Not confirmed",
+        }
+        result = execute_actions(
+            mock_engine,
+            [
+                {"action": "DELETE", "fact_index": 0, "old_id": 7},
+                {"action": "NOOP", "fact_index": 0, "existing_id": 7},
+                {"action": "CONFLICT", "fact_index": 0, "old_id": 7},
+            ],
+            [fact],
+            source="person/alice/demo/knowledge",
+            allowed_prefixes=["person/alice/demo", "project/demo"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            promotion_context=context,
+        )
+
+        assert result["promotion_candidates"] == []
+        conflict_state = mock_engine.add_memories.call_args.kwargs["trusted_promotion"]
+        assert conflict_state.status.value == "private"
+
+    def test_active_promotion_uses_bounded_audit_floor(self, monkeypatch):
+        from llm_extract import execute_actions
+
+        monkeypatch.setenv("PROJECT_PROMOTION_RELEVANCE_THRESHOLD", "0.8")
+        monkeypatch.setenv("PROJECT_PROMOTION_AUDIT_FLOOR", "2")
+        mock_engine = MagicMock()
+        mock_engine.add_memories.side_effect = [[201], [202], [203]]
+        context = PromotionContext(
+            project_id="demo",
+            principal_id="alice",
+            declared_mode=PromotionMode.AUTO,
+            effective_mode=PromotionMode.AUTO,
+            declaration_fingerprint="a" * 64,
+            classifier_version="classifier-v1",
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_version="reviewer-v1",
+            reviewer_provider="anthropic",
+            reviewer_model="claude-haiku",
+        )
+        facts = [
+            {
+                "text": f"Low relevance fact {index}",
+                "category": "detail",
+                "project_relevance": 0.2,
+                "visibility": "project",
+                "assertion_status": "confirmed",
+                "project_kind": "knowledge",
+                "confidence": 0.9,
+                "reason": "Candidate for recall audit",
+            }
+            for index in range(3)
+        ]
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": index} for index in range(3)],
+            facts,
+            source="person/alice/demo/knowledge",
+            allowed_prefixes=["person/alice/demo", "project/demo"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            promotion_context=context,
+        )
+
+        assert result["promotion_candidates"] == [
+            {"candidate_id": 201, "fact_index": 0, "route": "audit"},
+            {"candidate_id": 202, "fact_index": 1, "route": "audit"},
+        ]
+        assert (
+            mock_engine.add_memories.call_args_list[-1]
+            .kwargs["trusted_promotion"]
+            .status.value
+            == "private"
+        )
+
+    def test_active_promotion_audit_floor_persists_between_batches(
+        self, monkeypatch, tmp_path
+    ):
+        from llm_extract import execute_actions
+        from memory_engine import MemoryEngine
+        from project_promotion import promotion_state_from_memory
+
+        monkeypatch.setenv("PROJECT_PROMOTION_RELEVANCE_THRESHOLD", "0.8")
+        monkeypatch.setenv("PROJECT_PROMOTION_AUDIT_FLOOR", "1")
+        monkeypatch.setenv("PROJECT_PROMOTION_AUDIT_PERIOD_DAYS", "7")
+        engine = MemoryEngine(data_dir=str(tmp_path))
+        trusted = TrustedAuthorship.principal("alice", "codex")
+        context = PromotionContext(
+            project_id="demo",
+            principal_id="alice",
+            declared_mode=PromotionMode.AUTO,
+            effective_mode=PromotionMode.AUTO,
+            declaration_fingerprint="a" * 64,
+            classifier_version="classifier-v1",
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_version="reviewer-v1",
+            reviewer_provider="anthropic",
+            reviewer_model="claude-haiku",
+        )
+
+        def run_batch(text):
+            return execute_actions(
+                engine,
+                [{"action": "ADD", "fact_index": 0}],
+                [{
+                    "text": text,
+                    "category": "detail",
+                    "project_relevance": 0.2,
+                    "visibility": "project",
+                    "assertion_status": "confirmed",
+                    "project_kind": "knowledge",
+                    "confidence": 0.9,
+                    "reason": "Candidate for recall audit",
+                }],
+                source="person/alice/demo/knowledge",
+                allowed_prefixes=["person/alice/demo", "project/demo"],
+                novelty_gate=False,
+                trusted_authorship=trusted,
+                promotion_context=context,
+            )
+
+        first = run_batch("The project uses UTC timestamps.")
+        second = run_batch("The project stores timestamps as ISO strings.")
+
+        assert first["promotion_candidates"] == [
+            {"candidate_id": first["actions"][0]["id"], "fact_index": 0, "route": "audit"}
+        ]
+        assert second["promotion_candidates"] == []
+        second_state = promotion_state_from_memory(
+            engine.get_memory(second["actions"][0]["id"])
+        )
+        assert second_state is not None
+        assert second_state.status.value == "private"
+
+    def test_active_promotion_audit_floor_reopens_after_period_expiry(
+        self, monkeypatch, tmp_path
+    ):
+        from llm_extract import execute_actions
+        from memory_engine import MemoryEngine
+
+        monkeypatch.setenv("PROJECT_PROMOTION_RELEVANCE_THRESHOLD", "0.8")
+        monkeypatch.setenv("PROJECT_PROMOTION_AUDIT_FLOOR", "1")
+        monkeypatch.setenv("PROJECT_PROMOTION_AUDIT_PERIOD_DAYS", "7")
+        engine = MemoryEngine(data_dir=str(tmp_path))
+        trusted = TrustedAuthorship.principal("alice", "codex")
+        context = PromotionContext(
+            project_id="demo",
+            principal_id="alice",
+            declared_mode=PromotionMode.AUTO,
+            effective_mode=PromotionMode.AUTO,
+            declaration_fingerprint="a" * 64,
+            classifier_version="classifier-v1",
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_version="reviewer-v1",
+            reviewer_provider="anthropic",
+            reviewer_model="claude-haiku",
+        )
+        low_fact = {
+            "category": "detail",
+            "project_relevance": 0.2,
+            "visibility": "project",
+            "assertion_status": "confirmed",
+            "project_kind": "knowledge",
+            "confidence": 0.9,
+            "reason": "Candidate for recall audit",
+        }
+        first = execute_actions(
+            engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{**low_fact, "text": "The project uses UTC timestamps."}],
+            source="person/alice/demo/knowledge",
+            allowed_prefixes=["person/alice/demo", "project/demo"],
+            novelty_gate=False,
+            trusted_authorship=trusted,
+            promotion_context=context,
+        )
+        assert first["promotion_candidates"]
+
+        captured_at = (
+            datetime.now(timezone.utc) - timedelta(days=8)
+        ).isoformat()
+        first_meta = engine._get_meta_by_id(first["actions"][0]["id"])
+        first_meta["promotion"]["captured_at"] = captured_at
+        engine.save()
+
+        second = execute_actions(
+            engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{**low_fact, "text": "The project stores timestamps as ISO strings."}],
+            source="person/alice/demo/knowledge",
+            allowed_prefixes=["person/alice/demo", "project/demo"],
+            novelty_gate=False,
+            trusted_authorship=trusted,
+            promotion_context=context,
+        )
+        assert second["promotion_candidates"] == [
+            {"candidate_id": second["actions"][0]["id"], "fact_index": 0, "route": "audit"}
+        ]
+
     def test_execute_add_passes_trusted_authorship(self):
         from llm_extract import execute_actions
 
@@ -1005,6 +1444,75 @@ class TestExecuteActions:
 
 class TestFullPipeline:
     """Test run_extraction() end-to-end with mocks."""
+
+    def test_standard_partial_private_batch_skips_promotion_callback(self, monkeypatch):
+        from llm_extract import run_extraction
+
+        monkeypatch.setenv("PROJECT_PROMOTION_RELEVANCE_THRESHOLD", "0.8")
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.side_effect = [
+            _cr(json.dumps([
+                {
+                    "category": "DECISION",
+                    "text": "Use PostgreSQL",
+                    "project_relevance": 0.95,
+                    "visibility": "project",
+                    "assertion_status": "confirmed",
+                    "project_kind": "knowledge",
+                    "confidence": 0.94,
+                    "reason": "Confirmed project decision",
+                },
+                {
+                    "category": "DETAIL",
+                    "text": "Use UTC timestamps",
+                    "project_relevance": 0.95,
+                    "visibility": "project",
+                    "assertion_status": "confirmed",
+                    "project_kind": "knowledge",
+                    "confidence": 0.94,
+                    "reason": "Confirmed project convention",
+                },
+            ])),
+            _cr(json.dumps([
+                {"action": "ADD", "fact_index": 0},
+                {"action": "ADD", "fact_index": 1},
+            ])),
+        ]
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = []
+        mock_engine.add_memories.side_effect = [[301], RuntimeError("private write failed")]
+        callback = MagicMock()
+        context = PromotionContext(
+            project_id="demo",
+            principal_id="alice",
+            declared_mode=PromotionMode.AUTO,
+            effective_mode=PromotionMode.AUTO,
+            declaration_fingerprint="a" * 64,
+            classifier_version="classifier-v1",
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_version="reviewer-v1",
+            reviewer_provider="anthropic",
+            reviewer_model="claude-haiku",
+        )
+
+        result = run_extraction(
+            provider=mock_provider,
+            engine=mock_engine,
+            messages="We decided on the database and timestamp convention.",
+            source="person/alice/demo/knowledge",
+            allowed_prefixes=["person/alice/demo", "project/demo"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            promotion_context=context,
+            promotion_callback=callback,
+        )
+
+        callback.assert_not_called()
+        assert result["promotion_candidates"] == [
+            {"candidate_id": 301, "fact_index": 0, "route": "ordinary"}
+        ]
+        assert any(action["action"] == "error" for action in result["actions"])
 
     def test_full_extraction_pipeline(self):
         from llm_extract import run_extraction

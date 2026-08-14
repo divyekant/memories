@@ -119,3 +119,22 @@ def test_metrics_tracks_manual_embedder_reload(client):
     assert manual["failed_total"] == 0
     assert manual["last_requested_at"] is not None
     assert manual["last_completed_at"] is not None
+
+
+def test_metrics_includes_text_free_promotion_snapshot(client):
+    test_client, _ = client
+    import app as app_module
+
+    service = MagicMock()
+    service.metrics_snapshot.return_value = {
+        "status_counts": {"candidate": 2},
+        "alerts": {
+            "unreviewable_rate_alert": False,
+            "unreviewable_backlog_alert": False,
+        },
+    }
+    with patch.object(app_module, "promotion_service", service):
+        response = test_client.get("/metrics", headers={"X-API-Key": "test-key"})
+
+    assert response.status_code == 200
+    assert response.json()["promotion"]["status_counts"] == {"candidate": 2}

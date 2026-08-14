@@ -3,9 +3,11 @@
 Enabled via AUDIT_LOG=true env var. Records who did what, when, from where.
 """
 
+import json
 import logging
 import sqlite3
 import threading
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("memories.audit")
@@ -50,6 +52,14 @@ class AuditLog:
             CREATE INDEX IF NOT EXISTS idx_audit_key ON audit_log(key_id);
             CREATE INDEX IF NOT EXISTS idx_audit_resource_id ON audit_log(resource_id);
         """)
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(audit_log)").fetchall()
+        }
+        if "metadata_json" not in columns:
+            conn.execute(
+                "ALTER TABLE audit_log ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
+            )
+            conn.commit()
         conn.close()
         logger.info("Audit log initialized: %s", db_path)
 
@@ -72,13 +82,20 @@ class AuditLog:
         resource_id: str = "",
         source_prefix: str = "",
         ip: str = "",
+        metadata: Mapping[str, Any] | None = None,
     ) -> None:
         try:
+            metadata_json = json.dumps(
+                dict(metadata) if isinstance(metadata, Mapping) else {},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             conn = self._get_conn()
             conn.execute(
-                "INSERT INTO audit_log (action, key_id, key_name, resource_id, source_prefix, ip) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (action, key_id, key_name, resource_id, source_prefix, ip),
+                "INSERT INTO audit_log (action, key_id, key_name, resource_id, source_prefix, ip, metadata_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (action, key_id, key_name, resource_id, source_prefix, ip, metadata_json),
             )
             conn.commit()
         except Exception:
@@ -111,7 +128,19 @@ class AuditLog:
                 f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
                 params + [limit, offset],
             ).fetchall()
-            return [dict(r) for r in rows]
+            entries: List[Dict[str, Any]] = []
+            for row in rows:
+                entry = dict(row)
+                raw_metadata = entry.pop("metadata_json", "{}")
+                try:
+                    parsed_metadata = json.loads(raw_metadata or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    parsed_metadata = {}
+                entry["metadata"] = (
+                    parsed_metadata if isinstance(parsed_metadata, dict) else {}
+                )
+                entries.append(entry)
+            return entries
         finally:
             conn.close()
 

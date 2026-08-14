@@ -24,7 +24,7 @@ ALLOWED_ORIGIN_CLIENTS = frozenset(
 # particular, a caller may not use metadata to impersonate an author or to
 # attach provenance that has not been authenticated by the server.
 RESERVED_METADATA_FIELDS = frozenset(
-    {"author", "contributors", "origin_client", "source_memory_ids"}
+    {"author", "contributors", "origin_client", "source_memory_ids", "promotion"}
 )
 
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
@@ -270,10 +270,26 @@ class TrustedAuthorship:
         )
 
     @classmethod
-    def principal(cls, principal_id: str, origin_client: Any = "other") -> "TrustedAuthorship":
-        """Build trusted authorship for a principal-originated write."""
+    def principal(
+        cls,
+        principal_id: str,
+        origin_client: Any = "other",
+        *,
+        contributors: Iterable[Any] | None = None,
+        source_memory_ids: Iterable[Any] | None = None,
+    ) -> "TrustedAuthorship":
+        """Build trusted authorship for a principal-originated write.
 
-        return cls(author=principal_id, origin_client=normalize_origin_client(origin_client))
+        Internal server workflows may attach provenance in the same storage
+        mutation.  API callers never construct this value directly.
+        """
+
+        return cls(
+            author=principal_id,
+            origin_client=normalize_origin_client(origin_client),
+            contributors=tuple(contributors or ()),
+            source_memory_ids=tuple(source_memory_ids or ()),
+        )
 
     @classmethod
     def system(
@@ -298,7 +314,7 @@ class TrustedAuthorship:
             "author": self.author,
             "origin_client": self.origin_client,
         }
-        if self.author == "system":
+        if self.contributors or self.source_memory_ids:
             metadata["contributors"] = list(self.contributors)
             metadata["source_memory_ids"] = list(self.source_memory_ids)
         return metadata

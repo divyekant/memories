@@ -81,6 +81,35 @@ class TestMaintenanceSchedulerUsesThreadpool:
             assert len(threadpool_called) > 0, \
                 "Pruning must run via run_in_threadpool to avoid blocking the event loop"
 
+    def test_promotion_reconciliation_runs_in_threadpool(self):
+        import app as app_module
+
+        fake_now = datetime(2026, 3, 22, 3, 46, 0, tzinfo=timezone.utc)
+        calls = []
+
+        async def fake_run_in_threadpool(fn, *args, **kwargs):
+            calls.append(fn.__name__)
+            return fn(*args, **kwargs)
+
+        service = MagicMock()
+        service.reconcile.return_value = {"processed": 2}
+        with patch.object(app_module, "promotion_service", service), \
+             patch.object(app_module, "datetime") as mock_dt, \
+             patch.object(app_module, "run_in_threadpool", side_effect=fake_run_in_threadpool):
+            mock_dt.now.return_value = fake_now
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            async def _run_once():
+                task = asyncio.create_task(app_module._maintenance_scheduler())
+                await asyncio.sleep(0.05)
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+            asyncio.run(_run_once())
+
+        assert "_run_scheduled_promotion_reconciliation" in calls
+        service.reconcile.assert_called_once()
+
 
 class TestFindClustersMaxCandidates:
     """Verify find_clusters respects max_candidates limit."""

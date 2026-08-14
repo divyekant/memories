@@ -10,7 +10,7 @@ import yaml
 def _run_lib_function(func_call, env=None, config_content=None):
     """Source _lib.sh and call a function, return stdout."""
     lib_path = os.path.join(os.path.dirname(__file__), "..",
-                            "integrations", "claude-code", "hooks", "_lib.sh")
+                            "mcp-server", "assets", "claude-code", "hooks", "_lib.sh")
     script = f'source "{lib_path}"\n{func_call}'
     full_env = {**os.environ, **(env or {})}
     if config_content:

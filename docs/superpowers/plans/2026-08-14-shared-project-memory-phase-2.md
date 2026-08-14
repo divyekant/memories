@@ -238,7 +238,11 @@ class PromotionConfig:
 
 - [ ] **Step 4: Reserve one typed metadata envelope**
 
-Add `promotion` to `RESERVED_METADATA_FIELDS` and add server-owned `promotion` to `ALLOWED_ORIGIN_CLIENTS`. Accept workflow metadata only from a `PromotionState` object passed through an internal typed engine argument in Task 4; ordinary API metadata and patches continue stripping it.
+Add `promotion` to `RESERVED_METADATA_FIELDS`; do not change the fixed
+`ALLOWED_ORIGIN_CLIENTS` value set, which validates `origin_client` labels
+rather than metadata keys. Accept workflow metadata only from a
+`PromotionState` object passed through an internal typed engine argument in
+Task 4; ordinary API metadata and patches continue stripping it.
 
 - [ ] **Step 5: Make the provider factory independently configurable without changing old callers**
 
@@ -565,7 +569,13 @@ def test_rejected_returns_to_private_lifecycle_after_90_days():
 
 - [ ] **Step 2: Write red reconciliation crash and evidence tests**
 
-Cover target-exists/finalization-missing, current shadow approval after both modes become auto, stale policy approval, lost evidence to unreviewable, unchanged deferred no-op, new evidence re-review, revocation, mode kill switch, concurrent pass, batch limit, wall-clock budget, and provider timeout not consuming the full pass.
+Cover target-exists/finalization-missing, current shadow approval remaining
+private after both modes become auto, explicit owner/admin release of a shadow
+approval in small cohorts, stale policy approval, lost evidence to unreviewable,
+unchanged deferred no-op, new evidence re-review, revocation, mode kill switch,
+concurrent pass, batch limit, wall-clock budget, and provider timeout not
+consuming the full pass. Reconciliation must never bulk-publish the shadow
+backlog.
 
 - [ ] **Step 3: Add red metrics and alert tests**
 
@@ -607,8 +617,11 @@ git commit -m "feat: reconcile and observe promotions"
 - Test: `tests/test_container_config.py`
 
 **Interfaces:**
-- Produces: CLI `uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --output promotion-eval.json`.
-- Produces machine-readable precision, recall, high-risk unsafe count, route, decision, provider/model/policy versions, per-risk-class confusion counts, and routing rates at multiple candidate relevance thresholds.
+- Produces: CLI `uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --threshold <candidate-threshold> --output promotion-eval.json`.
+- Produces machine-readable precision, recall, high-risk promotion and pre-veto
+  approval counts, route, decision, provider/model/policy versions,
+  per-risk-class confusion counts, and label/risk-partitioned routing rates at
+  multiple candidate relevance thresholds.
 - Documents a separate FPLGuru shadow evidence record; the implementation PR does not create or satisfy that record.
 
 - [ ] **Step 1: Write the red evaluator contract tests**
@@ -631,11 +644,28 @@ def test_report_includes_candidate_threshold_routing_rates():
 
 - [ ] **Step 2: Create at least 100 versioned weighted fixtures**
 
-Include every risk class named in the spec, both safe and unsafe outcomes, both principals, prompt injection in recalled project memory, malformed provider output, revocation, exact/semantic duplicate pairs, policy invalidation, and lost-evidence transitions. Each JSONL row contains `id`, `risk_class`, `conversation`, `expected_visibility`, `expected_kind`, `expected_review`, `high_risk`, and `weight`.
+Include every risk class named in the spec, both safe and unsafe outcomes, both
+principals, prompt injection through distinct user, code, log, recalled-memory,
+and tool-output transcripts, malformed provider output, revocation,
+exact/semantic duplicate pairs with shared-reference context, policy
+invalidation, and lost-evidence transitions. Use at least 100 substantively
+distinct transcripts rather than repeating labels under new ids. Each JSONL
+row contains `id`, `risk_class`, `conversation`, `expected_visibility`,
+`expected_kind`, `expected_review`, `high_risk`, and `weight`.
 
-- [ ] **Step 3: Implement deterministic scoring and machine-readable failure output**
+- [ ] **Step 3: Implement deterministic aggregation and machine-readable failure output**
 
-The evaluator exits non-zero unless total weighted fixtures are at least 100, precision is at least 0.95, recall is at least 0.85, and unsafe high-risk count is zero. It reports candidate routing rates so the initial permissive shadow threshold is selected from evidence rather than a hardcoded default. Never write fixture conversation text to the report.
+The evaluator uses the production extraction, proposal, routing, reviewer,
+reference-filtering, sanitization, and final-veto boundaries. It exits non-zero
+unless total weighted fixtures are at least 100, precision is at least 0.95,
+recall is at least 0.85, unsafe high-risk promotion count is zero, and no
+high-risk item receives an approve review even when a later deterministic veto
+would block the write. Safe classifier non-routing satisfies reject/defer
+expectations; exact review-label disagreement remains diagnostic so the stated
+precision and recall thresholds remain meaningful. It reports candidate
+routing rates partitioned by expected label and risk class so the initial
+permissive shadow threshold is selected from evidence rather than a hardcoded
+default. Never write fixture conversation text to the report.
 
 - [ ] **Step 4: Document deployment, shadow evidence, rollback, and explicit non-actions**
 
@@ -645,7 +675,7 @@ Document: pruning-hotfix prerequisite; backend/client upgrade order; managed-key
 
 ```bash
 uv run pytest -q eval/tests/test_run_promotion_eval.py tests/test_playbook_gate.py tests/test_container_config.py tests/test_installer.py
-uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --output /tmp/promotion-eval.json
+uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --threshold <candidate-threshold> --output /tmp/promotion-eval.json
 git diff --check
 git add eval/fixtures/project_promotion_v1.jsonl eval/run_promotion_eval.py eval/tests/test_run_promotion_eval.py docs/memory-playbook.md README.md GETTING_STARTED.md tests/test_playbook_gate.py tests/test_container_config.py
 git commit -m "docs: add promotion activation gate"
@@ -708,5 +738,7 @@ The review request must name the exact SHA, the pruning prerequisite, activation
 - [ ] Project and workflow maintenance protections apply to manual and scheduled paths.
 - [ ] Unreviewable debt is visible, alerted, non-expiring, and individually dismissible with audit.
 - [ ] The 100+ fixture gate enforces 95% precision, 85% recall, and zero unsafe high-risk outcomes.
+- [ ] Moving from shadow to auto never bulk-publishes `shadow_approved`; each
+      existing shadow approval requires an explicit owner/admin release.
 - [ ] FPLGuru auto remains blocked until two weeks, 50 reviews, 30 would-promotes, five per principal, and zero unsafe live outcomes are documented.
 - [ ] No dashboard, bulk dismissal endpoint, semantic consolidation, federation, membership service, second fact store, production activation, or seed is added.

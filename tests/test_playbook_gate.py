@@ -149,3 +149,37 @@ def test_active_search_pattern_exposed_for_hooks(lib: Path) -> None:
     assert "did we already" in pattern
     assert "do you remember" in pattern
     assert "left off" in pattern
+
+
+def test_phase2_playbook_documents_inert_activation_gate() -> None:
+    playbook = (REPO_ROOT / "docs" / "memory-playbook.md").read_text(encoding="utf-8")
+    required_phrases = (
+        "v5.15.1",
+        "PROJECT_PROMOTION_MODE=off",
+        "PROJECT_PROMOTION_MODE=shadow",
+        "backend first",
+        "managed",
+        "principal_id",
+        "run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl",
+        "two weeks",
+        "50 total reviewed",
+        "30 manually inspected would-promote",
+        "five would-promote outcomes from each principal",
+        "zero unsafe",
+        "policy",
+        "unreviewable",
+        "rollback",
+        "bulk dismissal",
+        "project consolidation",
+        "seed",
+        "separate FPLGuru",
+        "not created",
+    )
+    for phrase in required_phrases:
+        assert phrase.lower() in playbook.lower(), phrase
+
+
+def test_phase2_playbook_does_not_claim_activation_or_seed() -> None:
+    playbook = (REPO_ROOT / "docs" / "memory-playbook.md").read_text(encoding="utf-8").lower()
+    assert "implementation pr does not create or satisfy" in playbook
+    assert "do not add .memories/project.yaml" in playbook

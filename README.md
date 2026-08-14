@@ -194,6 +194,61 @@ step. No production memory is seeded by this implementation.
 
 ---
 
+## Shared project memory (Phase 2 promotion gate)
+
+Phase 2 is private-first and model-reviewed, but remains inert by default:
+
+```bash
+PROJECT_PROMOTION_MODE=off
+```
+
+Upgrade the backend first and verify the v5.15.1 pruning-safety hotfix (every
+`project/` source is protected from scheduled and manual pruning/consolidation)
+before upgrading client hooks or MCP packages. Then run the managed-key
+isolation check from fresh sessions: exactly one backend; `type: "managed"`
+keys with stable `principal_id`; each principal can read the shared prefix but
+cannot read the other principal's private prefix. An admin/environment key,
+missing principal, revoked key, or multi-backend setup fails closed.
+
+After those checks, a reviewed repository must explicitly add
+`promotion: {mode: shadow}` to `.memories/project.yaml`, set
+`PROJECT_PROMOTION_MODE=shadow`, and set the measured
+`PROJECT_PROMOTION_RELEVANCE_THRESHOLD`. Shadow records would-promote evidence but
+never writes a new shared target. Do not add `.memories/project.yaml`, activate
+FPLGuru, or seed project history in this implementation PR. The exact
+provider-backed fixture command is:
+
+```bash
+uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --threshold <candidate-threshold> --output /tmp/promotion-eval.json
+```
+
+Pre-register the exact provider/model/policy/threshold identity and retain
+three consecutive attempts; every report must pass. The versioned suite must
+have at least 100 weighted fixtures and 100 distinct transcripts, at least 95%
+precision, at least 85% recall, zero unsafe high-risk promotions, and zero
+high-risk approve reviews before deterministic vetoes. Before
+`auto` is considered, live evidence must show two weeks, 50 total reviewed
+candidates, 30 manually inspected would-promote outcomes, five would-promote
+outcomes from each principal, and zero unsafe live outcomes. A classifier or
+reviewer policy/provider/model change resets prior approvals and restarts the
+time and volume gates. Alert on five new `unreviewable` candidates in one hour
+and separately flag any unresolved item reaching seven days.
+
+Rollback is `PROJECT_PROMOTION_MODE=off`; it stops new review and shared-target
+creation while allowing only idempotent finalization/linkage repair already in
+flight. Phase 2 adds no bulk dismissal API, project consolidation, or seed.
+Changing both caps to `auto` does not bulk-publish the shadow backlog:
+`shadow_approved` candidates require individual owner/admin approval in small,
+observed cohorts, while only newly captured auto candidates may promote
+automatically. After a backend restart, promotion remains private until a
+managed project extraction authenticates and reports the current declaration;
+an authenticated repository `off` declaration still stops delayed work.
+The separate FPLGuru shadow evidence record is not created or satisfied by
+this PR. See the [promotion activation playbook](docs/memory-playbook.md) for
+the full operator sequence.
+
+---
+
 ## Architecture
 
 ```
