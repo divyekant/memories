@@ -91,6 +91,21 @@ def _non_empty_string(value: Any, field_name: str, *, strip: bool = False) -> st
     return result
 
 
+def _provider_identity(value: Any, field_name: str) -> str:
+    """Validate and normalize a persisted provider identity."""
+
+    provider = _non_empty_string(value, field_name, strip=True).lower()
+    if provider not in _PROVIDER_NAMES:
+        raise ValueError(f"invalid {field_name}")
+    return provider
+
+
+def _model_identity(value: Any, field_name: str) -> str:
+    """Validate a persisted model identity without constraining model names."""
+
+    return _non_empty_string(value, field_name, strip=True)
+
+
 @dataclass(frozen=True)
 class PromotionConfig:
     """Operator-owned promotion settings.
@@ -163,7 +178,11 @@ class PromotionContext:
     effective_mode: PromotionMode
     declaration_fingerprint: str
     classifier_version: str
+    classifier_provider: str
+    classifier_model: str
     reviewer_version: str
+    reviewer_provider: str
+    reviewer_model: str
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -174,6 +193,26 @@ class PromotionContext:
             "reviewer_version",
         ):
             _non_empty_string(getattr(self, field_name), field_name)
+        object.__setattr__(
+            self,
+            "classifier_provider",
+            _provider_identity(self.classifier_provider, "classifier_provider"),
+        )
+        object.__setattr__(
+            self,
+            "classifier_model",
+            _model_identity(self.classifier_model, "classifier_model"),
+        )
+        object.__setattr__(
+            self,
+            "reviewer_provider",
+            _provider_identity(self.reviewer_provider, "reviewer_provider"),
+        )
+        object.__setattr__(
+            self,
+            "reviewer_model",
+            _model_identity(self.reviewer_model, "reviewer_model"),
+        )
         object.__setattr__(
             self,
             "declared_mode",
@@ -267,6 +306,10 @@ class PromotionState:
     owner: str
     project_id: str
     declaration_fingerprint: str
+    classifier_provider: str
+    classifier_model: str
+    reviewer_provider: str
+    reviewer_model: str
     capture_mode: PromotionMode
     route: str | None
     proposal: PromotionProposal | None
@@ -296,6 +339,26 @@ class PromotionState:
             "captured_at",
         ):
             _non_empty_string(getattr(self, field_name), field_name)
+        object.__setattr__(
+            self,
+            "classifier_provider",
+            _provider_identity(self.classifier_provider, "classifier_provider"),
+        )
+        object.__setattr__(
+            self,
+            "classifier_model",
+            _model_identity(self.classifier_model, "classifier_model"),
+        )
+        object.__setattr__(
+            self,
+            "reviewer_provider",
+            _provider_identity(self.reviewer_provider, "reviewer_provider"),
+        )
+        object.__setattr__(
+            self,
+            "reviewer_model",
+            _model_identity(self.reviewer_model, "reviewer_model"),
+        )
         if self.route is not None and self.route not in _REVIEW_ROUTES:
             raise ValueError("invalid route")
         if isinstance(self.attempt_count, bool) or not isinstance(self.attempt_count, int) or self.attempt_count < 0:
@@ -311,18 +374,6 @@ class PromotionState:
             raise ValueError("invalid proposal")
         if self.review is not None and not isinstance(self.review, PromotionReview):
             raise ValueError("invalid review")
-
-    @property
-    def classifier_version(self) -> str:
-        """The classifier version carried by the persisted proposal."""
-
-        return self.proposal.classifier_version if self.proposal else ""
-
-    @property
-    def reviewer_version(self) -> str:
-        """The reviewer version carried by the persisted review."""
-
-        return self.review.reviewer_version if self.review else ""
 
     @property
     def reviewed_at(self) -> str:
@@ -342,6 +393,10 @@ class PromotionState:
             "owner": self.owner,
             "project_id": self.project_id,
             "declaration_fingerprint": self.declaration_fingerprint,
+            "classifier_provider": self.classifier_provider,
+            "classifier_model": self.classifier_model,
+            "reviewer_provider": self.reviewer_provider,
+            "reviewer_model": self.reviewer_model,
             "capture_mode": self.capture_mode.value,
             "route": self.route,
             "proposal": _proposal_as_metadata(self.proposal),
@@ -451,6 +506,10 @@ def promotion_state_from_memory(memory: Mapping[str, Any]) -> PromotionState | N
         "owner",
         "project_id",
         "declaration_fingerprint",
+        "classifier_provider",
+        "classifier_model",
+        "reviewer_provider",
+        "reviewer_model",
         "capture_mode",
         "route",
         "proposal",
@@ -477,6 +536,10 @@ def promotion_state_from_memory(memory: Mapping[str, Any]) -> PromotionState | N
             owner=value["owner"],
             project_id=value["project_id"],
             declaration_fingerprint=value["declaration_fingerprint"],
+            classifier_provider=value["classifier_provider"],
+            classifier_model=value["classifier_model"],
+            reviewer_provider=value["reviewer_provider"],
+            reviewer_model=value["reviewer_model"],
             capture_mode=value["capture_mode"],
             route=value["route"],
             proposal=proposal,
@@ -611,7 +674,7 @@ def load_promotion_config() -> PromotionConfig:
     review_provider = _env_text("PROJECT_PROMOTION_REVIEW_PROVIDER").lower()
     if review_provider and review_provider not in _PROVIDER_NAMES:
         raise ValueError(f"invalid PROJECT_PROMOTION_REVIEW_PROVIDER: {review_provider!r}")
-    return PromotionConfig(
+    config = PromotionConfig(
         host_mode=_parse_env_mode("PROJECT_PROMOTION_MODE", PromotionMode.OFF),
         relevance_threshold=_parse_env_float(
             "PROJECT_PROMOTION_RELEVANCE_THRESHOLD", None
@@ -644,6 +707,12 @@ def load_promotion_config() -> PromotionConfig:
         review_provider=review_provider,
         review_model=_env_text("PROJECT_PROMOTION_REVIEW_MODEL"),
     )
+    if config.host_mode is not PromotionMode.OFF and config.relevance_threshold is None:
+        raise ValueError(
+            "PROJECT_PROMOTION_RELEVANCE_THRESHOLD is required when "
+            "PROJECT_PROMOTION_MODE is shadow or auto"
+        )
+    return config
 
 
 __all__ = [

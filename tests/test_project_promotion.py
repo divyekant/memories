@@ -1,6 +1,7 @@
 """Contract tests for the Phase 2 promotion policy foundation."""
 
 from dataclasses import FrozenInstanceError
+from copy import deepcopy
 
 import pytest
 
@@ -84,6 +85,35 @@ def test_config_parsing_is_strict_and_fails_closed(monkeypatch):
     with pytest.raises(ValueError):
         load_promotion_config()
 
+    monkeypatch.delenv("PROJECT_PROMOTION_RELEVANCE_THRESHOLD")
+    with pytest.raises(ValueError):
+        load_promotion_config()
+
+    monkeypatch.setenv("PROJECT_PROMOTION_MODE", "auto")
+    with pytest.raises(ValueError):
+        load_promotion_config()
+
+
+def test_context_keeps_classifier_and_reviewer_identities_independent():
+    context = PromotionContext(
+        project_id="fplguru",
+        principal_id="alice",
+        declared_mode=PromotionMode.SHADOW,
+        effective_mode=PromotionMode.SHADOW,
+        declaration_fingerprint="decl-sha256",
+        classifier_version="classifier-v1",
+        classifier_provider="anthropic",
+        classifier_model="claude-haiku",
+        reviewer_version="reviewer-v2",
+        reviewer_provider="openai",
+        reviewer_model="gpt-4.1-nano",
+    )
+
+    assert context.classifier_provider == "anthropic"
+    assert context.classifier_model == "claude-haiku"
+    assert context.reviewer_provider == "openai"
+    assert context.reviewer_model == "gpt-4.1-nano"
+
 
 def test_state_round_trip_is_typed_and_contains_policy_versions():
     proposal = PromotionProposal(
@@ -108,6 +138,10 @@ def test_state_round_trip_is_typed_and_contains_policy_versions():
         owner="alice",
         project_id="fplguru",
         declaration_fingerprint="decl-sha256",
+        classifier_provider="anthropic",
+        classifier_model="claude-haiku",
+        reviewer_provider="openai",
+        reviewer_model="gpt-4.1-nano",
         capture_mode=PromotionMode.SHADOW,
         route="ordinary",
         proposal=proposal,
@@ -127,9 +161,54 @@ def test_state_round_trip_is_typed_and_contains_policy_versions():
     assert metadata["promotion"]["review"]["reviewer_version"] == "reviewer-v2"
     assert metadata["promotion"]["review"]["reviewed_at"] == "2026-08-14T12:00:00+00:00"
     assert metadata["promotion"]["declaration_fingerprint"] == "decl-sha256"
+    assert metadata["promotion"]["classifier_provider"] == "anthropic"
+    assert metadata["promotion"]["classifier_model"] == "claude-haiku"
+    assert metadata["promotion"]["reviewer_provider"] == "openai"
+    assert metadata["promotion"]["reviewer_model"] == "gpt-4.1-nano"
     assert "transcript" not in metadata["promotion"]
     with pytest.raises(FrozenInstanceError):
         state.status = PromotionStatus.PRIVATE
+
+
+def test_state_parser_rejects_missing_or_spoofed_policy_identity():
+    proposal = PromotionProposal(
+        project_relevance=0.95,
+        visibility="project",
+        assertion_status="confirmed",
+        project_kind="knowledge",
+        confidence=0.91,
+        reason="durable project invariant",
+        classifier_version="classifier-v1",
+    )
+    state = PromotionState(
+        status=PromotionStatus.CANDIDATE,
+        owner="alice",
+        project_id="fplguru",
+        declaration_fingerprint="decl-sha256",
+        classifier_provider="anthropic",
+        classifier_model="claude-haiku",
+        reviewer_provider="openai",
+        reviewer_model="gpt-4.1-nano",
+        capture_mode=PromotionMode.SHADOW,
+        route="ordinary",
+        proposal=proposal,
+        review=None,
+        evidence_fingerprint="evidence-sha256",
+        captured_at="2026-08-14T11:00:00+00:00",
+    )
+    metadata = state.as_metadata()
+
+    missing = deepcopy(metadata)
+    del missing["promotion"]["classifier_provider"]
+    assert promotion_state_from_memory(missing) is None
+
+    spoofed = deepcopy(metadata)
+    spoofed["promotion"]["reviewer_provider"] = "mallory-provider"
+    assert promotion_state_from_memory(spoofed) is None
+
+    unknown = deepcopy(metadata)
+    unknown["promotion"]["classifier_prompt"] = "do not persist me"
+    assert promotion_state_from_memory(unknown) is None
 
 
 def test_review_route_uses_ordinary_threshold_then_fixed_audit_floor():
