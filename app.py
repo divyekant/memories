@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
@@ -37,6 +37,7 @@ from usage_tracker import UsageTracker, NullTracker
 from extraction_profiles import ExtractionProfiles
 from transcript_hygiene import clean_transcript
 from project_memory import (
+    PROJECT_KINDS,
     ProjectMemoryPolicyError,
     TrustedAuthorship,
     is_reserved_namespace_source,
@@ -1302,6 +1303,7 @@ async def lifespan(app: FastAPI):
         key_store,
         config=promotion_config,
         extract_provider=extract_provider,
+        audit_log=audit_log,
     )
     _ensure_extract_workers_started()
     background_tasks: List[asyncio.Task] = [
@@ -1655,6 +1657,7 @@ def build_promotion_context(
     source: str,
     request_context: Optional[PromotionRequestContext],
     config: PromotionConfig,
+    declaration_observer: Optional[Callable[..., None]] = None,
 ) -> Optional[PromotionContext]:
     """Build a server-owned promotion context after all fail-closed gates."""
     if not isinstance(auth, AuthContext) or not isinstance(config, PromotionConfig):
@@ -1677,10 +1680,6 @@ def build_promotion_context(
     }:
         return None
     effective_mode = resolve_effective_mode(config.host_mode, declared_mode)
-    # Off is an explicit, valid no-op.  Do not hand the extractor a context
-    # that could accidentally extend the legacy prompt or metadata envelope.
-    if effective_mode is PromotionMode.OFF:
-        return None
 
     parsed = parse_memory_source(source)
     if parsed is None or not parsed.is_person or parsed.kind != "knowledge":
@@ -1696,6 +1695,26 @@ def build_promotion_context(
     # The same managed key must be able to write both exact policy domains.
     if not auth.can_write(private_source) or not auth.can_write(project_source):
         return None
+    allowed_project_kinds = tuple(
+        kind
+        for kind in sorted(PROJECT_KINDS)
+        if auth.can_write(f"project/{request_context.project_id}/{kind}")
+    )
+    if not allowed_project_kinds:
+        return None
+    # Off is an explicit, valid no-op.  Register the authenticated declaration
+    # so it can stop delayed work, but never extend extraction payloads.
+    if effective_mode is PromotionMode.OFF:
+        if declaration_observer is not None:
+            try:
+                declaration_observer(
+                    project_id=request_context.project_id,
+                    mode=declared_mode,
+                    declaration_fingerprint=request_context.declaration_fingerprint,
+                )
+            except Exception:
+                logger.warning("Promotion declaration registration failed", exc_info=True)
+        return None
 
     classifier_provider = getattr(extract_provider, "provider_name", None)
     classifier_model = getattr(extract_provider, "model", None)
@@ -1706,7 +1725,7 @@ def build_promotion_context(
     reviewer_provider = config.review_provider or classifier_provider
     reviewer_model = config.review_model or classifier_model
     try:
-        return PromotionContext(
+        context = PromotionContext(
             project_id=request_context.project_id,
             principal_id=auth.principal_id,
             declared_mode=declared_mode,
@@ -1718,9 +1737,21 @@ def build_promotion_context(
             reviewer_version=REVIEWER_VERSION,
             reviewer_provider=reviewer_provider,
             reviewer_model=reviewer_model,
+            allowed_project_kinds=allowed_project_kinds,
         )
     except (TypeError, ValueError):
         return None
+    if declaration_observer is not None:
+        try:
+            declaration_observer(
+                project_id=request_context.project_id,
+                mode=declared_mode,
+                declaration_fingerprint=request_context.declaration_fingerprint,
+            )
+        except Exception:
+            logger.warning("Promotion declaration registration failed", exc_info=True)
+            return None
+    return context
 
 
 class ExtractRequest(BaseModel):
@@ -3832,6 +3863,11 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
         request_body.source,
         request_body.promotion_context,
         promotion_config,
+        (
+            promotion_service.observe_declaration
+            if promotion_service is not None
+            else None
+        ),
     )
 
     if extract_provider is None or run_extraction is None:

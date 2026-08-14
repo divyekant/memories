@@ -243,5 +243,9 @@ class TestSingleCallExtraction:
             {"candidate_id": 17, "fact_index": 0, "route": "ordinary"}
         ]
         assert mock_engine.add_memories.call_count == 1
-        failed_state = mock_engine.update_memory.call_args.kwargs["trusted_promotion"]
+        mock_engine.update_memory.assert_not_called()
+        failed_state = mock_engine.update_promotion_state.call_args.args[1]
         assert failed_state.status is PromotionStatus.FAILED
+        assert mock_engine.update_promotion_state.call_args.kwargs["expected_statuses"] == [
+            PromotionStatus.CANDIDATE
+        ]

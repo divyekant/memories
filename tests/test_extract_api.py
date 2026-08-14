@@ -512,6 +512,38 @@ class TestPromotionContext:
         assert context is not None
         assert context.effective_mode is PromotionMode.AUTO
         assert context.principal_id == "alice"
+        assert set(context.allowed_project_kinds) == {
+            "decisions",
+            "knowledge",
+            "state",
+            "operations",
+        }
+
+    def test_context_records_only_project_kinds_the_managed_key_can_write(self):
+        import app as app_module
+
+        provider = MagicMock(provider_name="anthropic", model="claude-haiku")
+        auth = AuthContext(
+            role="read-write",
+            prefixes=["person/alice/demo", "project/demo/knowledge"],
+            key_type="managed",
+            principal_id="alice",
+        )
+        request_context = app_module.PromotionRequestContext(
+            project_id="demo",
+            mode="auto",
+            declaration_fingerprint="a" * 64,
+        )
+        with patch.object(app_module, "extract_provider", provider):
+            context = app_module.build_promotion_context(
+                auth,
+                "person/alice/demo/knowledge",
+                request_context,
+                PromotionConfig(host_mode=PromotionMode.AUTO, relevance_threshold=0.8),
+            )
+
+        assert context is not None
+        assert context.allowed_project_kinds == ("knowledge",)
 
     def test_private_only_acl_and_host_off_fail_closed(self):
         import app as app_module
@@ -552,3 +584,63 @@ class TestPromotionContext:
                     relevance_threshold=None,
                 ),
             ) is None
+
+    def test_authenticated_off_declaration_is_observed_but_not_sent_to_extraction(self):
+        import app as app_module
+
+        provider = MagicMock(provider_name="anthropic", model="claude-haiku")
+        observer = MagicMock()
+        request_context = app_module.PromotionRequestContext(
+            project_id="demo",
+            mode="off",
+            declaration_fingerprint="b" * 64,
+        )
+        auth = AuthContext(
+            role="read-write",
+            prefixes=["person/alice/demo", "project/demo"],
+            key_type="managed",
+            principal_id="alice",
+        )
+        with patch.object(app_module, "extract_provider", provider):
+            context = app_module.build_promotion_context(
+                auth,
+                "person/alice/demo/knowledge",
+                request_context,
+                PromotionConfig(host_mode=PromotionMode.AUTO, relevance_threshold=0.8),
+                observer,
+            )
+
+        assert context is None
+        observer.assert_called_once_with(
+            project_id="demo",
+            mode=PromotionMode.OFF,
+            declaration_fingerprint="b" * 64,
+        )
+
+    def test_active_declaration_is_not_observed_until_provider_identity_is_valid(self):
+        import app as app_module
+
+        provider = MagicMock(provider_name="", model="")
+        observer = MagicMock()
+        request_context = app_module.PromotionRequestContext(
+            project_id="demo",
+            mode="auto",
+            declaration_fingerprint="c" * 64,
+        )
+        auth = AuthContext(
+            role="read-write",
+            prefixes=["person/alice/demo", "project/demo"],
+            key_type="managed",
+            principal_id="alice",
+        )
+        with patch.object(app_module, "extract_provider", provider):
+            context = app_module.build_promotion_context(
+                auth,
+                "person/alice/demo/knowledge",
+                request_context,
+                PromotionConfig(host_mode=PromotionMode.AUTO, relevance_threshold=0.8),
+                observer,
+            )
+
+        assert context is None
+        observer.assert_not_called()

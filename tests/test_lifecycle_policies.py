@@ -1,11 +1,14 @@
 """Tests for lifecycle policy fields in extraction profiles and policy enforcement."""
 
 import datetime
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
 from extraction_profiles import ExtractionProfiles
 from memory_engine import MemoryEngine
+from project_promotion import PromotionMode
+from tests.test_promotion_service import _state
 
 
 @pytest.fixture
@@ -181,6 +184,44 @@ def test_enforce_excludes_already_archived(engine, profiles):
 
     result = engine.enforce_policies(dry_run=True)
     assert not any(a["memory_id"] == mem_id for a in result["actions"])
+
+
+def test_enforce_excludes_protected_promotion_state_during_scan(engine, profiles):
+    profiles.put("person/alice/fplguru/", {"ttl_days": 1})
+    mem_id = engine.add_memories(
+        texts=["private candidate"],
+        sources=["person/alice/fplguru/knowledge"],
+    )[0]
+    engine._get_meta_by_id(mem_id).update(_state(mode=PromotionMode.AUTO).as_metadata())
+    _set_age(engine, mem_id, days=30)
+
+    result = engine.enforce_policies(dry_run=False)
+
+    assert not any(a["memory_id"] == mem_id for a in result["actions"])
+    assert engine.get_memory(mem_id).get("archived") is not True
+
+
+def test_enforce_rechecks_promotion_protection_under_lock(engine, profiles):
+    profiles.put("person/alice/fplguru/", {"ttl_days": 1})
+    mem_id = engine.add_memories(
+        texts=["private candidate"],
+        sources=["person/alice/fplguru/knowledge"],
+    )[0]
+    _set_age(engine, mem_id, days=30)
+    original_acquire = engine._entity_locks.acquire_many
+
+    @contextmanager
+    def add_candidate_before_locked_recheck(keys):
+        engine._get_meta_by_id(mem_id).update(_state().as_metadata())
+        with original_acquire(keys):
+            yield
+
+    engine._entity_locks.acquire_many = add_candidate_before_locked_recheck
+
+    result = engine.enforce_policies(dry_run=False)
+
+    assert result["summary"]["archived"] == 0
+    assert engine.get_memory(mem_id).get("archived") is not True
 
 
 def test_enforce_ttl_takes_precedence_over_confidence(engine, profiles):

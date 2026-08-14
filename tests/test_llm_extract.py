@@ -10,6 +10,35 @@ from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
 from project_promotion import PromotionContext, PromotionMode
 
 
+def test_promotion_proposal_rejects_project_kind_outside_authenticated_acl():
+    from llm_extract import _promotion_proposal
+
+    context = PromotionContext(
+        project_id="demo",
+        principal_id="alice",
+        declared_mode=PromotionMode.AUTO,
+        effective_mode=PromotionMode.AUTO,
+        declaration_fingerprint="a" * 64,
+        classifier_version="classifier-v1",
+        classifier_provider="anthropic",
+        classifier_model="claude-haiku",
+        reviewer_version="reviewer-v1",
+        reviewer_provider="anthropic",
+        reviewer_model="claude-haiku",
+        allowed_project_kinds=("knowledge",),
+    )
+    fact = {
+        "project_relevance": 0.99,
+        "visibility": "project",
+        "assertion_status": "confirmed",
+        "project_kind": "decisions",
+        "confidence": 0.99,
+        "reason": "provider-selected destination",
+    }
+
+    assert _promotion_proposal(fact, context) is None
+
+
 def _cr(text, input_tokens=10, output_tokens=5):
     """Helper to build CompletionResult from text."""
     return CompletionResult(text=text, input_tokens=input_tokens, output_tokens=output_tokens)

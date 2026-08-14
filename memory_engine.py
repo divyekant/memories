@@ -48,6 +48,7 @@ from project_promotion import (
     PromotionMode,
     PromotionState,
     PromotionStatus,
+    is_promotion_maintenance_protected,
     promotion_state_from_memory,
 )
 
@@ -1858,6 +1859,72 @@ class MemoryEngine:
                     "source_memory_ids": list(source_ids),
                 }
 
+    def remove_project_provenance(
+        self,
+        memory_id: int,
+        *,
+        contributor: str,
+        source_memory_id: Any,
+        expected_source: str,
+    ) -> Dict[str, Any]:
+        """Detach rejected workflow provenance and unpublish a sole target."""
+
+        if not isinstance(memory_id, int) or isinstance(memory_id, bool):
+            raise ValueError("memory_id must be an integer")
+        if not isinstance(contributor, str) or not is_valid_slug(contributor):
+            raise ProjectMemoryPolicyError("contributor must be a valid principal slug")
+        parsed = parse_memory_source(expected_source)
+        if parsed is None or not parsed.is_project:
+            raise ProjectMemoryPolicyError(
+                "project provenance requires an exact project/<project>/<kind> source"
+            )
+        with self._entity_locks.acquire_many(
+            [self._memory_key(memory_id), self._entity_key(expected_source)]
+        ):
+            with self._write_lock:
+                if not self._id_exists(memory_id):
+                    raise ValueError(f"Memory ID {memory_id} not found")
+                meta = self._get_meta_by_id(memory_id)
+                if meta.get("source", "") != expected_source:
+                    raise ValueError("project provenance source compare-and-set failed")
+                contributors = meta.get("contributors", [])
+                source_ids = meta.get("source_memory_ids", [])
+                if not isinstance(contributors, list) or not isinstance(source_ids, list):
+                    raise ValueError("project provenance is malformed")
+                source_ids = [value for value in source_ids if value != source_memory_id]
+                remaining_owners: set[str] = set()
+                for value in source_ids:
+                    if not isinstance(value, int) or isinstance(value, bool):
+                        continue
+                    try:
+                        remaining_state = promotion_state_from_memory(
+                            self._get_meta_by_id(value)
+                        )
+                    except (ValueError, KeyError, IndexError):
+                        remaining_state = None
+                    if remaining_state is not None:
+                        remaining_owners.add(remaining_state.owner)
+                contributors = [
+                    value
+                    for value in contributors
+                    if value != contributor or value in remaining_owners
+                ]
+                meta["contributors"] = contributors
+                meta["source_memory_ids"] = source_ids
+                if not source_ids:
+                    meta["archived"] = True
+                meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+                self.qdrant_store.replace_payload(memory_id, self._point_payload(meta))
+                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self.save()
+                return {
+                    "id": memory_id,
+                    "updated_fields": ["contributors", "source_memory_ids", "archived"],
+                    "contributors": list(contributors),
+                    "source_memory_ids": list(source_ids),
+                    "archived": bool(meta.get("archived")),
+                }
+
     def update_memory(
         self,
         memory_id: int,
@@ -2086,6 +2153,7 @@ class MemoryEngine:
         actions: List[Dict[str, Any]] = []
         excluded_pinned = 0
         excluded_archived = 0
+        excluded_promotion = 0
         candidates_scanned = 0
         by_rule: Dict[str, int] = {"ttl": 0, "confidence": 0}
 
@@ -2099,6 +2167,9 @@ class MemoryEngine:
                 continue
             if mem.get("pinned"):
                 excluded_pinned += 1
+                continue
+            if is_promotion_maintenance_protected(mem, now=now):
+                excluded_promotion += 1
                 continue
 
             candidates_scanned += 1
@@ -2173,6 +2244,9 @@ class MemoryEngine:
                         if meta.get("archived") or meta.get("pinned"):
                             skipped_stale += 1
                             continue
+                        if is_promotion_maintenance_protected(meta, now=now):
+                            skipped_stale += 1
+                            continue
 
                         # Recompute policy inputs from current state
                         source = meta.get("source", "")
@@ -2243,6 +2317,7 @@ class MemoryEngine:
                 "candidates_scanned": candidates_scanned,
                 summary_key: archived_count,
                 "by_rule": by_rule,
+                "excluded_promotion": excluded_promotion,
                 "excluded_pinned": excluded_pinned,
                 "excluded_already_archived": excluded_archived,
             },

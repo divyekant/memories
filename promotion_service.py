@@ -21,11 +21,13 @@ import time
 from typing import Any, Callable, Iterable, Mapping
 
 from auth_context import AuthContext
+from audit_log import NullAuditLog
 from key_store import KeyStore
 from llm_provider import get_provider
 from project_memory import (
     ProjectMemoryPolicyError,
     TrustedAuthorship,
+    is_valid_slug,
     parse_memory_source,
     validate_project_write,
 )
@@ -53,12 +55,21 @@ logger = logging.getLogger(__name__)
 
 _MIN_REVIEW_CONFIDENCE = 0.75
 _MAX_REVIEW_TEXT = 12000
+_MAX_RECONCILE_ATTEMPTS = 5
+_GROUNDING_STOPWORDS = frozenset(
+    {
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+        "has", "have", "in", "is", "it", "of", "on", "or", "that", "the",
+        "this", "to", "was", "were", "will", "with",
+    }
+)
 _PII_PATTERNS = (
     re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b", re.IGNORECASE),
     re.compile(r"\b(?:\+?\d[\d .()\-]{8,}\d)\b"),
     re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
 )
 _TRANSCRIPT_MARKERS = (
+    re.compile(r"IMPORTANT:\s*The following memories from prior sessions", re.IGNORECASE),
     re.compile(r"<\s*system-reminder\b", re.IGNORECASE),
     re.compile(r"\bhook\s+additional\s+context\s*:", re.IGNORECASE),
     re.compile(r"^\s*#{1,6}\s*(?:retrieved|relevant)\s+memories\b", re.IGNORECASE | re.MULTILINE),
@@ -109,6 +120,26 @@ def _parse_provider_text(value: Any) -> Any:
 def _contains_injection(value: Any) -> bool:
     text = value if isinstance(value, str) else _json_text(value)
     return any(pattern.search(text) for pattern in _INJECTION_MARKERS)
+
+
+def _grounding_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[\w'-]+", value.casefold())
+        if token not in _GROUNDING_STOPWORDS
+    }
+
+
+def _shared_text_is_grounded(shared_text: str, candidate_text: str, evidence: str) -> bool:
+    """Require every substantive output token to come from current evidence.
+
+    Shared references may influence contradiction/dedup decisions, but they are
+    never an authority for facts copied into the published text.
+    """
+
+    output_tokens = _grounding_tokens(shared_text)
+    evidence_tokens = _grounding_tokens(f"{candidate_text}\n{evidence}")
+    return bool(output_tokens) and output_tokens.issubset(evidence_tokens)
 
 
 def _safe_review(
@@ -177,6 +208,7 @@ class PromotionReviewer:
     def _reference_view(
         shared_references: Iterable[Any] | None,
         project_id: str | None = None,
+        candidate_author: str | None = None,
     ) -> list[dict[str, Any]]:
         """Keep only exact shared project records in reviewer context."""
         safe: list[dict[str, Any]] = []
@@ -188,6 +220,8 @@ class PromotionReviewer:
             if parsed is None or not parsed.is_project:
                 continue
             if project_id is not None and parsed.project_id != project_id:
+                continue
+            if candidate_author is not None and reference.get("author") != candidate_author:
                 continue
             safe.append(
                 {
@@ -218,6 +252,7 @@ class PromotionReviewer:
         references = self._reference_view(
             shared_references,
             candidate_source.project_id if candidate_source is not None else None,
+            str(candidate.get("author") or "") or None,
         )
         if candidate_source is None or not candidate_source.is_person:
             # A direct reviewer call must fail closed too; an invalid
@@ -353,6 +388,21 @@ class PromotionReviewer:
                 "review shared_text was malformed",
                 reviewer_version=self.reviewer_version,
             )
+        if (
+            decision is ReviewDecision.APPROVE
+            and shared_text is not None
+            and not _shared_text_is_grounded(
+                shared_text,
+                str(candidate.get("text", "")),
+                evidence,
+            )
+        ):
+            return _safe_review(
+                ReviewDecision.DEFER,
+                confidence,
+                "review shared_text introduced facts outside current evidence",
+                reviewer_version=self.reviewer_version,
+            )
         return _safe_review(
             decision,
             confidence,
@@ -380,6 +430,7 @@ class PromotionService:
         current_context: PromotionContext | Mapping[str, Any] | None = None,
         project_mode: PromotionMode | str | None = None,
         declaration_fingerprint: str | None = None,
+        audit_log: Any | None = None,
     ) -> None:
         self.engine = engine
         self.key_store = key_store
@@ -396,6 +447,8 @@ class PromotionService:
         self.current_context = current_context
         self.project_mode = project_mode
         self.declaration_fingerprint = declaration_fingerprint
+        self.audit_log = audit_log or NullAuditLog()
+        self._policy_lock = threading.RLock()
         self._reconcile_lock = threading.Lock()
         if reviewer is None:
             reviewer_name = config.review_provider or getattr(extract_provider, "provider_name", None)
@@ -406,6 +459,66 @@ class PromotionService:
                 reviewer_version=REVIEWER_VERSION,
             )
         self.reviewer = reviewer
+
+    def observe_declaration(
+        self,
+        *,
+        project_id: str,
+        mode: PromotionMode | str,
+        declaration_fingerprint: str,
+    ) -> None:
+        """Register a currently authenticated repository declaration.
+
+        This registry is deliberately in-memory.  After restart, delayed work
+        remains private until a client presents the current declaration again.
+        """
+
+        if not is_valid_slug(project_id):
+            raise ValueError("invalid project_id")
+        try:
+            declared_mode = mode if isinstance(mode, PromotionMode) else PromotionMode(mode)
+        except (TypeError, ValueError):
+            raise ValueError("invalid project promotion mode") from None
+        if (
+            not isinstance(declaration_fingerprint, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", declaration_fingerprint)
+        ):
+            raise ValueError("invalid declaration fingerprint")
+        with self._policy_lock:
+            self.project_modes[project_id] = declared_mode
+            self.declaration_fingerprints[project_id] = declaration_fingerprint
+
+    def _audit_event(
+        self,
+        action: str,
+        candidate_id: int,
+        state: PromotionState,
+        *,
+        target_memory_id: int | None = None,
+        outcome: str | None = None,
+        recovery: bool = False,
+    ) -> None:
+        metadata = {
+            "project_id": state.project_id,
+            "owner": state.owner,
+            "status": outcome or state.status.value,
+            "route": state.route,
+            "classifier_version": (
+                state.proposal.classifier_version if state.proposal is not None else None
+            ),
+            "reviewer_version": (
+                state.review.reviewer_version if state.review is not None else state.reviewer_version
+            ),
+            "target_memory_id": target_memory_id,
+            "attempt_count": state.attempt_count,
+            "recovery": recovery,
+        }
+        self.audit_log.log(
+            action=action,
+            resource_id=str(candidate_id),
+            source_prefix=f"project/{state.project_id}",
+            metadata=metadata,
+        )
 
     # -- policy and candidate helpers ----------------------------------
 
@@ -432,7 +545,7 @@ class PromotionService:
         if declared is None:
             declared = self.project_modes.get(project_id, self.project_mode)
         if declared is None:
-            declared = state.capture_mode
+            return PromotionMode.OFF
         try:
             declared = PromotionMode(declared)
         except (TypeError, ValueError):
@@ -451,9 +564,7 @@ class PromotionService:
             value = self._policy_value(state.project_id, "declaration_fingerprint", None)
         if value is None:
             value = self.declaration_fingerprint
-        if value is None:
-            value = state.declaration_fingerprint
-        return str(value)
+        return str(value or "")
 
     def _current_reviewer_version(self, project_id: str) -> str:
         value = self._policy_value(project_id, "reviewer_version", None)
@@ -548,6 +659,8 @@ class PromotionService:
                 continue
             if memory.get("source") != target_source or memory.get("archived"):
                 continue
+            if memory.get("author") != state.owner:
+                continue
             refs.append(dict(memory))
         return refs[:50]
 
@@ -605,7 +718,60 @@ class PromotionService:
             expected_source=candidate["source"],
             expected_statuses=[state.status],
         )
+        self._audit_event(
+            "promotion.reviewed",
+            candidate_id,
+            next_state,
+            outcome=status.value,
+        )
+        if status in {PromotionStatus.REJECTED, PromotionStatus.DEFERRED}:
+            self._audit_event(
+                f"promotion.{status.value}",
+                candidate_id,
+                next_state,
+                outcome=status.value,
+            )
         return result
+
+    def _mark_failed(
+        self,
+        candidate_id: int,
+        candidate: Mapping[str, Any],
+        state: PromotionState,
+    ) -> PromotionState:
+        next_attempt = state.attempt_count + 1
+        if next_attempt >= _MAX_RECONCILE_ATTEMPTS:
+            review = _safe_review(
+                ReviewDecision.DEFER,
+                0.0,
+                "promotion retry budget exhausted",
+                reviewer_version=self._current_reviewer_version(state.project_id),
+            )
+            failed = replace(
+                state,
+                status=PromotionStatus.UNREVIEWABLE,
+                review=review,
+                attempt_count=next_attempt,
+            )
+        else:
+            failed = replace(
+                state,
+                status=PromotionStatus.FAILED,
+                attempt_count=next_attempt,
+            )
+        self.engine.update_promotion_state(
+            candidate_id,
+            failed,
+            expected_source=str(candidate.get("source", "")),
+            expected_statuses=[state.status],
+        )
+        self._audit_event(
+            "promotion.failed",
+            candidate_id,
+            failed,
+            outcome=failed.status.value,
+        )
+        return failed
 
     def review_captured(
         self,
@@ -629,6 +795,7 @@ class PromotionService:
                     continue
                 if self._effective_mode(state) is PromotionMode.OFF:
                     continue
+                self._audit_event("promotion.proposed", candidate_id, state)
                 # Review is a visibility decision, not an authorization grant.
                 # Re-check the current managed ACL before sending private text
                 # to the independently configured reviewer.
@@ -644,6 +811,12 @@ class PromotionService:
                     # not treated as a normal uncertain review.
                     next_state = replace(state, status=PromotionStatus.UNREVIEWABLE, review=review, attempt_count=state.attempt_count + 1)
                     self.engine.update_promotion_state(candidate_id, next_state, expected_source=candidate["source"], expected_statuses=[state.status])
+                    self._audit_event(
+                        "promotion.unreviewable",
+                        candidate_id,
+                        next_state,
+                        outcome=PromotionStatus.UNREVIEWABLE.value,
+                    )
                     reviews.append(review)
                     continue
                 review = self.reviewer.review(
@@ -660,6 +833,19 @@ class PromotionService:
                         self.promote(candidate_id)
                     except Exception as exc:
                         logger.warning("Promotion candidate %s remains private: %s", candidate_id, exc)
+                        try:
+                            current_candidate, current_state = self._candidate(candidate_id)
+                            if current_state.status in {
+                                PromotionStatus.CANDIDATE,
+                                PromotionStatus.FAILED,
+                            }:
+                                self._mark_failed(candidate_id, current_candidate, current_state)
+                        except Exception:
+                            logger.warning(
+                                "Unable to persist promotion failure for candidate %s",
+                                candidate_id,
+                                exc_info=True,
+                            )
             except Exception as exc:
                 logger.warning("Promotion review failed for candidate %s: %s", candidate_id, exc)
         return reviews
@@ -867,31 +1053,83 @@ class PromotionService:
             actor,
             require_write=True,
         )
-        if state.status in {PromotionStatus.PROMOTED, PromotionStatus.REJECTED}:
-            raise ValueError("candidate is not manually rejectable")
-        review = _safe_review(
-            ReviewDecision.REJECT,
-            1.0,
-            reason,
-            reviewer_version=self._current_reviewer_version(state.project_id),
-        )
-        next_state = replace(
-            state,
-            status=PromotionStatus.REJECTED,
-            review=review,
-            attempt_count=state.attempt_count + 1,
-            rejected_until=(
-                datetime.now(timezone.utc)
-                + timedelta(days=self.config.rejected_retention_days)
-            ).isoformat(),
-        )
-        self.engine.update_promotion_state(
-            candidate_id,
-            next_state,
-            expected_source=candidate["source"],
-            expected_statuses=[state.status],
-        )
-        return self._candidate_view(self.engine.get_memory(candidate_id), next_state)
+        private_source = candidate["source"]
+        target_source = self._target_source(state)
+        lock_keys = [
+            self.engine._memory_key(candidate_id),
+            self.engine._entity_key(private_source),
+            self.engine._entity_key(target_source),
+        ]
+        with (
+            self.engine._entity_locks.acquire_many(lock_keys),
+            self.key_store.promotion_authority_lock(),
+        ):
+            candidate, state = self._candidate_for_actor(
+                candidate_id,
+                actor,
+                require_write=True,
+            )
+            if state.status in {PromotionStatus.PROMOTED, PromotionStatus.REJECTED}:
+                raise ValueError("candidate is not manually rejectable")
+            linked = self._find_target_by_source_memory(state, candidate_id)
+            review = _safe_review(
+                ReviewDecision.REJECT,
+                1.0,
+                reason,
+                reviewer_version=self._current_reviewer_version(state.project_id),
+            )
+            next_state = replace(
+                state,
+                status=PromotionStatus.REJECTED,
+                review=review,
+                attempt_count=state.attempt_count + 1,
+                rejected_until=(
+                    datetime.now(timezone.utc)
+                    + timedelta(days=self.config.rejected_retention_days)
+                ).isoformat(),
+            )
+            self.engine.update_promotion_state(
+                candidate_id,
+                next_state,
+                expected_source=candidate["source"],
+                expected_statuses=[state.status],
+            )
+            if linked is not None:
+                self._detach_candidate_target(candidate_id, state, linked)
+            self._audit_event(
+                "promotion.rejected",
+                candidate_id,
+                next_state,
+                target_memory_id=(int(linked["id"]) if linked is not None else None),
+                outcome=PromotionStatus.REJECTED.value,
+                recovery=linked is not None,
+            )
+            return self._candidate_view(self.engine.get_memory(candidate_id), next_state)
+
+    def _detach_candidate_target(
+        self,
+        candidate_id: int,
+        state: PromotionState,
+        target: Mapping[str, Any],
+    ) -> None:
+        """Remove a non-approved candidate's provenance and unpublish if sole."""
+
+        target_id = int(target["id"])
+        target_source = self._target_source(state)
+        remover = getattr(self.engine, "remove_project_provenance", None)
+        if callable(remover):
+            remover(
+                target_id,
+                contributor=state.owner,
+                source_memory_id=candidate_id,
+                expected_source=target_source,
+            )
+            return
+        source_ids = target.get("source_memory_ids", [])
+        if isinstance(source_ids, list) and source_ids == [candidate_id]:
+            self.engine.update_memory(target_id, archived=True)
+            return
+        raise ValueError("linked shared target requires operator remediation")
 
     # -- maintenance and observability ----------------------------------
 
@@ -919,7 +1157,9 @@ class PromotionService:
             "processed": 0,
             "promoted": 0,
             "repaired": 0,
+            "remediated": 0,
             "unreviewable": 0,
+            "retry_exhausted": 0,
             "skipped": 0,
             "errors": 0,
             "budget_exhausted": False,
@@ -930,13 +1170,42 @@ class PromotionService:
             return result
         deadline = time.monotonic() + float(budget_seconds)
         try:
+            memories = list(getattr(self.engine, "metadata", ()))
+            linked_candidate_ids: set[int] = set()
+            for memory in memories:
+                if not isinstance(memory, Mapping) or memory.get("archived"):
+                    continue
+                parsed = parse_memory_source(memory.get("source"))
+                if parsed is None or not parsed.is_project:
+                    continue
+                source_ids = memory.get("source_memory_ids", [])
+                if isinstance(source_ids, list):
+                    linked_candidate_ids.update(
+                        value
+                        for value in source_ids
+                        if isinstance(value, int) and not isinstance(value, bool)
+                    )
+
             candidate_ids = []
-            for memory in list(getattr(self.engine, "metadata", ())):
+            actionable_statuses = {
+                PromotionStatus.CANDIDATE,
+                PromotionStatus.FAILED,
+                PromotionStatus.PROMOTED,
+            }
+            for memory in memories:
                 if not isinstance(memory, Mapping):
                     continue
                 state = promotion_state_from_memory(memory)
                 memory_id = memory.get("id")
-                if state is not None and isinstance(memory_id, int):
+                if (
+                    state is not None
+                    and isinstance(memory_id, int)
+                    and not isinstance(memory_id, bool)
+                    and (
+                        state.status in actionable_statuses
+                        or memory_id in linked_candidate_ids
+                    )
+                ):
                     candidate_ids.append(memory_id)
             candidate_ids.sort()
             for candidate_id in candidate_ids:
@@ -949,17 +1218,41 @@ class PromotionService:
                 try:
                     candidate, state = self._candidate(candidate_id)
                     linked = self._find_target_by_source_memory(state, candidate_id)
+                    if linked is not None and state.status in {
+                        PromotionStatus.PRIVATE,
+                        PromotionStatus.DEFERRED,
+                        PromotionStatus.UNREVIEWABLE,
+                        PromotionStatus.REJECTED,
+                    }:
+                        self._detach_candidate_target(candidate_id, state, linked)
+                        self._audit_event(
+                            "promotion.recovery",
+                            candidate_id,
+                            state,
+                            target_memory_id=int(linked["id"]),
+                            outcome="remediated",
+                            recovery=True,
+                        )
+                        result["remediated"] += 1
+                        continue
                     if linked is not None or state.status is PromotionStatus.PROMOTED:
                         self.promote(candidate_id)
+                        self._audit_event(
+                            "promotion.recovery",
+                            candidate_id,
+                            state,
+                            target_memory_id=(int(linked["id"]) if linked is not None else state.target_memory_id),
+                            outcome="repaired",
+                            recovery=True,
+                        )
                         result["repaired"] += 1
                         continue
-                    if (
-                        state.status is PromotionStatus.SHADOW_APPROVED
-                        and self._effective_mode(state) is PromotionMode.AUTO
-                        and self._policy_is_current(state)
-                    ):
-                        self.promote(candidate_id)
-                        result["promoted"] += 1
+                    if state.attempt_count >= _MAX_RECONCILE_ATTEMPTS:
+                        if state.status is not PromotionStatus.UNREVIEWABLE:
+                            failed = self._mark_failed(candidate_id, candidate, state)
+                            if failed.status is PromotionStatus.UNREVIEWABLE:
+                                result["unreviewable"] += 1
+                        result["retry_exhausted"] += 1
                         continue
                     if (
                         state.status in {PromotionStatus.CANDIDATE, PromotionStatus.FAILED}
@@ -990,6 +1283,13 @@ class PromotionService:
                             expected_source=candidate["source"],
                             expected_statuses=[state.status],
                         )
+                        self._audit_event(
+                            "promotion.unreviewable",
+                            candidate_id,
+                            next_state,
+                            outcome=PromotionStatus.UNREVIEWABLE.value,
+                            recovery=True,
+                        )
                         result["unreviewable"] += 1
                         continue
                     result["skipped"] += 1
@@ -1000,6 +1300,24 @@ class PromotionService:
                         candidate_id,
                         exc,
                     )
+                    try:
+                        current_candidate, current_state = self._candidate(candidate_id)
+                        if current_state.status in {
+                            PromotionStatus.CANDIDATE,
+                            PromotionStatus.FAILED,
+                        }:
+                            failed = self._mark_failed(
+                                candidate_id, current_candidate, current_state
+                            )
+                            if failed.status is PromotionStatus.UNREVIEWABLE:
+                                result["unreviewable"] += 1
+                                result["retry_exhausted"] += 1
+                    except Exception:
+                        logger.warning(
+                            "Promotion reconciliation could not persist failure for %s",
+                            candidate_id,
+                            exc_info=True,
+                        )
             return result
         finally:
             self._reconcile_lock.release()
@@ -1017,6 +1335,8 @@ class PromotionService:
         retention_expirations = 0
         exact_reuse_count = 0
         promoted_count = 0
+        reviewed_count = 0
+        semantic_near_duplicate_count = 0
 
         for memory in list(getattr(self.engine, "metadata", ())):
             if not isinstance(memory, Mapping):
@@ -1041,6 +1361,40 @@ class PromotionService:
             policies[f"{state.proposal.classifier_version if state.proposal else 'none'}|{reviewer_version}"] += 1
             if state.status is PromotionStatus.PROMOTED:
                 promoted_count += 1
+            if state.review is not None and state.proposal is not None:
+                reviewed_count += 1
+                candidate_text = state.review.shared_text or str(memory.get("text", ""))
+                try:
+                    matches = self.engine.search(
+                        candidate_text,
+                        k=5,
+                        threshold=self.config.near_duplicate_threshold,
+                        source_exact=self._target_source(state),
+                        include_archived=False,
+                        reinforce_results=False,
+                    )
+                except Exception:
+                    matches = []
+                kind = state.proposal.project_kind
+                candidate_digest = project_text_digest(
+                    state.project_id, kind, candidate_text
+                )
+                for match in matches or ():
+                    if not isinstance(match, Mapping):
+                        continue
+                    similarity = match.get("similarity", 0.0)
+                    if (
+                        isinstance(similarity, (int, float))
+                        and not isinstance(similarity, bool)
+                        and math.isfinite(float(similarity))
+                        and float(similarity) >= self.config.near_duplicate_threshold
+                        and project_text_digest(
+                            state.project_id, kind, str(match.get("text", ""))
+                        )
+                        != candidate_digest
+                    ):
+                        semantic_near_duplicate_count += 1
+                        break
             if state.status is PromotionStatus.REJECTED and not is_promotion_maintenance_protected(
                 memory,
                 now=now,
@@ -1077,8 +1431,11 @@ class PromotionService:
             "exact_reuse_rate": (
                 exact_reuse_count / promoted_count if promoted_count else 0.0
             ),
-            "semantic_near_duplicate_count": 0,
-            "semantic_near_duplicate_rate": 0.0,
+            "semantic_near_duplicate_count": semantic_near_duplicate_count,
+            "semantic_near_duplicate_rate": (
+                semantic_near_duplicate_count / reviewed_count if reviewed_count else 0.0
+            ),
+            "promotion_error_count": self.audit_log.count(action="promotion.failed"),
             "unreviewable_count": statuses.get(PromotionStatus.UNREVIEWABLE.value, 0),
             "oldest_unreviewable_age_hours": round(oldest_unreviewable_hours, 3),
             "terminal_retention_expirations": retention_expirations,
@@ -1097,15 +1454,7 @@ class PromotionService:
 
     @staticmethod
     def _sanitize_shadow_text(text: str) -> str:
-        text = clean_transcript(text).strip()
-        text, _ = redact_secrets(text)
-        text = _PII_PATTERNS[0].sub("[REDACTED:pii]", text)
-        text = _PII_PATTERNS[2].sub("[REDACTED:pii]", text)
-        for phone_match in list(_PII_PATTERNS[1].finditer(text))[::-1]:
-            if len(re.sub(r"\D", "", phone_match.group(0))) >= 10:
-                start, end = phone_match.span()
-                text = text[:start] + "[REDACTED:pii]" + text[end:]
-        return text[:_MAX_REVIEW_TEXT].strip()
+        return clean_transcript(text).strip()[:_MAX_REVIEW_TEXT]
 
     @staticmethod
     def _final_text_violations(text: str, project_id: str) -> list[str]:
@@ -1138,6 +1487,7 @@ class PromotionService:
         return violations
 
     def _validate_final_text(self, text: str, state: PromotionState) -> str:
+        text = self._sanitize_shadow_text(text)
         violations = self._final_text_violations(text, state.project_id)
         target_source = self._target_source(state)
         if not violations:
@@ -1272,15 +1622,20 @@ class PromotionService:
                     texts=[text],
                     sources=[target_source],
                     deduplicate=False,
-                    trusted_authorship=TrustedAuthorship.principal(state.owner, "promotion"),
+                    trusted_authorship=TrustedAuthorship.principal(
+                        state.owner,
+                        "promotion",
+                        contributors=[state.owner],
+                        source_memory_ids=[candidate_id],
+                    ),
                 )
                 if not ids:
                     raise RuntimeError("promotion target add returned no memory")
                 target = self.engine.get_memory(ids[0])
                 target_id = ids[0]
-                # Provenance is a separate reserved-only update so a crash
-                # after the add can be repaired by the next retry without
-                # replacing the original author.
+                # The add already wrote provenance atomically. Keep the
+                # reserved-only append as an idempotent compatibility step for
+                # engines that normalize workflow metadata after insertion.
                 self.engine.append_project_provenance(
                     target_id,
                     contributor=state.owner,
@@ -1312,12 +1667,21 @@ class PromotionService:
             # terminal linkage are durable.
             if not candidate.get("archived"):
                 self.engine.update_memory(candidate_id, archived=True)
-            return {
+            result = {
                 "status": "promoted",
                 "candidate_id": candidate_id,
                 "target_memory_id": target_id,
                 "reused": reused,
             }
+            self._audit_event(
+                "promotion.promoted",
+                candidate_id,
+                promoted_state,
+                target_memory_id=target_id,
+                outcome=PromotionStatus.PROMOTED.value,
+                recovery=repair_existing_target,
+            )
+            return result
 
 
 __all__ = ["PromotionReviewer", "PromotionService"]

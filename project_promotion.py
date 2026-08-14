@@ -198,6 +198,7 @@ class PromotionContext:
     reviewer_version: str
     reviewer_provider: str
     reviewer_model: str
+    allowed_project_kinds: tuple[str, ...] = tuple(sorted(_PROJECT_KINDS))
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -238,6 +239,13 @@ class PromotionContext:
             "effective_mode",
             _coerce_enum(self.effective_mode, PromotionMode, "effective_mode"),
         )
+        allowed_kinds = self.allowed_project_kinds
+        if not isinstance(allowed_kinds, (tuple, list)):
+            raise ValueError("invalid allowed_project_kinds")
+        normalized_kinds = tuple(dict.fromkeys(allowed_kinds))
+        if not normalized_kinds or any(kind not in _PROJECT_KINDS for kind in normalized_kinds):
+            raise ValueError("invalid allowed_project_kinds")
+        object.__setattr__(self, "allowed_project_kinds", normalized_kinds)
 
 
 @dataclass(frozen=True)

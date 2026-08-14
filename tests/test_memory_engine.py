@@ -307,6 +307,29 @@ class TestAddAndSearch:
         assert meta["source_memory_ids"] == [11, 12]
         assert meta["origin_client"] == "hook"
 
+    def test_remove_project_provenance_archives_target_when_last_source_is_removed(self, engine):
+        target_id = engine.add_memories(
+            texts=["shared fact"],
+            sources=["project/demo/knowledge"],
+            trusted_authorship=TrustedAuthorship.principal(
+                "alice",
+                "promotion",
+                contributors=["alice"],
+                source_memory_ids=[17],
+            ),
+        )[0]
+
+        result = engine.remove_project_provenance(
+            target_id,
+            contributor="alice",
+            source_memory_id=17,
+            expected_source="project/demo/knowledge",
+        )
+
+        assert result["archived"] is True
+        assert engine.get_memory(target_id)["archived"] is True
+        assert engine.get_memory(target_id)["source_memory_ids"] == []
+
     def test_malformed_reserved_project_source_is_rejected(self, engine):
         with pytest.raises(ProjectMemoryPolicyError, match="project sources must be"):
             engine.add_memories(

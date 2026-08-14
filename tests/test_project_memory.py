@@ -99,6 +99,22 @@ def test_trusted_principal_authorship_stamps_server_identity():
     assert trusted.as_metadata() == {"author": "alice", "origin_client": "codex"}
 
 
+def test_trusted_principal_can_atomically_stamp_server_owned_provenance():
+    trusted = TrustedAuthorship.principal(
+        "alice",
+        "promotion",
+        contributors=["alice"],
+        source_memory_ids=[17],
+    )
+
+    assert trusted.as_metadata() == {
+        "author": "alice",
+        "origin_client": "other",
+        "contributors": ["alice"],
+        "source_memory_ids": [17],
+    }
+
+
 def test_trusted_system_authorship_normalizes_contributors_and_source_ids():
     trusted = TrustedAuthorship.system(
         contributors=[" alice ", "alice", "bob"],

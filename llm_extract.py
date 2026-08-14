@@ -89,7 +89,10 @@ def _promotion_proposal(
     proposal_fields["classifier_version"] = promotion_context.classifier_version
     if any(value is None for value in proposal_fields.values()):
         return None
-    return parse_proposal(proposal_fields)
+    proposal = parse_proposal(proposal_fields)
+    if proposal is None or proposal.project_kind not in promotion_context.allowed_project_kinds:
+        return None
+    return proposal
 
 
 def _promotion_evidence_fingerprint(messages: str) -> str:
@@ -201,10 +204,11 @@ def _invoke_promotion_callback(
                 if state is None:
                     continue
                 failed = _promotion_failure_state(state)
-                engine.update_memory(
+                engine.update_promotion_state(
                     candidate_id,
-                    trusted_authorship=trusted_authorship,
-                    trusted_promotion=failed,
+                    failed,
+                    expected_source=str(current.get("source", "")),
+                    expected_statuses=[state.status],
                 )
             except Exception as update_exc:
                 logger.warning(

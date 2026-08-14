@@ -389,6 +389,18 @@ The implementation PR does not create or satisfy the separate FPLGuru shadow
 evidence record; the live record is not created by this PR. That record must contain only reviewed aggregate outcomes and
 the exact backend/client/policy versions; it is a later operator artifact.
 
+Moving the host cap and repository declaration to `auto` does not publish the
+existing shadow backlog. Existing `shadow_approved` candidates stay private
+until an owner or administrator approves them individually; release them in
+small, observed cohorts. Only new candidates captured after the current
+authenticated `auto` declaration is accepted can follow the automatic path.
+
+The backend accepts the current declaration only from an authenticated managed
+key on a valid project extraction request. After a backend restart, delayed
+promotion stays private until that declaration is observed again. An
+authenticated `off` declaration is still reported to the backend so the
+repository kill switch stops pending review and new shared-target creation.
+
 ### Alerts and rollback
 
 Monitor the unreviewable signals without exposing candidate text:

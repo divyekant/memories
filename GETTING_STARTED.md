@@ -178,6 +178,13 @@ as part of setup. The separate FPLGuru shadow evidence record is not created
 or satisfied by this PR; follow the [full playbook](docs/memory-playbook.md)
 for the later operator record.
 
+Switching both caps to `auto` does not publish old `shadow_approved` items.
+Approve those individually in small, observed cohorts; only newly captured
+auto candidates can promote automatically. After a backend restart, promotion
+stays private until a managed project extraction authenticates and reports the
+current declaration. An authenticated repository `off` declaration still
+stops delayed review and new shared-target creation.
+
 ### Manual: `install.sh` (deprecated)
 
 `install.sh` still works this release but is superseded by the published npm

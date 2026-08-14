@@ -234,6 +234,12 @@ and separately flag any unresolved item reaching seven days.
 Rollback is `PROJECT_PROMOTION_MODE=off`; it stops new review and shared-target
 creation while allowing only idempotent finalization/linkage repair already in
 flight. Phase 2 adds no bulk dismissal API, project consolidation, or seed.
+Changing both caps to `auto` does not bulk-publish the shadow backlog:
+`shadow_approved` candidates require individual owner/admin approval in small,
+observed cohorts, while only newly captured auto candidates may promote
+automatically. After a backend restart, promotion remains private until a
+managed project extraction authenticates and reports the current declaration;
+an authenticated repository `off` declaration still stops delayed work.
 The separate FPLGuru shadow evidence record is not created or satisfied by
 this PR. See the [promotion activation playbook](docs/memory-playbook.md) for
 the full operator sequence.
