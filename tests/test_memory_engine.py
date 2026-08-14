@@ -3,6 +3,7 @@
 import json
 import tempfile
 import threading
+from datetime import datetime, timedelta, timezone
 import pytest
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from project_promotion import (
     PromotionProposal,
     PromotionState,
     PromotionStatus,
+    promotion_state_from_memory,
 )
 
 
@@ -36,6 +38,33 @@ def populated_engine(engine):
         sources=["lang.md", "lang.md", "devops.md", "python.md", "ml.md"],
     )
     return engine
+
+
+def _audit_candidate_state(*, project_id="demo", captured_at=None):
+    return PromotionState(
+        status=PromotionStatus.CANDIDATE,
+        owner="alice",
+        project_id=project_id,
+        declaration_fingerprint="a" * 64,
+        classifier_provider="anthropic",
+        classifier_model="claude-haiku",
+        reviewer_provider="anthropic",
+        reviewer_model="claude-haiku",
+        capture_mode=PromotionMode.AUTO,
+        route="audit",
+        proposal=PromotionProposal(
+            project_relevance=0.2,
+            visibility="project",
+            assertion_status="confirmed",
+            project_kind="knowledge",
+            confidence=0.9,
+            reason="audit sample",
+            classifier_version="classifier-v1",
+        ),
+        review=None,
+        evidence_fingerprint="b" * 64,
+        captured_at=captured_at or datetime.now(timezone.utc).isoformat(),
+    )
 
 
 class TestAddAndSearch:
@@ -187,6 +216,55 @@ class TestAddAndSearch:
             trusted_promotion=state,
         )
         assert engine.get_memory(ids[0])["promotion"]["status"] == "candidate"
+
+    def test_audit_candidate_count_is_project_and_period_scoped(self, engine):
+        now = datetime.now(timezone.utc)
+        states = [
+            (_audit_candidate_state(), "person/alice/demo/knowledge"),
+            (_audit_candidate_state(project_id="other"), "person/alice/other/knowledge"),
+            (
+                _audit_candidate_state(
+                    captured_at=(now - timedelta(days=8)).isoformat()
+                ),
+                "person/alice/demo/knowledge",
+            ),
+        ]
+        for index, (state, source) in enumerate(states):
+            engine.add_memories(
+                texts=[f"audit candidate {index}"],
+                sources=[source],
+                trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+                trusted_promotion=state,
+            )
+        engine.metadata.extend([
+            None,
+            {
+                "id": 99,
+                "source": "person/alice/demo/knowledge",
+                "promotion": {"route": "audit"},
+            },
+            {
+                "id": 100,
+                "source": "person/alice/demo/not-knowledge",
+                "promotion": _audit_candidate_state().as_metadata()["promotion"],
+            },
+        ])
+
+        assert engine.count_promotion_audit_candidates(
+            "demo", since=now - timedelta(days=7)
+        ) == 1
+
+    def test_promotion_state_parser_requires_reviewer_policy_identity(self):
+        state = _audit_candidate_state()
+        metadata = state.as_metadata()
+        restored = promotion_state_from_memory({"id": 1, **metadata})
+        assert restored == state
+        missing = {"id": 1, **metadata}
+        missing["promotion"].pop("reviewer_version", None)
+        assert promotion_state_from_memory(missing) is None
+        empty = {"id": 1, **metadata}
+        empty["promotion"]["reviewer_version"] = ""
+        assert promotion_state_from_memory(empty) is None
 
     def test_client_cannot_override_trusted_authorship_metadata(self, engine):
         ids = engine.add_memories(

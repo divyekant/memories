@@ -12,12 +12,14 @@ import hashlib
 import logging
 import os
 import uuid
+from contextlib import nullcontext
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional, List
 
 from auth_context import source_matches_prefixes
+from entity_locks import EntityLockManager
 from shadow_runner import build_shadow_providers, fanout_shadow_async
 from transcript_hygiene import clean_transcript, redact_secrets
 from project_memory import (
@@ -135,6 +137,7 @@ def _build_promotion_state(
         review=None,
         evidence_fingerprint=evidence_fingerprint,
         captured_at=datetime.now(timezone.utc).isoformat(),
+        reviewer_version=promotion_context.reviewer_version,
     )
 
 
@@ -210,6 +213,18 @@ def _invoke_promotion_callback(
                     update_exc,
                 )
         return str(exc)
+
+
+def _promotion_callback_candidates(result: dict) -> list[dict]:
+    """Only hand off candidates when every action in the private batch ran."""
+    actions = result.get("actions", []) if isinstance(result, dict) else []
+    if any(
+        isinstance(action, dict) and action.get("action") == "error"
+        for action in actions
+    ):
+        return []
+    candidates = result.get("promotion_candidates", [])
+    return candidates if isinstance(candidates, list) else []
 
 
 def _with_trusted_authorship(
@@ -972,7 +987,35 @@ def extract_and_decide_single_call(
     return actions[:max_facts], usage, None
 
 
-def execute_actions(
+def _promotion_audit_scope(engine, project_id: str):
+    """Return the engine lock used to serialize audit-capacity capture."""
+    if not isinstance(getattr(engine, "_entity_locks", None), EntityLockManager):
+        return nullcontext()
+    lock_factory = getattr(engine, "promotion_audit_lock", None)
+    if not callable(lock_factory):
+        return nullcontext()
+    return lock_factory(project_id)
+
+
+def _promotion_audit_count(engine, project_id: str, config: PromotionConfig) -> int:
+    """Read durable audit usage while the caller holds the project lock."""
+    if not isinstance(getattr(engine, "_entity_locks", None), EntityLockManager):
+        return 0
+    counter = getattr(engine, "count_promotion_audit_candidates", None)
+    if not callable(counter):
+        return config.audit_floor
+    since = datetime.now(timezone.utc) - timedelta(days=config.audit_period_days)
+    try:
+        count = counter(project_id, since=since)
+    except Exception as exc:
+        logger.warning("Promotion audit count failed closed: %s", exc)
+        return config.audit_floor
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return config.audit_floor
+    return count
+
+
+def _execute_actions_locked(
     engine,
     actions: list[dict],
     facts: list[dict],
@@ -984,6 +1027,7 @@ def execute_actions(
     trusted_authorship: Optional[TrustedAuthorship] = None,
     promotion_context: Optional[PromotionContext] = None,
     evidence_fingerprint: Optional[str] = None,
+    _initial_audit_count: int = 0,
 ) -> dict:
     """Execute AUDN decisions against the memory engine.
 
@@ -1006,7 +1050,13 @@ def execute_actions(
     gated_count = 0
     result_actions = []
     promotion_candidates: list[dict] = []
-    recent_audit_count = 0
+    recent_audit_count = (
+        _initial_audit_count
+        if isinstance(_initial_audit_count, int)
+        and not isinstance(_initial_audit_count, bool)
+        and _initial_audit_count >= 0
+        else 0
+    )
     gate_active = novelty_gate and _novelty_gate_enabled()
     promotion_active = _promotion_context_matches_source(
         promotion_context,
@@ -1291,6 +1341,65 @@ def execute_actions(
     }
 
 
+def execute_actions(
+    engine,
+    actions: list[dict],
+    facts: list[dict],
+    source: str,
+    allowed_prefixes: Optional[List[str]] = None,
+    job_id: Optional[str] = None,
+    document_at: Optional[str] = None,
+    novelty_gate: bool = True,
+    trusted_authorship: Optional[TrustedAuthorship] = None,
+    promotion_context: Optional[PromotionContext] = None,
+    evidence_fingerprint: Optional[str] = None,
+) -> dict:
+    """Execute actions with durable, project-scoped promotion accounting."""
+    promotion_active = _promotion_context_matches_source(
+        promotion_context,
+        source,
+        allowed_prefixes,
+        trusted_authorship,
+    )
+    config = _promotion_config_for_extraction() if promotion_active else None
+    if config is None or promotion_context is None:
+        return _execute_actions_locked(
+            engine=engine,
+            actions=actions,
+            facts=facts,
+            source=source,
+            allowed_prefixes=allowed_prefixes,
+            job_id=job_id,
+            document_at=document_at,
+            novelty_gate=novelty_gate,
+            trusted_authorship=trusted_authorship,
+            promotion_context=promotion_context,
+            evidence_fingerprint=evidence_fingerprint,
+        )
+
+    # Keep the project lock held from the durable count through every private
+    # mutation in this batch.  A second worker therefore observes the first
+    # batch's persisted audit states before selecting its own floor slots.
+    with _promotion_audit_scope(engine, promotion_context.project_id):
+        initial_audit_count = _promotion_audit_count(
+            engine, promotion_context.project_id, config
+        )
+        return _execute_actions_locked(
+            engine=engine,
+            actions=actions,
+            facts=facts,
+            source=source,
+            allowed_prefixes=allowed_prefixes,
+            job_id=job_id,
+            document_at=document_at,
+            novelty_gate=novelty_gate,
+            trusted_authorship=trusted_authorship,
+            promotion_context=promotion_context,
+            evidence_fingerprint=evidence_fingerprint,
+            _initial_audit_count=initial_audit_count,
+        )
+
+
 def _mem_score(m: dict) -> float:
     """Extract the relevance score from a memory dict (RRF or cosine fallback)."""
     return float(m.get("rrf_score", m.get("similarity", 0.0)))
@@ -1538,7 +1647,7 @@ def run_extraction(
         callback_error = _invoke_promotion_callback(
             promotion_callback,
             engine,
-            result.get("promotion_candidates", []),
+            _promotion_callback_candidates(result),
             {"messages": messages, "facts": facts, "source": source},
             trusted_authorship,
         )
@@ -1676,7 +1785,7 @@ def run_extraction(
     callback_error = _invoke_promotion_callback(
         promotion_callback,
         engine,
-        result.get("promotion_candidates", []),
+        _promotion_callback_candidates(result),
         {"messages": messages, "facts": facts, "source": source},
         trusted_authorship,
     )

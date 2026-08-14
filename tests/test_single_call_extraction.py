@@ -6,6 +6,62 @@ from project_promotion import PromotionContext, PromotionMode, PromotionStatus
 
 class TestSingleCallExtraction:
 
+    def test_single_call_partial_private_batch_skips_promotion_callback(self, monkeypatch):
+        from llm_extract import run_extraction
+
+        monkeypatch.setenv("PROJECT_PROMOTION_RELEVANCE_THRESHOLD", "0.8")
+        mock_provider = MagicMock()
+        mock_result = MagicMock()
+        mock_result.text = (
+            '[{"action":"ADD","fact_index":0,"category":"decision",'
+            '"text":"Use PostgreSQL","project_relevance":0.95,'
+            '"visibility":"project","assertion_status":"confirmed",'
+            '"project_kind":"knowledge","confidence":0.94,'
+            '"reason":"Confirmed project decision"},'
+            '{"action":"ADD","fact_index":1,"category":"detail",'
+            '"text":"Use UTC","project_relevance":0.95,'
+            '"visibility":"project","assertion_status":"confirmed",'
+            '"project_kind":"knowledge","confidence":0.94,'
+            '"reason":"Confirmed project convention"}]'
+        )
+        mock_result.input_tokens = 100
+        mock_result.output_tokens = 50
+        mock_provider.complete.return_value = mock_result
+        mock_engine = MagicMock()
+        mock_engine.add_memories.side_effect = [[401], RuntimeError("private write failed")]
+        callback = MagicMock()
+        context = PromotionContext(
+            project_id="demo",
+            principal_id="alice",
+            declared_mode=PromotionMode.AUTO,
+            effective_mode=PromotionMode.AUTO,
+            declaration_fingerprint="a" * 64,
+            classifier_version="classifier-v1",
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_version="reviewer-v1",
+            reviewer_provider="anthropic",
+            reviewer_model="claude-haiku",
+        )
+
+        result = run_extraction(
+            provider=mock_provider,
+            engine=mock_engine,
+            messages="We decided on the database and timestamp convention.",
+            source="person/alice/demo/knowledge",
+            allowed_prefixes=["person/alice/demo", "project/demo"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            promotion_context=context,
+            promotion_callback=callback,
+            profile={"single_call": True, "mode": "standard", "rules": {}},
+        )
+
+        callback.assert_not_called()
+        assert result["promotion_candidates"] == [
+            {"candidate_id": 401, "fact_index": 0, "route": "ordinary"}
+        ]
+        assert any(action["action"] == "error" for action in result["actions"])
+
     def test_single_call_returns_actions_list(self):
         from llm_extract import extract_and_decide_single_call
         mock_provider = MagicMock()

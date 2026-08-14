@@ -286,7 +286,7 @@ class PromotionReview:
     confidence: float
     reason: str
     shared_text: str | None = None
-    reviewer_version: str = ""
+    reviewer_version: str = REVIEWER_VERSION
     reviewed_at: str = ""
 
     def __post_init__(self) -> None:
@@ -330,6 +330,9 @@ class PromotionState:
     review: PromotionReview | None
     evidence_fingerprint: str
     captured_at: str
+    # Captured at proposal time so an unreviewed candidate records the
+    # reviewer policy identity that must be invalidated on policy changes.
+    reviewer_version: str = REVIEWER_VERSION
     attempt_count: int = 0
     target_memory_id: int | None = None
     rejected_until: str | None = None
@@ -372,6 +375,11 @@ class PromotionState:
             self,
             "reviewer_model",
             _model_identity(self.reviewer_model, "reviewer_model"),
+        )
+        object.__setattr__(
+            self,
+            "reviewer_version",
+            _non_empty_string(self.reviewer_version, "reviewer_version", strip=True),
         )
         if self.route is not None and self.route not in _REVIEW_ROUTES:
             raise ValueError("invalid route")
@@ -421,6 +429,7 @@ class PromotionState:
             "review": _review_as_metadata(self.review),
             "evidence_fingerprint": self.evidence_fingerprint,
             "captured_at": self.captured_at,
+            "reviewer_version": self.reviewer_version,
             "attempt_count": self.attempt_count,
             "target_memory_id": self.target_memory_id,
             "rejected_until": self.rejected_until,
@@ -531,6 +540,7 @@ def promotion_state_from_memory(memory: Mapping[str, Any]) -> PromotionState | N
         "classifier_model",
         "reviewer_provider",
         "reviewer_model",
+        "reviewer_version",
         "capture_mode",
         "route",
         "proposal",
@@ -561,6 +571,7 @@ def promotion_state_from_memory(memory: Mapping[str, Any]) -> PromotionState | N
             classifier_model=value["classifier_model"],
             reviewer_provider=value["reviewer_provider"],
             reviewer_model=value["reviewer_model"],
+            reviewer_version=value["reviewer_version"],
             capture_mode=value["capture_mode"],
             route=value["route"],
             proposal=proposal,

@@ -13,6 +13,8 @@ import shutil
 import tempfile
 import threading
 import gc
+from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -41,7 +43,11 @@ from project_memory import (
     validate_namespace_preserving_replacement,
     validate_project_write,
 )
-from project_promotion import PromotionMode, PromotionState
+from project_promotion import (
+    PromotionMode,
+    PromotionState,
+    promotion_state_from_memory,
+)
 
 logger = logging.getLogger("memories")
 
@@ -446,6 +452,65 @@ class MemoryEngine:
     def _entity_key(self, source: str) -> str:
         scoped = source.strip() if source else "__unknown__"
         return f"default:{scoped}"
+
+    @contextmanager
+    def promotion_audit_lock(self, project_id: str):
+        """Serialize promotion audit-capacity reads and private captures."""
+        with self._entity_locks.acquire_many(
+            [self._entity_key(f"project/{project_id}")]
+        ):
+            yield
+
+    def count_promotion_audit_candidates(
+        self,
+        project_id: str,
+        *,
+        since: datetime,
+    ) -> int:
+        """Count typed audit-route captures for one project and time window.
+
+        The source and promotion envelope are both validated before a record
+        contributes.  Malformed metadata and another project's records are
+        therefore excluded from the durable audit floor.
+        """
+        if not isinstance(project_id, str) or not project_id.strip():
+            return 0
+        if not isinstance(since, datetime):
+            return 0
+        cutoff = since
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+        with self.promotion_audit_lock(project_id):
+            with self._write_lock:
+                records = [
+                    dict(item) for item in self.metadata if isinstance(item, Mapping)
+                ]
+
+        count = 0
+        for memory in records:
+            state = promotion_state_from_memory(memory)
+            if state is None or state.route != "audit" or state.project_id != project_id:
+                continue
+            parsed = parse_memory_source(memory.get("source"))
+            if (
+                parsed is None
+                or not parsed.is_person
+                or parsed.kind != "knowledge"
+                or parsed.project_id != project_id
+                or parsed.principal_id != state.owner
+            ):
+                continue
+            try:
+                captured_at = datetime.fromisoformat(
+                    state.captured_at.replace("Z", "+00:00")
+                )
+            except (TypeError, ValueError):
+                continue
+            if captured_at.tzinfo is None:
+                captured_at = captured_at.replace(tzinfo=timezone.utc)
+            if captured_at >= cutoff:
+                count += 1
+        return count
 
     def _memory_key(self, memory_id: int) -> str:
         """Stable lock domain for mutations that follow a record across sources."""
