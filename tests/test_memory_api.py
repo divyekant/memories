@@ -113,6 +113,33 @@ def test_browse_endpoints_pass_opt_in_source_boundary_to_engine(client):
     )
 
 
+def test_search_passes_source_prefix_union_to_one_hybrid_query(client):
+    test_client, mock_engine = client
+    mock_engine.hybrid_search.return_value = [
+        {"id": 1, "source": "project/shared/decisions", "text": "decision", "rrf_score": 0.1}
+    ]
+
+    response = test_client.post(
+        "/search",
+        json={
+            "query": "decision",
+            "hybrid": True,
+            "source_prefixes": [
+                "project/shared",
+                "person/alice/shared",
+            ],
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert mock_engine.hybrid_search.call_count == 1
+    assert mock_engine.hybrid_search.call_args.kwargs["allowed_prefixes"] == [
+        "project/shared",
+        "person/alice/shared",
+    ]
+
+
 def test_delete_batch_endpoint_deletes_multiple_ids(client):
     test_client, _ = client
     response = test_client.post(

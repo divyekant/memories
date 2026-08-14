@@ -123,6 +123,29 @@ class TestPrefixFilteringOnSearch:
         assert resp.status_code == 200
         assert len(resp.json()["results"]) == 2
 
+    def test_search_rejects_disallowed_source_prefix_union(self, app_with_keys):
+        client, mock_engine, key_store = app_with_keys
+        created = key_store.create_key(
+            name="scoped",
+            role="read-only",
+            prefixes=["project/shared/decisions"],
+        )
+
+        resp = client.post(
+            "/search",
+            json={
+                "query": "decision",
+                "source_prefixes": [
+                    "project/shared/decisions",
+                    "project/shared/knowledge",
+                ],
+            },
+            headers={"X-API-Key": created["key"]},
+        )
+
+        assert resp.status_code == 403
+        mock_engine.hybrid_search.assert_not_called()
+
 
 class TestReadOnlyEnforcement:
     def test_read_only_can_search(self, app_with_keys):

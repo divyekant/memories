@@ -200,9 +200,10 @@ For an activated collaborative repository, recall searches in this order:
 2. `person/<principal_id>/<project_id>`;
 3. legacy exact-project prefixes authorized for this principal, for continuity only.
 
-The client queries those scopes in that deterministic order. Search hits are
-then ranked by their returned relevance score before applying the caller's
-limit; equal scores retain project, person, then legacy order.
+The client supplies those scopes in that deterministic order to one
+authorization-filtered ranked search. The backend ranks all hits in one score
+domain before applying the caller's limit; equal scores retain project, person,
+then legacy order.
 
 New writes never target legacy prefixes once collaborative mode is active. Legacy memories are not renamed, copied, or shared automatically. Because old `codex/<project>` and `claude-code/<project>` prefixes do not identify a person, a new collaborator is not granted another person's legacy prefixes; reviewed records may be explicitly promoted to the project namespace.
 

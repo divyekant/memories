@@ -210,8 +210,6 @@ test('active memory_search routes project and private namespaces before authoriz
   await mkdir(join(dir, '.memories'), { recursive: true });
   await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
   const calls = [];
-  let activeSearches = 0;
-  let maxActiveSearches = 0;
   const responses = {
     'project/shared-demo': [
       { id: 1, source: 'project/shared-demo/knowledge', text: 'newer weak fact', author: 'alice', origin_client: 'codex', similarity: 0.2, document_at: '2026-08-12T00:00:00Z' },
@@ -245,13 +243,9 @@ test('active memory_search routes project and private namespaces before authoriz
         ],
       }), { status: 200 });
     }
-    activeSearches += 1;
-    maxActiveSearches = Math.max(maxActiveSearches, activeSearches);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const result = body.source_prefix === 'project/shared-demo' && body.source_boundary !== true
-      ? responses['project/shared-demo'].filter((item) => item.source.includes('shared-demo-extra'))
+    const result = body.source_prefixes
+      ? body.source_prefixes.flatMap((prefix) => responses[prefix] || [])
       : (responses[body.source_prefix] || []);
-    activeSearches -= 1;
     return new Response(JSON.stringify({ results: result, count: result.length }), { status: 200 });
   };
   const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
@@ -264,19 +258,15 @@ test('active memory_search routes project and private namespaces before authoriz
       arguments: { query: 'shared', k: 3 },
     });
     assert.equal(result.isError, undefined);
-    const searchPrefixes = calls.filter((call) => call.url.endsWith('/search')).map((call) => call.body.source_prefix);
-    assert.deepEqual(searchPrefixes, [
+    const searchCalls = calls.filter((call) => call.url.endsWith('/search'));
+    assert.equal(searchCalls.length, 1);
+    assert.deepEqual(searchCalls[0].body.source_prefixes, [
       'project/shared-demo',
       'person/alice/shared-demo',
       'codex/shared-demo',
       'claude-code/shared-demo',
     ]);
-    assert.equal(
-      calls.filter((call) => call.url.endsWith('/search')).every((call) => call.body.source_boundary === true),
-      true,
-    );
-    assert.ok(maxActiveSearches > 1, 'project prefix requests must run concurrently');
-    assert.equal(searchPrefixes.includes(''), false);
+    assert.equal(Object.hasOwn(searchCalls[0].body, 'source_prefix'), false);
     const text = result.content.map((item) => item.text || '').join('\n');
     assert.match(text, /author=alice/);
     assert.match(text, /origin-client=codex/);
@@ -299,7 +289,9 @@ test('active memory_search routes project and private namespaces before authoriz
     const recallCalls = calls.slice(beforeRecallTools).filter((call) => call.url.endsWith('/search'));
     assert.ok(recallCalls.length > 0);
     assert.equal(calls.slice(beforeRecallTools).some((call) => call.url.endsWith('/search/evidence')), false);
-    assert.equal(recallCalls.some((call) => !searchPrefixes.includes(call.body.source_prefix)), false);
+    assert.equal(recallCalls.every((call) => (
+      call.body.source_prefixes.join('|') === searchCalls[0].body.source_prefixes.join('|')
+    )), true);
     const evidenceText = evidenceResult.content.map((item) => item.text || '').join('\n');
     assert.match(evidenceText, /Current candidate:\n\[2\].*older strong fact/s);
     assert.match(evidenceText, /\[supporting\] project\/shared-demo\/knowledge 2026-08-12/);
@@ -344,7 +336,7 @@ test('active memory_search intersects project scopes with kind-level ACLs before
   const dir = await mkdtemp(join(tmpdir(), 'mem-project-search-acl-'));
   await mkdir(join(dir, '.memories'), { recursive: true });
   await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
-  const searchPrefixes = [];
+  const searchBodies = [];
   const fetchImpl = async (url, options = {}) => {
     const requestUrl = String(url);
     if (requestUrl.endsWith('/api/keys/me')) {
@@ -355,8 +347,9 @@ test('active memory_search intersects project scopes with kind-level ACLs before
       }), { status: 200 });
     }
     const body = JSON.parse(options.body);
-    searchPrefixes.push(body.source_prefix);
-    const results = body.source_prefix === 'project/shared-demo/decisions'
+    searchBodies.push(body);
+    const results = body.source_prefixes?.length === 1
+      && body.source_prefixes[0] === 'project/shared-demo/decisions'
       ? [{ id: 1, source: 'project/shared-demo/decisions', text: 'Allowed decision', similarity: 0.8 }]
       : [{ id: 2, source: 'project/shared-demo/knowledge', text: 'Crowding result', similarity: 0.99 }];
     return new Response(JSON.stringify({ results, count: results.length }), { status: 200 });
@@ -367,7 +360,9 @@ test('active memory_search intersects project scopes with kind-level ACLs before
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
   try {
     const result = await client.callTool({ name: 'memory_search', arguments: { query: 'decision', k: 1 } });
-    assert.deepEqual(searchPrefixes, ['project/shared-demo/decisions']);
+    assert.equal(searchBodies.length, 1);
+    assert.deepEqual(searchBodies[0].source_prefixes, ['project/shared-demo/decisions']);
+    assert.equal(Object.hasOwn(searchBodies[0], 'source_prefix'), false);
     const rendered = result.content.map((item) => item.text || '').join('\n');
     assert.match(rendered, /Allowed decision/);
     assert.doesNotMatch(rendered, /Crowding result/);
@@ -381,6 +376,7 @@ test('active memory_search ranks authorized scopes globally before applying k', 
   const dir = await mkdtemp(join(tmpdir(), 'mem-project-search-rank-'));
   await mkdir(join(dir, '.memories'), { recursive: true });
   await writeFile(join(dir, '.memories', 'project.yaml'), 'project_id: shared-demo\nshared_memory: true\n');
+  const searchBodies = [];
   const fetchImpl = async (url, options = {}) => {
     const requestUrl = String(url);
     if (requestUrl.endsWith('/api/keys/me')) {
@@ -391,9 +387,13 @@ test('active memory_search ranks authorized scopes globally before applying k', 
       }), { status: 200 });
     }
     const body = JSON.parse(options.body);
-    const results = body.source_prefix === 'project/shared-demo'
-      ? [{ id: 1, source: 'project/shared-demo/knowledge', text: 'Weak shared match', similarity: 0.2 }]
-      : [{ id: 2, source: 'person/alice/shared-demo/knowledge', text: 'Exact private match', similarity: 0.95 }];
+    searchBodies.push(body);
+    const results = body.source_prefixes
+      ? [
+        { id: 2, source: 'person/alice/shared-demo/knowledge', text: 'Exact private match', rrf_score: 0.0164 },
+        { id: 1, source: 'project/shared-demo/knowledge', text: 'Weak shared match', rrf_score: 0.0112 },
+      ]
+      : [{ id: 1, source: 'project/shared-demo/knowledge', text: 'Weak shared match', rrf_score: 0.0164 }];
     return new Response(JSON.stringify({ results, count: results.length }), { status: 200 });
   };
   const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });
@@ -402,6 +402,11 @@ test('active memory_search ranks authorized scopes globally before applying k', 
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
   try {
     const result = await client.callTool({ name: 'memory_search', arguments: { query: 'exact', k: 1 } });
+    assert.equal(searchBodies.length, 1);
+    assert.deepEqual(searchBodies[0].source_prefixes, [
+      'project/shared-demo',
+      'person/alice/shared-demo',
+    ]);
     const rendered = result.content.map((item) => item.text || '').join('\n');
     assert.match(rendered, /Exact private match/);
     assert.doesNotMatch(rendered, /Weak shared match/);
@@ -915,12 +920,12 @@ test('project-aware tools retry an inactive principal resolution and cache recov
     assert.match(unavailable.content[0].text, /collaborative project memory is unavailable/i);
     assert.equal(searchBodies.some((body) => body.query === 'first'), false);
     assert.deepEqual(
-      searchBodies.filter((body) => body.query === 'second').map((body) => body.source_prefix),
-      ['project/shared-demo', 'person/alice/shared-demo', 'codex/shared-demo'],
+      searchBodies.filter((body) => body.query === 'second').map((body) => body.source_prefixes),
+      [['project/shared-demo', 'person/alice/shared-demo', 'codex/shared-demo']],
     );
     assert.deepEqual(
-      searchBodies.filter((body) => body.query === 'third').map((body) => body.source_prefix),
-      ['project/shared-demo', 'person/alice/shared-demo', 'codex/shared-demo'],
+      searchBodies.filter((body) => body.query === 'third').map((body) => body.source_prefixes),
+      [['project/shared-demo', 'person/alice/shared-demo', 'codex/shared-demo']],
     );
   } finally {
     await client.close();
@@ -1000,9 +1005,9 @@ test('project evidence recency ignores metadata-only updated_at timestamps', asy
       }), { status: 200 });
     }
     const body = options.body ? JSON.parse(options.body) : {};
-    const results = memories.filter((memory) => (
-      memory.source === body.source_prefix || memory.source.startsWith(`${body.source_prefix}/`)
-    ));
+    const results = memories.filter((memory) => (body.source_prefixes || [body.source_prefix]).some((prefix) => (
+      memory.source === prefix || memory.source.startsWith(`${prefix}/`)
+    )));
     return new Response(JSON.stringify({ results, count: results.length }), { status: 200 });
   };
   const server = buildServer({ cwd: dir, url: 'http://backend.test', apiKey: 'secret', fetchImpl, skipFileConfig: true });

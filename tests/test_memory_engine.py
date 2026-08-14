@@ -60,6 +60,35 @@ class TestAddAndSearch:
         results = populated_engine.search("test", k=1000)
         assert len(results) <= populated_engine.stats_light()["total_memories"]
 
+    def test_hybrid_search_ranks_one_allowed_prefix_union(self, engine):
+        engine.add_memories(
+            texts=[
+                "deployment decision uses port 9000",
+                "private note confirms deployment port 9000",
+                "unrelated namespace also mentions deployment port 9000",
+            ],
+            sources=[
+                "codex/shared/decisions",
+                "person/alice/shared/knowledge",
+                "codex/other/knowledge",
+            ],
+        )
+
+        results = engine.hybrid_search(
+            "deployment port 9000",
+            k=10,
+            allowed_prefixes=[
+                "codex/shared/decisions",
+                "person/alice/shared",
+            ],
+            graph_weight=0.1,
+        )
+
+        assert {result["source"] for result in results} == {
+            "codex/shared/decisions",
+            "person/alice/shared/knowledge",
+        }
+
     def test_add_sets_created_at_and_updated_at(self, engine):
         ids = engine.add_memories(["timestamp test"], ["test/ts"])
         meta = engine.metadata[ids[0]]

@@ -752,31 +752,17 @@ export function buildServer({ url, apiKey, client, fetchImpl, skipFileConfig = f
 
   async function projectSearchRequest(body, projectContext) {
     const prefixes = projectBrowsePrefixes(projectContext);
-    const responses = await Promise.all(prefixes.map(async (prefix) => {
-      const scopedBody = { ...body, source_prefix: prefix, source_boundary: true };
-      const data = await memoriesRequest("/search", {
-        method: "POST",
-        body: JSON.stringify(scopedBody),
-      }, "search");
-      const results = (data.results || []).filter((result) => {
-        const source = String(result?.source || "");
-        return source === prefix || source.startsWith(`${prefix}/`);
-      });
-      return { ...data, results, count: results.length };
-    }));
-
-    const candidates = responses.flatMap((data) => data.results || []);
-    candidates.sort((left, right) => evidenceScore(right) - evidenceScore(left));
-    const seen = new Set();
-    const results = [];
-    for (const result of candidates) {
-      const key = result?.id !== undefined && result?.id !== null
-        ? `id:${result.id}:source:${result.source || ""}`
-        : `text:${result?.text || ""}:source:${result?.source || ""}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      results.push(result);
-    }
+    if (prefixes.length === 0) return { results: [], count: 0 };
+    const scopedBody = { ...body, source_prefixes: prefixes };
+    delete scopedBody.source_prefix;
+    const data = await memoriesRequest("/search", {
+      method: "POST",
+      body: JSON.stringify(scopedBody),
+    }, "search");
+    const results = (data.results || []).filter((result) => {
+      const source = String(result?.source || "");
+      return prefixes.some((prefix) => source === prefix || source.startsWith(`${prefix}/`));
+    });
     const capped = results.slice(0, body.k);
     return { results: capped, count: capped.length };
   }

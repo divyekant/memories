@@ -2248,13 +2248,14 @@ class MemoryEngine:
         include_archived: bool,
         source_exact: Optional[str] = None,
         source_boundary: bool = False,
+        allowed_prefixes: Optional[List[str]] = None,
     ) -> Dict[int, Set[int]]:
         """Filter adjacency to visible subgraph.
 
         Scope is a boundary — out-of-scope nodes cannot act as transit bridges.
         Nodes with no visible neighbors are omitted from the result.
         """
-        if source_exact is None and not source_prefix and include_archived:
+        if source_exact is None and not source_prefix and allowed_prefixes is None and include_archived:
             return adj
 
         visible = set()
@@ -2264,6 +2265,10 @@ class MemoryEngine:
             ):
                 continue
             if source_exact is not None and m.get("source", "") != source_exact:
+                continue
+            if allowed_prefixes is not None and not source_matches_prefixes(
+                str(m.get("source", "")), allowed_prefixes
+            ):
                 continue
             if not include_archived and m.get("archived"):
                 continue
@@ -2286,6 +2291,7 @@ class MemoryEngine:
         include_archived: bool,
         source_exact: Optional[str] = None,
         source_boundary: bool = False,
+        allowed_prefixes: Optional[List[str]] = None,
     ) -> tuple:
         """Expand search results via PPR on scope-filtered adjacency graph.
 
@@ -2314,6 +2320,7 @@ class MemoryEngine:
             include_archived,
             source_exact=source_exact,
             source_boundary=source_boundary,
+            allowed_prefixes=allowed_prefixes,
         )
 
         # Edge counts for info
@@ -2488,6 +2495,7 @@ class MemoryEngine:
         until: Optional[str] = None,
         source_exact: Optional[str] = None,
         source_boundary: bool = False,
+        allowed_prefixes: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -2509,6 +2517,7 @@ class MemoryEngine:
             source_prefix=source_prefix,
             source_exact=source_exact,
             source_boundary=source_boundary,
+            allowed_prefixes=allowed_prefixes,
             include_archived=include_archived,
             since=since,
             until=until,
@@ -2518,7 +2527,7 @@ class MemoryEngine:
         if self.bm25_index is not None:
             tokenized = query.lower().split()
             bm25_scores = self.bm25_index.get_scores(tokenized)
-            if source_prefix or source_exact is not None:
+            if source_prefix or source_exact is not None or allowed_prefixes is not None:
                 bm25_ranked = [
                     (pos, score)
                     for pos, score in enumerate(bm25_scores)
@@ -2534,6 +2543,13 @@ class MemoryEngine:
                                 self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", ""),
                                 source_prefix,
                                 source_boundary,
+                            )
+                        )
+                        and (
+                            allowed_prefixes is None
+                            or source_matches_prefixes(
+                                str(self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "")),
+                                allowed_prefixes,
                             )
                         )
                     )
@@ -2657,6 +2673,7 @@ class MemoryEngine:
             include_archived=include_archived,
             source_exact=source_exact,
             source_boundary=source_boundary,
+            allowed_prefixes=allowed_prefixes,
         )
 
         return self._merge_graph_results(

@@ -1371,6 +1371,11 @@ class SearchRequest(BaseModel):
         max_length=500,
         description="Optional source path prefix filter",
     )
+    source_prefixes: Optional[List[str]] = Field(
+        None,
+        max_length=20,
+        description="Optional union of boundary-safe source path prefixes",
+    )
     source_boundary: bool = Field(
         False,
         description="Match source_prefix only at an exact path boundary",
@@ -2090,6 +2095,14 @@ async def enforce_policies(
 async def search(request_body: SearchRequest, request: Request):
     """Search for similar memories (vector-only or hybrid)"""
     auth = _get_auth(request)
+    if request_body.source_prefix and request_body.source_prefixes is not None:
+        raise HTTPException(status_code=422, detail="source_prefix and source_prefixes are mutually exclusive")
+    if request_body.source_prefixes is not None:
+        if any(not prefix or len(prefix) > 500 for prefix in request_body.source_prefixes):
+            raise HTTPException(status_code=422, detail="source_prefixes must contain non-empty paths up to 500 characters")
+        for prefix in request_body.source_prefixes:
+            if not auth.can_read(prefix):
+                raise HTTPException(status_code=403, detail=f"Key does not have read access to source: {prefix}")
     logger.info("Search: q=%r k=%d hybrid=%s", request_body.query[:80], request_body.k, request_body.hybrid)
     # -- Auto-detect query intent and adjust parameters ---
     _auto_detected = False
@@ -2144,6 +2157,8 @@ async def search(request_body: SearchRequest, request: Request):
             )
             if request_body.source_boundary:
                 search_kwargs["source_boundary"] = True
+            if request_body.source_prefixes is not None:
+                search_kwargs["allowed_prefixes"] = request_body.source_prefixes
             results = memory.hybrid_search(**search_kwargs)
         else:
             search_kwargs = dict(
@@ -2157,6 +2172,8 @@ async def search(request_body: SearchRequest, request: Request):
             )
             if request_body.source_boundary:
                 search_kwargs["source_boundary"] = True
+            if request_body.source_prefixes is not None:
+                search_kwargs["allowed_prefixes"] = request_body.source_prefixes
             results = memory.search(**search_kwargs)
         results = annotate_relative_scores(auth.filter_results(results))
         result_count = len(results)
