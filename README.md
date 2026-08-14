@@ -4,7 +4,7 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **OpenCode**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v5.14.0):**
+**Key capabilities (v5.15.0):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
 - **Write doctrine** — corrections supersede instead of being dropped: a colliding write replaces the similar memory and archives the old version with a supersedes link (`on_duplicate: supersede|skip|add`); agents update facts via `memory_update`
 - **Secret redaction** — credential-shaped content (API keys, JWTs, tokens, URL credentials) is redacted before any extraction LLM call or storage, with a context guard that spares placeholders and localhost DSNs
@@ -159,6 +159,38 @@ memories config show
 ```
 
 Config resolution: CLI flags > `~/.config/memories/config.json` > env vars > defaults.
+
+## Shared project memory (Phase 1)
+
+Two collaborators can share durable project knowledge through one configured
+Memories host while keeping their private memories separate. Commit only this
+declaration to the repository:
+
+```yaml
+# .memories/project.yaml
+project_id: fplguru
+shared_memory: true
+```
+
+The declaration is an identity signal, not an access grant: it contains no
+URL, API key, member list, or role. Collaborative mode requires exactly one
+backend and a server-issued managed key whose `GET /api/keys/me` response has
+`type: "managed"` and a stable `principal_id`. Use separate prefix scopes such
+as `person/dk/fplguru` plus `project/fplguru` and
+`person/darshan/fplguru` plus `project/fplguru`; both clients must point to the
+same host. Environment/admin keys and multi-backend configuration do not
+activate collaborative mode.
+
+Automatic extraction remains private at
+`person/<principal>/<project>/knowledge`. After applying the durable-sharing
+test (another contributor will need the fact without the current session),
+write one deliberate project fact with `memory_add` and a source of
+`project/<project>/<decisions|knowledge|state|operations>`. The server stamps
+the authenticated author and origin client; client metadata cannot impersonate
+either field. See the [shared project memory playbook](docs/memory-playbook.md)
+for exact administrator payloads, fresh-session isolation probes, narrowing
+and revocation, legacy-prefix migration, and the post-deployment manual seed
+step. No production memory is seeded by this implementation.
 
 ---
 

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, call
 
 from llm_provider import CompletionResult
+from project_memory import TrustedAuthorship
 
 
 def _cr(text, input_tokens=10, output_tokens=5):
@@ -41,7 +42,7 @@ class TestClusterDetection:
         engine.metadata = [m0, m1, m2, m3]
 
         # hybrid_search returns similar memories for each query
-        def fake_search(query, k=10, source_prefix=None):
+        def fake_search(query, k=10, source_prefix=None, source_exact=None):
             if "Postgres" in query or "database" in query.lower():
                 results = []
                 for m in [m0, m1, m2]:
@@ -96,6 +97,53 @@ class TestClusterDetection:
         for cluster in clusters:
             for mem in cluster:
                 assert mem["source"].startswith("project/")
+
+    def test_never_clusters_across_exact_sources(self):
+        from consolidator import find_clusters
+
+        m0 = _make_memory(0, "Use Postgres", source="project/acme/decisions")
+        m1 = _make_memory(1, "Postgres is great", source="project/other/decisions")
+        engine = MagicMock()
+        engine.metadata = [m0, m1]
+        calls = []
+
+        def fake_search(**kwargs):
+            calls.append(kwargs)
+            return [{**m1, "similarity": 0.95}]
+
+        engine.search.side_effect = fake_search
+
+        clusters = find_clusters(
+            engine,
+            source_prefix="project/",
+            similarity_threshold=0.75,
+            min_cluster_size=2,
+        )
+
+        assert clusters == []
+        assert calls
+        assert {call["source_exact"] for call in calls} == {
+            "project/acme/decisions",
+            "project/other/decisions",
+        }
+
+    def test_legacy_clusters_can_span_clients_without_absorbing_reserved_sources(self):
+        from consolidator import find_clusters
+
+        codex = _make_memory(0, "Use Postgres", source="codex/acme")
+        claude = _make_memory(1, "Postgres is used", source="claude-code/acme")
+        private = _make_memory(2, "Private Postgres note", source="person/alice/acme/knowledge")
+        engine = MagicMock()
+        engine.metadata = [codex, claude, private]
+        engine.search.return_value = [
+            {**claude, "similarity": 0.95},
+            {**private, "similarity": 0.99},
+        ]
+
+        clusters = find_clusters(engine, similarity_threshold=0.75, min_cluster_size=2)
+
+        assert [{m["id"] for m in cluster} for cluster in clusters] == [{0, 1}]
+        assert "source_exact" not in engine.search.call_args_list[0].kwargs
 
     def test_respects_min_cluster_size(self):
         from consolidator import find_clusters
@@ -152,6 +200,10 @@ class TestConsolidation:
         meta = add_call[1]["metadata_list"][0]
         assert meta["category"] == "decision"  # dominant category
         assert set(meta["consolidated_from"]) == {0, 1, 2}
+        trusted = add_call[1]["trusted_authorship"]
+        assert isinstance(trusted, TrustedAuthorship)
+        assert trusted.author == "system"
+        assert set(trusted.source_memory_ids) == {0, 1, 2}
 
     def test_dry_run_does_not_mutate(self):
         from consolidator import consolidate_cluster
@@ -178,6 +230,102 @@ class TestConsolidation:
         engine.delete_memories.assert_not_called()
         engine.delete_memory.assert_not_called()
         engine.add_memories.assert_not_called()
+
+    def test_consolidate_omits_unverified_legacy_provenance(self):
+        from consolidator import consolidate_cluster
+
+        cluster = [
+            {
+                **_make_memory(0, "Legacy fact A", source="codex/acme"),
+                "author": "mallory",
+                "contributors": ["mallory", "alice"],
+                "authorship_verified": True,
+            },
+            {
+                **_make_memory(1, "Legacy fact B", source="codex/acme"),
+                "author": "alice",
+            },
+        ]
+        provider = MagicMock()
+        provider.complete.return_value = _cr(json.dumps(["Merged legacy fact"]))
+        engine = MagicMock()
+        engine.add_memories.return_value = [100]
+
+        consolidate_cluster(provider, engine, cluster, dry_run=False)
+
+        trusted = engine.add_memories.call_args.kwargs["trusted_authorship"]
+        assert trusted.author == "system"
+        assert trusted.contributors == ()
+        assert trusted.source_memory_ids == (0, 1)
+
+    def test_mixed_source_cluster_is_rejected_before_mutation(self):
+        from consolidator import consolidate_cluster
+
+        m0 = _make_memory(0, "Fact A", source="project/acme/decisions")
+        m1 = _make_memory(1, "Fact B", source="project/other/decisions")
+        provider = MagicMock()
+        engine = MagicMock()
+
+        result = consolidate_cluster(provider, engine, [m0, m1], dry_run=False)
+
+        assert result["merged_count"] == 0
+        assert "source" in result["skipped_reason"]
+        provider.complete.assert_not_called()
+        engine.add_memories.assert_not_called()
+        engine.delete_memories.assert_not_called()
+
+    def test_legacy_cross_client_cluster_can_consolidate(self):
+        from consolidator import consolidate_cluster
+
+        cluster = [
+            _make_memory(0, "Use Postgres", source="codex/acme"),
+            _make_memory(1, "Postgres is used", source="claude-code/acme"),
+        ]
+        provider = MagicMock()
+        provider.complete.return_value = _cr(json.dumps(["Use Postgres"]))
+        engine = MagicMock()
+        engine.add_memories.return_value = [100]
+
+        result = consolidate_cluster(provider, engine, cluster, dry_run=False)
+
+        assert result["merged_count"] == 2
+        assert engine.add_memories.call_args.kwargs["sources"] == ["codex/acme"]
+        engine.delete_memories.assert_called_once_with([0, 1])
+
+    def test_consolidation_revalidates_stale_cluster_under_memory_locks(self, tmp_path, monkeypatch):
+        from contextlib import contextmanager
+        from consolidator import consolidate_cluster
+        from memory_engine import MemoryEngine
+
+        engine = MemoryEngine(data_dir=str(tmp_path))
+        trusted = TrustedAuthorship.principal("alice", "codex")
+        ids = engine.add_memories(
+            ["Fact A", "Fact B"],
+            ["project/acme/knowledge", "project/acme/knowledge"],
+            trusted_authorship=trusted,
+        )
+        cluster = [dict(engine._get_meta_by_id(mid)) for mid in ids]
+        provider = MagicMock()
+        provider.complete.return_value = _cr(json.dumps(["Merged fact"]))
+        original_acquire = engine._entity_locks.acquire_many
+        raced = False
+
+        @contextmanager
+        def racing_acquire(keys):
+            nonlocal raced
+            with original_acquire(keys):
+                if not raced and engine._memory_key(ids[1]) in keys:
+                    raced = True
+                    engine._get_meta_by_id(ids[1])["source"] = "project/other/knowledge"
+                yield
+
+        monkeypatch.setattr(engine._entity_locks, "acquire_many", racing_acquire)
+
+        result = consolidate_cluster(provider, engine, cluster, dry_run=False)
+
+        assert "changed while consolidation was running" in result["error"]
+        assert all(engine._id_exists(mid) for mid in ids)
+        assert engine.qdrant_store.count() == 2
 
     def test_consolidate_uses_dominant_category(self):
         from consolidator import consolidate_cluster

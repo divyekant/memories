@@ -127,6 +127,8 @@ class TestNoveltyGate:
 
     def _engine(self, novel=True, similar=None):
         engine = MagicMock()
+        if isinstance(similar, dict):
+            similar = {"source": "test/proj", **similar}
         engine.is_novel.return_value = (novel, similar)
         engine.add_memories.return_value = [100]
         return engine
@@ -244,7 +246,7 @@ class TestNoveltyGate:
         from llm_extract import execute_actions
 
         engine = MagicMock()
-        engine.get_memory.return_value = {"id": 42, "source": "test", "text": "old"}
+        engine.get_memory.return_value = {"id": 42, "source": "test/proj", "text": "old"}
         engine.add_memories.return_value = [101]
         actions = [{"action": "UPDATE", "fact_index": 0, "old_id": 42, "new_text": "updated"}]
         facts = [{"text": "orig", "category": "decision"}]
@@ -258,7 +260,7 @@ class TestNoveltyGate:
         from llm_extract import execute_actions
 
         engine = MagicMock()
-        engine.get_memory.return_value = {"id": 10, "source": "test", "text": "old"}
+        engine.get_memory.return_value = {"id": 10, "source": "test/proj", "text": "old"}
         engine.add_memories.return_value = [43]
         actions = [{"action": "CONFLICT", "fact_index": 0, "old_id": 10}]
         facts = [{"text": "contradicting fact", "category": "decision"}]
@@ -274,7 +276,7 @@ class TestNoveltyGate:
 
         engine = MagicMock()
         engine.is_novel.side_effect = [
-            (False, {"id": 1, "similarity": 0.95}),
+            (False, {"id": 1, "similarity": 0.95, "source": "test/proj"}),
             (True, None),
         ]
         engine.add_memories.return_value = [200]
@@ -306,7 +308,7 @@ class TestNoveltyGate:
         ]
         engine = MagicMock()
         engine.hybrid_search.return_value = []
-        engine.is_novel.return_value = (False, {"id": 9, "similarity": 0.93})
+        engine.is_novel.return_value = (False, {"id": 9, "similarity": 0.93, "source": "test/proj"})
 
         result = run_extraction(provider, engine, messages="user: same thing again",
                                 source="test/proj", context="stop")

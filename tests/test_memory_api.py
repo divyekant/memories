@@ -7,6 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from auth_context import AuthContext
+from project_memory import ProjectMemoryPolicyError
+
 
 @pytest.fixture
 def client():
@@ -59,6 +62,154 @@ def test_search_accepts_source_prefix_and_passes_to_engine(client):
     )
 
 
+def test_search_passes_opt_in_source_boundary_to_engine(client):
+    test_client, mock_engine = client
+    response = test_client.post(
+        "/search",
+        json={
+            "query": "shared",
+            "k": 3,
+            "hybrid": False,
+            "source_prefix": "project/acme",
+            "source_boundary": True,
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert mock_engine.search.call_args.kwargs["source_boundary"] is True
+
+
+def test_browse_endpoints_pass_opt_in_source_boundary_to_engine(client):
+    test_client, mock_engine = client
+    mock_engine.count_memories.return_value = 1
+    mock_engine.list_memories.return_value = {
+        "memories": [{"id": 1, "source": "project/shared/knowledge", "text": "fact"}],
+        "total": 1,
+        "offset": 0,
+        "limit": 20,
+    }
+
+    count_response = test_client.get(
+        "/memories/count?source=project/shared&source_boundary=true",
+        headers={"X-API-Key": "test-key"},
+    )
+    list_response = test_client.get(
+        "/memories?source=project/shared&source_boundary=true",
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert count_response.status_code == 200
+    assert list_response.status_code == 200
+    mock_engine.count_memories.assert_called_once_with(
+        source_prefix="project/shared",
+        source_boundary=True,
+    )
+    mock_engine.list_memories.assert_called_once_with(
+        offset=0,
+        limit=20,
+        source_filter="project/shared",
+        source_boundary=True,
+    )
+
+
+def test_search_passes_source_prefix_union_to_one_hybrid_query(client):
+    test_client, mock_engine = client
+    mock_engine.hybrid_search.return_value = [
+        {"id": 1, "source": "project/shared/decisions", "text": "decision", "rrf_score": 0.1}
+    ]
+
+    response = test_client.post(
+        "/search",
+        json={
+            "query": "decision",
+            "hybrid": True,
+            "source_prefixes": [
+                "project/shared",
+                "person/alice/shared",
+            ],
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert mock_engine.hybrid_search.call_count == 1
+    assert mock_engine.hybrid_search.call_args.kwargs["allowed_prefixes"] == [
+        "project/shared",
+        "person/alice/shared",
+    ]
+
+
+def test_search_accepts_more_than_twenty_source_prefixes(client):
+    test_client, mock_engine = client
+    prefixes = [f"project/shared/kind-{index}" for index in range(25)]
+
+    response = test_client.post(
+        "/search",
+        json={"query": "decision", "source_prefixes": prefixes},
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert mock_engine.hybrid_search.call_args.kwargs["allowed_prefixes"] == prefixes
+
+
+def test_search_evidence_forwards_source_prefix_union(client):
+    test_client, mock_engine = client
+    prefixes = ["project/shared", "person/alice/shared"]
+
+    response = test_client.post(
+        "/search/evidence",
+        json={"query": "decision", "source_prefixes": prefixes},
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert mock_engine.hybrid_search.call_args.kwargs["allowed_prefixes"] == prefixes
+
+
+def test_search_batch_forwards_source_prefix_unions(client):
+    test_client, mock_engine = client
+    hybrid_prefixes = ["project/shared", "person/alice/shared"]
+    vector_prefixes = ["project/other"]
+
+    response = test_client.post(
+        "/search/batch",
+        json={
+            "queries": [
+                {"query": "decision", "source_prefixes": hybrid_prefixes},
+                {"query": "fact", "hybrid": False, "source_prefixes": vector_prefixes},
+            ]
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert mock_engine.hybrid_search.call_args.kwargs["allowed_prefixes"] == hybrid_prefixes
+    assert mock_engine.search.call_args.kwargs["allowed_prefixes"] == vector_prefixes
+
+
+def test_search_batch_rejects_mixed_source_scope_fields_before_querying(client):
+    test_client, mock_engine = client
+
+    response = test_client.post(
+        "/search/batch",
+        json={
+            "queries": [
+                {
+                    "query": "decision",
+                    "source_prefix": "project/shared",
+                    "source_prefixes": ["project/shared/decisions"],
+                }
+            ]
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 422
+    mock_engine.hybrid_search.assert_not_called()
+
+
 def test_delete_batch_endpoint_deletes_multiple_ids(client):
     test_client, _ = client
     response = test_client.post(
@@ -109,6 +260,188 @@ def test_get_memory_by_id_logs_attributed_usage(client):
     )
 
 
+def test_patch_substantive_project_edit_restamps_current_trusted_authorship(client):
+    test_client, mock_engine = client
+    import app as app_module
+    from project_memory import TrustedAuthorship
+
+    mock_engine.get_memory.return_value = {
+        "id": 4,
+        "text": "Alice's project fact",
+        "source": "project/acme/knowledge",
+        "author": "alice",
+    }
+    mock_engine.update_memory.return_value = {
+        "id": 4,
+        "updated_fields": ["text", "metadata"],
+        "author": "bob",
+    }
+    bob = TrustedAuthorship.principal("bob", "codex")
+    with patch.object(app_module, "_trusted_authorship", return_value=bob):
+        response = test_client.patch(
+            "/memory/4",
+            json={
+                "text": "Bob's replacement",
+                "metadata_patch": {
+                    "author": "mallory",
+                    "contributors": ["mallory"],
+                    "kept": True,
+                },
+            },
+            headers={"X-API-Key": "test-key"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["author"] == "bob"
+    kwargs = mock_engine.update_memory.call_args.kwargs
+    assert kwargs["trusted_authorship"] == bob
+    assert kwargs["apply_trusted_authorship"] is True
+
+
+def test_patch_metadata_only_does_not_request_authorship_restamp(client):
+    test_client, mock_engine = client
+    import app as app_module
+    from project_memory import TrustedAuthorship
+
+    mock_engine.get_memory.return_value = {
+        "id": 4,
+        "text": "Alice's project fact",
+        "source": "project/acme/knowledge",
+        "author": "system",
+        "contributors": ["alice"],
+        "source_memory_ids": [17],
+    }
+    mock_engine.update_memory.return_value = {
+        "id": 4,
+        "updated_fields": ["metadata"],
+        "author": "system",
+        "contributors": ["alice"],
+        "source_memory_ids": [17],
+    }
+    bob = TrustedAuthorship.principal("bob", "codex")
+    with patch.object(app_module, "_trusted_authorship", return_value=bob):
+        response = test_client.patch(
+            "/memory/4",
+            json={"metadata_patch": {"kept": True}},
+            headers={"X-API-Key": "test-key"},
+        )
+
+    assert response.status_code == 200
+    kwargs = mock_engine.update_memory.call_args.kwargs
+    assert kwargs["trusted_authorship"] == bob
+    assert "apply_trusted_authorship" not in kwargs
+
+
+def test_env_admin_can_patch_project_lifecycle_without_authorship_stamp(client):
+    test_client, mock_engine = client
+    mock_engine.get_memory.return_value = {
+        "id": 4,
+        "text": "Alice's project fact",
+        "source": "project/acme/knowledge",
+        "author": "alice",
+    }
+    mock_engine.update_memory.return_value = {
+        "id": 4,
+        "updated_fields": ["pinned", "archived"],
+    }
+
+    response = test_client.patch(
+        "/memory/4",
+        json={"pinned": True, "archived": True},
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    kwargs = mock_engine.update_memory.call_args.kwargs
+    assert "trusted_authorship" not in kwargs
+    assert "apply_trusted_authorship" not in kwargs
+
+
+def test_managed_dedup_blocker_lookup_is_scoped_to_destination_source(client):
+    test_client, mock_engine = client
+    import app as app_module
+    from project_memory import TrustedAuthorship
+
+    mock_engine.add_memories.return_value = []
+    mock_engine.is_novel.return_value = (
+        False,
+        {"id": 8, "source": "project/acme/knowledge", "similarity": 0.99},
+    )
+    bob = TrustedAuthorship.principal("bob", "codex")
+    with patch.object(app_module, "_trusted_authorship", return_value=bob):
+        response = test_client.post(
+            "/memory/add",
+            json={
+                "text": "Project fact",
+                "source": "project/acme/knowledge",
+                "deduplicate": True,
+            },
+            headers={"X-API-Key": "test-key"},
+        )
+
+    assert response.status_code == 200
+    assert mock_engine.is_novel.call_args.kwargs["source_exact"] == "project/acme/knowledge"
+
+
+def test_legacy_fallback_dedup_remains_global_for_env_admin(client, monkeypatch):
+    _, mock_engine = client
+    import app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "_fallback_extract_facts",
+        lambda _messages: ["A durable decision was recorded for this project"],
+    )
+    mock_engine.is_novel.return_value = (
+        False,
+        {"id": 8, "source": "other/source", "similarity": 0.99},
+    )
+
+    app_module._run_fallback_extraction(
+        "ignored transcript",
+        "legacy/source",
+        "stop",
+        None,
+    )
+
+    kwargs = mock_engine.is_novel.call_args.kwargs
+    assert "source_exact" not in kwargs
+
+
+def test_managed_legacy_fallback_filters_global_novelty_to_authorized_legacy_sources(client, monkeypatch):
+    _, mock_engine = client
+    import app as app_module
+    from project_memory import TrustedAuthorship
+
+    monkeypatch.setattr(
+        app_module,
+        "_fallback_extract_facts",
+        lambda _messages: ["A durable decision was recorded for this project"],
+    )
+    mock_engine.is_novel.return_value = (
+        False,
+        {"id": 9, "source": "claude-code/acme", "similarity": 0.99},
+    )
+
+    result = app_module._run_fallback_extraction(
+        "ignored transcript",
+        "codex/acme",
+        "stop",
+        ["codex/acme", "claude-code/acme", "project/acme"],
+        TrustedAuthorship.principal("alice", "codex"),
+    )
+
+    assert result["actions"][0]["action"] == "noop"
+    kwargs = mock_engine.is_novel.call_args.kwargs
+    assert "source_exact" not in kwargs
+    assert kwargs["allowed_source_prefixes"] == [
+        "codex/acme",
+        "claude-code/acme",
+        "project/acme",
+    ]
+    assert kwargs["exclude_reserved_sources"] is True
+
+
 def test_get_memory_batch(client):
     test_client, mock_engine = client
     response = test_client.post(
@@ -142,6 +475,94 @@ def test_upsert_memory(client):
     )
 
 
+def test_managed_principal_authorship_reaches_add_boundary(client, monkeypatch):
+    test_client, mock_engine = client
+    import app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "_get_auth",
+        lambda request: AuthContext(
+            role="read-write",
+            prefixes=["project/demo/"],
+            key_type="managed",
+            key_id="key-1",
+            principal_id="alice",
+        ),
+    )
+    response = test_client.post(
+        "/memory/add",
+        json={
+            "text": "a project decision",
+            "source": "project/demo/decisions",
+            "metadata": {
+                "author": "mallory",
+                "contributors": ["mallory"],
+                "origin_client": "spoofed",
+                "source_memory_ids": [999],
+            },
+        },
+        headers={"X-API-Key": "test-key", "X-Memories-Client": "  Claude-Code "},
+    )
+
+    assert response.status_code == 200
+    trusted = mock_engine.add_memories.call_args.kwargs["trusted_authorship"]
+    assert trusted.author == "alice"
+    assert trusted.origin_client == "claude-code"
+
+
+def test_managed_principal_authorship_reaches_batch_add_boundary(client, monkeypatch):
+    test_client, mock_engine = client
+    import app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "_get_auth",
+        lambda request: AuthContext(
+            role="read-write",
+            prefixes=["project/demo/"],
+            key_type="managed",
+            principal_id="alice",
+        ),
+    )
+    response = test_client.post(
+        "/memory/add-batch",
+        json={
+            "memories": [
+                {
+                    "text": "first",
+                    "source": "project/demo/decisions",
+                    "metadata": {"author": "mallory"},
+                },
+                {
+                    "text": "second",
+                    "source": "project/demo/knowledge",
+                    "metadata": {"origin_client": "mallory"},
+                },
+            ]
+        },
+        headers={"X-API-Key": "test-key", "X-Memories-Client": "hook"},
+    )
+
+    assert response.status_code == 200
+    trusted = mock_engine.add_memories.call_args.kwargs["trusted_authorship"]
+    assert trusted.author == "alice"
+    assert trusted.origin_client == "hook"
+
+
+def test_project_policy_error_is_stable_422_for_add(client):
+    test_client, mock_engine = client
+    mock_engine.add_memories.side_effect = ProjectMemoryPolicyError("project policy")
+    response = test_client.post(
+        "/memory/add",
+        json={"text": "shared", "source": "project/demo/decisions"},
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "project policy"
+
+
 def test_upsert_batch_memory(client):
     test_client, mock_engine = client
     response = test_client.post(
@@ -160,6 +581,52 @@ def test_upsert_batch_memory(client):
     assert body["created"] == 1
     assert body["updated"] == 1
     mock_engine.upsert_memories.assert_called_once()
+
+
+def test_managed_principal_authorship_reaches_upsert_paths(client, monkeypatch):
+    test_client, mock_engine = client
+    import app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "_get_auth",
+        lambda request: AuthContext(
+            role="read-write",
+            prefixes=["project/demo/"],
+            key_type="managed",
+            principal_id="alice",
+        ),
+    )
+
+    one = test_client.post(
+        "/memory/upsert",
+        json={
+            "text": "replacement",
+            "source": "project/demo/decisions",
+            "key": "decision-1",
+            "metadata": {"author": "mallory"},
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+    many = test_client.post(
+        "/memory/upsert-batch",
+        json={
+            "memories": [
+                {
+                    "text": "replacement 2",
+                    "source": "project/demo/decisions",
+                    "key": "decision-2",
+                    "metadata": {"origin_client": "mallory"},
+                }
+            ]
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert one.status_code == 200
+    assert many.status_code == 200
+    assert mock_engine.upsert_memory.call_args.kwargs["trusted_authorship"].author == "alice"
+    assert mock_engine.upsert_memories.call_args.kwargs["trusted_authorship"].author == "alice"
 
 
 def test_search_batch(client):

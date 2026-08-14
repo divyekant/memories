@@ -27,6 +27,19 @@ from event_bus import event_bus
 from qdrant_config import QdrantSettings
 from qdrant_store import QdrantStore
 from rank_bm25 import BM25Okapi
+from auth_context import source_matches_prefixes
+from project_memory import (
+    RESERVED_METADATA_FIELDS,
+    ProjectMemoryPolicyError,
+    TrustedAuthorship,
+    is_namespace_crossing_source_move,
+    is_project_source,
+    is_reserved_namespace_source,
+    is_substantive_authored_content_replacement,
+    normalize_origin_client,
+    validate_namespace_preserving_replacement,
+    validate_project_write,
+)
 
 logger = logging.getLogger("memories")
 
@@ -54,6 +67,31 @@ GRAPH_RESERVED_SLOTS = int(os.environ.get(
     "SEARCH_GRAPH_RESERVED_SLOTS",
     os.environ.get("SEARCH_GRAPH_MAX_NEIGHBORS", "2")
 ))
+
+
+def _validate_trusted_authorship(value: Optional[TrustedAuthorship]) -> None:
+    if value is not None and not isinstance(value, TrustedAuthorship):
+        raise ProjectMemoryPolicyError(
+            "trusted_authorship must be a TrustedAuthorship value"
+        )
+
+
+def _with_trusted_authorship(
+    kwargs: Dict[str, Any], trusted_authorship: Optional[TrustedAuthorship]
+) -> Dict[str, Any]:
+    """Add trusted authorship only when a caller supplied an authenticated value."""
+    if trusted_authorship is not None:
+        kwargs["trusted_authorship"] = trusted_authorship
+    return kwargs
+
+
+def _validate_project_write(
+    text: Any,
+    source: Any,
+    trusted_authorship: Optional[TrustedAuthorship],
+) -> None:
+    """Backward-compatible local alias for the shared project policy gate."""
+    validate_project_write(text, source, trusted_authorship)
 
 
 def annotate_relative_scores(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -369,6 +407,10 @@ class MemoryEngine:
         scoped = source.strip() if source else "__unknown__"
         return f"default:{scoped}"
 
+    def _memory_key(self, memory_id: int) -> str:
+        """Stable lock domain for mutations that follow a record across sources."""
+        return f"memory:{memory_id}"
+
     def _point_payload(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         return {k: v for k, v in meta.items() if k != "id"}
 
@@ -654,6 +696,7 @@ class MemoryEngine:
         deduplicate: bool = False,
         dedup_threshold: float = 0.90,
         _chunk_size: int = 100,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> List[int]:
         """Add new memories to Qdrant + metadata (thread-safe).
 
@@ -663,6 +706,10 @@ class MemoryEngine:
         if not texts:
             return []
 
+        _validate_trusted_authorship(trusted_authorship)
+        for text, source in zip(texts, sources):
+            _validate_project_write(text, source, trusted_authorship)
+
         keys = [self._entity_key(source) for source in sources]
         with self._entity_locks.acquire_many(keys):
             if deduplicate and self.metadata:
@@ -670,7 +717,13 @@ class MemoryEngine:
                 novel_sources = []
                 novel_meta = []
                 for i, text in enumerate(texts):
-                    is_new, _ = self.is_novel(text, threshold=dedup_threshold)
+                    novelty_kwargs = {"threshold": dedup_threshold}
+                    # Authenticated writes are isolated to the exact
+                    # destination source. Legacy callers without trusted
+                    # authorship retain the historical global dedup behavior.
+                    if trusted_authorship is not None:
+                        novelty_kwargs["source_exact"] = sources[i]
+                    is_new, _ = self.is_novel(text, **novelty_kwargs)
                     if is_new:
                         novel_texts.append(text)
                         novel_sources.append(sources[i])
@@ -702,7 +755,18 @@ class MemoryEngine:
 
                 start_id = self._next_id
                 added_ids = []
-                _reserved_add = {"id", "text", "source", "timestamp", "created_at", "updated_at"}
+                _reserved_add = {
+                    "id",
+                    "text",
+                    "source",
+                    "timestamp",
+                    "created_at",
+                    "updated_at",
+                    *RESERVED_METADATA_FIELDS,
+                }
+                trusted_metadata = (
+                    trusted_authorship.as_metadata() if trusted_authorship else {}
+                )
 
                 # Build metadata + points in chunks and upsert per chunk
                 for chunk_start in range(0, len(texts), _chunk_size):
@@ -713,6 +777,10 @@ class MemoryEngine:
                         now = datetime.now(timezone.utc).isoformat()
                         extra = metadata_list[i] if metadata_list and i < len(metadata_list) else {}
                         filtered_extra = {k: v for k, v in extra.items() if k not in _reserved_add}
+                        if trusted_authorship is None and "origin_client" in extra:
+                            filtered_extra["origin_client"] = normalize_origin_client(
+                                extra.get("origin_client")
+                            )
                         meta = {
                             "id": mem_id,
                             "text": texts[i],
@@ -721,6 +789,7 @@ class MemoryEngine:
                             "updated_at": now,
                             "timestamp": now,  # backward compat alias
                             **filtered_extra,
+                            **trusted_metadata,
                         }
                         self.metadata.append(meta)
                         points.append(
@@ -748,27 +817,46 @@ class MemoryEngine:
 
     def delete_memory(self, memory_id: int, force: bool = False) -> Dict[str, Any]:
         """Delete a single memory by ID. Pinned memories require force=True."""
-        if not self._id_exists(memory_id):
-            raise ValueError(f"Memory ID {memory_id} not found")
-        if not force and self._get_meta_by_id(memory_id).get("pinned"):
-            raise ValueError(f"Memory ID {memory_id} is pinned; pass force=true to delete it")
-        key = self._entity_key(self._get_meta_by_id(memory_id).get("source", ""))
-        with self._entity_locks.acquire_many([key]):
-            with self._write_lock:
-                if not self._id_exists(memory_id):
-                    raise ValueError(f"Memory ID {memory_id} not found")
+        while True:
+            if not self._id_exists(memory_id):
+                raise ValueError(f"Memory ID {memory_id} not found")
+            current = self._get_meta_by_id(memory_id)
+            if not force and current.get("pinned"):
+                raise ValueError(
+                    f"Memory ID {memory_id} is pinned; pass force=true to delete it"
+                )
+            keys = [
+                self._memory_key(memory_id),
+                self._entity_key(current.get("source", "")),
+            ]
+            with self._entity_locks.acquire_many(keys):
+                with self._write_lock:
+                    if not self._id_exists(memory_id):
+                        raise ValueError(f"Memory ID {memory_id} not found")
 
-                self._backup(prefix="pre_delete")
+                    locked = self._get_meta_by_id(memory_id)
+                    current_source_key = self._entity_key(locked.get("source", ""))
+                    if current_source_key not in set(keys):
+                        # The record moved before the stale source lock was
+                        # acquired. Retry while retaining the stable ID lock.
+                        continue
+                    if not force and locked.get("pinned"):
+                        raise ValueError(
+                            f"Memory ID {memory_id} is pinned; pass force=true to delete it"
+                        )
 
-                # Scrub incoming links referencing this memory
-                self._scrub_links_to(memory_id)
+                    self._backup(prefix="pre_delete")
 
-                deleted = dict(self._get_meta_by_id(memory_id))
-                self._delete_ids_targeted({memory_id})
+                    # Scrub incoming links referencing this memory
+                    self._scrub_links_to(memory_id)
 
-                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
-                self.save()
-                self._rebuild_bm25()
+                    deleted = dict(locked)
+                    self._delete_ids_targeted({memory_id})
+
+                    self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    self.save()
+                    self._rebuild_bm25()
+                    break
 
         event_bus.emit("memory.deleted", {"id": memory_id, "source": deleted.get("source", "")})
         return {"deleted_id": memory_id, "deleted_text": deleted["text"][:100]}
@@ -808,42 +896,88 @@ class MemoryEngine:
         if not unique_ids:
             return {"deleted_count": 0, "deleted_ids": [], "missing_ids": []}
 
-        existing = [mid for mid in unique_ids if self._id_exists(mid)]
-        # Pinned memories never participate in bulk deletes.
-        pinned = [mid for mid in existing if self._get_meta_by_id(mid).get("pinned")]
-        if pinned:
-            logger.info("delete_memories: skipping %d pinned ids: %s", len(pinned), pinned[:10])
-            existing = [mid for mid in existing if mid not in set(pinned)]
-        existing_set = set(existing)
-        missing = [mid for mid in unique_ids if mid not in existing_set and mid not in set(pinned)]
-        if not existing:
-            return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing, "skipped_pinned": pinned}
+        while True:
+            existing = [mid for mid in unique_ids if self._id_exists(mid)]
+            if not existing:
+                return {
+                    "deleted_count": 0,
+                    "deleted_ids": [],
+                    "missing_ids": unique_ids,
+                    "skipped_pinned": [],
+                }
 
-        if len(unique_ids) > 10 and not skip_snapshot:
-            self._snapshot_before_delete("pre_delete_batch")
+            keys = [self._memory_key(mid) for mid in existing]
+            keys.extend(
+                self._entity_key(self._get_meta_by_id(mid).get("source", ""))
+                for mid in existing
+            )
+            with self._entity_locks.acquire_many(keys):
+                with self._write_lock:
+                    existing_now = [mid for mid in existing if self._id_exists(mid)]
+                    required_keys = {
+                        self._memory_key(mid) for mid in existing_now
+                    }
+                    required_keys.update(
+                        self._entity_key(
+                            self._get_meta_by_id(mid).get("source", "")
+                        )
+                        for mid in existing_now
+                    )
+                    if not required_keys.issubset(set(keys)):
+                        # At least one record moved before its stale source
+                        # lock was acquired. Retry with authoritative domains.
+                        continue
 
-        keys = [self._entity_key(self._get_meta_by_id(mid).get("source", "")) for mid in existing]
-        with self._entity_locks.acquire_many(keys):
-            with self._write_lock:
-                existing_now = [mid for mid in existing if self._id_exists(mid)]
-                if not existing_now:
-                    return {"deleted_count": 0, "deleted_ids": [], "missing_ids": missing}
+                    pinned = [
+                        mid
+                        for mid in existing_now
+                        if self._get_meta_by_id(mid).get("pinned")
+                    ]
+                    if pinned:
+                        logger.info(
+                            "delete_memories: skipping %d pinned ids: %s",
+                            len(pinned),
+                            pinned[:10],
+                        )
+                    pinned_set = set(pinned)
+                    deleted_ids = [
+                        mid for mid in existing_now if mid not in pinned_set
+                    ]
+                    existing_now_set = set(existing_now)
+                    missing = [
+                        mid for mid in unique_ids if mid not in existing_now_set
+                    ]
+                    if not deleted_ids:
+                        return {
+                            "deleted_count": 0,
+                            "deleted_ids": [],
+                            "missing_ids": missing,
+                            "skipped_pinned": pinned,
+                        }
 
-                self._backup(prefix="pre_delete_batch")
+                    if len(unique_ids) > 10 and not skip_snapshot:
+                        self._snapshot_before_delete("pre_delete_batch")
+                    self._backup(prefix="pre_delete_batch")
+                    self._delete_ids_targeted(set(deleted_ids))
 
-                self._delete_ids_targeted(set(existing_now))
+                    self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    self.save()
+                    self._rebuild_bm25()
 
-                self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
-                self.save()
-                self._rebuild_bm25()
+                    return {
+                        "deleted_count": len(deleted_ids),
+                        "deleted_ids": deleted_ids,
+                        "missing_ids": missing,
+                    }
 
-        return {
-            "deleted_count": len(existing),
-            "deleted_ids": existing,
-            "missing_ids": missing,
-        }
-
-    def supersede(self, old_id: int, new_text: str, source: str = "", metadata: Optional[Dict] = None) -> dict:
+    def supersede(
+        self,
+        old_id: int,
+        new_text: str,
+        source: str = "",
+        metadata: Optional[Dict] = None,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
+    ) -> dict:
         """Replace a memory with an updated version, preserving history.
 
         The new memory is added FIRST; the old memory is then ARCHIVED (not
@@ -855,32 +989,66 @@ class MemoryEngine:
         if not self._id_exists(old_id):
             raise ValueError(f"Memory {old_id} not found")
 
-        old_meta = self._get_meta_by_id(old_id)
-        previous_text = old_meta.get("text", "")
-        use_source = source or old_meta.get("source", "")
+        while True:
+            initial_source = self._get_meta_by_id(old_id).get("source", "")
+            initial_target = source or initial_source
+            keys = [
+                self._memory_key(old_id),
+                self._entity_key(initial_source),
+                self._entity_key(initial_target),
+            ]
+            with self._entity_locks.acquire_many(keys):
+                if not self._id_exists(old_id):
+                    raise ValueError(f"Memory {old_id} not found")
 
-        added_ids = self.add_memories(
-            texts=[new_text],
-            sources=[use_source],
-            metadata_list=[metadata] if metadata else None,
-            deduplicate=False,
-        )
-        new_id = added_ids[0] if added_ids else None
-        if new_id is None or not self._id_exists(new_id):
-            raise RuntimeError("supersede: add_memories stored nothing; original left untouched")
+                # update_memory uses these same source-domain locks. Re-reading
+                # here makes policy validation and archival one atomic snapshot.
+                old_meta = self._get_meta_by_id(old_id)
+                old_source = old_meta.get("source", "")
+                use_source = source or old_source
+                required_keys = {
+                    self._entity_key(old_source),
+                    self._entity_key(use_source),
+                }
+                if not required_keys.issubset(set(keys)):
+                    # The source moved before the stale lock snapshot was
+                    # acquired. Release and retry with the authoritative keys.
+                    continue
 
-        new_meta = self._get_meta_by_id(new_id)
-        new_meta["supersedes"] = old_id
-        new_meta["previous_text"] = previous_text
-        self.add_link(new_id, old_id, "supersedes")
+                previous_text = old_meta.get("text", "")
+                validate_namespace_preserving_replacement(
+                    [old_source], use_source, "supersede"
+                )
+                if is_project_source(old_source):
+                    _validate_project_write(new_text, old_source, trusted_authorship)
+                _validate_project_write(new_text, use_source, trusted_authorship)
 
-        old_meta["archived"] = True
-        old_meta["superseded_by"] = new_id
-        self.qdrant_store.set_payload(old_id, {"archived": True})
-        self.save()
+                add_kwargs = {
+                    "texts": [new_text],
+                    "sources": [use_source],
+                    "metadata_list": [metadata] if metadata else None,
+                    "deduplicate": False,
+                }
+                added_ids = self.add_memories(
+                    **_with_trusted_authorship(add_kwargs, trusted_authorship)
+                )
+                new_id = added_ids[0] if added_ids else None
+                if new_id is None or not self._id_exists(new_id):
+                    raise RuntimeError("supersede: add_memories stored nothing; original left untouched")
 
-        logger.info("Superseded memory %d → %d (old archived)", old_id, new_id)
-        return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text, "archived_old": True}
+                with self._write_lock:
+                    new_meta = self._get_meta_by_id(new_id)
+                    new_meta["supersedes"] = old_id
+                    new_meta["previous_text"] = previous_text
+                    self.add_link(new_id, old_id, "supersedes")
+
+                    old_meta["archived"] = True
+                    old_meta["superseded_by"] = new_id
+                    self.qdrant_store.set_payload(old_id, {"archived": True})
+                    self.save()
+
+                logger.info("Superseded memory %d → %d (old archived)", old_id, new_id)
+                return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text, "archived_old": True}
 
     def add_with_doctrine(
         self,
@@ -890,6 +1058,7 @@ class MemoryEngine:
         on_duplicate: str = "supersede",
         dedup_threshold: float = 0.90,
         identical_threshold: Optional[float] = None,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> Dict[str, Any]:
         """Single-memory write with update-on-collision semantics.
 
@@ -906,13 +1075,18 @@ class MemoryEngine:
         on_duplicate: "supersede" (default) | "skip" (legacy dedup behavior,
         but with the blocker surfaced) | "add" (no collision check).
         """
+        _validate_trusted_authorship(trusted_authorship)
+        _validate_project_write(text, source, trusted_authorship)
         if on_duplicate not in ("add", "skip", "supersede"):
             raise ValueError(f"on_duplicate must be add|skip|supersede, got {on_duplicate!r}")
         if identical_threshold is None:
             identical_threshold = float(os.getenv("DOCTRINE_IDENTICAL_THRESHOLD", "0.97"))
 
         if on_duplicate != "add" and self.metadata:
-            novel, top = self.is_novel(text, threshold=dedup_threshold)
+            novelty_kwargs = {"threshold": dedup_threshold}
+            if trusted_authorship is not None:
+                novelty_kwargs["source_exact"] = source
+            novel, top = self.is_novel(text, **novelty_kwargs)
             if not novel and top is not None:
                 top_id = top.get("id")
                 sim = float(top.get("similarity", 0.0))
@@ -933,7 +1107,13 @@ class MemoryEngine:
                         "similarity": round(sim, 4),
                         "hint": f"memory {top_id} already covers this; supersede it to replace the content",
                     }
-                result = self.supersede(top_id, text, source, metadata=metadata)
+                supersede_kwargs = {"metadata": metadata}
+                result = self.supersede(
+                    top_id,
+                    text,
+                    source,
+                    **_with_trusted_authorship(supersede_kwargs, trusted_authorship),
+                )
                 return {
                     "action": "superseded",
                     "id": result["new_id"],
@@ -942,11 +1122,14 @@ class MemoryEngine:
                     "previous_text": result["previous_text"],
                 }
 
+        add_kwargs = {
+            "texts": [text],
+            "sources": [source],
+            "metadata_list": [metadata] if metadata else None,
+            "deduplicate": False,
+        }
         ids = self.add_memories(
-            texts=[text],
-            sources=[source],
-            metadata_list=[metadata] if metadata else None,
-            deduplicate=False,
+            **_with_trusted_authorship(add_kwargs, trusted_authorship)
         )
         return {"action": "added", "id": ids[0] if ids else None}
 
@@ -1010,6 +1193,13 @@ class MemoryEngine:
                     mutated = True
                 continue
 
+            if m.get("source") != other.get("source"):
+                needs_review.append({"id": mid, "conflicts_with": cw, "reason": "cross_source"})
+                if not dry_run and m.get("conflict_review") != "cross_source":
+                    m["conflict_review"] = "cross_source"
+                    mutated = True
+                continue
+
             t_m, t_o = _when(m), _when(other)
             if t_m is None or t_o is None:
                 needs_review.append({"id": mid, "conflicts_with": cw, "reason": "undated"})
@@ -1054,28 +1244,135 @@ class MemoryEngine:
             "orphaned_count": len(orphaned),
         }
 
-    def merge_memories(self, ids: List[int], merged_text: str, source: str) -> Dict[str, Any]:
+    def replace_consolidation_cluster(
+        self,
+        cluster: List[Dict[str, Any]],
+        new_texts: List[str],
+        source: str,
+        metadata_list: List[Dict[str, Any]],
+        trusted_authorship: Optional[TrustedAuthorship] = None,
+    ) -> Dict[str, Any]:
+        """Atomically revalidate and replace a consolidation snapshot."""
+        expected_by_id = {item["id"]: item for item in cluster}
+        old_ids = list(expected_by_id)
+        if not old_ids:
+            return {"error": "consolidation cluster is empty"}
+
+        expected_sources = [
+            str(expected_by_id[mid].get("source", "")) for mid in old_ids
+        ]
+        keys = [self._memory_key(mid) for mid in old_ids]
+        keys.extend(self._entity_key(value) for value in expected_sources)
+        keys.append(self._entity_key(source))
+
+        with self._entity_locks.acquire_many(keys):
+            current_records: List[Dict[str, Any]] = []
+            for mid in old_ids:
+                if not self._id_exists(mid):
+                    return {"error": "cluster changed while consolidation was running"}
+                current = self._get_meta_by_id(mid)
+                expected = expected_by_id[mid]
+                for field in ("text", "source", "pinned", "archived", "updated_at"):
+                    if current.get(field) != expected.get(field):
+                        return {"error": "cluster changed while consolidation was running"}
+                current_records.append(current)
+
+            current_sources = [str(item.get("source", "")) for item in current_records]
+            validate_namespace_preserving_replacement(
+                current_sources, source, "consolidation"
+            )
+            for text in new_texts:
+                for current_source in current_sources:
+                    if is_project_source(current_source):
+                        _validate_project_write(
+                            text, current_source, trusted_authorship
+                        )
+                _validate_project_write(text, source, trusted_authorship)
+
+            added_ids = self.add_memories(
+                texts=new_texts,
+                sources=[source] * len(new_texts),
+                metadata_list=metadata_list,
+                deduplicate=False,
+                **_with_trusted_authorship({}, trusted_authorship),
+            )
+            if not added_ids:
+                return {"error": "add_memories stored nothing; originals left untouched"}
+            deleted = self.delete_memories(old_ids)
+            if deleted.get("deleted_count") != len(old_ids):
+                return {
+                    "error": "consolidation replacement did not delete every original",
+                    "added_ids": added_ids,
+                }
+            return {"added_ids": added_ids, "deleted_ids": old_ids}
+
+    def merge_memories(
+        self,
+        ids: List[int],
+        merged_text: str,
+        source: str,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
+    ) -> Dict[str, Any]:
         """Merge multiple memories into one, archiving originals and linking via supersedes."""
         if len(ids) < 2:
             raise ValueError("merge_memories requires at least 2 IDs")
-        for mid in ids:
-            if not self._id_exists(mid):
-                raise ValueError(f"Memory {mid} not found")
+        while True:
+            for mid in ids:
+                if not self._id_exists(mid):
+                    raise ValueError(f"Memory {mid} not found")
+            initial_sources = [
+                self._get_meta_by_id(mid).get("source", "") for mid in ids
+            ]
+            keys = [self._memory_key(mid) for mid in ids]
+            keys.extend(self._entity_key(value) for value in initial_sources)
+            keys.append(self._entity_key(source))
 
-        added_ids = self.add_memories(texts=[merged_text], sources=[source], deduplicate=False)
-        new_id = added_ids[0]
+            with self._entity_locks.acquire_many(keys):
+                for mid in ids:
+                    if not self._id_exists(mid):
+                        raise ValueError(f"Memory {mid} not found")
+                source_values = [
+                    self._get_meta_by_id(mid).get("source", "") for mid in ids
+                ]
+                required_keys = {
+                    self._entity_key(value) for value in [*source_values, source]
+                }
+                if not required_keys.issubset(set(keys)):
+                    # A source moved before the stale lock snapshot was
+                    # acquired. Retry with the authoritative source domains.
+                    continue
 
-        for mid in ids:
-            self.add_link(new_id, mid, "supersedes")
+                validate_namespace_preserving_replacement(
+                    source_values, source, "merge"
+                )
+                for source_value in source_values:
+                    if is_project_source(source_value):
+                        _validate_project_write(
+                            merged_text, source_value, trusted_authorship
+                        )
+                _validate_project_write(merged_text, source, trusted_authorship)
 
-        for mid in ids:
-            meta = self._get_meta_by_id(mid)
-            meta["archived"] = True
-            self.qdrant_store.set_payload(mid, {"archived": True})
+                add_kwargs = {
+                    "texts": [merged_text],
+                    "sources": [source],
+                    "deduplicate": False,
+                }
+                added_ids = self.add_memories(
+                    **_with_trusted_authorship(add_kwargs, trusted_authorship)
+                )
+                new_id = added_ids[0]
 
-        self.save()
-        logger.info("Merged memories %s → %d", ids, new_id)
-        return {"id": new_id, "archived": ids}
+                with self._write_lock:
+                    for mid in ids:
+                        self.add_link(new_id, mid, "supersedes")
+                    for mid in ids:
+                        meta = self._get_meta_by_id(mid)
+                        meta["archived"] = True
+                        self.qdrant_store.set_payload(mid, {"archived": True})
+                    self.save()
+
+                logger.info("Merged memories %s → %d", ids, new_id)
+                return {"id": new_id, "archived": ids}
 
     # ------------------------------------------------------------------
     # Memory Links (lightweight graph edges)
@@ -1300,14 +1597,52 @@ class MemoryEngine:
         metadata_patch: Optional[Dict[str, Any]] = None,
         pinned: Optional[bool] = None,
         archived: Optional[bool] = None,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
+        apply_trusted_authorship: bool = False,
     ) -> Dict[str, Any]:
         """Update fields on an existing memory without changing its ID."""
         if not self._id_exists(memory_id):
             raise ValueError(f"Memory ID {memory_id} not found")
 
+        _validate_trusted_authorship(trusted_authorship)
+
         current = self._get_meta_by_id(memory_id)
         old_key = self._entity_key(current.get("source", ""))
-        new_key = self._entity_key(source if source is not None else current.get("source", ""))
+        target_source = source if source is not None else current.get("source", "")
+        new_key = self._entity_key(target_source)
+        current_source = current.get("source", "")
+        current_is_project = is_project_source(current_source)
+        target_is_project = is_project_source(target_source)
+        touches_project = current_is_project or target_is_project
+        replaces_authored_content = is_substantive_authored_content_replacement(
+            current_text=current.get("text", ""),
+            new_text=text,
+            current_source=current_source,
+            new_source=source,
+            metadata_patch=metadata_patch,
+        )
+        content_update_requested = (
+            text is not None or source is not None or bool(metadata_patch)
+        )
+        validates_project_target = source is not None or (
+            is_reserved_namespace_source(target_source)
+            and content_update_requested
+        )
+        if validates_project_target:
+            effective_text = text if text is not None else current.get("text", "")
+            _validate_project_write(effective_text, target_source, trusted_authorship)
+        namespace_crossing = is_namespace_crossing_source_move(
+            current_source, source
+        )
+        if namespace_crossing and trusted_authorship is None:
+            raise ProjectMemoryPolicyError(
+                "namespace-crossing replacements require trusted principal or system authorship"
+            )
+        if apply_trusted_authorship or (touches_project and replaces_authored_content):
+            if trusted_authorship is None:
+                raise ProjectMemoryPolicyError(
+                    "project-namespace memories require trusted principal or system authorship"
+                )
         updated_fields: List[str] = []
 
         # Fast path: source-only change skips backup + re-embed
@@ -1320,18 +1655,81 @@ class MemoryEngine:
             and source != current.get("source", "")
         )
 
-        with self._entity_locks.acquire_many([old_key, new_key]):
+        with self._entity_locks.acquire_many(
+            [self._memory_key(memory_id), old_key, new_key]
+        ):
             with self._write_lock:
                 if not self._id_exists(memory_id):
                     raise ValueError(f"Memory ID {memory_id} not found")
 
                 meta = self._get_meta_by_id(memory_id)
 
+                # The preflight above provides an early failure, but another
+                # writer may change this record while we wait for the lock.
+                # Recompute the policy inputs from the locked record before
+                # any mutation so project transitions cannot race validation.
+                locked_current_source = meta.get("source", "")
+                locked_target_source = source if source is not None else locked_current_source
+                locked_touches_project = (
+                    is_project_source(locked_current_source)
+                    or is_project_source(locked_target_source)
+                )
+                locked_replaces_authored_content = (
+                    is_substantive_authored_content_replacement(
+                        current_text=meta.get("text", ""),
+                        new_text=text,
+                        current_source=locked_current_source,
+                        new_source=source,
+                        metadata_patch=metadata_patch,
+                    )
+                    or apply_trusted_authorship
+                )
+                locked_namespace_crossing = is_namespace_crossing_source_move(
+                    locked_current_source, source
+                )
+                validates_locked_project_target = source is not None or (
+                    is_reserved_namespace_source(locked_target_source)
+                    and content_update_requested
+                )
+                if validates_locked_project_target:
+                    locked_text = text if text is not None else meta.get("text", "")
+                    _validate_project_write(
+                        locked_text, locked_target_source, trusted_authorship
+                    )
+                if locked_namespace_crossing and trusted_authorship is None:
+                    raise ProjectMemoryPolicyError(
+                        "namespace-crossing replacements require trusted principal or system authorship"
+                    )
+                if apply_trusted_authorship or (
+                    locked_touches_project and locked_replaces_authored_content
+                ):
+                    if trusted_authorship is None:
+                        raise ProjectMemoryPolicyError(
+                            "project-namespace memories require trusted principal or system authorship"
+                        )
+                should_apply_trusted_authorship = (
+                    apply_trusted_authorship
+                    or locked_namespace_crossing
+                    or (
+                        locked_touches_project
+                        and locked_replaces_authored_content
+                    )
+                )
+
                 if source_only:
                     meta["source"] = source
+                    if should_apply_trusted_authorship:
+                        # Namespace-crossing source replacement and explicit
+                        # trusted application are authored edits.  Same-policy
+                        # folder/source moves preserve the existing identity.
+                        for reserved in RESERVED_METADATA_FIELDS:
+                            meta.pop(reserved, None)
+                        meta.update(trusted_authorship.as_metadata())
                     meta["updated_at"] = datetime.now(timezone.utc).isoformat()
                     # Don't touch created_at or timestamp
-                    self.qdrant_store.set_payload(memory_id, self._point_payload(meta))
+                    # set_payload merges keys in Qdrant, which would preserve
+                    # removed reserved provenance from pre-upgrade records.
+                    self.qdrant_store.replace_payload(memory_id, self._point_payload(meta))
                     self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
                     self.save()
                     return {"id": memory_id, "updated_fields": ["source"]}
@@ -1347,12 +1745,24 @@ class MemoryEngine:
                     updated_fields.append("source")
 
                 if metadata_patch:
-                    _reserved = {"id", "text", "source", "timestamp", "created_at", "updated_at", "entity_key"}
+                    _reserved = {
+                        "id", "text", "source", "timestamp", "created_at", "updated_at",
+                        "entity_key", *RESERVED_METADATA_FIELDS,
+                    }
                     for key, value in metadata_patch.items():
                         if key in _reserved or key.startswith("_policy_"):
                             continue
                         meta[key] = value
                     updated_fields.append("metadata")
+
+                if should_apply_trusted_authorship:
+                    if trusted_authorship is None:
+                        raise ProjectMemoryPolicyError(
+                            "trusted authorship is required for replacement updates"
+                        )
+                    for reserved in RESERVED_METADATA_FIELDS:
+                        meta.pop(reserved, None)
+                    meta.update(trusted_authorship.as_metadata())
 
                 if pinned is not None:
                     meta["pinned"] = pinned
@@ -1567,8 +1977,10 @@ class MemoryEngine:
         source: str,
         key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> Dict[str, Any]:
         """Upsert a memory by stable entity key + source."""
+        _validate_trusted_authorship(trusted_authorship)
         metadata = dict(metadata or {})
         metadata["entity_key"] = key
 
@@ -1579,24 +1991,41 @@ class MemoryEngine:
                 break
 
         if existing_id is None:
+            add_kwargs = {
+                "texts": [text],
+                "sources": [source],
+                "metadata_list": [metadata],
+                "deduplicate": False,
+            }
             ids = self.add_memories(
-                texts=[text],
-                sources=[source],
-                metadata_list=[metadata],
-                deduplicate=False,
+                **_with_trusted_authorship(add_kwargs, trusted_authorship)
             )
             return {"id": ids[0], "action": "created"}
 
+        update_kwargs = {
+            "memory_id": existing_id,
+            "text": text,
+            "source": source,
+            "metadata_patch": metadata,
+        }
+        if trusted_authorship is not None:
+            update_kwargs["apply_trusted_authorship"] = True
         result = self.update_memory(
-            memory_id=existing_id,
-            text=text,
-            source=source,
-            metadata_patch=metadata,
+            **_with_trusted_authorship(update_kwargs, trusted_authorship)
         )
         return {"id": result["id"], "action": "updated"}
 
-    def upsert_memories(self, entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def upsert_memories(
+        self,
+        entries: List[Dict[str, Any]],
+        trusted_authorship: Optional[TrustedAuthorship] = None,
+    ) -> Dict[str, Any]:
         """Upsert multiple memories by stable keys."""
+        _validate_trusted_authorship(trusted_authorship)
+        for entry in entries:
+            _validate_project_write(
+                entry.get("text", ""), entry.get("source", ""), trusted_authorship
+            )
         created = 0
         updated = 0
         errors = 0
@@ -1604,11 +2033,14 @@ class MemoryEngine:
 
         for entry in entries:
             try:
+                upsert_kwargs = {
+                    "text": entry["text"],
+                    "source": entry["source"],
+                    "key": entry["key"],
+                    "metadata": entry.get("metadata"),
+                }
                 result = self.upsert_memory(
-                    text=entry["text"],
-                    source=entry["source"],
-                    key=entry["key"],
-                    metadata=entry.get("metadata"),
+                    **_with_trusted_authorship(upsert_kwargs, trusted_authorship)
                 )
                 results.append(result)
                 if result["action"] == "created":
@@ -1633,11 +2065,20 @@ class MemoryEngine:
         """Return sorted list of unique source values across all memories."""
         return sorted({str(m.get("source", "")) for m in self.metadata})
 
+    @staticmethod
+    def _source_matches_scope(source: str, prefix: str, boundary: bool = False) -> bool:
+        if boundary:
+            return source == prefix or source.startswith(prefix + "/")
+        return source.startswith(prefix)
+
     def _build_source_filter(
         self,
         source_prefix: Optional[str] = None,
         allowed_prefixes: Optional[List[str]] = None,
         include_archived: bool = False,
+        source_exact: Optional[str] = None,
+        source_boundary: bool = False,
+        exclude_reserved_sources: bool = False,
     ) -> Optional[qdrant_models.Filter]:
         """Build a Qdrant filter from source prefix, auth prefixes, and archive state.
 
@@ -1646,19 +2087,34 @@ class MemoryEngine:
         """
         filter_obj: Optional[qdrant_models.Filter] = None
 
-        if source_prefix is not None or allowed_prefixes is not None:
+        if (
+            source_prefix is not None
+            or source_exact is not None
+            or allowed_prefixes is not None
+            or exclude_reserved_sources
+        ):
             all_sources = self.distinct_sources()
 
-            # Narrow by source_prefix first
-            if source_prefix:
-                candidates = [s for s in all_sources if s.startswith(source_prefix)]
+            # An exact source is a strict boundary.  Keep prefix filtering as
+            # an optional additional constraint for callers that provide both.
+            if source_exact is not None:
+                candidates = [s for s in all_sources if s == source_exact]
+                if source_prefix:
+                    candidates = [s for s in candidates if s.startswith(source_prefix)]
+            elif source_prefix:
+                # Narrow by source_prefix first
+                candidates = [
+                    s for s in all_sources
+                    if self._source_matches_scope(s, source_prefix, source_boundary)
+                ]
             else:
                 candidates = all_sources
 
             # Further narrow by auth allowed_prefixes
             if allowed_prefixes is not None:
-                from auth_context import source_matches_prefixes
                 candidates = [s for s in candidates if source_matches_prefixes(s, allowed_prefixes)]
+            if exclude_reserved_sources:
+                candidates = [s for s in candidates if not is_reserved_namespace_source(s)]
 
             if not candidates:
                 filter_obj = qdrant_models.Filter(
@@ -1703,6 +2159,11 @@ class MemoryEngine:
         include_archived: bool = False,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        source_exact: Optional[str] = None,
+        source_boundary: bool = False,
+        allowed_prefixes: Optional[List[str]] = None,
+        exclude_reserved_sources: bool = False,
+        reinforce_results: bool = True,
     ) -> List[Dict[str, Any]]:
         """Vector-only search for similar memories."""
         if not self.metadata:
@@ -1717,8 +2178,15 @@ class MemoryEngine:
             kind="query",
         )[0].astype("float32").tolist()
 
-        # Pre-filter at Qdrant level when source_prefix is specified
-        query_filter = self._build_source_filter(source_prefix=source_prefix, include_archived=include_archived)
+        # Pre-filter at Qdrant level when source scope is specified
+        query_filter = self._build_source_filter(
+            source_prefix=source_prefix,
+            source_exact=source_exact,
+            source_boundary=source_boundary,
+            allowed_prefixes=allowed_prefixes,
+            exclude_reserved_sources=exclude_reserved_sources,
+            include_archived=include_archived,
+        )
 
         hits = self.qdrant_store.search(
             query_vector=query_vec,
@@ -1737,7 +2205,15 @@ class MemoryEngine:
             meta = self._get_meta_by_id(mem_id)
             source = str(meta.get("source", ""))
             # Defense-in-depth: still verify source prefix in Python
-            if source_prefix and not source.startswith(source_prefix):
+            if source_prefix and not self._source_matches_scope(source, source_prefix, source_boundary):
+                continue
+            if source_exact is not None and source != source_exact:
+                continue
+            if allowed_prefixes is not None and not source_matches_prefixes(
+                source, allowed_prefixes
+            ):
+                continue
+            if exclude_reserved_sources and is_reserved_namespace_source(source):
                 continue
 
             # Temporal filtering
@@ -1750,7 +2226,8 @@ class MemoryEngine:
 
             result = self._enrich_with_confidence({**meta, "similarity": round(similarity, 6)})
             results.append(result)
-            self.reinforce(mem_id)
+            if reinforce_results:
+                self.reinforce(mem_id)
 
         return results
 
@@ -1827,18 +2304,29 @@ class MemoryEngine:
         adj: Dict[int, Set[int]],
         source_prefix: Optional[str],
         include_archived: bool,
+        source_exact: Optional[str] = None,
+        source_boundary: bool = False,
+        allowed_prefixes: Optional[List[str]] = None,
     ) -> Dict[int, Set[int]]:
         """Filter adjacency to visible subgraph.
 
         Scope is a boundary — out-of-scope nodes cannot act as transit bridges.
         Nodes with no visible neighbors are omitted from the result.
         """
-        if not source_prefix and include_archived:
+        if source_exact is None and not source_prefix and allowed_prefixes is None and include_archived:
             return adj
 
         visible = set()
         for m in self.metadata:
-            if source_prefix and not m.get("source", "").startswith(source_prefix):
+            if source_prefix and not self._source_matches_scope(
+                str(m.get("source", "")), source_prefix, source_boundary
+            ):
+                continue
+            if source_exact is not None and m.get("source", "") != source_exact:
+                continue
+            if allowed_prefixes is not None and not source_matches_prefixes(
+                str(m.get("source", "")), allowed_prefixes
+            ):
                 continue
             if not include_archived and m.get("archived"):
                 continue
@@ -1859,6 +2347,9 @@ class MemoryEngine:
         graph_weight: float,
         source_prefix: Optional[str],
         include_archived: bool,
+        source_exact: Optional[str] = None,
+        source_boundary: bool = False,
+        allowed_prefixes: Optional[List[str]] = None,
     ) -> tuple:
         """Expand search results via PPR on scope-filtered adjacency graph.
 
@@ -1881,7 +2372,14 @@ class MemoryEngine:
 
         # 1. Build and filter adjacency
         full_adj = self._build_adjacency("related_to")
-        adj = self._filter_adjacency(full_adj, source_prefix, include_archived)
+        adj = self._filter_adjacency(
+            full_adj,
+            source_prefix,
+            include_archived,
+            source_exact=source_exact,
+            source_boundary=source_boundary,
+            allowed_prefixes=allowed_prefixes,
+        )
 
         # Edge counts for info
         unfiltered_edges = sum(len(n) for n in full_adj.values()) // 2
@@ -2053,6 +2551,9 @@ class MemoryEngine:
         graph_weight: float = 0.0,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        source_exact: Optional[str] = None,
+        source_boundary: bool = False,
+        allowed_prefixes: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -2072,6 +2573,9 @@ class MemoryEngine:
             k=oversample,
             threshold=threshold,
             source_prefix=source_prefix,
+            source_exact=source_exact,
+            source_boundary=source_boundary,
+            allowed_prefixes=allowed_prefixes,
             include_archived=include_archived,
             since=since,
             until=until,
@@ -2081,12 +2585,32 @@ class MemoryEngine:
         if self.bm25_index is not None:
             tokenized = query.lower().split()
             bm25_scores = self.bm25_index.get_scores(tokenized)
-            if source_prefix:
+            if source_prefix or source_exact is not None or allowed_prefixes is not None:
                 bm25_ranked = [
                     (pos, score)
                     for pos, score in enumerate(bm25_scores)
                     if pos < len(self._bm25_pos_to_id)
-                    and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                    and (
+                        (
+                            source_exact is None
+                            or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "") == source_exact
+                        )
+                        and (
+                            not source_prefix
+                            or self._source_matches_scope(
+                                self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", ""),
+                                source_prefix,
+                                source_boundary,
+                            )
+                        )
+                        and (
+                            allowed_prefixes is None
+                            or source_matches_prefixes(
+                                str(self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "")),
+                                allowed_prefixes,
+                            )
+                        )
+                    )
                     and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
                 ]
                 bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
@@ -2205,6 +2729,9 @@ class MemoryEngine:
             graph_weight=graph_weight,
             source_prefix=source_prefix,
             include_archived=include_archived,
+            source_exact=source_exact,
+            source_boundary=source_boundary,
+            allowed_prefixes=allowed_prefixes,
         )
 
         return self._merge_graph_results(
@@ -2220,13 +2747,22 @@ class MemoryEngine:
         include_archived: bool = False,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        source_exact: Optional[str] = None,
+        source_boundary: bool = False,
+        allowed_prefixes: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Vector search without reinforcement side effects (for explain/debug)."""
         if not self.metadata:
             return []
         k = min(k, len(self.metadata), 100)
         query_vec = self._encode([query], normalize_embeddings=True, show_progress_bar=False, kind="query")[0].astype("float32").tolist()
-        query_filter = self._build_source_filter(source_prefix=source_prefix, include_archived=include_archived)
+        query_filter = self._build_source_filter(
+            source_prefix=source_prefix,
+            source_exact=source_exact,
+            source_boundary=source_boundary,
+            allowed_prefixes=allowed_prefixes,
+            include_archived=include_archived,
+        )
         hits = self.qdrant_store.search(
             query_vector=query_vec, limit=k, score_threshold=threshold,
             consistency=self.qdrant_settings.read_consistency, query_filter=query_filter,
@@ -2238,7 +2774,13 @@ class MemoryEngine:
                 continue
             meta = self._get_meta_by_id(mem_id)
             source = str(meta.get("source", ""))
-            if source_prefix and not source.startswith(source_prefix):
+            if source_prefix and not self._source_matches_scope(source, source_prefix, source_boundary):
+                continue
+            if source_exact is not None and source != source_exact:
+                continue
+            if allowed_prefixes is not None and not source_matches_prefixes(
+                source, allowed_prefixes
+            ):
                 continue
             # Temporal filtering
             if not self._passes_temporal_filter(meta, since, until):
@@ -2266,6 +2808,9 @@ class MemoryEngine:
         graph_weight: float = 0.0,
         since: Optional[str] = None,
         until: Optional[str] = None,
+        source_exact: Optional[str] = None,
+        source_boundary: bool = False,
+        allowed_prefixes: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Hybrid search with detailed scoring breakdown for explainability.
 
@@ -2304,6 +2849,9 @@ class MemoryEngine:
             k=oversample,
             threshold=threshold,
             source_prefix=source_prefix,
+            source_exact=source_exact,
+            source_boundary=source_boundary,
+            allowed_prefixes=allowed_prefixes,
             include_archived=include_archived,
             since=since,
             until=until,
@@ -2323,12 +2871,32 @@ class MemoryEngine:
         if self.bm25_index is not None:
             tokenized = query.lower().split()
             bm25_scores = self.bm25_index.get_scores(tokenized)
-            if source_prefix:
+            if source_prefix or source_exact is not None or allowed_prefixes is not None:
                 bm25_ranked = [
                     (pos, score)
                     for pos, score in enumerate(bm25_scores)
                     if pos < len(self._bm25_pos_to_id)
-                    and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                    and (
+                        (
+                            source_exact is None
+                            or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "") == source_exact
+                        )
+                        and (
+                            not source_prefix
+                            or self._source_matches_scope(
+                                self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", ""),
+                                source_prefix,
+                                source_boundary,
+                            )
+                        )
+                        and (
+                            allowed_prefixes is None
+                            or source_matches_prefixes(
+                                str(self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "")),
+                                allowed_prefixes,
+                            )
+                        )
+                    )
                     and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
                 ]
                 bm25_ranked = sorted(bm25_ranked, key=lambda x: x[1], reverse=True)[:oversample]
@@ -2363,14 +2931,34 @@ class MemoryEngine:
 
         # Count how many were filtered by source prefix
         filtered_by_source = 0
-        if source_prefix and self.bm25_index is not None:
+        if (source_prefix or source_exact is not None or allowed_prefixes is not None) and self.bm25_index is not None:
             tokenized = query.lower().split()
             raw_bm25 = self.bm25_index.get_scores(tokenized)
             total_bm25_with_score = sum(1 for s in raw_bm25 if s > 0)
             bm25_after_source = len([
                 pos for pos, score in enumerate(raw_bm25)
                 if score > 0 and pos < len(self._bm25_pos_to_id)
-                and self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "").startswith(source_prefix)
+                and (
+                    (
+                        source_exact is None
+                        or self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "") == source_exact
+                    )
+                    and (
+                        not source_prefix
+                        or self._source_matches_scope(
+                            self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", ""),
+                            source_prefix,
+                            source_boundary,
+                        )
+                    )
+                    and (
+                        allowed_prefixes is None
+                        or source_matches_prefixes(
+                            str(self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("source", "")),
+                            allowed_prefixes,
+                        )
+                    )
+                )
             ])
             filtered_by_source = total_bm25_with_score - bm25_after_source
 
@@ -2472,6 +3060,9 @@ class MemoryEngine:
                 graph_weight=graph_weight,
                 source_prefix=source_prefix,
                 include_archived=include_archived,
+                source_exact=source_exact,
+                source_boundary=source_boundary,
+                allowed_prefixes=allowed_prefixes,
             )
 
             results = self._merge_graph_results(
@@ -2499,12 +3090,55 @@ class MemoryEngine:
             },
         }
 
-    def is_novel(self, text: str, threshold: float = 0.88) -> Tuple[bool, Optional[Dict]]:
-        """Check if text is novel (not too similar to existing memories)."""
-        results = self.search(text, k=1)
+    def is_novel(
+        self,
+        text: str,
+        threshold: float = 0.88,
+        source_exact: Optional[str] = None,
+        allowed_source_prefixes: Optional[List[str]] = None,
+        exclude_reserved_sources: bool = False,
+    ) -> Tuple[bool, Optional[Dict]]:
+        """Check novelty within an exact source or an eligible policy scope.
+
+        Policy-filtered lookups retrieve several candidates before filtering so
+        an ineligible top result cannot hide a lower-ranked authorized match.
+        """
+        policy_filtered = (
+            allowed_source_prefixes is not None or exclude_reserved_sources
+        )
+        if policy_filtered:
+            search_kwargs: Dict[str, Any] = {
+                "k": 1,
+                "allowed_prefixes": allowed_source_prefixes,
+                "exclude_reserved_sources": exclude_reserved_sources,
+                "reinforce_results": False,
+            }
+            if source_exact is not None:
+                search_kwargs["source_exact"] = source_exact
+            results = self.search(text, **search_kwargs)
+        elif source_exact is None:
+            # Preserve the legacy call shape for integrations that wrap or
+            # monkeypatch ``search`` without an exact-source parameter.
+            results = self.search(text, k=1)
+        else:
+            results = self.search(text, k=1, source_exact=source_exact)
+        if policy_filtered:
+            results = [
+                result
+                for result in results
+                if not (
+                    exclude_reserved_sources
+                    and is_reserved_namespace_source(str(result.get("source", "")))
+                )
+                and source_matches_prefixes(
+                    str(result.get("source", "")), allowed_source_prefixes
+                )
+            ]
         if not results:
             return True, None
         top_match = results[0]
+        if source_exact is not None and str(top_match.get("source", "")) != source_exact:
+            return True, None
         return top_match["similarity"] < threshold, top_match
 
     # ------------------------------------------------------------------
@@ -2525,6 +3159,7 @@ class MemoryEngine:
         similarities = np.matmul(all_embeddings, all_embeddings.T)
         search_k = min(5, len(self.metadata))
         id_list = [m["id"] for m in self.metadata]
+        source_list = [str(m.get("source", "")) for m in self.metadata]
 
         duplicates: List[Dict[str, Any]] = []
         seen = set()
@@ -2532,7 +3167,11 @@ class MemoryEngine:
         for i in range(len(self.metadata)):
             row = similarities[i]
             nearest = np.argsort(row)[::-1]
-            neighbors = [j for j in nearest if j != i][:search_k]
+            neighbors = [
+                j
+                for j in nearest
+                if j != i and source_list[int(j)] == source_list[i]
+            ][:search_k]
             for j in neighbors:
                 sim = float(row[j])
                 id_a, id_b = id_list[i], id_list[int(j)]
@@ -2543,6 +3182,7 @@ class MemoryEngine:
                         {
                             "id_a": pair_key[0],
                             "id_b": pair_key[1],
+                            "source": source_list[i],
                             "similarity": round(sim, 4),
                             "text_a": self._get_meta_by_id(pair_key[0])["text"][:120],
                             "text_b": self._get_meta_by_id(pair_key[1])["text"][:120],
@@ -2557,11 +3197,10 @@ class MemoryEngine:
         if not pairs:
             return {"duplicate_pairs": 0, "removed": 0, "dry_run": dry_run}
 
-        ids_to_remove = set()
-        for pair in pairs:
-            ids_to_remove.add(max(pair["id_a"], pair["id_b"]))
-
         if dry_run:
+            ids_to_remove = {
+                max(pair["id_a"], pair["id_b"]) for pair in pairs
+            }
             return {
                 "duplicate_pairs": len(pairs),
                 "would_remove": len(ids_to_remove),
@@ -2571,6 +3210,27 @@ class MemoryEngine:
 
         with self._entity_locks.acquire_many(["__all__"]):
             with self._write_lock:
+                # The scan ran unlocked. Recheck the namespace boundary at
+                # the mutation point so a concurrent source move cannot turn
+                # a same-source candidate into a cross-source deletion.
+                pairs = [
+                    pair
+                    for pair in pairs
+                    if self._id_exists(pair["id_a"])
+                    and self._id_exists(pair["id_b"])
+                    and self._get_meta_by_id(pair["id_a"]).get("source", "")
+                    == self._get_meta_by_id(pair["id_b"]).get("source", "")
+                ]
+                ids_to_remove = {
+                    max(pair["id_a"], pair["id_b"]) for pair in pairs
+                }
+                if not ids_to_remove:
+                    return {
+                        "duplicate_pairs": 0,
+                        "removed": 0,
+                        "remaining": len(self.metadata),
+                        "dry_run": False,
+                    }
                 self._backup(prefix="pre_dedup")
 
                 self._delete_ids_targeted(ids_to_remove)
@@ -2660,16 +3320,30 @@ class MemoryEngine:
     # Browse / List
     # ------------------------------------------------------------------
 
-    def count_memories(self, source_prefix: Optional[str] = None) -> int:
+    def count_memories(
+        self,
+        source_prefix: Optional[str] = None,
+        source_boundary: bool = False,
+    ) -> int:
         """Count memories, optionally filtered by source prefix."""
         if not source_prefix:
             return len(self.metadata)
-        return sum(1 for m in self.metadata if m.get("source", "").startswith(source_prefix))
+        return sum(
+            1
+            for m in self.metadata
+            if self._source_matches_scope(
+                str(m.get("source", "")),
+                source_prefix,
+                source_boundary,
+            )
+        )
 
     def count_by_filter(
         self,
         source_prefix: Optional[str] = None,
         allowed_prefixes: Optional[List[str]] = None,
+        source_boundary: bool = False,
+        include_archived: bool = False,
     ) -> int:
         """Count memories using Qdrant-level filtering (O(1) vs O(n) scan).
 
@@ -2678,6 +3352,8 @@ class MemoryEngine:
         query_filter = self._build_source_filter(
             source_prefix=source_prefix,
             allowed_prefixes=allowed_prefixes,
+            source_boundary=source_boundary,
+            include_archived=include_archived,
         )
         if query_filter is None:
             return len(self.metadata)
@@ -2688,11 +3364,20 @@ class MemoryEngine:
         offset: int = 0,
         limit: int = 20,
         source_filter: Optional[str] = None,
+        source_boundary: bool = False,
     ) -> Dict[str, Any]:
         """List memories with pagination and optional source filter."""
         filtered = self.metadata
         if source_filter:
-            filtered = [m for m in filtered if m.get("source", "").startswith(source_filter)]
+            filtered = [
+                m
+                for m in filtered
+                if self._source_matches_scope(
+                    str(m.get("source", "")),
+                    source_filter,
+                    source_boundary,
+                )
+            ]
 
         total = len(filtered)
         page = [self._enrich_with_confidence(dict(m)) for m in filtered[offset : offset + limit]]
@@ -2765,6 +3450,7 @@ class MemoryEngine:
         strategy: str = "add",
         source_remap: Optional[Tuple[str, str]] = None,
         create_backup: bool = True,
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> Dict[str, Any]:
         """Import memories from NDJSON lines produced by :meth:`export_memories`.
 
@@ -2796,6 +3482,7 @@ class MemoryEngine:
             "errors": [],
             "backup": None,
         }
+        _validate_trusted_authorship(trusted_authorship)
 
         if not lines:
             result["errors"].append({"line": 1, "error": "Missing header: first line must contain _header: true"})
@@ -2811,13 +3498,6 @@ class MemoryEngine:
         if not header.get("_header"):
             result["errors"].append({"line": 1, "error": "Missing header: first line must contain _header: true"})
             return result
-
-        # --- backup ---
-        backup_name: Optional[str] = None
-        if create_backup and self.metadata:
-            backup_path = self._backup(prefix="pre-import")
-            backup_name = backup_path.name
-            result["backup"] = backup_name
 
         # --- parse records ---
         parsed: List[Dict[str, Any]] = []
@@ -2841,17 +3521,52 @@ class MemoryEngine:
                 "source": source,
                 "created_at": record.get("created_at", ""),
                 "updated_at": record.get("updated_at", ""),
+                "_import_line": idx,
             }
             custom = record.get("custom_fields")
             if custom and isinstance(custom, dict):
                 entry["custom_fields"] = custom
             parsed.append(entry)
 
+        # Validate every exact project record before any strategy can delete,
+        # replace, or add data.  A malformed/pre-existing reserved source is a
+        # record-level compatibility error: retain valid records and report
+        # the rejected line instead of aborting the entire import.
+        validated: List[Dict[str, Any]] = []
+        for entry in parsed:
+            line_number = entry.pop("_import_line", 0)
+            try:
+                _validate_project_write(
+                    entry["text"], entry["source"], trusted_authorship
+                )
+            except ProjectMemoryPolicyError as exc:
+                result["errors"].append(
+                    {"line": line_number, "error": str(exc)}
+                )
+                continue
+            validated.append(entry)
+        parsed = validated
+
+        # --- backup ---
+        backup_name: Optional[str] = None
+        if create_backup and self.metadata:
+            backup_path = self._backup(prefix="pre-import")
+            backup_name = backup_path.name
+            result["backup"] = backup_name
+
         # --- dispatch by strategy ---
         if strategy == "add":
-            self._import_add(parsed, result)
+            self._import_add(
+                parsed,
+                result,
+                **_with_trusted_authorship({}, trusted_authorship),
+            )
         elif strategy in ("smart", "smart+extract"):
-            self._import_smart(parsed, result)
+            self._import_smart(
+                parsed,
+                result,
+                **_with_trusted_authorship({}, trusted_authorship),
+            )
         else:
             result["errors"].append({"line": 0, "error": f"Unknown strategy: {strategy}"})
 
@@ -2862,7 +3577,10 @@ class MemoryEngine:
     # ------------------------------------------------------------------
 
     def _import_add(
-        self, parsed: List[Dict[str, Any]], result: Dict[str, Any]
+        self,
+        parsed: List[Dict[str, Any]],
+        result: Dict[str, Any],
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> None:
         """Bulk-add all parsed records without novelty checking."""
         if not parsed:
@@ -2873,11 +3591,22 @@ class MemoryEngine:
             {"imported": True, "import_source": r["source"], **r.get("custom_fields", {})}
             for r in parsed
         ]
-        self.add_memories(texts=texts, sources=sources, metadata_list=metadata_list, deduplicate=False)
+        add_kwargs = {
+            "texts": texts,
+            "sources": sources,
+            "metadata_list": metadata_list,
+            "deduplicate": False,
+        }
+        self.add_memories(
+            **_with_trusted_authorship(add_kwargs, trusted_authorship)
+        )
         result["imported"] = len(texts)
 
     def _import_smart(
-        self, parsed: List[Dict[str, Any]], result: Dict[str, Any]
+        self,
+        parsed: List[Dict[str, Any]],
+        result: Dict[str, Any],
+        trusted_authorship: Optional[TrustedAuthorship] = None,
     ) -> None:
         """Add records with similarity-based novelty checking.
 
@@ -2908,7 +3637,21 @@ class MemoryEngine:
                 novel_meta.append(rec_meta)
                 continue
 
-            hits = self.search(text, k=1)
+            # Smart import may delete a borderline match when the imported
+            # record is newer.  Authenticated writes are scoped to the exact
+            # destination source so a match from another namespace can never
+            # be deleted as a replacement.  Legacy callers retain the
+            # historical global lookup, but cross-source matches are never
+            # mutated below.
+            search_kwargs = {"k": 1}
+            if trusted_authorship is not None:
+                search_kwargs["source_exact"] = source
+            hits = self.search(text, **search_kwargs)
+            if trusted_authorship is not None:
+                hits = [
+                    hit for hit in hits
+                    if str(hit.get("source", "")) == source
+                ]
 
             if not hits:
                 novel_texts.append(text)
@@ -2917,6 +3660,10 @@ class MemoryEngine:
                 continue
 
             best = hits[0]
+            cross_source_match = (
+                trusted_authorship is None
+                and str(best.get("source", "")) != source
+            )
             similarity = best.get("similarity", 0.0)
 
             if similarity >= _SKIP_THRESHOLD:
@@ -2933,11 +3680,17 @@ class MemoryEngine:
                 if import_created > existing_created:
                     # Import record is newer — replace old with new
                     match_id = best.get("id")
-                    if match_id is not None:
+                    if match_id is not None and not cross_source_match:
                         self.delete_memory(match_id)
                     novel_texts.append(text)
                     novel_sources.append(source)
                     novel_meta.append(rec_meta)
+                    if cross_source_match:
+                        # Legacy global lookup may still identify a
+                        # cross-source borderline match, but smart import must
+                        # never delete that record.  Keep the destination
+                        # record by importing it as new.
+                        continue
                     result["updated"] += 1
                 else:
                     # Existing is newer or same — skip
@@ -2945,9 +3698,14 @@ class MemoryEngine:
 
         # Batch-add all novel records at once
         if novel_texts:
+            add_kwargs = {
+                "texts": novel_texts,
+                "sources": novel_sources,
+                "metadata_list": novel_meta,
+                "deduplicate": False,
+            }
             self.add_memories(
-                texts=novel_texts, sources=novel_sources,
-                metadata_list=novel_meta, deduplicate=False,
+                **_with_trusted_authorship(add_kwargs, trusted_authorship)
             )
             result["imported"] = len(novel_texts)
 

@@ -150,3 +150,42 @@ def test_rename_exact_match_no_slash(client):
     data = resp.json()
     assert data["updated"] == 1
     mock_engine.update_memory.assert_called_once_with(memory_id=3, source="moved")
+
+
+def test_managed_legacy_folder_rename_preserves_original_authorship(client):
+    tc, mock_engine = client
+    import app as app_module
+    from project_memory import TrustedAuthorship
+
+    mock_engine.metadata = [{"id": 9, "text": "Alice's fact", "source": "legacy/acme"}]
+    bob = TrustedAuthorship.principal("bob", "codex")
+    with patch.object(app_module, "_trusted_authorship", return_value=bob):
+        response = tc.post(
+            "/folders/rename",
+            json={"old_name": "legacy", "new_name": "codex"},
+            headers=HEADERS,
+        )
+
+    assert response.status_code == 200
+    mock_engine.update_memory.assert_called_once_with(
+        memory_id=9,
+        source="codex/acme",
+        trusted_authorship=bob,
+    )
+
+
+def test_mixed_valid_and_structured_folder_targets_fail_before_mutation(client):
+    tc, mock_engine = client
+    mock_engine.metadata = [
+        {"id": 10, "text": "ordinary", "source": "legacy/one"},
+        {"id": 11, "text": "unsafe destination", "source": "legacy/knowledge"},
+    ]
+
+    response = tc.post(
+        "/folders/rename",
+        json={"old_name": "legacy", "new_name": "project/acme"},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 422
+    mock_engine.update_memory.assert_not_called()

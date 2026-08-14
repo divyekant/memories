@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from llm_provider import CompletionResult
+from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
 
 
 def _cr(text, input_tokens=10, output_tokens=5):
@@ -295,6 +296,152 @@ class TestAUDNCycle:
         )
         assert decisions[0]["action"] == "NOOP"
 
+    def test_ollama_no_source_uses_unscoped_novelty_lookup(self):
+        """Legacy/env-admin extraction keeps the historical global lookup."""
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = False
+
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (
+            False,
+            {"id": 5, "text": "Existing legacy fact", "source": "legacy/project"},
+        )
+
+        decisions, _, _ = run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "Existing legacy fact", "category": "detail"}],
+            source="",
+        )
+
+        assert decisions[0]["action"] == "NOOP"
+        assert "source_exact" not in mock_engine.is_novel.call_args.kwargs
+
+    def test_provider_no_source_keeps_unscoped_similar_memory_candidates(self):
+        """Provider AUDN must not filter all candidates when destination is empty."""
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {"action": "NOOP", "fact_index": 0, "existing_id": 7},
+        ]))
+
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {
+                "id": 7,
+                "text": "Existing legacy fact",
+                "source": "legacy/project",
+                "similarity": 0.99,
+            },
+        ]
+
+        run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "Existing legacy fact", "category": "detail"}],
+            source="",
+        )
+
+        assert "source_exact" not in mock_engine.hybrid_search.call_args.kwargs
+        prompt = mock_provider.complete.call_args[0][1]
+        assert "Existing legacy fact" in prompt
+
+    def test_provider_legacy_source_keeps_cross_client_duplicate_detection(self):
+        """A nonempty legacy hook source must retain pre-project global AUDN lookup."""
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {"action": "NOOP", "fact_index": 0, "existing_id": 7},
+        ]))
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {"id": 7, "text": "Existing fact", "source": "claude-code/demo", "similarity": 0.99},
+        ]
+
+        run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "Existing fact", "category": "detail"}],
+            source="codex/demo",
+        )
+
+        assert "source_exact" not in mock_engine.hybrid_search.call_args.kwargs
+        assert "Existing fact" in mock_provider.complete.call_args[0][1]
+
+    def test_provider_legacy_source_excludes_authorized_structured_candidates(self):
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {"action": "ADD", "fact_index": 0},
+        ]))
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {"id": 7, "text": "Legacy match", "source": "claude-code/demo", "similarity": 0.95},
+            {"id": 8, "text": "Shared secret", "source": "project/demo/knowledge", "similarity": 0.99},
+        ]
+
+        run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "Candidate", "category": "detail"}],
+            source="codex/demo",
+            allowed_prefixes=["codex/demo", "claude-code/demo", "project/demo"],
+        )
+
+        prompt = mock_provider.complete.call_args[0][1]
+        assert "Legacy match" in prompt
+        assert "Shared secret" not in prompt
+
+    def test_ollama_legacy_source_ignores_structured_novelty_blocker(self):
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = False
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (
+            False,
+            {"id": 8, "source": "project/demo/knowledge", "similarity": 0.99},
+        )
+
+        decisions, _, _ = run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "Legacy fact", "category": "detail"}],
+            source="codex/demo",
+            allowed_prefixes=["codex/demo", "project/demo"],
+        )
+
+        assert decisions == [{"action": "ADD", "fact_index": 0}]
+
+    def test_ollama_legacy_source_ignores_unauthorized_legacy_blocker(self):
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = False
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (
+            False,
+            {"id": 9, "source": "claude-code/other-project", "similarity": 0.99},
+        )
+
+        decisions, _, _ = run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "Legacy fact", "category": "detail"}],
+            source="codex/demo",
+            allowed_prefixes=["codex/demo", "claude-code/demo"],
+        )
+
+        assert decisions == [{"action": "ADD", "fact_index": 0}]
+
     def test_audn_prompt_truncates_similar_memory_text(self):
         from llm_extract import run_audn, EXTRACT_SIMILAR_TEXT_CHARS
 
@@ -308,7 +455,7 @@ class TestAUDNCycle:
 
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = [
-            {"id": 42, "text": long_memory, "similarity": 0.95}
+            {"id": 42, "text": long_memory, "similarity": 0.95, "source": "test/project"}
         ]
 
         run_audn(
@@ -333,7 +480,7 @@ class TestAUDNCycle:
 
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = [
-            {"id": 42, "text": "Uses Drizzle ORM", "rrf_score": 0.025}
+            {"id": 42, "text": "Uses Drizzle ORM", "rrf_score": 0.025, "source": "test/project"}
         ]
 
         run_audn(
@@ -394,6 +541,33 @@ class TestAUDNCycle:
         assert "Allowed" in prompt
         assert "Blocked" not in prompt
 
+    def test_audn_filters_similar_memories_by_exact_destination_source(self):
+        from llm_extract import run_audn
+
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = True
+        mock_provider.complete.return_value = _cr(json.dumps([
+            {"action": "ADD", "fact_index": 0}
+        ]))
+        mock_engine = MagicMock()
+        mock_engine.hybrid_search.return_value = [
+            {"id": 1, "text": "Same source", "source": "project/acme/decisions", "similarity": 0.9},
+            {"id": 2, "text": "Other source secret", "source": "project/other/decisions", "similarity": 0.99},
+        ]
+
+        run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "Uses Postgres", "category": "decision"}],
+            source="project/acme/decisions",
+            allowed_prefixes=["project/"],
+        )
+
+        prompt = mock_provider.complete.call_args[0][1]
+        assert "Same source" in prompt
+        assert "Other source secret" not in prompt
+        assert mock_engine.hybrid_search.call_args.kwargs["source_exact"] == "project/acme/decisions"
+
     def test_audn_returns_artifacts_dict_with_similar_per_fact(self):
         """run_audn() always returns audn_artifacts dict with similar_per_fact."""
         from llm_extract import run_audn
@@ -402,7 +576,7 @@ class TestAUDNCycle:
         mock_provider.complete.return_value = _cr(json.dumps([{"action": "ADD", "fact_index": 0}]))
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = [
-            {"id": 5, "text": "Existing memory", "rrf_score": 0.025, "source": "test/proj"}
+            {"id": 5, "text": "Existing memory", "rrf_score": 0.025, "source": "test/project"}
         ]
         decisions, tokens, artifacts = run_audn(
             mock_provider, mock_engine,
@@ -444,6 +618,22 @@ class TestAUDNCycle:
         assert isinstance(artifacts, dict)
         assert artifacts["similar_per_fact"] == {}
 
+    def test_ollama_novelty_is_scoped_to_destination_source(self):
+        from llm_extract import run_audn
+        mock_provider = MagicMock()
+        mock_provider.supports_audn = False
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (True, None)
+
+        run_audn(
+            mock_provider,
+            mock_engine,
+            facts=[{"text": "New fact", "category": "detail"}],
+            source="project/acme/decisions",
+        )
+
+        assert mock_engine.is_novel.call_args.kwargs["source_exact"] == "project/acme/decisions"
+
     def test_audn_empty_facts_returns_empty_artifacts(self):
         from llm_extract import run_audn
         mock_provider = MagicMock()
@@ -475,6 +665,197 @@ class TestExecuteActions:
         call_kwargs = mock_engine.add_memories.call_args
         assert call_kwargs.kwargs.get("metadata_list") == [{"category": "decision"}]
 
+    def test_execute_add_passes_trusted_authorship(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.add_memories.return_value = [100]
+        trusted = TrustedAuthorship.principal("alice", "codex")
+
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{"text": "project fact", "category": "decision"}],
+            source="project/demo/decisions",
+            trusted_authorship=trusted,
+        )
+
+        assert result["stored_count"] == 1
+        assert mock_engine.add_memories.call_args.kwargs["trusted_authorship"] == trusted
+
+    def test_novelty_gate_no_source_accepts_unscoped_duplicate(self):
+        """The legacy novelty gate must retain duplicate detection across sources."""
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (
+            False,
+            {"id": 12, "text": "Existing legacy fact", "source": "legacy/project", "similarity": 0.99},
+        )
+
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{"text": "Existing legacy fact", "category": "detail"}],
+            source="",
+        )
+
+        assert result["actions"][0]["action"] == "noop"
+        assert result["actions"][0]["existing_id"] == 12
+        assert "source_exact" not in mock_engine.is_novel.call_args.kwargs
+        mock_engine.add_memories.assert_not_called()
+
+    def test_novelty_gate_legacy_source_detects_cross_client_duplicate(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (
+            False,
+            {"id": 13, "text": "Existing fact", "source": "claude-code/demo", "similarity": 0.99},
+        )
+
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{"text": "Existing fact", "category": "detail"}],
+            source="codex/demo",
+            allowed_prefixes=["codex/demo", "claude-code/demo"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+        )
+
+        assert result["actions"][0]["action"] == "noop"
+        assert result["actions"][0]["existing_id"] == 13
+        assert "source_exact" not in mock_engine.is_novel.call_args.kwargs
+        mock_engine.add_memories.assert_not_called()
+
+    def test_managed_legacy_novelty_ignores_unauthorized_global_match(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (
+            False,
+            {"id": 99, "text": "Private fact", "source": "person/bob/demo/knowledge", "similarity": 0.99},
+        )
+        mock_engine.add_memories.return_value = [100]
+
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{"text": "New fact", "category": "detail"}],
+            source="codex/demo",
+            allowed_prefixes=["codex/demo", "claude-code/demo"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+        )
+
+        assert result["actions"][0]["action"] == "add"
+        mock_engine.add_memories.assert_called_once()
+
+    def test_managed_legacy_novelty_ignores_authorized_structured_match(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (
+            False,
+            {"id": 8, "text": "Shared fact", "source": "project/demo/knowledge", "similarity": 0.99},
+        )
+        mock_engine.add_memories.return_value = [100]
+
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{"text": "Legacy fact", "category": "detail"}],
+            source="codex/demo",
+            allowed_prefixes=["codex/demo", "project/demo"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+        )
+
+        assert result["actions"][0]["action"] == "add"
+        mock_engine.add_memories.assert_called_once()
+
+    def test_managed_legacy_novelty_requests_filtered_multi_candidate_lookup(self):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.is_novel.return_value = (
+            False,
+            {"id": 13, "text": "Legacy fact", "source": "claude-code/demo", "similarity": 0.95},
+        )
+
+        result = execute_actions(
+            mock_engine,
+            [{"action": "ADD", "fact_index": 0}],
+            [{"text": "Legacy fact", "category": "detail"}],
+            source="codex/demo",
+            allowed_prefixes=["codex/demo", "claude-code/demo", "project/demo"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+        )
+
+        assert result["actions"][0]["action"] == "noop"
+        kwargs = mock_engine.is_novel.call_args.kwargs
+        assert kwargs["allowed_source_prefixes"] == [
+            "codex/demo",
+            "claude-code/demo",
+            "project/demo",
+        ]
+        assert kwargs["exclude_reserved_sources"] is True
+
+    def test_execute_update_rejects_project_credential_before_archiving(self, tmp_path):
+        from llm_extract import execute_actions
+        from memory_engine import MemoryEngine
+
+        engine = MemoryEngine(data_dir=str(tmp_path))
+        trusted = TrustedAuthorship.principal("alice", "codex")
+        old_id = engine.add_memories(
+            ["old decision"],
+            ["project/demo/decisions"],
+            trusted_authorship=trusted,
+        )[0]
+        secret = "Production token is ghp_abcdefghijklmnopqrstuvwxyz123456"
+
+        with pytest.raises(ProjectMemoryPolicyError, match="credential-shaped"):
+            execute_actions(
+                engine,
+                [{"action": "UPDATE", "fact_index": 0, "old_id": old_id, "new_text": secret}],
+                [{"text": secret, "category": "decision"}],
+                source="project/demo/decisions",
+                trusted_authorship=trusted,
+            )
+
+        old = engine._get_meta_by_id(old_id)
+        assert old["text"] == "old decision"
+        assert old.get("archived") is not True
+        assert engine.qdrant_store.count() == 1
+
+    def test_execute_actions_preflights_every_project_write_before_batch_mutation(self, tmp_path):
+        from llm_extract import execute_actions
+        from memory_engine import MemoryEngine
+
+        engine = MemoryEngine(data_dir=str(tmp_path))
+        trusted = TrustedAuthorship.principal("alice", "codex")
+        facts = [
+            {"text": "safe shared decision", "category": "decision"},
+            {
+                "text": "Production token is ghp_abcdefghijklmnopqrstuvwxyz123456",
+                "category": "detail",
+            },
+        ]
+
+        with pytest.raises(ProjectMemoryPolicyError, match="credential-shaped"):
+            execute_actions(
+                engine,
+                [
+                    {"action": "ADD", "fact_index": 0},
+                    {"action": "ADD", "fact_index": 1},
+                ],
+                facts,
+                source="project/demo/knowledge",
+                novelty_gate=False,
+                trusted_authorship=trusted,
+            )
+
+        assert engine.qdrant_store.count() == 0
+        assert engine.metadata == []
+
     def test_execute_add_passes_category_metadata(self):
         from llm_extract import execute_actions
 
@@ -492,7 +873,7 @@ class TestExecuteActions:
         from llm_extract import execute_actions
 
         mock_engine = MagicMock()
-        mock_engine.get_memory.return_value = {"id": 42, "source": "test", "text": "old"}
+        mock_engine.get_memory.return_value = {"id": 42, "source": "test/proj", "text": "old"}
         mock_engine.add_memories.return_value = [101]
         mock_engine.add_link.return_value = {}
 
@@ -526,6 +907,7 @@ class TestExecuteActions:
         from llm_extract import execute_actions
 
         mock_engine = MagicMock()
+        mock_engine.get_memory.return_value = {"id": 55, "source": "test/proj"}
         actions = [{"action": "DELETE", "fact_index": 0, "old_id": 55}]
         facts = [{"text": "contradicted fact", "category": "detail"}]
 
@@ -586,6 +968,39 @@ class TestExecuteActions:
         assert result["deleted_count"] == 0
         mock_engine.delete_memory.assert_not_called()
         assert any(a.get("action") == "error" for a in result["actions"])
+
+    @pytest.mark.parametrize("action_name", ["UPDATE", "DELETE", "CONFLICT"])
+    def test_execute_actions_rejects_cross_source_old_id_even_with_broad_prefix(self, action_name):
+        from llm_extract import execute_actions
+
+        mock_engine = MagicMock()
+        mock_engine.get_memory.return_value = {
+            "id": 42,
+            "source": "person/alice/acme/decisions",
+            "text": "Alice's private fact",
+        }
+        mock_engine.add_memories.return_value = [100]
+        facts = [{"text": "Replacement fact", "category": "decision"}]
+        action = {"action": action_name, "fact_index": 0, "old_id": 42}
+        if action_name == "UPDATE":
+            action["new_text"] = "Replacement fact"
+
+        result = execute_actions(
+            mock_engine,
+            [action],
+            facts,
+            source="project/acme/decisions",
+            allowed_prefixes=["project/", "person/"],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+        )
+
+        assert result["stored_count"] == 0
+        assert result["updated_count"] == 0
+        assert result["deleted_count"] == 0
+        assert result["conflict_count"] == 0
+        assert result["actions"][0]["action"] == "error"
+        mock_engine.add_memories.assert_not_called()
+        mock_engine.delete_memory.assert_not_called()
 
 
 class TestFullPipeline:
@@ -961,7 +1376,7 @@ class TestExtractionMaintenance:
         ]
         mock_engine = MagicMock()
         mock_engine.hybrid_search.return_value = [
-            {"id": 30, "text": "Prisma was the old ORM", "rrf_score": 0.022, "source": "test/proj"}
+            {"id": 30, "text": "Prisma was the old ORM", "rrf_score": 0.022, "source": "test/project"}
         ]
         mock_engine.add_memories.return_value = [121]
         mock_engine.add_link.return_value = {}

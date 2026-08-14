@@ -145,20 +145,54 @@ _memory_ids_for_metrics() {
   jq -nc --argjson a "$input_ids" --argjson b "$response_ids" '$a + $b | unique | .[0:50]' 2>/dev/null || echo '[]'
 }
 
-# Resolve the project name for a cwd. Git worktree checkouts (e.g. Claude
-# Code's .claude/worktrees/<name>) resolve to the MAIN repo's directory name,
-# not the worktree directory, so worktree sessions share the project's
-# memories instead of scoping recall/capture to a throwaway name.
+# Resolve the main repository boundary for a cwd. Git worktrees have their
+# own checkout root but share the main repository's git-common-dir; using that
+# shared directory keeps the committed project declaration authoritative for
+# both the main checkout and every worktree.
+_memories_resolve_repo_root() {
+  local cwd="${1:-}"
+  [ -n "$cwd" ] || return 1
+  local resolved
+  resolved=$(CDPATH= cd -P "$cwd" 2>/dev/null && pwd -P) || return 1
+  if ! command -v git >/dev/null 2>&1; then
+    printf '%s' "$resolved"
+    return 0
+  fi
+  local common
+  common=$(git -C "$resolved" rev-parse --git-common-dir 2>/dev/null) || {
+    printf '%s' "$resolved"
+    return 0
+  }
+  [ -z "$common" ] && { printf '%s' "$resolved"; return 0; }
+  case "$common" in
+    /*) ;;
+    *) common="$resolved/$common" ;;
+  esac
+  if [ "$(basename "$common")" = ".git" ]; then
+    local root
+    root=$(CDPATH= cd -P "$(dirname "$common")" 2>/dev/null && pwd -P)
+    if [ -n "$root" ] && [ "$root" != "/" ]; then
+      printf '%s' "$root"
+      return 0
+    fi
+  fi
+  printf '%s' "$resolved"
+}
+
+# Resolve the project name for a cwd while preserving the historical basename
+# fallback for non-git directories and empty input.
 _memories_resolve_project() {
   local cwd="${1:-}"
   local fallback
   fallback=$(basename "${cwd:-unknown}")
-  if [ -z "$cwd" ] || ! command -v git >/dev/null 2>&1; then
-    printf '%s' "$fallback"; return 0
-  fi
+  [ -n "$cwd" ] || { printf '%s' "$fallback"; return 0; }
+  command -v git >/dev/null 2>&1 || { printf '%s' "$fallback"; return 0; }
   local common
-  common=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null) || { printf '%s' "$fallback"; return 0; }
-  [ -z "$common" ] && { printf '%s' "$fallback"; return 0; }
+  common=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null) || {
+    printf '%s' "$fallback"
+    return 0
+  }
+  [ -n "$common" ] || { printf '%s' "$fallback"; return 0; }
   case "$common" in
     /*) ;;
     *) common="$cwd/$common" ;;
@@ -167,10 +201,565 @@ _memories_resolve_project() {
     local root
     root=$(CDPATH= cd "$(dirname "$common")" 2>/dev/null && pwd)
     if [ -n "$root" ] && [ "$root" != "/" ]; then
-      printf '%s' "$(basename "$root")"; return 0
+      printf '%s' "$(basename "$root")"
+      return 0
     fi
   fi
   printf '%s' "$fallback"
+}
+
+# -- Collaborative project declaration ---------------------------------------
+#
+# A repository declaration is an opt-in hint only.  It never grants access;
+# the authenticated backend principal below is still required.  Keep this
+# parser deliberately small and dependency-free because packaged hooks may be
+# copied away from the MCP npm install (and therefore cannot assume Node or
+# js-yaml is present).
+_memories_parse_project_yaml() {
+  local file="$1"
+  [ -f "$file" ] || {
+    jq -nc '{ok:false,reason:"missing",diagnostic:"no .memories/project.yaml at the repository boundary"}'
+    return 0
+  }
+
+  local project_id="" shared_memory="" seen_project=0 seen_shared=0 seen_any=0
+  local raw line key value
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    line="${raw%$'\r'}"
+    line=$(printf '%s' "$line" | sed 's/[[:space:]]*$//')
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    # Top-level scalar mappings only; nested YAML is not part of the contract.
+    case "$line" in
+      [[:space:]]*)
+        jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration must contain only top-level fields"}'
+        return 0
+        ;;
+    esac
+    if ! printf '%s' "$line" | grep -qE '^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*[^:]*([[:space:]]+#.*)?$'; then
+      jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration contains malformed YAML"}'
+      return 0
+    fi
+    key=$(printf '%s' "$line" | sed 's/:.*//')
+    value=$(printf '%s' "$line" | sed -E 's/^[^:]*:[[:space:]]*//;s/[[:space:]]*$//')
+    case "$value" in
+      \"*\"|\'*\' ) ;;
+      *) value=$(printf '%s' "$value" | sed -E 's/[[:space:]]+#.*$//;s/[[:space:]]*$//') ;;
+    esac
+    seen_any=1
+    case "$key" in
+      project_id)
+        [ "$seen_project" -eq 0 ] || {
+          jq -nc '{ok:false,reason:"malformed",diagnostic:"project_id is declared more than once"}'
+          return 0
+        }
+        seen_project=1
+        project_id="$value"
+        ;;
+      shared_memory)
+        [ "$seen_shared" -eq 0 ] || {
+          jq -nc '{ok:false,reason:"malformed",diagnostic:"shared_memory is declared more than once"}'
+          return 0
+        }
+        seen_shared=1
+        shared_memory="$value"
+        ;;
+      *)
+        jq -nc --arg key "$key" '{ok:false,reason:"unknown_field",diagnostic:("unknown project declaration field: " + $key)}'
+        return 0
+        ;;
+    esac
+  done < "$file"
+
+  [ "$seen_any" -eq 1 ] || {
+    jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration must be a YAML mapping"}'
+    return 0
+  }
+  if [ "$seen_project" -eq 0 ] || [ "$seen_shared" -eq 0 ]; then
+    jq -nc --arg missing "$( [ "$seen_project" -eq 0 ] && printf 'project_id' || true; [ "$seen_shared" -eq 0 ] && { [ "$seen_project" -eq 0 ] && printf ', '; printf 'shared_memory'; } )" \
+      '{ok:false,reason:"missing_field",diagnostic:("missing project declaration field: " + $missing)}'
+    return 0
+  fi
+  local project_quoted=0
+  case "$project_id" in
+    \"*\"|\'*\') project_quoted=1; project_id="${project_id:1:${#project_id}-2}" ;;
+  esac
+  case "$project_id" in
+    \[*|\{*)
+      jq -nc '{ok:false,reason:"malformed",diagnostic:"project declaration contains malformed YAML"}'
+      return 0
+      ;;
+  esac
+  if [ "$project_quoted" -eq 0 ] && {
+    case "$project_id" in
+      true|True|TRUE|false|False|FALSE|null|Null|NULL|~) true ;;
+      *) printf '%s' "$project_id" | grep -qE '^[0-9]+$' ;;
+    esac
+  }; then
+    jq -nc '{ok:false,reason:"invalid_project_id",diagnostic:"project_id must be a lowercase path-safe slug"}'
+    return 0
+  fi
+  if ! printf '%s' "$project_id" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'; then
+    jq -nc '{ok:false,reason:"invalid_project_id",diagnostic:"project_id must be a lowercase path-safe slug"}'
+    return 0
+  fi
+  case "$shared_memory" in
+    true|True|TRUE|'!!bool true'|'!!bool True'|'!!bool TRUE') ;;
+    *)
+    jq -nc '{ok:false,reason:"shared_memory_not_true",diagnostic:"shared_memory must be the YAML boolean true"}'
+    return 0
+    ;;
+  esac
+  jq -nc --arg id "$project_id" '{ok:true,projectId:$id,project_id:$id,sharedMemory:true,shared_memory:true}'
+}
+
+_memories_project_file() {
+  local cwd="${1:-}"
+  local root
+  root=$(_memories_resolve_repo_root "$cwd" 2>/dev/null) || return 1
+  local file="$root/.memories/project.yaml"
+  [ -f "$file" ] || return 1
+  printf '%s' "$file"
+}
+
+# Determine declaration presence from the context result already computed by
+# the hook.  This avoids resolving the repository root and parsing project.yaml
+# a second time on every invocation while preserving fail-closed behavior for
+# a valid declaration whose backend identity is unavailable.
+_memories_project_context_declared() {
+  local context="${1:-}" active reason
+  [ -n "$context" ] || context='{}'
+  active=$(printf '%s' "$context" | jq -r '.active // false' 2>/dev/null) || return 1
+  [ "$active" = "true" ] && return 0
+  reason=$(printf '%s' "$context" | jq -r '.reason // "missing"' 2>/dev/null) || return 1
+  case "$reason" in
+    missing|malformed|unreadable|unknown_field|missing_field|invalid_project_id|shared_memory_not_true)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+_memories_project_backends_file() {
+  local root="${1:-}"
+  if [ -n "${MEMORIES_BACKENDS_FILE:-}" ]; then
+    [ -f "$MEMORIES_BACKENDS_FILE" ] || return 1
+    printf '%s' "$MEMORIES_BACKENDS_FILE"
+    return 0
+  fi
+  if [ -n "$root" ] && [ -f "$root/.memories/backends.yaml" ]; then
+    printf '%s' "$root/.memories/backends.yaml"
+    return 0
+  fi
+  if [ -f "$HOME/.config/memories/backends.yaml" ]; then
+    printf '%s' "$HOME/.config/memories/backends.yaml"
+    return 0
+  fi
+  return 1
+}
+
+# Validate the small mapping grammar accepted by the strict project-context
+# view.  The normal _parse_backends_yaml loader intentionally remains
+# permissive for legacy routing; this guard prevents an ignored sequence,
+# malformed indentation, or unsupported flow value from activating project
+# mode merely because the permissive loader found one backend entry.
+_memories_validate_project_backend_yaml() {
+  awk '
+    function trim(s) {
+      sub(/\r$/, "", s)
+      sub(/[[:space:]]+$/, "", s)
+      return s
+    }
+    function fail() { exit 1 }
+    {
+      line = trim($0)
+      if (line == "" || line ~ /^[[:space:]]*#/) next
+      if (line ~ /\t/) fail()
+
+      # Section headers are the only top-level mappings supported here.
+      if (line ~ /^backends:[[:space:]]*(\{\}|#.*)?$/) {
+        if (seen_backends++) fail()
+        section = "backends"
+        have_backend = 0
+        next
+      }
+      if (line ~ /^routing:[[:space:]]*(\{\}|#.*)?$/) {
+        if (!seen_backends || seen_routing++) fail()
+        section = "routing"
+        route = ""
+        next
+      }
+
+      if (section == "backends") {
+        if (line ~ /^  [A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*(#.*)?$/) {
+          have_backend = 1
+          next
+        }
+        if (line ~ /^    (url|api_key|scenario):[[:space:]]*(.*)$/) {
+          if (!have_backend) fail()
+          value = line
+          sub(/^    (url|api_key|scenario):[[:space:]]*/, "", value)
+          # Values are scalar strings. Flow collections and block scalars are
+          # deliberately outside the supported hook grammar.
+          if (value ~ /^[\[\{>|]/) fail()
+          next
+        }
+        fail()
+      }
+
+      if (section == "routing") {
+        if (line ~ /^  [A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*(.*)$/) {
+          route = line
+          sub(/^  [A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*/, "", route)
+          if (route == "" || route ~ /^#/) next
+          if (route !~ /^\[[[:space:]]*([A-Za-z_][A-Za-z0-9_-]*([[:space:]]*,[[:space:]]*[A-Za-z_][A-Za-z0-9_-]*)*)?[[:space:]]*\]([[:space:]]+#.*)?$/) fail()
+          next
+        }
+        if (line ~ /^    -[[:space:]]+[A-Za-z_][A-Za-z0-9_-]*([[:space:]]+#.*)?$/) {
+          if (route == "") fail()
+          next
+        }
+        fail()
+      }
+
+      fail()
+    }
+    END { if (section == "") exit 1 }
+  ' "$1" >/dev/null 2>&1
+}
+
+# Strict backend view for collaborative activation.  Legacy _load_backends
+# intentionally keeps its env/localhost fallback for ordinary fan-out; this
+# helper never turns an absent or malformed project config into a host probe.
+_memories_project_backend_config() {
+  local cwd="${1:-}" file="" first="" rhs="" raw=""
+  # Use the exact resolver consumed by _load_backends.  Project declaration
+  # lookup may use the main repository root for worktrees, but backend
+  # identity must bind to the same cwd/override precedence as real requests.
+  file=$(_resolve_backends_file "$cwd" 2>/dev/null) || {
+    if [ -n "${MEMORIES_URL:-}" ]; then
+      jq -nc --arg url "$MEMORIES_URL" --arg key "${MEMORIES_API_KEY:-}" \
+        '{backends:[{name:"default",url:$url,api_key:$key,api_key_env:"MEMORIES_API_KEY",env_backed:true,scenario:""}],config_origin:"environment"}'
+    else
+      jq -nc '{backends:[],error:{reason:"no_backends",diagnostic:"no backend configuration is available"}}'
+    fi
+    return 0
+  }
+
+  first=$(awk '
+    /^[[:space:]]*($|#)/ { next }
+    { print; exit }
+  ' "$file" 2>/dev/null)
+  case "$first" in
+    true|false|null|~|\[*|\{*)
+      jq -nc '{backends:[],error:{reason:"backend_config_invalid",diagnostic:"backend configuration must be a YAML mapping"}}'
+      return 0
+      ;;
+  esac
+  if ! printf '%s\n' "$first" | grep -qE '^backends:'; then
+    jq -nc '{backends:[],error:{reason:"no_backends",diagnostic:"backend configuration does not define any backends"}}'
+    return 0
+  fi
+  if ! _memories_validate_project_backend_yaml "$file"; then
+    jq -nc '{backends:[],error:{reason:"backend_config_invalid",diagnostic:"backend configuration contains unsupported or malformed YAML"}}'
+    return 0
+  fi
+  rhs=$(printf '%s' "$first" | sed -E 's/^backends:[[:space:]]*//;s/[[:space:]]*$//')
+  case "$rhs" in
+    ""|\{\}) ;;
+    \[*|true|false|null|~|[0-9]*)
+      jq -nc '{backends:[],error:{reason:"backend_config_invalid",diagnostic:"backend configuration backends must be a YAML mapping"}}'
+      return 0
+      ;;
+  esac
+
+  raw=$(_parse_backends_yaml "$file" 2>/dev/null) || raw=""
+  if [ -z "$raw" ] || ! printf '%s' "$raw" | jq -e '(.backends | type == "array") and (.routing | type == "object")' >/dev/null 2>&1; then
+    jq -nc '{backends:[],error:{reason:"backend_config_invalid",diagnostic:"backend configuration is malformed"}}'
+    return 0
+  fi
+  printf '%s' "$raw" | jq -c --arg origin "$file" '{backends:(.backends // []),config_origin:$origin}'
+}
+
+_memories_project_context() {
+  local cwd="${1:-${CWD:-$PWD}}"
+  local file parsed
+  file=$(_memories_project_file "$cwd" 2>/dev/null) || {
+    jq -nc '{active:false,reason:"missing",diagnostic:"no .memories/project.yaml at the repository boundary"}'
+    return 0
+  }
+  parsed=$(_memories_parse_project_yaml "$file")
+  if [ "$(printf '%s' "$parsed" | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
+    printf '%s' "$parsed" | jq -c '{active:false,reason:(.reason // "malformed"),diagnostic:(.diagnostic // "invalid project declaration")}'
+    return 0
+  fi
+
+  # Load exactly the backend set the hooks already use for this payload cwd.
+  # This function runs in command-substitution scope, so its temporary cache
+  # cannot alter the caller's legacy routing state.
+  local project_config backends count backend url key response http_status body identity principal config_origin call_budget
+  project_config=$(_memories_project_backend_config "$cwd" 2>/dev/null) || project_config='{"backends":[]}'
+  if [ "$(printf '%s' "$project_config" | jq -r '.error.reason // empty' 2>/dev/null)" ]; then
+    printf '%s' "$project_config" | jq -c '{active:false,reason:.error.reason,diagnostic:.error.diagnostic}'
+    return 0
+  fi
+  backends=$(printf '%s' "$project_config" | jq -c '.backends // []' 2>/dev/null) || backends="[]"
+  count=$(printf '%s' "$backends" | jq 'length' 2>/dev/null) || count=0
+  if [ "$count" -eq 0 ]; then
+    jq -nc '{active:false,reason:"no_backends",diagnostic:"no backend configuration is available"}'
+    return 0
+  fi
+  if [ "$count" -ne 1 ]; then
+    jq -nc --arg diag "collaborative project mode requires exactly one configured backend (found $count)" \
+      '{active:false,reason:"multiple_backends",diagnostic:$diag}'
+    return 0
+  fi
+  backend=$(printf '%s' "$backends" | jq -c '.[0]')
+  config_origin=$(printf '%s' "$project_config" | jq -r '.config_origin // empty' 2>/dev/null || true)
+  url=$(printf '%s' "$backend" | jq -r '.url // empty')
+  key=$(printf '%s' "$backend" | jq -r '.api_key // .apiKey // empty')
+  [ -n "$url" ] || {
+    jq -nc '{active:false,reason:"principal_unreachable",diagnostic:"the configured backend cannot be reached"}'
+    return 0
+  }
+
+  call_budget=2
+  if declare -F _hook_call_budget >/dev/null 2>&1; then
+    call_budget=$(_hook_call_budget 2) || {
+      jq -nc '{active:false,reason:"budget_exhausted",diagnostic:"hook budget exhausted before authenticated principal lookup"}'
+      return 0
+    }
+  fi
+  if [ -n "$key" ]; then
+    response=$(curl -sS --max-time "$call_budget" -H "X-API-Key: $key" -w $'\n%{http_code}' "${url%/}/api/keys/me" 2>/dev/null) || response=""
+  else
+    response=$(curl -sS --max-time "$call_budget" -w $'\n%{http_code}' "${url%/}/api/keys/me" 2>/dev/null) || response=""
+  fi
+  http_status=$(printf '%s\n' "$response" | tail -n 1)
+  body=$(printf '%s\n' "$response" | sed '$d')
+  case "$http_status" in
+    2??) ;;
+    401)
+      local backend_name api_key_env env_backed
+      backend_name=$(printf '%s' "$backend" | jq -r '.name // "default"')
+      api_key_env=$(printf '%s' "$backend" | jq -r '.api_key_env // empty')
+      env_backed=$(printf '%s' "$backend" | jq -r '.env_backed // false')
+      jq -nc --arg diag "authenticated principal lookup returned HTTP 401" \
+        --arg name "$backend_name" --arg url "$url" --arg api_key_env "$api_key_env" \
+        --argjson env_backed "$env_backed" \
+        '{active:false,reason:"principal_unauthorized",diagnostic:$diag,auth_failed:true,auth_failed_backends:[{name:$name,url:$url,api_key_env:$api_key_env,env_backed:$env_backed}]}'
+      return 0
+      ;;
+    *) jq -nc --arg diag "authenticated principal lookup returned HTTP ${http_status:-unknown}" '{active:false,reason:"principal_unreachable",diagnostic:$diag}'; return 0 ;;
+  esac
+  identity=$(printf '%s' "$body" | jq -c . 2>/dev/null) || {
+    jq -nc '{active:false,reason:"principal_unreachable",diagnostic:"authenticated principal lookup returned invalid JSON"}'
+    return 0
+  }
+  case "$(printf '%s' "$identity" | jq -r '.type // empty')" in
+    managed) ;;
+    env|none) jq -nc '{active:false,reason:"env_principal",diagnostic:"environment or unconfigured admin identity cannot activate collaborative mode"}'; return 0 ;;
+    *) jq -nc '{active:false,reason:"invalid_principal_type",diagnostic:"authenticated principal lookup did not return a managed principal"}'; return 0 ;;
+  esac
+  principal=$(printf '%s' "$identity" | jq -r '.principal_id // empty')
+  if [ -z "$principal" ]; then
+    jq -nc '{active:false,reason:"missing_principal",diagnostic:"authenticated backend response did not include principal_id"}'
+    return 0
+  fi
+  if ! printf '%s' "$principal" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'; then
+    jq -nc '{active:false,reason:"invalid_principal",diagnostic:"authenticated principal_id must be a lowercase path-safe slug"}'
+    return 0
+  fi
+  local project_id identity_prefixes legacy_prefixes prefixes_unrestricted
+  project_id=$(printf '%s' "$parsed" | jq -r '.project_id')
+  local backend_name
+  backend_name=$(printf '%s' "$backend" | jq -r '.name // "default"')
+  prefixes_unrestricted=$(printf '%s' "$identity" | jq -r '(.role == "admin") or (.prefixes == null)' 2>/dev/null || printf 'false')
+  if [ "$prefixes_unrestricted" = "true" ]; then
+    identity_prefixes='[]'
+  else
+    if ! printf '%s' "$identity" | jq -e '(.prefixes | type == "array") and all(.prefixes[]; type == "string")' >/dev/null 2>&1; then
+      jq -nc '{active:false,reason:"invalid_prefixes",diagnostic:"authenticated principal lookup returned invalid source prefixes"}'
+      return 0
+    fi
+    identity_prefixes=$(printf '%s' "$identity" | jq -c '.prefixes')
+  fi
+  legacy_prefixes=$(printf '%s' "$identity_prefixes" | jq -c --arg project "$project_id" '
+    reduce .[]? as $raw ([ ];
+      ($raw | if type == "string" then (gsub("^[[:space:]]+|[[:space:]]+$"; "") | gsub("\\{project\\}"; $project)) else "" end) as $prefix
+      | if ($prefix == "" or ($prefix | contains("*")) or ($prefix | endswith("/"))) then .
+        else ($prefix | split("/")) as $parts
+        | if (($parts | length) >= 2 and $parts[1] == $project and $parts[0] != "project" and $parts[0] != "person") then
+            if any(.[]; . as $existing | ($prefix == $existing or ($prefix | startswith($existing + "/")))) then .
+            else ([.[] | select((. | startswith($prefix + "/")) | not)] + [$prefix])
+            end
+          else . end
+        end
+    )
+  ' 2>/dev/null || printf '[]')
+  jq -nc --arg project "$project_id" --arg principal "$principal" --arg backend "$backend_name" \
+    --arg url "$url" --arg origin "$config_origin" --argjson prefixes "$identity_prefixes" --argjson unrestricted "$prefixes_unrestricted" --argjson legacy "$legacy_prefixes" \
+    '{active:true,reason:"active",projectId:$project,project_id:$project,principalId:$principal,principal_id:$principal,sharedMemory:true,shared_memory:true,backend:$backend,backend_name:$backend,backend_url:$url,config_origin:$origin,prefixes:$prefixes,prefixes_unrestricted:$unrestricted,legacy_source_prefixes:$legacy}'
+}
+
+_memories_project_unavailable_message() {
+  local context="${1:-}" reason labels env_refs env_only
+  [ -n "$context" ] || context='{}'
+  reason=$(printf '%s' "$context" | jq -r '.reason // "unknown"' 2>/dev/null) || reason="unknown"
+  case "$reason" in
+    principal_unauthorized)
+      labels=$(printf '%s' "$context" | jq -r '[.auth_failed_backends[]? | "\(.name) (\(.url))"] | join(", ")' 2>/dev/null)
+      env_refs=$(printf '%s' "$context" | jq -r '[.auth_failed_backends[]? | select((.env_backed // false) != true and (.api_key_env // "") != "") | .api_key_env] | unique | join(", ")' 2>/dev/null)
+      env_only=$(printf '%s' "$context" | jq -r '(.auth_failed_backends | length) > 0 and all(.auth_failed_backends[]; ((.name // "") == "default") and ((.env_backed // false) == true))' 2>/dev/null)
+      if [ "$env_only" = "true" ]; then
+        printf 'Memories project backend(s) %s rejected the API key. Set MEMORIES_API_KEY; collaborative recall/search is unavailable.' "$labels"
+      elif [ -n "$env_refs" ]; then
+        printf 'Memories project backend(s) %s rejected the API key. Update the configured api_key or referenced environment variable(s) %s; collaborative recall/search is unavailable.' "$labels" "$env_refs"
+      else
+        printf 'Memories project backend(s) %s rejected the API key. Update the configured api_key; collaborative recall/search is unavailable.' "$labels"
+      fi
+      ;;
+    budget_exhausted)
+      printf 'Memories project identity lookup was skipped because the hook budget exhausted before the request; collaborative recall/search is unavailable for this invocation.'
+      ;;
+    *)
+      printf 'Collaborative project memory is unavailable: %s' "$(printf '%s' "$context" | jq -r '.diagnostic // .reason // "unknown error"' 2>/dev/null)"
+      ;;
+  esac
+}
+
+_memories_project_recall_prefixes() {
+  local project="${1:-}" principal="${2:-}" configured="${3:-}" identity_prefixes="${4:-[]}" unrestricted="${5:-true}" raw prefix existing duplicate desired_json
+  local -a prefixes=() configured_prefixes=()
+  [ -n "$project" ] && prefixes+=("project/$project")
+  [ -n "$project" ] && [ -n "$principal" ] && prefixes+=("person/$principal/$project")
+  if [ -n "$configured" ]; then
+    IFS=',' read -r -a configured_prefixes <<< "$configured"
+    for raw in "${configured_prefixes[@]}"; do
+      prefix=$(printf '%s' "$raw" | xargs)
+      [ -z "$prefix" ] && continue
+      prefix="${prefix//\{project\}/$project}"
+      # Collaborative mode owns the exact project and person namespaces.  A
+      # trailing slash is a legacy family prefix, not an exact-project prefix.
+      case "$prefix" in
+        project/*|person/*|*/|*\*) continue ;;
+      esac
+      # Retain an explicitly authorized descendant of this legacy project,
+      # while rejecting family prefixes and other projects.
+      case "$prefix" in
+        */"$project"|*/"$project"/*) ;;
+        *) continue ;;
+      esac
+      duplicate=0
+      for existing in "${prefixes[@]}"; do
+        [ "$existing" = "$prefix" ] && duplicate=1 && break
+      done
+      [ "$duplicate" -eq 0 ] && prefixes+=("$prefix")
+    done
+  fi
+  if [ "$unrestricted" = "true" ]; then
+    printf '%s\n' "${prefixes[@]}"
+    return 0
+  fi
+  desired_json=$(printf '%s\n' "${prefixes[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))') || return 0
+  jq -nr --arg project "$project" --argjson desired "$desired_json" --argjson authorized "$identity_prefixes" '
+    def normalize:
+      if type != "string" then ""
+      else
+        gsub("^[[:space:]]+|[[:space:]]+$"; "")
+        | gsub("\\{project\\}"; $project)
+        | if endswith("/*") then .[0:-2] else . end
+        | gsub("/+$"; "")
+        | if . == "" or (split("/") | index("..") != null) then "" else . end
+      end;
+    reduce $desired[] as $scope ([ ];
+      reduce $authorized[] as $raw (.;
+        ($raw | normalize) as $prefix
+        | (if $prefix == "" then ""
+           elif $scope == $prefix or ($scope | startswith($prefix + "/")) then $scope
+           elif ($prefix | startswith($scope + "/")) then $prefix
+           else ""
+           end) as $candidate
+        | if $candidate == "" or any(.[];
+              . as $existing
+              | ($candidate == $existing or ($candidate | startswith($existing + "/"))))
+          then .
+          else ([.[] | select((. | startswith($candidate + "/")) | not)] + [$candidate])
+          end
+      )
+    )
+    | .[]
+  ' 2>/dev/null
+}
+
+_memories_project_extract_source() {
+  local active="${1:-false}" project="${2:-}" principal="${3:-}"
+  [ "$active" = "true" ] || return 1
+  [ -n "$project" ] && [ -n "$principal" ] || return 1
+  printf 'person/%s/%s/knowledge\n' "$principal" "$project"
+}
+
+_memories_filter_search_response_for_prefix() {
+  local prefix="${1:-}"
+  jq -c --arg prefix "$prefix" '
+    (.results // []) as $results
+    | .results = ($results | map(select(
+        ((.source // "") == $prefix)
+        or ((.source // "") | startswith($prefix + "/"))
+      )))
+    | .count = (.results | length)
+  '
+}
+
+_memories_merge_search_results() {
+  local ordered="${1:-false}" limit="${2:-6}"
+  if [ "$ordered" = "true" ]; then
+    jq -sr --argjson limit "$limit" '
+      def dedup_key:
+        if (.id? != null) then ["id", .id, (.source // "")]
+        else ["text", (.text // ""), "source", (.source // "")]
+        end;
+      map(select(type == "object") | (.results // [])) | add // []
+      | reduce .[] as $item ([];
+          if any(.[]; dedup_key == ($item | dedup_key)) then . else . + [$item] end
+        )
+      | .[0:$limit]
+    '
+  else
+    jq -sr --argjson limit "$limit" '
+      def dedup_key:
+        if (.id? != null) then ["id", .id, (.source // "")]
+        else ["text", (.text // ""), "source", (.source // "")]
+        end;
+      map(select(type == "object") | (.results // [])) | add // []
+      | reduce .[] as $item ([];
+          if any(.[]; dedup_key == ($item | dedup_key)) then . else . + [$item] end
+        )
+      | sort_by(-(.similarity // .rrf_score // 0)) | .[0:$limit]
+    '
+  fi
+}
+
+_memories_label_project_results() {
+  local project="${1:-}"
+  jq -c --arg project "$project" '
+    def clean_provenance:
+      tostring
+      | gsub("[[:cntrl:]]"; " ")
+      | gsub("[[:space:]]+"; " ")
+      | .[0:80];
+    map(
+      if ((.source // "") | startswith("project/" + $project + "/")) then
+        . + {provenance_label: ([
+          if (.author // "") != "" then "author=" + (.author | clean_provenance) else empty end,
+          if (.origin_client // "") != "" then "origin-client=" + (.origin_client | clean_provenance) else empty end
+        ] | if length > 0 then "[" + join(", ") + "]" else "" end)}
+      else . end
+    )
+  '
 }
 
 _memories_disabled() {
@@ -619,6 +1208,47 @@ _health_check() {
 
 _BACKENDS_CACHE=""
 
+# Normalize the simple scalar subset accepted by the strict backends.yaml
+# validator. Comments start only at an unquoted # preceded by whitespace;
+# matching outer quotes are removed after comment stripping.
+_memories_yaml_scalar() {
+  printf '%s\n' "${1:-}" | awk '
+    {
+      value = $0
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      single_quote = sprintf("%c", 39)
+      double_quote = sprintf("%c", 34)
+      quote = ""
+      output = ""
+      previous = ""
+      for (i = 1; i <= length(value); i++) {
+        character = substr(value, i, 1)
+        if (quote == "") {
+          if (character == single_quote || character == double_quote) {
+            quote = character
+          } else if (character == "#" && previous ~ /[[:space:]]/) {
+            break
+          }
+        } else if (character == quote) {
+          quote = ""
+        }
+        output = output character
+        previous = character
+      }
+      sub(/[[:space:]]+$/, "", output)
+      if (length(output) >= 2) {
+        first = substr(output, 1, 1)
+        last = substr(output, length(output), 1)
+        if ((first == single_quote || first == double_quote) && last == first) {
+          output = substr(output, 2, length(output) - 2)
+        }
+      }
+      print output
+    }
+  '
+}
+
 # Pure-shell YAML parser for backends.yaml — handles the simple flat format only.
 # Supports: backends.<name>.url, backends.<name>.api_key, backends.<name>.scenario,
 # and routing.<op>: [name1, name2].
@@ -664,13 +1294,13 @@ _parse_backends_yaml() {
       fi
       # Properties (4-space indent)
       if printf '%s' "$line" | grep -qE '^    url:'; then
-        url=$(printf '%s' "$line" | sed 's/^    url: *//;s/^ *//;s/ *$//')
+        url=$(_memories_yaml_scalar "$(printf '%s' "$line" | sed 's/^    url: *//')")
       fi
       if printf '%s' "$line" | grep -qE '^    api_key:'; then
-        api_key=$(printf '%s' "$line" | sed 's/^    api_key: *//;s/^ *//;s/ *$//')
+        api_key=$(_memories_yaml_scalar "$(printf '%s' "$line" | sed 's/^    api_key: *//')")
       fi
       if printf '%s' "$line" | grep -qE '^    scenario:'; then
-        scenario=$(printf '%s' "$line" | sed 's/^    scenario: *//;s/^ *//;s/ *$//')
+        scenario=$(_memories_yaml_scalar "$(printf '%s' "$line" | sed 's/^    scenario: *//')")
       fi
     fi
 
@@ -911,8 +1541,13 @@ _search_memories_multi() {
 
   local body
   if [ -n "$prefix" ]; then
-    body=$(jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
-      '{query: $q, source_prefix: $p, k: $k, hybrid: true, threshold: $t}')
+    if [ "${PROJECT_CONTEXT_ACTIVE:-false}" = "true" ]; then
+      body=$(jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
+        '{query: $q, source_prefix: $p, source_boundary: true, k: $k, hybrid: true, threshold: $t}')
+    else
+      body=$(jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
+        '{query: $q, source_prefix: $p, k: $k, hybrid: true, threshold: $t}')
+    fi
   else
     body=$(jq -nc --arg q "$query" --argjson k "$limit" --argjson t "$threshold" \
       '{query: $q, k: $k, hybrid: true, threshold: $t}')

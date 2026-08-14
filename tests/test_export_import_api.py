@@ -8,6 +8,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from auth_context import AuthContext
+from project_memory import ProjectMemoryPolicyError
+
 
 @pytest.fixture
 def mock_engine():
@@ -138,3 +141,39 @@ class TestImportEndpoint:
         call_kwargs = mock_engine.import_memories.call_args
         # create_backup should be False
         assert "create_backup=False" in str(call_kwargs) or call_kwargs[1].get("create_backup") is False
+
+    def test_import_passes_managed_trusted_authorship(self, client, monkeypatch):
+        test_client, mock_engine = client
+        import app as app_module
+
+        monkeypatch.setattr(
+            app_module,
+            "_get_auth",
+            lambda request: AuthContext(
+                role="read-write",
+                prefixes=["project/demo/"],
+                key_type="managed",
+                principal_id="alice",
+            ),
+        )
+        body = "\n".join([
+            json.dumps({"_header": True}),
+            json.dumps({"text": "decision", "source": "project/demo/decisions"}),
+        ])
+        response = test_client.post("/import?strategy=add", content=body)
+
+        assert response.status_code == 200
+        trusted = mock_engine.import_memories.call_args.kwargs["trusted_authorship"]
+        assert trusted.author == "alice"
+
+    def test_import_project_policy_error_is_422(self, client):
+        test_client, mock_engine = client
+        mock_engine.import_memories.side_effect = ProjectMemoryPolicyError("project policy")
+        body = "\n".join([
+            json.dumps({"_header": True}),
+            json.dumps({"text": "decision", "source": "project/demo/decisions"}),
+        ])
+
+        response = test_client.post("/import?strategy=add", content=body)
+
+        assert response.status_code == 422

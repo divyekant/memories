@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [5.15.0] - 2026-08-13
+
+### Added
+- **Shared project memory (Phase 1).** A strict repository declaration,
+  managed principal identities, and server-authoritative authorship now let
+  collaborators share `project/<project>/<kind>` memories while automatic
+  extraction stays private under `person/<principal>/<project>/knowledge`.
+  Claude Code and Codex recall project, current-person, then explicitly
+  authorized legacy prefixes from one authenticated backend.
+
+### Changed
+- **Project boundaries fail closed.** Add-like MCP tools share one project
+  identity gate; malformed declarations, ambiguous backends, invalid reserved
+  sources, cross-owner/project replacements, extraction updates, dedup,
+  supersede, import, conflict resolution, and consolidation cannot cross a
+  person or project policy domain. Legacy client sources retain historical
+  cross-client duplicate detection and consolidation.
+
+### Documentation
+- Added the shared-memory administration playbook and architecture decision,
+  including key creation/revocation, isolation probes, explicit sharing,
+  malformed historical-source migration, and Phase 1 non-goals.
+
 ## [5.14.0] - 2026-08-13
 
 ### Changed

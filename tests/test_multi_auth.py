@@ -69,12 +69,19 @@ class TestEnvKeyFallback:
 class TestManagedKeys:
     def test_managed_key_authenticates(self, app_with_keys):
         client, _, ks = app_with_keys
-        created = ks.create_key(name="test", role="read-write", prefixes=["test/*"])
+        created = ks.create_key(
+            name="Display Name",
+            role="read-write",
+            prefixes=["test/*"],
+            principal_id="person-a",
+        )
         resp = client.get("/api/keys/me", headers={"X-API-Key": created["key"]})
         assert resp.status_code == 200
         body = resp.json()
         assert body["role"] == "read-write"
         assert body["type"] == "managed"
+        assert body["name"] == "Display Name"
+        assert body["principal_id"] == "person-a"
 
     def test_revoked_key_returns_401(self, app_with_keys):
         client, _, ks = app_with_keys
@@ -115,6 +122,29 @@ class TestPrefixFilteringOnSearch:
         )
         assert resp.status_code == 200
         assert len(resp.json()["results"]) == 2
+
+    def test_search_rejects_disallowed_source_prefix_union(self, app_with_keys):
+        client, mock_engine, key_store = app_with_keys
+        created = key_store.create_key(
+            name="scoped",
+            role="read-only",
+            prefixes=["project/shared/decisions"],
+        )
+
+        resp = client.post(
+            "/search",
+            json={
+                "query": "decision",
+                "source_prefixes": [
+                    "project/shared/decisions",
+                    "project/shared/knowledge",
+                ],
+            },
+            headers={"X-API-Key": created["key"]},
+        )
+
+        assert resp.status_code == 403
+        mock_engine.hybrid_search.assert_not_called()
 
 
 class TestReadOnlyEnforcement:
@@ -203,14 +233,68 @@ class TestKeyManagementAPI:
         client, _, _ = app_with_keys
         resp = client.post(
             "/api/keys",
-            json={"name": "new-key", "role": "read-write", "prefixes": ["test/*"]},
+            json={
+                "name": "New Display Name",
+                "principal_id": "person-b",
+                "role": "read-write",
+                "prefixes": ["test/*"],
+            },
             headers={"X-API-Key": "admin-env-key"},
         )
         assert resp.status_code == 200
         body = resp.json()
         assert body["key"].startswith("mem_")
-        assert body["name"] == "new-key"
+        assert body["name"] == "New Display Name"
         assert body["role"] == "read-write"
+        assert body["principal_id"] == "person-b"
+
+    def test_key_name_update_does_not_change_principal_id(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(
+            name="Original Display Name",
+            role="read-write",
+            prefixes=["test/*"],
+            principal_id="person-c",
+        )
+        resp = client.patch(
+            f"/api/keys/{created['id']}",
+            json={"name": "Renamed Display Name"},
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert resp.status_code == 200
+        me = client.get("/api/keys/me", headers={"X-API-Key": created["key"]})
+        assert me.status_code == 200
+        assert me.json()["name"] == "Renamed Display Name"
+        assert me.json()["principal_id"] == "person-c"
+
+    def test_missing_principal_is_exposed_and_can_be_assigned(self, app_with_keys):
+        client, _, key_store = app_with_keys
+        created = key_store.create_key(
+            name="Display Name",
+            role="read-write",
+            prefixes=["test/*"],
+        )
+
+        before = client.get("/api/keys/me", headers={"X-API-Key": created["key"]})
+        assert before.status_code == 200
+        assert before.json().get("principal_id") is None
+
+        patched = client.patch(
+            f"/api/keys/{created['id']}",
+            json={"principal_id": "assigned-person"},
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert patched.status_code == 200
+
+        after = client.get("/api/keys/me", headers={"X-API-Key": created["key"]})
+        assert after.status_code == 200
+        assert after.json()["principal_id"] == "assigned-person"
+
+    def test_env_admin_has_no_principal_id(self, app_with_keys):
+        client, _, _ = app_with_keys
+        resp = client.get("/api/keys/me", headers={"X-API-Key": "admin-env-key"})
+        assert resp.status_code == 200
+        assert "principal_id" not in resp.json()
 
     def test_create_key_without_admin_returns_403(self, app_with_keys):
         client, _, key_store = app_with_keys
@@ -224,7 +308,12 @@ class TestKeyManagementAPI:
 
     def test_list_keys_with_admin(self, app_with_keys):
         client, _, key_store = app_with_keys
-        key_store.create_key(name="k1", role="read-only", prefixes=["a/*"])
+        created = key_store.create_key(
+            name="k1",
+            role="read-only",
+            prefixes=["a/*"],
+            principal_id="person-list",
+        )
         resp = client.get("/api/keys", headers={"X-API-Key": "admin-env-key"})
         assert resp.status_code == 200
         body = resp.json()
@@ -232,6 +321,8 @@ class TestKeyManagementAPI:
         # Ensure raw key is NOT in list response
         for k in body["keys"]:
             assert "key" not in k
+        listed = next(k for k in body["keys"] if k["id"] == created["id"])
+        assert listed["principal_id"] == "person-list"
 
     def test_list_keys_without_admin_returns_403(self, app_with_keys):
         client, _, key_store = app_with_keys
@@ -258,6 +349,15 @@ class TestKeyManagementAPI:
             headers={"X-API-Key": "admin-env-key"},
         )
         assert resp.status_code == 200
+
+    def test_update_key_rejects_malformed_principal_as_validation_error(self, app_with_keys):
+        client, _, _ = app_with_keys
+        resp = client.patch(
+            "/api/keys/not-a-real-key",
+            json={"principal_id": "Not A Slug"},
+            headers={"X-API-Key": "admin-env-key"},
+        )
+        assert resp.status_code == 422
 
     def test_revoke_nonexistent_returns_404(self, app_with_keys):
         client, _, _ = app_with_keys

@@ -57,3 +57,19 @@ def test_different_entities_parallel():
     # Parallel lock domains should complete near single-sleep duration.
     assert elapsed < 0.18
 
+
+def test_same_thread_can_reenter_entity_lock_for_composed_writes():
+    manager = EntityLockManager()
+    completed = threading.Event()
+
+    def worker():
+        with manager.acquire_many(["default:project/acme/decisions"]):
+            with manager.acquire_many(["default:project/acme/decisions"]):
+                completed.set()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout=0.5)
+
+    assert completed.is_set()
+    assert not thread.is_alive()

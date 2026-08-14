@@ -53,6 +53,11 @@ def test_dockerfile_copies_evidence_packet_module() -> None:
     assert "COPY evidence_packet.py ." in dockerfile
 
 
+def test_dockerfile_copies_project_memory_policy_module() -> None:
+    dockerfile = _read("Dockerfile")
+    assert "COPY project_memory.py ." in dockerfile
+
+
 def test_compose_healthchecks_use_python_probe() -> None:
     for compose_file in ("docker-compose.yml", "docker-compose.snippet.yml"):
         contents = _read(compose_file)

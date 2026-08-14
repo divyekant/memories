@@ -11,6 +11,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+from project_memory import TrustedAuthorship, is_reserved_namespace_source
+
 logger = logging.getLogger(__name__)
 
 CONSOLIDATION_PROMPT = """These {n} memories are about the same topic in the {project} project.
@@ -97,7 +99,13 @@ def find_clusters(
         # for. hybrid_search returns RRF rank-fusion scores structurally
         # bounded near 1/60, so comparing those against 0.75 meant no cluster
         # could ever form.
+        seed_source = mem.get("source", "")
         search_kwargs = {"query": mem["text"], "k": 10}
+        # Structured records are exact isolation domains. Legacy client
+        # sources keep historical cross-client consolidation, but may never
+        # absorb a reserved person/project record.
+        if is_reserved_namespace_source(seed_source):
+            search_kwargs["source_exact"] = seed_source
         if source_prefix:
             search_kwargs["source_prefix"] = source_prefix
         similar = engine.search(**search_kwargs)
@@ -114,6 +122,12 @@ def find_clusters(
             if hit_id in clustered_ids:
                 continue
             if hit.get("pinned") or hit.get("archived"):
+                continue
+            hit_source = hit.get("source", "")
+            if is_reserved_namespace_source(seed_source):
+                if hit_source != seed_source:
+                    continue
+            elif is_reserved_namespace_source(hit_source):
                 continue
             score = hit.get("similarity", 0.0)
             if score >= similarity_threshold:
@@ -170,6 +184,18 @@ def consolidate_cluster(
         Dict with merged_count, new_count, old_ids, new_texts, dry_run.
     """
     old_ids = [m["id"] for m in cluster]
+    sources = {m.get("source", "") for m in cluster}
+    if len(sources) > 1 and any(
+        is_reserved_namespace_source(source) for source in sources
+    ):
+        return {
+            "merged_count": 0,
+            "new_count": 0,
+            "old_ids": old_ids,
+            "new_texts": [],
+            "dry_run": dry_run,
+            "skipped_reason": "cluster contains structured memories from multiple exact sources",
+        }
     protected = [m["id"] for m in cluster if m.get("pinned") or m.get("archived")]
     if protected:
         return {
@@ -232,21 +258,46 @@ def consolidate_cluster(
             {"category": category, "consolidated_from": old_ids}
             for _ in new_texts
         ]
-        added = engine.add_memories(
-            texts=new_texts,
-            sources=[source] * len(new_texts),
-            metadata_list=metadata_list,
+        # Existing records have no cryptographically trustworthy way to prove
+        # their authorship fields came from the new server boundary: every
+        # possible plain metadata marker could also exist on a pre-upgrade
+        # caller-controlled record. Preserve source IDs for traceability, but
+        # do not inherit author/contributor labels during Phase 1 consolidation.
+        trusted_authorship = TrustedAuthorship.system(
+            source_memory_ids=old_ids,
         )
-        if not added:
+        replace_method = getattr(type(engine), "replace_consolidation_cluster", None)
+        if callable(replace_method):
+            mutation = replace_method(
+                engine,
+                cluster,
+                new_texts,
+                source,
+                metadata_list,
+                trusted_authorship,
+            )
+            mutation_error = mutation.get("error")
+        else:
+            # Compatibility for lightweight integrations and test doubles;
+            # production MemoryEngine uses the locked transaction above.
+            added = engine.add_memories(
+                texts=new_texts,
+                sources=[source] * len(new_texts),
+                metadata_list=metadata_list,
+                trusted_authorship=trusted_authorship,
+            )
+            mutation_error = None if added else "add_memories stored nothing; originals left untouched"
+            if added:
+                engine.delete_memories(old_ids)
+        if mutation_error:
             return {
                 "merged_count": 0,
                 "new_count": 0,
                 "old_ids": old_ids,
                 "new_texts": new_texts,
                 "dry_run": dry_run,
-                "error": "add_memories stored nothing; originals left untouched",
+                "error": mutation_error,
             }
-        engine.delete_memories(old_ids)
 
     return {
         "merged_count": len(cluster),
