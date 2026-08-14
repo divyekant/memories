@@ -17,14 +17,14 @@ from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from auth_context import AuthContext
 from embedder_reloader import EmbedderAutoReloadController
@@ -41,6 +41,17 @@ from project_memory import (
     is_reserved_namespace_source,
     is_substantive_authored_content_replacement,
     validate_namespace_preserving_replacement,
+    is_valid_slug,
+    parse_memory_source,
+)
+from project_promotion import (
+    CLASSIFIER_VERSION,
+    REVIEWER_VERSION,
+    PromotionConfig,
+    PromotionContext,
+    PromotionMode,
+    load_promotion_config,
+    resolve_effective_mode,
 )
 
 # -- Logging ------------------------------------------------------------------
@@ -159,6 +170,18 @@ EXTRACT_FALLBACK_NOVELTY_THRESHOLD = min(
     1.0,
     _env_float("EXTRACT_FALLBACK_NOVELTY_THRESHOLD", 0.88, minimum=0.0),
 )
+
+
+def _load_runtime_promotion_config() -> PromotionConfig:
+    """Load the host promotion cap; malformed operator config fails closed."""
+    try:
+        return load_promotion_config()
+    except (TypeError, ValueError) as exc:
+        logger.warning("Project promotion disabled by invalid configuration: %s", exc)
+        return PromotionConfig()
+
+
+promotion_config: PromotionConfig = _load_runtime_promotion_config()
 
 extract_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=EXTRACT_QUEUE_MAX)
 extract_jobs: Dict[str, Dict[str, Any]] = {}
@@ -322,6 +345,15 @@ def _with_trusted_authorship(
     """Add request-bound authorship without changing legacy call shapes."""
     if trusted_authorship is not None:
         kwargs["trusted_authorship"] = trusted_authorship
+    return kwargs
+
+
+def _with_promotion_context(
+    kwargs: Dict[str, Any], promotion_context: Optional[PromotionContext]
+) -> Dict[str, Any]:
+    """Add server-validated promotion context without changing legacy calls."""
+    if promotion_context is not None:
+        kwargs["promotion_context"] = promotion_context
     return kwargs
 
 
@@ -819,7 +851,12 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data.get("debug", False),
                 request_data.get("profile"),
                 request_data.get("document_at"),
-                **_with_trusted_authorship({}, request_data.get("trusted_authorship")),
+                **_with_promotion_context(
+                    _with_trusted_authorship(
+                        {}, request_data.get("trusted_authorship")
+                    ),
+                    request_data.get("promotion_context"),
+                ),
             )
             is_dry_run = request_data.get("profile", {}).get("dry_run", False)
             if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result) and not is_dry_run:
@@ -1519,6 +1556,99 @@ class ArchiveBatchRequest(BaseModel):
     ids: List[int] = Field(..., min_length=1, max_length=1000)
 
 
+class PromotionRequestContext(BaseModel):
+    """Untrusted client declaration carried alongside extraction input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        pattern=r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+    )
+    mode: Literal["off", "shadow", "auto"]
+    declaration_fingerprint: str = Field(
+        ...,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
+def build_promotion_context(
+    auth: AuthContext,
+    source: str,
+    request_context: Optional[PromotionRequestContext],
+    config: PromotionConfig,
+) -> Optional[PromotionContext]:
+    """Build a server-owned promotion context after all fail-closed gates."""
+    if not isinstance(auth, AuthContext) or not isinstance(config, PromotionConfig):
+        return None
+    if not isinstance(request_context, PromotionRequestContext):
+        return None
+    if auth.key_type != "managed" or auth.role not in {"read-write", "admin"}:
+        return None
+    if not auth.principal_id or not is_valid_slug(auth.principal_id):
+        return None
+
+    try:
+        declared_mode = PromotionMode(request_context.mode)
+    except (TypeError, ValueError):
+        return None
+    if config.host_mode not in {
+        PromotionMode.OFF,
+        PromotionMode.SHADOW,
+        PromotionMode.AUTO,
+    }:
+        return None
+    effective_mode = resolve_effective_mode(config.host_mode, declared_mode)
+    # Off is an explicit, valid no-op.  Do not hand the extractor a context
+    # that could accidentally extend the legacy prompt or metadata envelope.
+    if effective_mode is PromotionMode.OFF:
+        return None
+
+    parsed = parse_memory_source(source)
+    if parsed is None or not parsed.is_person or parsed.kind != "knowledge":
+        return None
+    if parsed.principal_id != auth.principal_id:
+        return None
+    if parsed.project_id != request_context.project_id:
+        return None
+    private_source = f"person/{auth.principal_id}/{request_context.project_id}/knowledge"
+    project_source = f"project/{request_context.project_id}/knowledge"
+    if source != private_source:
+        return None
+    # The same managed key must be able to write both exact policy domains.
+    if not auth.can_write(private_source) or not auth.can_write(project_source):
+        return None
+
+    classifier_provider = getattr(extract_provider, "provider_name", None)
+    classifier_model = getattr(extract_provider, "model", None)
+    if not isinstance(classifier_provider, str) or not classifier_provider.strip():
+        return None
+    if not isinstance(classifier_model, str) or not classifier_model.strip():
+        return None
+    reviewer_provider = config.review_provider or classifier_provider
+    reviewer_model = config.review_model or classifier_model
+    try:
+        return PromotionContext(
+            project_id=request_context.project_id,
+            principal_id=auth.principal_id,
+            declared_mode=declared_mode,
+            effective_mode=effective_mode,
+            declaration_fingerprint=request_context.declaration_fingerprint,
+            classifier_version=CLASSIFIER_VERSION,
+            classifier_provider=classifier_provider,
+            classifier_model=classifier_model,
+            reviewer_version=REVIEWER_VERSION,
+            reviewer_provider=reviewer_provider,
+            reviewer_model=reviewer_model,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 class ExtractRequest(BaseModel):
     messages: str = Field(
         ...,
@@ -1531,6 +1661,10 @@ class ExtractRequest(BaseModel):
     debug: bool = Field(default=False, description="When True, return detailed extraction trace")
     dry_run: bool = Field(default=False, description="Return actions without executing")
     document_at: Optional[str] = Field(default=None, description="ISO 8601 date for when the source content was created. Propagated to all extracted memories.")
+    promotion_context: Optional[PromotionRequestContext] = Field(
+        default=None,
+        description="Untrusted repository promotion declaration; server authorization remains authoritative.",
+    )
 
 
 class ExtractCommitRequest(BaseModel):
@@ -3491,6 +3625,13 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
         if auth.role != "admin" and auth.prefixes is not None:
             raise HTTPException(status_code=400, detail="source is required for scoped keys")
 
+    request_promotion_context = build_promotion_context(
+        auth,
+        request_body.source,
+        request_body.promotion_context,
+        promotion_config,
+    )
+
     if extract_provider is None or run_extraction is None:
         if not EXTRACT_FALLBACK_ADD_ENABLED:
             raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
@@ -3586,20 +3727,25 @@ async def memory_extract(request_body: ExtractRequest, request: Request):
         "auth_key_id": auth.key_id,
         "trusted_authorship": trusted_authorship,
     }
+    request_payload = {
+        "messages": request_body.messages,
+        "source": request_body.source,
+        "context": request_body.context,
+        # Admin managed keys are unrestricted even though KeyStore stores an
+        # empty prefix list for them.  Preserve that distinction for the
+        # extraction worker's source gate and promotion ACL check.
+        "allowed_prefixes": None if auth.role == "admin" else auth.prefixes,
+        "debug": request_body.debug,
+        "profile": profile,
+        "document_at": request_body.document_at,
+        "trusted_authorship": trusted_authorship,
+    }
+    _with_promotion_context(request_payload, request_promotion_context)
     try:
         extract_queue.put_nowait(
             {
                 "job_id": job_id,
-                "request": {
-                    "messages": request_body.messages,
-                    "source": request_body.source,
-                    "context": request_body.context,
-                    "allowed_prefixes": auth.prefixes,
-                    "debug": request_body.debug,
-                    "profile": profile,
-                    "document_at": request_body.document_at,
-                    "trusted_authorship": trusted_authorship,
-                },
+                "request": request_payload,
             }
         )
     except asyncio.QueueFull:

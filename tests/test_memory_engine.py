@@ -8,6 +8,12 @@ from pathlib import Path
 
 from memory_engine import MemoryEngine
 from project_memory import ProjectMemoryPolicyError, TrustedAuthorship
+from project_promotion import (
+    PromotionMode,
+    PromotionProposal,
+    PromotionState,
+    PromotionStatus,
+)
 
 
 @pytest.fixture
@@ -137,6 +143,50 @@ class TestAddAndSearch:
 
         assert engine.metadata == []
         assert engine.qdrant_store.count() == 0
+
+    def test_typed_trusted_promotion_is_persisted_but_caller_metadata_is_ignored(self, engine):
+        proposal = PromotionProposal(
+            project_relevance=0.95,
+            visibility="project",
+            assertion_status="confirmed",
+            project_kind="knowledge",
+            confidence=0.9,
+            reason="durable project fact",
+            classifier_version="classifier-v1",
+        )
+        state = PromotionState(
+            status=PromotionStatus.CANDIDATE,
+            owner="alice",
+            project_id="demo",
+            declaration_fingerprint="a" * 64,
+            classifier_provider="anthropic",
+            classifier_model="claude-haiku",
+            reviewer_provider="anthropic",
+            reviewer_model="claude-haiku",
+            capture_mode=PromotionMode.AUTO,
+            route="ordinary",
+            proposal=proposal,
+            review=None,
+            evidence_fingerprint="b" * 64,
+            captured_at="2026-08-14T12:00:00+00:00",
+        )
+        ids = engine.add_memories(
+            texts=["The project uses Qdrant."],
+            sources=["person/alice/demo/knowledge"],
+            metadata_list=[{"promotion": {"status": "promoted"}}],
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            trusted_promotion=state,
+        )
+
+        stored = engine.get_memory(ids[0])
+        assert stored["promotion"]["status"] == "candidate"
+        engine.update_memory(
+            ids[0],
+            metadata_patch={"promotion": {"status": "promoted"}},
+            trusted_authorship=TrustedAuthorship.principal("alice", "codex"),
+            trusted_promotion=state,
+        )
+        assert engine.get_memory(ids[0])["promotion"]["status"] == "candidate"
 
     def test_client_cannot_override_trusted_authorship_metadata(self, engine):
         ids = engine.add_memories(

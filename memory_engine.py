@@ -33,6 +33,7 @@ from project_memory import (
     ProjectMemoryPolicyError,
     TrustedAuthorship,
     is_namespace_crossing_source_move,
+    parse_memory_source,
     is_project_source,
     is_reserved_namespace_source,
     is_substantive_authored_content_replacement,
@@ -40,6 +41,7 @@ from project_memory import (
     validate_namespace_preserving_replacement,
     validate_project_write,
 )
+from project_promotion import PromotionMode, PromotionState
 
 logger = logging.getLogger("memories")
 
@@ -73,6 +75,44 @@ def _validate_trusted_authorship(value: Optional[TrustedAuthorship]) -> None:
     if value is not None and not isinstance(value, TrustedAuthorship):
         raise ProjectMemoryPolicyError(
             "trusted_authorship must be a TrustedAuthorship value"
+        )
+
+
+def _validate_trusted_promotion(value: Optional[PromotionState]) -> None:
+    """Reject caller values that are not server-owned promotion state."""
+    if value is not None and not isinstance(value, PromotionState):
+        raise ProjectMemoryPolicyError(
+            "trusted_promotion must be a PromotionState value"
+        )
+
+
+def _validate_private_promotion(
+    source: Any,
+    trusted_authorship: Optional[TrustedAuthorship],
+    trusted_promotion: Optional[PromotionState],
+) -> None:
+    """Validate the narrow destination for an internal promotion envelope."""
+    if trusted_promotion is None:
+        return
+    parsed = parse_memory_source(source)
+    if (
+        parsed is None
+        or not parsed.is_person
+        or parsed.kind != "knowledge"
+        or parsed.project_id != trusted_promotion.project_id
+        or parsed.principal_id != trusted_promotion.owner
+    ):
+        raise ProjectMemoryPolicyError(
+            "trusted promotion state requires the exact private project knowledge source"
+        )
+    if trusted_promotion.capture_mode is PromotionMode.OFF:
+        raise ProjectMemoryPolicyError("trusted promotion state cannot be captured in off mode")
+    if (
+        trusted_authorship is None
+        or trusted_authorship.author != trusted_promotion.owner
+    ):
+        raise ProjectMemoryPolicyError(
+            "trusted promotion state requires matching principal authorship"
         )
 
 
@@ -697,6 +737,7 @@ class MemoryEngine:
         dedup_threshold: float = 0.90,
         _chunk_size: int = 100,
         trusted_authorship: Optional[TrustedAuthorship] = None,
+        trusted_promotion: Optional[PromotionState] = None,
     ) -> List[int]:
         """Add new memories to Qdrant + metadata (thread-safe).
 
@@ -707,8 +748,10 @@ class MemoryEngine:
             return []
 
         _validate_trusted_authorship(trusted_authorship)
+        _validate_trusted_promotion(trusted_promotion)
         for text, source in zip(texts, sources):
             _validate_project_write(text, source, trusted_authorship)
+            _validate_private_promotion(source, trusted_authorship, trusted_promotion)
 
         keys = [self._entity_key(source) for source in sources]
         with self._entity_locks.acquire_many(keys):
@@ -767,6 +810,9 @@ class MemoryEngine:
                 trusted_metadata = (
                     trusted_authorship.as_metadata() if trusted_authorship else {}
                 )
+                trusted_promotion_metadata = (
+                    trusted_promotion.as_metadata() if trusted_promotion else {}
+                )
 
                 # Build metadata + points in chunks and upsert per chunk
                 for chunk_start in range(0, len(texts), _chunk_size):
@@ -790,6 +836,7 @@ class MemoryEngine:
                             "timestamp": now,  # backward compat alias
                             **filtered_extra,
                             **trusted_metadata,
+                            **trusted_promotion_metadata,
                         }
                         self.metadata.append(meta)
                         points.append(
@@ -977,6 +1024,7 @@ class MemoryEngine:
         source: str = "",
         metadata: Optional[Dict] = None,
         trusted_authorship: Optional[TrustedAuthorship] = None,
+        trusted_promotion: Optional[PromotionState] = None,
     ) -> dict:
         """Replace a memory with an updated version, preserving history.
 
@@ -988,6 +1036,9 @@ class MemoryEngine:
         """
         if not self._id_exists(old_id):
             raise ValueError(f"Memory {old_id} not found")
+
+        _validate_trusted_promotion(trusted_promotion)
+        _validate_private_promotion(source or self._get_meta_by_id(old_id).get("source", ""), trusted_authorship, trusted_promotion)
 
         while True:
             initial_source = self._get_meta_by_id(old_id).get("source", "")
@@ -1030,7 +1081,8 @@ class MemoryEngine:
                     "deduplicate": False,
                 }
                 added_ids = self.add_memories(
-                    **_with_trusted_authorship(add_kwargs, trusted_authorship)
+                    **_with_trusted_authorship(add_kwargs, trusted_authorship),
+                    **({"trusted_promotion": trusted_promotion} if trusted_promotion else {}),
                 )
                 new_id = added_ids[0] if added_ids else None
                 if new_id is None or not self._id_exists(new_id):
@@ -1059,6 +1111,7 @@ class MemoryEngine:
         dedup_threshold: float = 0.90,
         identical_threshold: Optional[float] = None,
         trusted_authorship: Optional[TrustedAuthorship] = None,
+        trusted_promotion: Optional[PromotionState] = None,
     ) -> Dict[str, Any]:
         """Single-memory write with update-on-collision semantics.
 
@@ -1076,6 +1129,8 @@ class MemoryEngine:
         but with the blocker surfaced) | "add" (no collision check).
         """
         _validate_trusted_authorship(trusted_authorship)
+        _validate_trusted_promotion(trusted_promotion)
+        _validate_private_promotion(source, trusted_authorship, trusted_promotion)
         _validate_project_write(text, source, trusted_authorship)
         if on_duplicate not in ("add", "skip", "supersede"):
             raise ValueError(f"on_duplicate must be add|skip|supersede, got {on_duplicate!r}")
@@ -1113,6 +1168,7 @@ class MemoryEngine:
                     text,
                     source,
                     **_with_trusted_authorship(supersede_kwargs, trusted_authorship),
+                    **({"trusted_promotion": trusted_promotion} if trusted_promotion else {}),
                 )
                 return {
                     "action": "superseded",
@@ -1129,7 +1185,8 @@ class MemoryEngine:
             "deduplicate": False,
         }
         ids = self.add_memories(
-            **_with_trusted_authorship(add_kwargs, trusted_authorship)
+            **_with_trusted_authorship(add_kwargs, trusted_authorship),
+            **({"trusted_promotion": trusted_promotion} if trusted_promotion else {}),
         )
         return {"action": "added", "id": ids[0] if ids else None}
 
@@ -1599,12 +1656,14 @@ class MemoryEngine:
         archived: Optional[bool] = None,
         trusted_authorship: Optional[TrustedAuthorship] = None,
         apply_trusted_authorship: bool = False,
+        trusted_promotion: Optional[PromotionState] = None,
     ) -> Dict[str, Any]:
         """Update fields on an existing memory without changing its ID."""
         if not self._id_exists(memory_id):
             raise ValueError(f"Memory ID {memory_id} not found")
 
         _validate_trusted_authorship(trusted_authorship)
+        _validate_trusted_promotion(trusted_promotion)
 
         current = self._get_meta_by_id(memory_id)
         old_key = self._entity_key(current.get("source", ""))
@@ -1631,6 +1690,7 @@ class MemoryEngine:
         if validates_project_target:
             effective_text = text if text is not None else current.get("text", "")
             _validate_project_write(effective_text, target_source, trusted_authorship)
+        _validate_private_promotion(target_source, trusted_authorship, trusted_promotion)
         namespace_crossing = is_namespace_crossing_source_move(
             current_source, source
         )
@@ -1696,6 +1756,9 @@ class MemoryEngine:
                     _validate_project_write(
                         locked_text, locked_target_source, trusted_authorship
                     )
+                _validate_private_promotion(
+                    locked_target_source, trusted_authorship, trusted_promotion
+                )
                 if locked_namespace_crossing and trusted_authorship is None:
                     raise ProjectMemoryPolicyError(
                         "namespace-crossing replacements require trusted principal or system authorship"
@@ -1725,6 +1788,8 @@ class MemoryEngine:
                         for reserved in RESERVED_METADATA_FIELDS:
                             meta.pop(reserved, None)
                         meta.update(trusted_authorship.as_metadata())
+                    if trusted_promotion is not None:
+                        meta.update(trusted_promotion.as_metadata())
                     meta["updated_at"] = datetime.now(timezone.utc).isoformat()
                     # Don't touch created_at or timestamp
                     # set_payload merges keys in Qdrant, which would preserve
@@ -1763,6 +1828,9 @@ class MemoryEngine:
                     for reserved in RESERVED_METADATA_FIELDS:
                         meta.pop(reserved, None)
                     meta.update(trusted_authorship.as_metadata())
+
+                if trusted_promotion is not None:
+                    meta.update(trusted_promotion.as_metadata())
 
                 if pinned is not None:
                     meta["pinned"] = pinned
@@ -1978,9 +2046,12 @@ class MemoryEngine:
         key: str,
         metadata: Optional[Dict[str, Any]] = None,
         trusted_authorship: Optional[TrustedAuthorship] = None,
+        trusted_promotion: Optional[PromotionState] = None,
     ) -> Dict[str, Any]:
         """Upsert a memory by stable entity key + source."""
         _validate_trusted_authorship(trusted_authorship)
+        _validate_trusted_promotion(trusted_promotion)
+        _validate_private_promotion(source, trusted_authorship, trusted_promotion)
         metadata = dict(metadata or {})
         metadata["entity_key"] = key
 
@@ -1998,7 +2069,8 @@ class MemoryEngine:
                 "deduplicate": False,
             }
             ids = self.add_memories(
-                **_with_trusted_authorship(add_kwargs, trusted_authorship)
+                **_with_trusted_authorship(add_kwargs, trusted_authorship),
+                **({"trusted_promotion": trusted_promotion} if trusted_promotion else {}),
             )
             return {"id": ids[0], "action": "created"}
 
@@ -2010,6 +2082,8 @@ class MemoryEngine:
         }
         if trusted_authorship is not None:
             update_kwargs["apply_trusted_authorship"] = True
+        if trusted_promotion is not None:
+            update_kwargs["trusted_promotion"] = trusted_promotion
         result = self.update_memory(
             **_with_trusted_authorship(update_kwargs, trusted_authorship)
         )
@@ -2019,9 +2093,11 @@ class MemoryEngine:
         self,
         entries: List[Dict[str, Any]],
         trusted_authorship: Optional[TrustedAuthorship] = None,
+        trusted_promotion: Optional[PromotionState] = None,
     ) -> Dict[str, Any]:
         """Upsert multiple memories by stable keys."""
         _validate_trusted_authorship(trusted_authorship)
+        _validate_trusted_promotion(trusted_promotion)
         for entry in entries:
             _validate_project_write(
                 entry.get("text", ""), entry.get("source", ""), trusted_authorship
@@ -2040,7 +2116,8 @@ class MemoryEngine:
                     "metadata": entry.get("metadata"),
                 }
                 result = self.upsert_memory(
-                    **_with_trusted_authorship(upsert_kwargs, trusted_authorship)
+                    **_with_trusted_authorship(upsert_kwargs, trusted_authorship),
+                    **({"trusted_promotion": trusted_promotion} if trusted_promotion else {}),
                 )
                 results.append(result)
                 if result["action"] == "created":

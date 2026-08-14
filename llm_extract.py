@@ -8,27 +8,208 @@ Usage:
   result = run_extraction(provider, engine, messages, source, context)
 """
 import json
+import hashlib
 import logging
 import os
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List
+from typing import Callable, Optional, List
 
 from auth_context import source_matches_prefixes
 from shadow_runner import build_shadow_providers, fanout_shadow_async
 from transcript_hygiene import clean_transcript, redact_secrets
 from project_memory import (
     is_reserved_namespace_source,
+    parse_memory_source,
     ProjectMemoryPolicyError,
     TrustedAuthorship,
     validate_project_write,
+)
+from project_promotion import (
+    PromotionConfig,
+    PromotionContext,
+    PromotionMode,
+    PromotionProposal,
+    PromotionState,
+    PromotionStatus,
+    load_promotion_config,
+    parse_proposal,
+    promotion_state_from_memory,
+    select_review_route,
 )
 
 logger = logging.getLogger(__name__)
 
 TRAINING_DATA_DIR = os.environ.get("EXTRACT_TRAINING_DATA_DIR", "").strip()
 _TRAINING_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50MB rotation threshold
+
+
+def _promotion_is_active(promotion_context: Optional[PromotionContext]) -> bool:
+    return (
+        isinstance(promotion_context, PromotionContext)
+        and promotion_context.effective_mode is not PromotionMode.OFF
+    )
+
+
+def _promotion_config_for_extraction() -> Optional[PromotionConfig]:
+    """Load the measured route policy without widening a failed-closed run."""
+    try:
+        config = load_promotion_config()
+    except (TypeError, ValueError):
+        return None
+    if config.relevance_threshold is None:
+        return None
+    return config
+
+
+def _promotion_proposal(
+    fact: object,
+    promotion_context: Optional[PromotionContext],
+) -> Optional[PromotionProposal]:
+    """Parse only server-versioned proposal fields from one extracted fact."""
+    if not _promotion_is_active(promotion_context) or not isinstance(fact, dict):
+        return None
+    proposal_fields = {
+        key: fact.get(key)
+        for key in (
+            "project_relevance",
+            "visibility",
+            "assertion_status",
+            "project_kind",
+            "confidence",
+            "reason",
+        )
+    }
+    # The provider cannot choose the policy identity.  The active context is
+    # the only source of the classifier version persisted on a candidate.
+    proposal_fields["classifier_version"] = promotion_context.classifier_version
+    if any(value is None for value in proposal_fields.values()):
+        return None
+    return parse_proposal(proposal_fields)
+
+
+def _promotion_evidence_fingerprint(messages: str) -> str:
+    """Hash in-flight evidence; never persist the conversation itself."""
+    return hashlib.sha256(messages.encode("utf-8")).hexdigest()
+
+
+def _promotion_route(
+    proposal: PromotionProposal,
+    *,
+    recent_audit_count: int = 0,
+) -> Optional[str]:
+    config = _promotion_config_for_extraction()
+    if config is None:
+        return None
+    # The scheduler/reconciler owns the durable audit-period counter.  During
+    # capture, an empty cohort safely fills the configured fixed floor.
+    return select_review_route(
+        proposal,
+        recent_audit_count=recent_audit_count,
+        config=config,
+    )
+
+
+def _build_promotion_state(
+    promotion_context: PromotionContext,
+    proposal: Optional[PromotionProposal],
+    route: Optional[str],
+    evidence_fingerprint: str,
+    *,
+    status: PromotionStatus,
+) -> PromotionState:
+    return PromotionState(
+        status=status,
+        owner=promotion_context.principal_id,
+        project_id=promotion_context.project_id,
+        declaration_fingerprint=promotion_context.declaration_fingerprint,
+        classifier_provider=promotion_context.classifier_provider,
+        classifier_model=promotion_context.classifier_model,
+        reviewer_provider=promotion_context.reviewer_provider,
+        reviewer_model=promotion_context.reviewer_model,
+        capture_mode=promotion_context.effective_mode,
+        route=route,
+        proposal=proposal,
+        review=None,
+        evidence_fingerprint=evidence_fingerprint,
+        captured_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _promotion_state_for_fact(
+    fact: object,
+    promotion_context: Optional[PromotionContext],
+    promotion_active: bool,
+    evidence_fingerprint: str,
+    recent_audit_count: int,
+) -> tuple[Optional[PromotionState], Optional[str], int]:
+    """Build private or candidate state for one active extraction fact."""
+    if not promotion_active or promotion_context is None:
+        return None, None, recent_audit_count
+    proposal = _promotion_proposal(fact, promotion_context)
+    route = (
+        _promotion_route(proposal, recent_audit_count=recent_audit_count)
+        if proposal is not None
+        else None
+    )
+    status = PromotionStatus.CANDIDATE if route is not None else PromotionStatus.PRIVATE
+    state = _build_promotion_state(
+        promotion_context,
+        proposal,
+        route,
+        evidence_fingerprint,
+        status=status,
+    )
+    return state, route, recent_audit_count
+
+
+def _promotion_failure_state(state: PromotionState) -> PromotionState:
+    return replace(
+        state,
+        status=PromotionStatus.FAILED,
+        attempt_count=state.attempt_count + 1,
+    )
+
+
+def _invoke_promotion_callback(
+    callback: Optional[Callable],
+    engine,
+    candidates: list[dict],
+    evidence: dict,
+    trusted_authorship: Optional[TrustedAuthorship],
+) -> Optional[str]:
+    """Run review handoff after private writes; failures leave them private."""
+    if callback is None or not candidates:
+        return None
+    try:
+        callback(candidates, evidence)
+        return None
+    except Exception as exc:
+        logger.warning("Promotion callback failed after private capture: %s", exc)
+        for candidate in candidates:
+            candidate_id = candidate.get("candidate_id")
+            if candidate_id is None:
+                continue
+            try:
+                current = engine.get_memory(candidate_id)
+                state = promotion_state_from_memory(current)
+                if state is None:
+                    continue
+                failed = _promotion_failure_state(state)
+                engine.update_memory(
+                    candidate_id,
+                    trusted_authorship=trusted_authorship,
+                    trusted_promotion=failed,
+                )
+            except Exception as update_exc:
+                logger.warning(
+                    "Unable to mark promotion callback failure for candidate %s: %s",
+                    candidate_id,
+                    update_exc,
+                )
+        return str(exc)
 
 
 def _with_trusted_authorship(
@@ -38,6 +219,43 @@ def _with_trusted_authorship(
     if trusted_authorship is not None:
         kwargs["trusted_authorship"] = trusted_authorship
     return kwargs
+
+
+def _with_trusted_promotion(
+    kwargs: dict, trusted_promotion: Optional[PromotionState]
+) -> dict:
+    """Attach server-owned promotion state only for internal engine calls."""
+    if trusted_promotion is not None:
+        kwargs["trusted_promotion"] = trusted_promotion
+    return kwargs
+
+
+def _promotion_context_matches_source(
+    promotion_context: Optional[PromotionContext],
+    source: str,
+    allowed_prefixes: Optional[List[str]],
+    trusted_authorship: Optional[TrustedAuthorship],
+) -> bool:
+    if not _promotion_is_active(promotion_context):
+        return False
+    parsed = parse_memory_source(source)
+    if parsed is None or not parsed.is_person or parsed.kind != "knowledge":
+        return False
+    if (
+        parsed.project_id != promotion_context.project_id
+        or parsed.principal_id != promotion_context.principal_id
+    ):
+        return False
+    if trusted_authorship is None or trusted_authorship.author != promotion_context.principal_id:
+        return False
+    if allowed_prefixes is not None:
+        private_ok = source_matches_prefixes(source, allowed_prefixes)
+        project_ok = source_matches_prefixes(
+            f"project/{promotion_context.project_id}/knowledge", allowed_prefixes
+        )
+        if not private_ok or not project_ok:
+            return False
+    return True
 
 
 def _training_output_path(out_dir: Path, now: datetime) -> Path:
@@ -56,7 +274,12 @@ def _training_output_path(out_dir: Path, now: datetime) -> Path:
     return path
 
 
-def _build_extraction_system_prompt(source: str, context: str, rules: dict | None = None) -> str:
+def _build_extraction_system_prompt(
+    source: str,
+    context: str,
+    rules: dict | None = None,
+    promotion_context: Optional[PromotionContext] = None,
+) -> str:
     """Build the exact extraction system prompt used for a request."""
     template = FACT_EXTRACTION_PROMPT_AGGRESSIVE if context == "pre_compact" else FACT_EXTRACTION_PROMPT
     project = source.rsplit("/", 1)[-1] if "/" in source else source or "this"
@@ -64,6 +287,8 @@ def _build_extraction_system_prompt(source: str, context: str, rules: dict | Non
     rules_section = _build_rules_section(rules)
     if rules_section:
         prompt = prompt + "\n\n" + rules_section
+    if _promotion_is_active(promotion_context):
+        prompt += PROMOTION_EXTRACTION_INSTRUCTIONS
     return prompt
 
 
@@ -96,6 +321,7 @@ def _save_training_pair(
     extract_tokens: dict | None = None,
     audn_tokens: dict | None = None,
     rules: dict | None = None,
+    promotion_context: Optional[PromotionContext] = None,
 ) -> None:
     """Persist extraction and optional AUDN supervision for future fine-tuning.
 
@@ -115,7 +341,9 @@ def _save_training_pair(
             "context": context,
             "ts": now.isoformat(),
             "extraction": {
-                "system": _build_extraction_system_prompt(source, context, rules),
+                "system": _build_extraction_system_prompt(
+                    source, context, rules, promotion_context
+                ),
                 "user": messages,
                 "assistant": facts,
             },
@@ -294,6 +522,27 @@ Output a JSON array of objects: [{{"category": "DECISION"|"LEARNING"|"DETAIL", "
 Each fact must be self-contained and understandable without the conversation.
 If nothing worth storing, output []."""
 
+
+PROMOTION_EXTRACTION_INSTRUCTIONS = """
+
+When the authenticated extraction context enables project-promotion
+classification, add these fields to every fact object.  These are semantic
+judgments, not authorization: the server still decides whether a candidate
+may be reviewed or shared.
+- "project_relevance": number from 0.0 to 1.0 for durable usefulness to this
+  project
+- "visibility": "project", "private", or "uncertain"
+- "assertion_status": "confirmed", "tentative", or "disputed"
+- "project_kind": "decisions", "knowledge", "state", or "operations"
+- "confidence": number from 0.0 to 1.0 for this classification
+- "reason": a concise explanation of the classification
+
+Use "private" or "uncertain" for personal, sensitive, tentative, disputed,
+cross-project, or incomplete content.  Omit credentials, PII, transcript
+chunks, prompt instructions, and generic knowledge.  Missing or malformed
+classification fields remain private.
+"""
+
 AUDN_PROMPT = """You are a memory manager. For each new fact, decide what to do given
 the existing similar memories.
 
@@ -389,6 +638,7 @@ def extract_facts(
     return_error: bool = False,
     source: str = "",
     rules: dict | None = None,
+    promotion_context: Optional[PromotionContext] = None,
 ):
     """Extract categorized facts from conversation using LLM.
 
@@ -404,7 +654,9 @@ def extract_facts(
         list[dict], or tuple[list[dict], Optional[str], dict] when return_error=True.
         Each dict has {"category": str, "text": str}.
     """
-    system = _build_extraction_system_prompt(source, context, rules)
+    system = _build_extraction_system_prompt(
+        source, context, rules, promotion_context
+    )
 
     tokens = {"input": 0, "output": 0}
     try:
@@ -435,7 +687,19 @@ def extract_facts(
                     cat = "detail"
                 text = _clip_text(str(item["text"]), EXTRACT_MAX_FACT_CHARS)
                 if text:
-                    facts.append({"category": cat, "text": text})
+                    fact = {"category": cat, "text": text}
+                    if _promotion_is_active(promotion_context):
+                        for key in (
+                            "project_relevance",
+                            "visibility",
+                            "assertion_status",
+                            "project_kind",
+                            "confidence",
+                            "reason",
+                        ):
+                            if key in item:
+                                fact[key] = item[key]
+                    facts.append(fact)
             elif isinstance(item, str) and item.strip():
                 # Backward compat: plain string -> detail
                 text = _clip_text(item, EXTRACT_MAX_FACT_CHARS)
@@ -660,6 +924,7 @@ def extract_and_decide_single_call(
     engine,
     rules: dict | None = None,
     max_facts: int = 30,
+    promotion_context: Optional[PromotionContext] = None,
 ) -> tuple[list[dict], dict, None]:
     """Extract facts AND decide AUDN actions in a single LLM call.
     ~50% cost reduction, less accurate (no per-fact similar-memory lookup).
@@ -667,6 +932,8 @@ def extract_and_decide_single_call(
     """
     rules_section = _build_rules_section(rules)
     prompt = SINGLE_CALL_PROMPT.format(rules_section=rules_section)
+    if _promotion_is_active(promotion_context):
+        prompt += PROMOTION_EXTRACTION_INSTRUCTIONS
 
     user_prompt = f"Extract and classify facts from this conversation:\n\n{messages[:max_facts * 500]}"
     result = provider.complete(system=prompt, user=user_prompt)
@@ -715,6 +982,8 @@ def execute_actions(
     document_at: Optional[str] = None,
     novelty_gate: bool = True,
     trusted_authorship: Optional[TrustedAuthorship] = None,
+    promotion_context: Optional[PromotionContext] = None,
+    evidence_fingerprint: Optional[str] = None,
 ) -> dict:
     """Execute AUDN decisions against the memory engine.
 
@@ -736,7 +1005,19 @@ def execute_actions(
     fallback_count = 0
     gated_count = 0
     result_actions = []
+    promotion_candidates: list[dict] = []
+    recent_audit_count = 0
     gate_active = novelty_gate and _novelty_gate_enabled()
+    promotion_active = _promotion_context_matches_source(
+        promotion_context,
+        source,
+        allowed_prefixes,
+        trusted_authorship,
+    )
+    if evidence_fingerprint is None:
+        evidence_fingerprint = hashlib.sha256(
+            json.dumps(facts, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
 
     # Project policy errors are terminal for extraction commits (the API
     # returns 422), so validate every action that can create replacement text
@@ -783,6 +1064,13 @@ def execute_actions(
                     fact_meta["extract_source"] = source
                 if document_at:
                     fact_meta["document_at"] = document_at
+                promotion_state, route, recent_audit_count = _promotion_state_for_fact(
+                    fact,
+                    promotion_context,
+                    promotion_active,
+                    evidence_fingerprint,
+                    recent_audit_count,
+                )
                 add_kwargs = {
                     "texts": [fact_text],
                     "sources": [source],
@@ -790,13 +1078,27 @@ def execute_actions(
                     "deduplicate": True,
                 }
                 added_ids = engine.add_memories(
-                    **_with_trusted_authorship(add_kwargs, trusted_authorship)
+                    **_with_trusted_promotion(
+                        _with_trusted_authorship(add_kwargs, trusted_authorship),
+                        promotion_state,
+                    )
                 )
                 new_id = added_ids[0] if added_ids else None
                 result_actions.append({"action": "fallback_add" if act == "FALLBACK_ADD" else "add", "text": fact_text, "id": new_id})
                 stored_count += 1
                 if act == "FALLBACK_ADD":
                     fallback_count += 1
+                if (
+                    new_id is not None
+                    and promotion_state is not None
+                    and promotion_state.status is PromotionStatus.CANDIDATE
+                    and route is not None
+                ):
+                    promotion_candidates.append(
+                        {"candidate_id": new_id, "fact_index": fi, "route": route}
+                    )
+                    if route == "audit":
+                        recent_audit_count += 1
 
             elif act == "UPDATE":
                 old_id = action.get("old_id")
@@ -815,17 +1117,26 @@ def execute_actions(
                         raise PermissionError(f"old_id not authorized for update: {old_id}")
                 if not source_matches_prefixes(source, allowed_prefixes):
                     raise PermissionError(f"source not authorized for update: {source}")
+                promotion_state, route, recent_audit_count = _promotion_state_for_fact(
+                    fact,
+                    promotion_context,
+                    promotion_active,
+                    evidence_fingerprint,
+                    recent_audit_count,
+                )
                 if old_id is not None:
                     validate_project_write(new_text, source, trusted_authorship)
-                    # Archive old memory instead of deleting (version preservation)
-                    archive_kwargs = {
-                        "archived": True,
-                        "metadata_patch": {"is_latest": False},
-                    }
-                    engine.update_memory(
-                        old_id,
-                        **_with_trusted_authorship(archive_kwargs, trusted_authorship),
-                    )
+                    if not promotion_active:
+                        # Preserve the legacy extraction mutation order when
+                        # no typed promotion context is active.
+                        archive_kwargs = {
+                            "archived": True,
+                            "metadata_patch": {"is_latest": False},
+                        }
+                        engine.update_memory(
+                            old_id,
+                            **_with_trusted_authorship(archive_kwargs, trusted_authorship),
+                        )
                 fact_meta = {"category": fact.get("category", "detail"), "supersedes": old_id, "is_latest": True} if isinstance(fact, dict) else {"supersedes": old_id, "is_latest": True}
                 if job_id:
                     fact_meta["extraction_job_id"] = job_id
@@ -839,9 +1150,24 @@ def execute_actions(
                     "deduplicate": False,
                 }
                 added_ids = engine.add_memories(
-                    **_with_trusted_authorship(add_kwargs, trusted_authorship)
+                    **_with_trusted_promotion(
+                        _with_trusted_authorship(add_kwargs, trusted_authorship),
+                        promotion_state,
+                    )
                 )
                 new_id = added_ids[0] if added_ids else None
+                if old_id is not None and promotion_active and new_id is not None:
+                    # In active promotion mode the replacement is committed
+                    # with its candidate state before the prior version is
+                    # archived.  Legacy callers retain the historical order.
+                    archive_kwargs = {
+                        "archived": True,
+                        "metadata_patch": {"is_latest": False},
+                    }
+                    engine.update_memory(
+                        old_id,
+                        **_with_trusted_authorship(archive_kwargs, trusted_authorship),
+                    )
                 # Create supersedes link from new → old
                 if new_id and old_id is not None:
                     try:
@@ -850,6 +1176,17 @@ def execute_actions(
                         pass  # Link creation is non-fatal
                 result_actions.append({"action": "update", "old_id": old_id, "text": new_text, "new_id": new_id})
                 updated_count += 1
+                if (
+                    new_id is not None
+                    and promotion_state is not None
+                    and promotion_state.status is PromotionStatus.CANDIDATE
+                    and route is not None
+                ):
+                    promotion_candidates.append(
+                        {"candidate_id": new_id, "fact_index": fi, "route": route}
+                    )
+                    if route == "audit":
+                        recent_audit_count += 1
 
             elif act == "DELETE":
                 old_id = action.get("old_id")
@@ -889,6 +1226,13 @@ def execute_actions(
                         if not source_matches_prefixes(existing_source, allowed_prefixes):
                             raise PermissionError(f"old_id not authorized for conflict: {old_id}")
                     fact_meta["conflicts_with"] = old_id
+                promotion_state, route, recent_audit_count = _promotion_state_for_fact(
+                    fact,
+                    promotion_context,
+                    promotion_active,
+                    evidence_fingerprint,
+                    recent_audit_count,
+                )
                 add_kwargs = {
                     "texts": [fact_text],
                     "sources": [source],
@@ -896,7 +1240,10 @@ def execute_actions(
                     "deduplicate": False,
                 }
                 added_ids = engine.add_memories(
-                    **_with_trusted_authorship(add_kwargs, trusted_authorship)
+                    **_with_trusted_promotion(
+                        _with_trusted_authorship(add_kwargs, trusted_authorship),
+                        promotion_state,
+                    )
                 )
                 new_id = added_ids[0] if added_ids else None
                 result_actions.append({
@@ -907,6 +1254,17 @@ def execute_actions(
                 })
                 stored_count += 1
                 conflict_count += 1
+                if (
+                    new_id is not None
+                    and promotion_state is not None
+                    and promotion_state.status is PromotionStatus.CANDIDATE
+                    and route is not None
+                ):
+                    promotion_candidates.append(
+                        {"candidate_id": new_id, "fact_index": fi, "route": route}
+                    )
+                    if route == "audit":
+                        recent_audit_count += 1
 
             elif act == "NOOP":
                 existing_id = action.get("existing_id")
@@ -929,6 +1287,7 @@ def execute_actions(
         "conflict_count": conflict_count,
         "fallback_count": fallback_count,
         "gated_count": gated_count,
+        "promotion_candidates": promotion_candidates,
     }
 
 
@@ -1071,6 +1430,8 @@ def run_extraction(
     profile: dict | None = None,
     document_at: Optional[str] = None,
     trusted_authorship: Optional[TrustedAuthorship] = None,
+    promotion_context: Optional[PromotionContext] = None,
+    promotion_callback: Optional[Callable] = None,
 ) -> dict:
     """Full extraction pipeline: extract facts -> AUDN -> execute.
 
@@ -1087,6 +1448,8 @@ def run_extraction(
     """
     if provider is None:
         return {"error": "extraction_disabled"}
+
+    promotion_active = _promotion_is_active(promotion_context)
 
     # Transcript hygiene: hook-injected recalled memories, <system-reminder>
     # blocks, and hook additional-context blocks must never reach the
@@ -1107,6 +1470,7 @@ def run_extraction(
             "tokens": {"extract": {"input": 0, "output": 0}, "audn": {"input": 0, "output": 0}},
             "links_created": [],
             "compaction_candidates": [],
+            "promotion_candidates": [],
         }
 
     job_id = uuid.uuid4().hex[:12]
@@ -1133,9 +1497,27 @@ def run_extraction(
             engine=engine,
             rules=rules,
             max_facts=max_facts,
+            promotion_context=promotion_context,
         )
-        facts = [{"text": a.get("text", ""), "category": a.get("category", "detail")}
-                 for a in actions]
+        facts = []
+        for action in actions:
+            fact = {
+                "text": action.get("text", ""),
+                "category": action.get("category", "detail"),
+            }
+            if promotion_active:
+                for key in (
+                    "project_relevance",
+                    "visibility",
+                    "assertion_status",
+                    "project_kind",
+                    "confidence",
+                    "reason",
+                ):
+                    if key in action:
+                        fact[key] = action[key]
+            facts.append(fact)
+        evidence_fingerprint = _promotion_evidence_fingerprint(messages)
         result = execute_actions(
             engine,
             actions,
@@ -1146,11 +1528,22 @@ def run_extraction(
                 {"job_id": job_id, "document_at": document_at},
                 trusted_authorship,
             ),
+            promotion_context=promotion_context,
+            evidence_fingerprint=evidence_fingerprint,
         )
         result["tokens"] = {"single_call": usage}
         result["job_id"] = job_id
         result["links_created"] = []
         result["compaction_candidates"] = []
+        callback_error = _invoke_promotion_callback(
+            promotion_callback,
+            engine,
+            result.get("promotion_candidates", []),
+            {"messages": messages, "facts": facts, "source": source},
+            trusted_authorship,
+        )
+        if callback_error is not None:
+            result["promotion_callback_error"] = callback_error
         return result
 
     # Temporarily override module-level constants for extract_facts
@@ -1169,6 +1562,7 @@ def run_extraction(
             return_error=True,
             source=source,
             rules=rules,
+            promotion_context=promotion_context,
         )
     finally:
         _mod.EXTRACT_MAX_FACTS = orig_max_facts
@@ -1184,6 +1578,7 @@ def run_extraction(
             "error_stage": "extract_facts",
             "error_message": extract_error,
             "tokens": {"extract": extract_tokens, "audn": {"input": 0, "output": 0}},
+            "promotion_candidates": [],
         }
 
     if not facts:
@@ -1194,6 +1589,7 @@ def run_extraction(
             "updated_count": 0,
             "deleted_count": 0,
             "tokens": {"extract": extract_tokens, "audn": {"input": 0, "output": 0}},
+            "promotion_candidates": [],
         }
 
     # Step 2: AUDN decisions
@@ -1221,6 +1617,7 @@ def run_extraction(
         extract_tokens=extract_tokens,
         audn_tokens=audn_tokens,
         rules=rules,
+        promotion_context=promotion_context,
     )
 
     # Step 3: Dry-run intercept — return planned actions without executing
@@ -1240,6 +1637,7 @@ def run_extraction(
             "tokens": {"extract": extract_tokens, "audn": audn_tokens},
             "links_created": [],
             "compaction_candidates": [],
+            "promotion_candidates": [],
         }
 
     # Step 4: Execute
@@ -1256,6 +1654,8 @@ def run_extraction(
             },
             trusted_authorship,
         ),
+        promotion_context=promotion_context,
+        evidence_fingerprint=_promotion_evidence_fingerprint(messages),
     )
     result["extracted_count"] = len(facts)
     result["tokens"] = {"extract": extract_tokens, "audn": audn_tokens}
@@ -1272,6 +1672,16 @@ def run_extraction(
         logger.error("Extraction maintenance failed (non-fatal): %s", e)
         result["links_created"] = []
         result["compaction_candidates"] = []
+
+    callback_error = _invoke_promotion_callback(
+        promotion_callback,
+        engine,
+        result.get("promotion_candidates", []),
+        {"messages": messages, "facts": facts, "source": source},
+        trusted_authorship,
+    )
+    if callback_error is not None:
+        result["promotion_callback_error"] = callback_error
 
     # Step 5: Build debug trace when requested
     debug_similar = audn_artifacts.get("debug_similar", {})

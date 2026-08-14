@@ -58,6 +58,15 @@ _PROVIDER_NAMES = frozenset(
     {"anthropic", "openai", "chatgpt-subscription", "ollama", "omlx"}
 )
 
+# Version identities are deliberately independent from provider/model names so
+# a prompt or policy change can invalidate prior shadow evidence.
+CLASSIFIER_VERSION = os.environ.get(
+    "PROJECT_PROMOTION_CLASSIFIER_VERSION", "classifier-v1"
+).strip() or "classifier-v1"
+REVIEWER_VERSION = os.environ.get(
+    "PROJECT_PROMOTION_REVIEWER_VERSION", "reviewer-v1"
+).strip() or "reviewer-v1"
+
 
 def _coerce_enum(value: Any, enum_type: type[Enum], field_name: str) -> Enum:
     if isinstance(value, enum_type):
@@ -728,6 +737,7 @@ def load_promotion_config() -> PromotionConfig:
 
 
 __all__ = [
+    "CLASSIFIER_VERSION",
     "PromotionConfig",
     "PromotionContext",
     "PromotionMode",
@@ -736,6 +746,7 @@ __all__ = [
     "PromotionState",
     "PromotionStatus",
     "ReviewDecision",
+    "REVIEWER_VERSION",
     "canonical_project_text",
     "load_promotion_config",
     "parse_proposal",
