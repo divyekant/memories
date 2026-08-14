@@ -175,7 +175,7 @@ dirty spike reproduced that limitation.
 | R1 | Personal, explicitly private, sensitive, cross-project, or unauthorized content never becomes project-readable through promotion. | Must-have | ❌ | ✅ | ✅ | ❌ |
 | R2 | Semantic project relevance and sharing intent are judged by a configured model; deterministic logic is limited to enforceable structural and safety vetoes. | Must-have | ✅ | ✅ | ✅ | ❌ |
 | R3 | Tentative, disputed, contradicted, incomplete, or low-confidence knowledge remains private. | Must-have | ❌ | ✅ | ✅ | ❌ |
-| R4 | Promotion precision gets an independent model review without paying a second provider call for every extracted fact. | Must-have | ❌ | ❌ | ✅ | ❌ |
+| R4 | Promotion precision gets an independent model review, while routing remains configurable so later higher-volume deployments can bound provider cost without weakening the review gate. | Must-have | ❌ | ❌ | ✅ | ❌ |
 | R5 | Every proposal, review, promotion, rejection, and retry is attributable, auditable, and idempotent across worker or process failure. | Must-have | ✅ | ✅ | ✅ | ✅ |
 | R6 | Reconciliation recovers interrupted eligible work but does not promote by blindly rerunning unchanged uncertain evidence. | Must-have | ✅ | ✅ | ✅ | ✅ |
 | R7 | Upgrade and rollout are inert by default at the server; operators can observe real decisions in shadow mode and stop promotion immediately. | Must-have | ✅ | ✅ | ✅ | ✅ |
@@ -186,7 +186,9 @@ dirty spike reproduced that limitation.
 **Notes:**
 
 - A fails R1 and R3 in the dirty spike and has no independent review for R4.
-- B fails R4 because every fact pays for a second provider call.
+- B fails R4 because it has no selective routing control when volume later
+  makes reviewing every fact materially expensive. FPLGuru deliberately starts
+  permissively and may review nearly every plausible candidate during shadow.
 - D fails R1–R4 because embedding similarity is not a sharing-intent or
   assertion-state classifier.
 - A, B, and D do not specify the Phase 2 maintenance exclusion and activation
@@ -322,7 +324,7 @@ second canonical fact store. The exact field names are implementation detail,
 but the persisted state must represent:
 
 - candidate/private memory ID;
-- project ID and proposed project kind;
+- project ID, declaration fingerprint, and proposed project kind;
 - capture mode (`off`, `shadow`, or `auto`);
 - proposal visibility, assertion status, confidence, reason, and classifier
   version;
@@ -433,7 +435,7 @@ It may act as follows:
 | `deferred` with changed private text, explicit owner approval, newly relevant shared-project evidence, or a newer reviewer policy/version **and sufficient evidence** | Re-review. |
 | `deferred` with unchanged evidence and reviewer version | Do nothing. |
 | `rejected` with unchanged evidence and reviewer version | Do nothing. |
-| `unreviewable` without new evidence or manual decision | Do nothing; retain and include it in backlog age/count alerts. |
+| `unreviewable` without new evidence or manual decision | Do nothing; retain and include it in the new-item rate alert and aged-backlog signal. |
 | `promoted` | Verify target linkage only; never create another target. |
 
 New evidence may use the candidate owner's updated private record and
@@ -444,7 +446,15 @@ The pass revalidates current managed-key identity and exact project write
 authority before any shared mutation. Revoked access leaves the candidate
 private. Reconciliation is bounded by both batch size and wall-clock budget and
 uses per-candidate locks; one stuck provider call cannot consume the entire
-maintenance window.
+maintenance window. The wall-clock budget is authoritative and the batch size
+is only an upper bound: a pass stops before the batch is exhausted whenever
+the deadline is reached.
+
+The host cap and declared mode gate only work that would initiate a new review
+or create/reuse a shared target. Crash-finalization repair for an already
+created shared target, and linkage verification for an already promoted
+candidate, continue while the cap is `off`; these operations finish previously
+authorized work and never create new shared knowledge.
 
 ## Automatic Maintenance Boundary and Phase 1 Prerequisite
 
@@ -493,25 +503,31 @@ global cap, defaulting to `off` in the first Phase 2 release:
 PROJECT_PROMOTION_MODE=off|shadow|auto
 ```
 
-The first release also exposes bounded operator settings with conservative
-defaults:
+The first release also exposes bounded operator settings. The relevance
+threshold intentionally has no production default: the fixture evaluator must
+report routing rates at candidate thresholds, and the operator selects a
+deliberately permissive shadow value from that measured distribution before
+raising the host cap:
 
 ```text
-PROJECT_PROMOTION_RELEVANCE_THRESHOLD=0.70
+PROJECT_PROMOTION_RELEVANCE_THRESHOLD=
 PROJECT_PROMOTION_NEAR_DUPLICATE_THRESHOLD=0.88
 PROJECT_PROMOTION_AUDIT_FLOOR=10
 PROJECT_PROMOTION_AUDIT_PERIOD_DAYS=7
 PROJECT_PROMOTION_RECONCILE_BATCH=25
 PROJECT_PROMOTION_RECONCILE_BUDGET_SECONDS=20
 PROJECT_PROMOTION_REJECTED_RETENTION_DAYS=90
-PROJECT_PROMOTION_UNREVIEWABLE_ALERT_COUNT=20
-PROJECT_PROMOTION_UNREVIEWABLE_ALERT_AGE_HOURS=24
+PROJECT_PROMOTION_UNREVIEWABLE_RATE_COUNT=5
+PROJECT_PROMOTION_UNREVIEWABLE_RATE_WINDOW_HOURS=1
+PROJECT_PROMOTION_UNREVIEWABLE_BACKLOG_AGE_HOURS=168
 PROJECT_PROMOTION_REVIEW_PROVIDER=
 PROJECT_PROMOTION_REVIEW_MODEL=
 ```
 
 An empty review-provider or review-model value inherits the configured
-extraction provider or model respectively.
+extraction provider or model respectively. A missing relevance threshold is
+valid while the host cap is `off`, but `shadow` or `auto` fails closed until a
+measured threshold is configured.
 
 FPLGuru shadow starts with a deliberately permissive relevance threshold so
 every plausibly durable project fact is reviewed. Tightening it later is an
@@ -613,9 +629,11 @@ exist, even if MCP parity is deferred.
 
 There is no bulk dismissal endpoint in Phase 2. An owner may script the
 per-item audited reject operation during an incident; a bulk mutation API is
-deferred until real volume demonstrates that it is needed. Unresolved
-`unreviewable` count and oldest age have explicit alert thresholds so degraded
-review infrastructure cannot create silent permanent debt.
+deferred until real volume demonstrates that it is needed. Unreviewable
+operations expose two distinct signals so degraded review infrastructure
+cannot create silent permanent debt: a page-worthy rate alert for at least
+five newly unreviewable candidates within one hour, and an informational
+aged-backlog signal when any unresolved item reaches seven days.
 
 ## MiniLM's Role
 
@@ -641,11 +659,11 @@ failures directly.
 | Proposal fields malformed | Store the valid extracted fact privately with no promotion. |
 | Secret, PII, or raw-transcript marker in candidate/final text | Reject promotion; retain only text allowed by existing private extraction hygiene. |
 | Review provider unavailable, timeout, malformed output, or low confidence while evidence remains in flight | Defer privately and retry only within the bounded evidence lifetime. |
-| Review evidence is lost before a semantic decision | Mark `unreviewable`, retain privately, protect from maintenance, and alert by count/age; never infer from fact text alone. |
+| Review evidence is lost before a semantic decision | Mark `unreviewable`, retain privately, protect from maintenance, and expose rate/backlog alerts; never infer from fact text alone. |
 | Queue full or worker/process exit | Private fact survives; candidate is retryable only when sufficient evidence remains, otherwise `unreviewable`. |
 | Authorization revoked between proposal and write | Reject at final under-lock preflight. |
 | Target add succeeds but private finalization fails | Reconciler finds target by private source ID and finishes without duplicating. |
-| Project mode or host cap changes to `off` | Stop new reviews/promotions immediately; do not delete existing shared knowledge. |
+| Project mode or host cap changes to `off` | Stop new reviews and shared-target creation immediately; still finish an already-created target's private metadata/archive finalization and verify existing linkage. Do not delete shared knowledge. |
 | Classifier/reviewer prompt, policy, provider, or model version changes | Invalidate prior shadow outcomes and restart time plus volume gates; stale approvals cannot promote. |
 | Semantic near-duplicate found | Keep both records/candidates; surface and measure similarity, but do not merge, archive, or suppress automatically. |
 | Automatic maintenance sees `project/` or protected workflow state | Skip it using the shared maintenance predicate. |
@@ -669,8 +687,10 @@ Activation gates are:
 1. a versioned labeled suite of at least 100 weighted fixtures;
 2. zero unsafe promotions in every high-risk fixture;
 3. at least 95% promotion precision across the full labeled fixture set;
-4. at least 85% end-to-end recall for confirmed durable project facts,
-   including false-private measurement through the low-relevance audit route;
+4. at least 85% end-to-end recall for confirmed durable project facts in the
+   weighted fixture suite; the bounded low-relevance audit route detects live
+   false-private drift but is not treated as statistically establishing that
+   recall rate;
 5. no cross-principal private disclosure in API, reviewer input, logs, audit,
    metrics, or reconciliation tests;
 6. successful idempotency tests for every mutation boundary;
@@ -683,8 +703,10 @@ Activation gates are:
 Fewer than 30 would-promote outcomes extends shadow. Fewer than roughly 10
 after two weeks triggers a routing-threshold review rather than being treated
 as safety evidence. The fixture suite carries the statistical precision and
-recall argument; live shadow exists to catch vocabulary, interleaving, and
-injection shapes the fixtures did not anticipate.
+recall argument and must report routing rates at multiple candidate relevance
+thresholds. Live shadow and the audit route detect drift and catch vocabulary,
+interleaving, and injection shapes the fixtures did not anticipate; they do
+not establish the 85% recall rate on their own.
 
 Required operational metrics are project-record count by kind, canonical
 exact-reuse count/rate, semantic near-duplicate candidate count/rate,
@@ -757,7 +779,7 @@ PR #97 review resolved the former reviewer questions as follows:
     duplicates and excludes project records from automatic consolidation.
 12. Every `project/`-prefixed source, including malformed legacy paths, is
     protected from pruning by a standalone pre-activation hotfix.
-13. `unreviewable` backlog alerts ship in Phase 2; bulk dismissal is deferred
+13. `unreviewable` degradation-rate and aged-backlog signals ship in Phase 2; bulk dismissal is deferred
     in favor of scriptable per-item audited decisions.
 
 ## Acceptance Criteria for the Future Implementation
@@ -789,7 +811,7 @@ The implementation is not complete until:
 14. Promotion-state private memories follow the specified per-state retention
     rules, including non-expiring `unreviewable` and 90-day rejected audit
     retention by default.
-15. Unreviewable count/age alerts and all specified promotion/duplicate/project
+15. Unreviewable rate/backlog signals and all specified promotion/duplicate/project
     metrics are exposed without leaking candidate text.
 16. The versioned 100+ labeled dirty suite, live-shadow evidence record,
     operational metrics, rollback procedure, and FPLGuru activation playbook

@@ -182,6 +182,7 @@ class PromotionProposal:
     project_kind: str
     confidence: float
     reason: str
+    classifier_version: str
 
 @dataclass(frozen=True)
 class PromotionReview:
@@ -189,6 +190,8 @@ class PromotionReview:
     confidence: float
     reason: str
     shared_text: str | None = None
+    reviewer_version: str = ""
+    reviewed_at: str = ""
 
 @dataclass(frozen=True)
 class PromotionContext:
@@ -205,6 +208,7 @@ class PromotionState:
     status: PromotionStatus
     owner: str
     project_id: str
+    declaration_fingerprint: str
     capture_mode: PromotionMode
     route: str | None
     proposal: PromotionProposal | None
@@ -218,15 +222,16 @@ class PromotionState:
 @dataclass(frozen=True)
 class PromotionConfig:
     host_mode: PromotionMode = PromotionMode.OFF
-    relevance_threshold: float = 0.70
+    relevance_threshold: float | None = None
     near_duplicate_threshold: float = 0.88
     audit_floor: int = 10
     audit_period_days: int = 7
     reconcile_batch: int = 25
     reconcile_budget_seconds: int = 20
     rejected_retention_days: int = 90
-    unreviewable_alert_count: int = 20
-    unreviewable_alert_age_hours: int = 24
+    unreviewable_rate_count: int = 5
+    unreviewable_rate_window_hours: int = 1
+    unreviewable_backlog_age_hours: int = 168
     review_provider: str = ""
     review_model: str = ""
 ```
@@ -574,11 +579,11 @@ uv run pytest -q tests/test_promotion_reconciliation.py tests/test_consolidator.
 
 - [ ] **Step 5: Centralize maintenance protection and add the bounded pass**
 
-Both `find_clusters` and `find_prune_candidates` call the same state predicate. Strict project sources are excluded from clustering; every `project/` prefix remains excluded from pruning. The scheduler calls reconciliation in a threadpool with the configured batch and deadline and never runs it when the host cap is off.
+Both `find_clusters` and `find_prune_candidates` call the same state predicate. Strict project sources are excluded from clustering; every `project/` prefix remains excluded from pruning. The scheduler calls reconciliation in a threadpool with the configured batch and authoritative deadline; the batch is only an upper bound. When the host cap is off, the pass skips review and shared-target initiation but still runs crash-finalization repair for an already-created target and linkage verification for already-promoted candidates.
 
 - [ ] **Step 6: Implement state-derived metrics and alerts**
 
-Derive current gauges from memory metadata; derive cumulative events from the existing audit log. An alert is active when unreviewable count is at least 20 or oldest age is at least 24 hours, using configured thresholds.
+Derive current gauges from memory metadata; derive cumulative events from the existing audit log. Emit a page-worthy degradation alert when at least five candidates become unreviewable within one hour, and a separate informational backlog signal when any unresolved candidate reaches seven days, using configured thresholds.
 
 - [ ] **Step 7: Run maintenance, API, and regression suites, then commit**
 
@@ -603,7 +608,7 @@ git commit -m "feat: reconcile and observe promotions"
 
 **Interfaces:**
 - Produces: CLI `uv run python eval/run_promotion_eval.py --fixtures eval/fixtures/project_promotion_v1.jsonl --output promotion-eval.json`.
-- Produces machine-readable precision, recall, high-risk unsafe count, route, decision, provider/model/policy versions, and per-risk-class confusion counts.
+- Produces machine-readable precision, recall, high-risk unsafe count, route, decision, provider/model/policy versions, per-risk-class confusion counts, and routing rates at multiple candidate relevance thresholds.
 - Documents a separate FPLGuru shadow evidence record; the implementation PR does not create or satisfy that record.
 
 - [ ] **Step 1: Write the red evaluator contract tests**
@@ -618,6 +623,10 @@ def test_gate_requires_100_weighted_fixtures_and_zero_unsafe_high_risk(tmp_path)
 def test_gate_enforces_precision_and_recall():
     assert evaluate(labeled_cases(precision=.949, recall=.90))["gate_passed"] is False
     assert evaluate(labeled_cases(precision=.96, recall=.849))["gate_passed"] is False
+
+def test_report_includes_candidate_threshold_routing_rates():
+    report = evaluate(labeled_cases(precision=.96, recall=.90))
+    assert set(report["routing_rates"]) >= {"0.30", "0.40", "0.50", "0.70"}
 ```
 
 - [ ] **Step 2: Create at least 100 versioned weighted fixtures**
@@ -626,7 +635,7 @@ Include every risk class named in the spec, both safe and unsafe outcomes, both 
 
 - [ ] **Step 3: Implement deterministic scoring and machine-readable failure output**
 
-The evaluator exits non-zero unless total weighted fixtures are at least 100, precision is at least 0.95, recall is at least 0.85, and unsafe high-risk count is zero. Never write fixture conversation text to the report.
+The evaluator exits non-zero unless total weighted fixtures are at least 100, precision is at least 0.95, recall is at least 0.85, and unsafe high-risk count is zero. It reports candidate routing rates so the initial permissive shadow threshold is selected from evidence rather than a hardcoded default. Never write fixture conversation text to the report.
 
 - [ ] **Step 4: Document deployment, shadow evidence, rollback, and explicit non-actions**
 
@@ -695,7 +704,7 @@ The review request must name the exact SHA, the pruning prerequisite, activation
 - [ ] Exact canonical digest is the only automatic reuse operation.
 - [ ] Semantically similar project facts can coexist and are measured.
 - [ ] Candidate locks and provenance recover every crash boundary without duplicate shared records.
-- [ ] Revocation and host/project off stop promotion at the final mutation boundary.
+- [ ] Revocation and host/project off prevent any new shared target at the final mutation boundary, while an already-created target is still finalized idempotently.
 - [ ] Project and workflow maintenance protections apply to manual and scheduled paths.
 - [ ] Unreviewable debt is visible, alerted, non-expiring, and individually dismissible with audit.
 - [ ] The 100+ fixture gate enforces 95% precision, 85% recall, and zero unsafe high-risk outcomes.
