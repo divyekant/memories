@@ -16,10 +16,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import threading
 import time
+import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +64,9 @@ def parse_shadow_providers(env_value: str) -> list[ShadowProviderConfig]:
 
 def _build_one(cfg: ShadowProviderConfig) -> LLMProvider:
     """Construct a single shadow provider. Raises ValueError for unsupported types."""
+    if cfg.provider_name == "jev":
+        from jev_shadow import JevShadow
+        return JevShadow(model=cfg.model)
     if cfg.provider_name == "omlx":
         base_url = os.environ.get("SHADOW_OMLX_URL", "").strip() or None
         api_key = os.environ.get("SHADOW_OMLX_API_KEY", "").strip() or None
@@ -75,7 +80,7 @@ def _build_one(cfg: ShadowProviderConfig) -> LLMProvider:
         return OllamaProvider(base_url=base_url, model=cfg.model)
     raise ValueError(
         f"Shadow provider '{cfg.provider_name}' not supported in v1 "
-        "(supported: omlx, ollama)"
+        "(supported: omlx, ollama, jev)"
     )
 
 
@@ -99,7 +104,7 @@ def _sanitize_model_name(model: str) -> str:
     return _FILENAME_SAFE.sub("_", model)
 
 
-def write_shadow_log(log_dir: str, model: str, record: dict) -> None:
+def write_shadow_log(log_dir: str, model: str, record: dict, *, max_bytes: int = 0, backups: int = 5) -> None:
     """Append a single JSONL line for `model` to <log_dir>/memories-shadow-<model>.log.
 
     Thread-safe: writes are serialized per-file by an internal lock so concurrent
@@ -107,11 +112,27 @@ def write_shadow_log(log_dir: str, model: str, record: dict) -> None:
     """
     safe_model = _sanitize_model_name(model)
     log_path = Path(log_dir)
-    log_path.mkdir(parents=True, exist_ok=True)
+    log_path.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = str(log_path / f"memories-shadow-{safe_model}.log")
     line = json.dumps(record, default=str) + "\n"
     lock = _get_log_lock(path)
     with lock:
+        if max_bytes:
+            # Pre-create privately; rotations preserve the original permissions.
+            fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+            os.close(fd)
+            handler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backups, encoding="utf-8", delay=True)
+            try:
+                record_line = logging.LogRecord("shadow", logging.INFO, "", 0, line.rstrip("\n"), (), None)
+                if handler.shouldRollover(record_line):
+                    handler.doRollover()
+                    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+                    os.close(fd)
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(line)
+            finally:
+                handler.close()
+            return
         with open(path, "a", encoding="utf-8") as f:
             f.write(line)
 
@@ -132,12 +153,19 @@ def build_shadow_providers() -> list[LLMProvider]:
     return providers
 
 
-# Module-level daemon executor — submits return immediately; shadow work
-# runs on background threads. Track in-flight futures so tests (and graceful
-# shutdown) can wait deterministically.
+# Bound running plus queued work. Slow shadows never grow a production backlog.
 _SHADOW_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="shadow")
-_inflight: list[Future] = []
+_slots = threading.BoundedSemaphore(16)
+_inflight: set[Future] = set()
 _inflight_lock = threading.Lock()
+_dropped_total = 0
+_process_id = uuid.uuid4().hex
+
+
+def _shadow_done(future: Future) -> None:
+    with _inflight_lock:
+        _inflight.discard(future)
+    _slots.release()
 
 
 def _prompt_hash(system: str, user: str) -> str:
@@ -158,6 +186,7 @@ def _run_one_shadow(
     prompt_hash: str,
     source: str,
     log_dir: str,
+    primary_metadata: dict,
 ) -> None:
     """Execute a single shadow; never raises."""
     model = shadow.model or shadow.provider_name
@@ -167,24 +196,35 @@ def _run_one_shadow(
         "call_type": call_type,
         "source": source,
         "prompt_hash": prompt_hash,
-        "primary_text": primary_text[:4000] if primary_text else None,
+        "primary_text": primary_text[:4000] if primary_text and shadow.provider_name != "jev" else None,
         "shadow_text": None,
         "shadow_input_tokens": 0,
         "shadow_output_tokens": 0,
         "latency_ms": 0,
         "error": None,
+        "call_id": uuid.uuid4().hex,
+        "process_id": _process_id,
+        "dropped_total": _dropped_total,
+        **primary_metadata,
     }
     try:
-        result = shadow.complete(system, user)
-        record["shadow_text"] = (result.text or "")[:4000]
-        record["shadow_input_tokens"] = result.input_tokens
-        record["shadow_output_tokens"] = result.output_tokens
+        if shadow.provider_name == "jev":
+            record.update(shadow.compare(system, user, primary_text))
+        else:
+            result = shadow.complete(system, user)
+            record["shadow_text"] = (result.text or "")[:4000]
+            record["shadow_input_tokens"] = result.input_tokens
+            record["shadow_output_tokens"] = result.output_tokens
     except Exception as e:
-        record["error"] = str(e)
+        record["error"] = type(e).__name__ if shadow.provider_name == "jev" else str(e)
+        record["status"] = "error"
     finally:
         record["latency_ms"] = int((time.time() - start) * 1000)
         try:
-            write_shadow_log(log_dir, model, record)
+            if shadow.provider_name == "jev":
+                write_shadow_log(log_dir, model, record, max_bytes=10 * 1024 * 1024)
+            else:
+                write_shadow_log(log_dir, model, record)
         except Exception as e:
             logger.warning("Shadow log write failed for %s: %s", model, e)
 
@@ -197,24 +237,38 @@ def fanout_shadow_async(
     source: str,
     shadows: list[LLMProvider],
     log_dir: str = "/tmp",
+    primary_model: str | None = None,
+    primary_provider: str | None = None,
+    primary_latency_ms: int | None = None,
 ) -> None:
     """Fan out the same prompt to all shadow providers. Returns immediately.
 
     Never raises; all failures are caught and logged to JSONL.
     """
+    global _dropped_total
     if not shadows:
         return
     prompt_hash = _prompt_hash(system, user)
     for shadow in shadows:
+        if shadow.provider_name == "jev" and call_type != "audn":
+            continue
+        if not _slots.acquire(blocking=False):
+            with _inflight_lock:
+                _dropped_total += 1
+            logger.warning("Shadow capacity exhausted; skipped %s", shadow.model)
+            continue
         try:
             fut = _SHADOW_EXECUTOR.submit(
                 _run_one_shadow,
                 shadow, call_type, system, user, primary_text,
                 prompt_hash, source, log_dir,
+                {"primary_model": primary_model, "primary_provider": primary_provider, "primary_latency_ms": primary_latency_ms},
             )
             with _inflight_lock:
-                _inflight.append(fut)
+                _inflight.add(fut)
+            fut.add_done_callback(_shadow_done)
         except Exception as e:
+            _slots.release()
             logger.warning("Failed to submit shadow %s: %s", shadow, e)
 
 

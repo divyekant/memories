@@ -257,3 +257,49 @@ class TestFanoutShadow:
         assert elapsed < 0.1, f"fanout_shadow_async blocked for {elapsed:.3f}s"
         wait_for_shadows(timeout=5)
         assert (tmp_path / "memories-shadow-slow.log").exists()
+
+class TestProductionShadowBounds:
+    def test_jev_receives_only_audn_and_keeps_primary_metadata(self, tmp_path):
+        from shadow_runner import fanout_shadow_async, wait_for_shadows
+        class Shadow:
+            provider_name = 'jev'
+            model = 'jev-latest'
+            def compare(self, system, user, primary_text):
+                assert (system, user, primary_text) == ('s', 'u', 'primary')
+                return {'status': 'ok', 'fact_count': 1, 'action_matches': 1}
+        for kind in ('extract', 'single_call', 'audn'):
+            fanout_shadow_async(kind, 's', 'u', 'primary', 'src', [Shadow()], str(tmp_path), primary_model='live-model', primary_provider='anthropic', primary_latency_ms=123)
+        wait_for_shadows(5)
+        rows=[json.loads(x) for x in (tmp_path/'memories-shadow-jev-latest.log').read_text().splitlines()]
+        assert len(rows)==1
+        assert rows[0]['primary_model']=='live-model'
+        assert rows[0]['primary_latency_ms']==123
+        assert rows[0]['status']=='ok'
+
+    def test_saturation_skips_without_waiting_and_prunes_futures(self, tmp_path):
+        import shadow_runner as sr
+        sr.wait_for_shadows(5)
+        gate=threading.Event()
+        class Slow:
+            provider_name='jev'; model='slow-jev'
+            def compare(self, *args):
+                gate.wait(3)
+                return {'status':'ok'}
+        before=sr._dropped_total
+        try:
+            start=time.monotonic()
+            for _ in range(40): sr.fanout_shadow_async('audn','s','u','p','src',[Slow()],str(tmp_path))
+            assert time.monotonic()-start < 0.5
+            assert len(sr._inflight)<=16
+            assert sr._dropped_total > before
+        finally:
+            gate.set();sr.wait_for_shadows(5)
+        assert len(sr._inflight)==0
+
+    def test_jev_log_rotates_and_is_private(self, tmp_path):
+        from shadow_runner import write_shadow_log
+        for _ in range(10): write_shadow_log(str(tmp_path),'jev',{'data':'x'*90},max_bytes=200,backups=2)
+        files=list(tmp_path.glob('memories-shadow-jev.log*'))
+        assert len(files)==3
+        assert all(p.stat().st_mode & 0o077 == 0 for p in files)
+        assert all(json.loads(line) for p in files for line in p.read_text().splitlines())

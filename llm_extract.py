@@ -11,6 +11,7 @@ import json
 import hashlib
 import logging
 import os
+import time
 import uuid
 from contextlib import nullcontext
 from dataclasses import replace
@@ -876,7 +877,9 @@ def run_audn(
         }
 
     try:
+        primary_start = time.monotonic()
         result = provider.complete(audn_system, prompt)
+        primary_latency_ms = int((time.monotonic() - primary_start) * 1000)
         try:
             shadows = build_shadow_providers()
             if shadows:
@@ -886,6 +889,9 @@ def run_audn(
                     user=prompt,
                     primary_text=result.text,
                     source=source,
+                    primary_model=provider.model,
+                    primary_provider=provider.provider_name,
+                    primary_latency_ms=primary_latency_ms,
                     shadows=shadows,
                     log_dir=os.environ.get("SHADOW_LOG_DIR", "/tmp"),
                 )
