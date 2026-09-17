@@ -18,8 +18,39 @@ from project_memory import (
     parse_memory_source,
 )
 from project_promotion import is_promotion_maintenance_protected
+import shadow_runner as _shadow_runner
 
 logger = logging.getLogger(__name__)
+
+
+def observe_jev(*args: Any, **kwargs: Any) -> Any:
+    return _shadow_runner.observe_jev(*args, **kwargs)
+
+
+def start_jev(*args: Any, **kwargs: Any) -> Any:
+    return _shadow_runner.start_jev(*args, **kwargs)
+
+
+def finish_jev(*args: Any, **kwargs: Any) -> Any:
+    return _shadow_runner.finish_jev(*args, **kwargs)
+
+
+def _jev_call(name: str, *args: Any, **kwargs: Any) -> Any:
+    """Call an optional Jev hook without changing maintenance behavior."""
+    try:
+        hook = globals().get(name)
+        if not callable(hook):
+            return None
+        return hook(*args, **kwargs)
+    except Exception:
+        logger.debug("Jev hook %s failed", name, exc_info=True)
+        return None
+
+
+def _jev_finish(ticket: Any, baseline: Dict[str, Any]) -> None:
+    if ticket is not None:
+        _jev_call("finish_jev", ticket, baseline)
+
 
 CONSOLIDATION_PROMPT = """These {n} memories are about the same topic in the {project} project.
 Consolidate them into 1-2 concise memories that capture ALL unique information.
@@ -236,10 +267,33 @@ def consolidate_cluster(
         memories_json=json.dumps(memories_for_prompt, indent=2),
     )
 
-    # Call LLM
-    result = provider.complete(
-        system="You are a memory consolidation assistant. Output only valid JSON.",
-        user=prompt,
+    source = cluster[0].get("source", "consolidated")
+    jev_ticket = _jev_call(
+        "start_jev",
+        "consolidation",
+        {"phase": "before_merge", "memories": cluster},
+        source=source,
+        primary_model=getattr(provider, "model", None),
+    )
+    try:
+        result = provider.complete(
+            system="You are a memory consolidation assistant. Output only valid JSON.",
+            user=prompt,
+        )
+    except Exception as exc:
+        _jev_finish(
+            jev_ticket,
+            {"status": "error", "error": type(exc).__name__},
+        )
+        raise
+    _jev_finish(
+        jev_ticket,
+        {
+            "status": "ok",
+            "text": getattr(result, "text", None),
+            "input_tokens": getattr(result, "input_tokens", 0),
+            "output_tokens": getattr(result, "output_tokens", 0),
+        },
     )
 
     # Parse response. A response that is not a clean JSON array is REJECTED for
@@ -263,12 +317,22 @@ def consolidate_cluster(
             "error": f"unparseable consolidation response{': ' + parse_error if parse_error else ''}",
         }
     new_texts = [str(t) for t in new_texts]
+    _jev_call(
+        "observe_jev",
+        "consolidation",
+        {
+            "phase": "after_merge",
+            "memories": cluster,
+            "proposed_texts": new_texts,
+        },
+        {"status": "proposed", "dry_run": dry_run},
+        source=source,
+    )
 
     if not dry_run:
         # Add the consolidated memories FIRST, delete originals only after the
         # add succeeded — never leave a window where the cluster is gone and
         # nothing replaced it.
-        source = cluster[0].get("source", "consolidated")
         metadata_list = [
             {"category": category, "consolidated_from": old_ids}
             for _ in new_texts
@@ -393,4 +457,22 @@ def find_prune_candidates(
         if age_days > threshold:
             candidates.append(mem)
 
+    bounded_candidates = [dict(candidate) for candidate in candidates[:20]]
+    candidate_ids = [candidate.get("id") for candidate in bounded_candidates]
+    _jev_call(
+        "observe_jev",
+        "pruning",
+        {
+            "candidates": bounded_candidates,
+            "total_candidates": len(candidates),
+            "rules": {
+                "detail_days": detail_days,
+                "decision_days": decision_days,
+                "rejected_retention_days": rejected_retention_days,
+            },
+            "evidence": [],
+        },
+        {"candidate_ids": candidate_ids, "selector": "age_and_nonuse"},
+        source="maintenance/pruning",
+    )
     return candidates

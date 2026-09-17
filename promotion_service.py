@@ -50,8 +50,34 @@ from project_promotion import (
     resolve_effective_mode,
 )
 from transcript_hygiene import clean_transcript, redact_secrets
+import shadow_runner as _shadow_runner
 
 logger = logging.getLogger(__name__)
+
+
+def observe_jev(*args: Any, **kwargs: Any) -> Any:
+    return _shadow_runner.observe_jev(*args, **kwargs)
+
+
+def start_jev(*args: Any, **kwargs: Any) -> Any:
+    return _shadow_runner.start_jev(*args, **kwargs)
+
+
+def finish_jev(*args: Any, **kwargs: Any) -> Any:
+    return _shadow_runner.finish_jev(*args, **kwargs)
+
+
+def _jev_call(name: str, *args: Any, **kwargs: Any) -> Any:
+    """Call an optional Jev hook without changing promotion behavior."""
+    try:
+        hook = globals().get(name)
+        if not callable(hook):
+            return None
+        return hook(*args, **kwargs)
+    except Exception:
+        logger.debug("Jev hook %s failed", name, exc_info=True)
+        return None
+
 
 _MIN_REVIEW_CONFIDENCE = 0.75
 _MAX_REVIEW_TEXT = 12000
@@ -242,6 +268,62 @@ class PromotionReviewer:
         evidence: str,
         shared_references: Iterable[Any] | None,
     ) -> PromotionReview:
+        """Review one candidate and record the guarded primary decision."""
+        hook_state: dict[str, Any] = {"ticket": None, "status": "ok"}
+        review_result: PromotionReview | None = None
+
+        def on_prompt(system: str, user: str) -> None:
+            hook_state["ticket"] = _jev_call(
+                "start_jev",
+                "promotion",
+                {"system": system, "user": user},
+                source=str(candidate.get("source") or ""),
+                primary_model=getattr(self.provider, "model", None),
+            )
+
+        def on_provider_failure() -> None:
+            hook_state["status"] = "error"
+
+        try:
+            review_result = self._review_primary(
+                candidate,
+                proposal,
+                evidence,
+                shared_references,
+                _on_prompt=on_prompt,
+                _on_provider_failure=on_provider_failure,
+            )
+            return review_result
+        finally:
+            ticket = hook_state["ticket"]
+            if ticket is not None:
+                if review_result is None:
+                    baseline = {
+                        "status": "error",
+                        "decision": ReviewDecision.DEFER.value,
+                        "confidence": 0.0,
+                        "reason": "review failed before guarded result",
+                    }
+                else:
+                    baseline = {
+                        "status": hook_state["status"],
+                        "decision": review_result.decision.value,
+                        "confidence": review_result.confidence,
+                        "reason": review_result.reason,
+                        "shared_text": review_result.shared_text,
+                    }
+                _jev_call("finish_jev", ticket, baseline)
+
+    def _review_primary(
+        self,
+        candidate: Mapping[str, Any],
+        proposal: PromotionProposal,
+        evidence: str,
+        shared_references: Iterable[Any] | None,
+        *,
+        _on_prompt: Callable[[str, str], None] | None = None,
+        _on_provider_failure: Callable[[], None] | None = None,
+    ) -> PromotionReview:
         """Review one candidate without treating any input field as a command."""
         if not isinstance(candidate, Mapping) or not isinstance(proposal, PromotionProposal):
             return _safe_review(ReviewDecision.DEFER, 0.0, "invalid candidate or proposal", reviewer_version=self.reviewer_version)
@@ -306,9 +388,13 @@ class PromotionReviewer:
             f"{_json_text(references)}\n"
             "--- END SHARED REFERENCES ---"
         )
+        if _on_prompt is not None:
+            _on_prompt(system, user)
         try:
             result = self.provider.complete(system, user)
         except Exception as exc:  # provider outages leave the fact private
+            if _on_provider_failure is not None:
+                _on_provider_failure()
             logger.warning("Promotion reviewer unavailable: %s", exc)
             if injection_detected:
                 return _safe_review(

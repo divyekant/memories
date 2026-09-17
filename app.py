@@ -56,6 +56,7 @@ from project_promotion import (
     resolve_effective_mode,
 )
 from promotion_service import PromotionService
+import shadow_runner as _shadow_runner
 
 # -- Logging ------------------------------------------------------------------
 
@@ -396,6 +397,105 @@ def _log_usage_event(
         client=request.headers.get("X-Memories-Client", "")[:100],
         session_id=request.headers.get("X-Memories-Session-Id", "")[:200],
         invocation=request.headers.get("X-Memories-Invocation", "")[:100],
+    )
+
+
+def observe_jev(*args: Any, **kwargs: Any) -> Any:
+    return _shadow_runner.observe_jev(*args, **kwargs)
+
+
+def start_jev(*args: Any, **kwargs: Any) -> Any:
+    return _shadow_runner.start_jev(*args, **kwargs)
+
+
+def finish_jev(*args: Any, **kwargs: Any) -> Any:
+    return _shadow_runner.finish_jev(*args, **kwargs)
+
+
+def _jev_call(name: str, *args: Any, **kwargs: Any) -> Any:
+    """Call an optional Jev hook without affecting the primary API path."""
+    try:
+        hook = globals().get(name)
+        if not callable(hook):
+            return None
+        return hook(*args, **kwargs)
+    except Exception:
+        logger.debug("Jev hook %s failed", name, exc_info=True)
+        return None
+
+
+_JEV_RETRIEVAL_FIELDS = (
+    "id",
+    "text",
+    "source",
+    "category",
+    "created_at",
+    "updated_at",
+    "event_at",
+    "document_at",
+    "archived",
+    "score",
+    "similarity",
+    "rrf_score",
+)
+_JEV_TIME_METADATA_FIELDS = frozenset(
+    {"created_at", "updated_at", "event_at", "document_at", "timestamp", "date"}
+)
+
+
+def _jev_retrieval_memory(memory: Mapping[str, Any]) -> Dict[str, Any]:
+    """Copy only fields that retrieval comparison needs."""
+    snapshot = {
+        key: memory[key]
+        for key in _JEV_RETRIEVAL_FIELDS
+        if key in memory
+    }
+    metadata = memory.get("metadata")
+    if isinstance(metadata, Mapping):
+        time_metadata = {
+            key: metadata[key]
+            for key in _JEV_TIME_METADATA_FIELDS
+            if key in metadata
+        }
+        if time_metadata:
+            snapshot["metadata"] = time_metadata
+    return snapshot
+
+
+def _observe_jev_retrieval(
+    request_body: Any,
+    results: List[Dict[str, Any]],
+    *,
+    route: str,
+) -> None:
+    """Observe authorized retrieval output while keeping the primary result intact."""
+    candidates = [
+        _jev_retrieval_memory(result)
+        for result in results[:20]
+        if isinstance(result, Mapping)
+    ]
+    _jev_call(
+        "observe_jev",
+        "retrieval",
+        {
+            "query": request_body.query,
+            "candidates": candidates,
+            "total_candidates": len(results),
+            "context": {
+                "route": route,
+                "since": request_body.since,
+                "until": request_body.until,
+                "reference_date": request_body.reference_date,
+            },
+        },
+        {
+            "ranking": [
+                result.get("id")
+                for result in results[:20]
+                if isinstance(result, Mapping)
+            ]
+        },
+        source=request_body.source,
     )
 
 
@@ -2551,6 +2651,7 @@ async def search(request_body: SearchRequest, request: Request):
             results = memory.search(**search_kwargs)
         results = annotate_relative_scores(auth.filter_results(results))
         result_count = len(results)
+        _observe_jev_retrieval(request_body, results, route="/search")
         _log_usage_event(request, "search", request_body.source)
         for rank, r in enumerate(results, 1):
             if "id" in r:
@@ -2622,6 +2723,7 @@ async def search_explain(request_body: SearchRequest, request: Request):
         filtered_by_auth = len(raw_results) - len(filtered_results)
         explain_result["results"] = filtered_results
         explain_result["explain"]["filtered_by_auth"] = filtered_by_auth
+        _observe_jev_retrieval(request_body, filtered_results, route="/search/explain")
         return explain_result
     except Exception as e:
         logger.exception("Search explain failed")
@@ -2700,6 +2802,7 @@ async def search_evidence(request_body: SearchRequest, request: Request):
         from evidence_packet import build_evidence_packet
 
         packet = build_evidence_packet(request_body.query, results)
+        _observe_jev_retrieval(request_body, results, route="/search/evidence")
         _log_usage_event(request, "search_evidence", request_body.source)
         return {
             "query": request_body.query,
@@ -2752,6 +2855,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                 results = memory.search(**search_kwargs)
             results = annotate_relative_scores(auth.filter_results(results))
             batch_result_count = len(results)
+            _observe_jev_retrieval(request_body=item, results=results, route="/search/batch")
             for rank, r in enumerate(results, 1):
                 if "id" in r:
                     usage_tracker.log_retrieval(

@@ -303,3 +303,52 @@ class TestProductionShadowBounds:
         assert len(files)==3
         assert all(p.stat().st_mode & 0o077 == 0 for p in files)
         assert all(json.loads(line) for p in files for line in p.read_text().splitlines())
+
+class TestIndependentJev:
+    def test_shadow_can_finish_before_primary_and_keeps_pair_id(self, monkeypatch, tmp_path):
+        import shadow_runner as sr
+        started=threading.Event()
+        class Jev:
+            provider_name='jev';model='jev-test'
+            def compare(self,system,user,primary_text):
+                assert primary_text==''
+                started.set()
+                return {'status':'ok','shadow_decisions':[], 'fact_count':0}
+        monkeypatch.setenv('SHADOW_PROVIDERS','jev')
+        monkeypatch.setenv('SHADOW_LOG_DIR',str(tmp_path))
+        monkeypatch.setattr(sr,'_build_one',lambda cfg:Jev())
+        ticket=sr.start_jev('audn',{'system':'s','user':'u'},source='test',primary_model='primary')
+        assert started.wait(1)
+        sr.wait_for_shadows(5)
+        rows=[json.loads(x) for x in next(tmp_path.glob('*.log')).read_text().splitlines()]
+        assert rows[0]['event']=='shadow'
+        sr.finish_jev(ticket,{'status':'error','error':'provider_failure'})
+        sr.wait_for_shadows(5)
+        rows=[json.loads(x) for x in next(tmp_path.glob('*.log')).read_text().splitlines()]
+        assert [r['event'] for r in rows]==['shadow','primary']
+        assert rows[0]['call_id']==rows[1]['call_id']
+        assert rows[1]['baseline']['status']=='error'
+
+    def test_disabled_does_not_construct_provider(self, monkeypatch):
+        import shadow_runner as sr
+        monkeypatch.delenv('SHADOW_PROVIDERS',raising=False)
+        monkeypatch.setattr(sr,'_build_one',lambda cfg:(_ for _ in ()).throw(AssertionError('unexpected provider')))
+        assert sr.start_jev('retrieval',{'query':'q'}) is None
+        sr.observe_jev('pruning',{}, {})
+
+    def test_observation_freezes_state_before_caller_mutation(self, monkeypatch, tmp_path):
+        import shadow_runner as sr
+        gate=threading.Event();seen=[]
+        class Jev:
+            provider_name='jev';model='jev-test'
+            def evaluate(self,flow,state,baseline):
+                gate.wait(2);seen.append(state['candidates'][0]['text'])
+                return {'status':'ok','state':state,'baseline':baseline}
+        monkeypatch.setenv('SHADOW_PROVIDERS','jev')
+        monkeypatch.setenv('SHADOW_LOG_DIR',str(tmp_path))
+        monkeypatch.setattr(sr,'_build_one',lambda cfg:Jev())
+        state={'candidates':[{'text':'before'}]}
+        sr.observe_jev('retrieval',state,{'ranking':[]})
+        state['candidates'][0]['text']='after'
+        gate.set();sr.wait_for_shadows(5)
+        assert seen==['before']

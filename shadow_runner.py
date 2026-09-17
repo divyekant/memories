@@ -284,3 +284,150 @@ def wait_for_shadows(timeout: float = 30.0) -> None:
             fut.result(timeout=remaining)
         except Exception:
             pass
+
+
+JEV_FLOWS = frozenset({'audn', 'extraction', 'relationships', 'retrieval', 'consolidation', 'pruning', 'promotion'})
+_flow_drops: dict[str, int] = {}
+
+
+def _jev_config(flow: str):
+    if flow not in JEV_FLOWS:
+        return None
+    selected = os.environ.get('JEV_SHADOW_FLOWS', 'all').strip()
+    if selected != 'all' and flow not in {x.strip() for x in selected.split(',')}:
+        return None
+    return next((cfg for cfg in parse_shadow_providers(os.environ.get('SHADOW_PROVIDERS', '')) if cfg.provider_name == 'jev'), None)
+
+
+def _enqueue_jev(function, ticket, *args):
+    global _dropped_total
+    if not _slots.acquire(blocking=False):
+        with _inflight_lock:
+            _dropped_total += 1
+            flow=ticket['flow'];_flow_drops[flow]=_flow_drops.get(flow,0)+1
+        logger.warning('Jev shadow capacity exhausted; skipped %s event', ticket['flow'])
+        return False
+    try:
+        future=_SHADOW_EXECUTOR.submit(function,ticket,*args)
+        with _inflight_lock:
+            _inflight.add(future)
+        future.add_done_callback(_shadow_done)
+        return True
+    except Exception:
+        _slots.release()
+        logger.warning('Jev shadow submission failed')
+        return False
+
+
+def _jev_record(ticket, event):
+    return {'schema_version':2,'ts':time.time(),'flow':ticket['flow'],'call_type':ticket['flow'],
+            'event':event,'call_id':ticket['call_id'],'source':ticket['source'],
+            'primary_model':ticket['primary_model'],'process_id':_process_id,
+            'dropped_total':_dropped_total,'dropped_by_flow':dict(_flow_drops),
+            'prompt_hash':ticket['prompt_hash'],'requested_model':ticket['model']}
+
+
+def _write_jev_record(ticket, record):
+    try:
+        # Keep busy retrieval traffic from evicting every maintenance observation.
+        write_shadow_log(ticket['log_dir'], ticket['model']+'--'+ticket['flow'], record, max_bytes=10*1024*1024)
+    except Exception:
+        logger.warning('Jev shadow log write failed for %s',ticket['flow'])
+
+
+def _run_jev(ticket, baseline, event):
+    record=_jev_record(ticket,event);start=time.monotonic()
+    try:
+        if ticket['state'].get('_shadow_skip'):
+            record.update(status='skipped', reason=ticket['state']['_shadow_skip'])
+            _write_jev_record(ticket, record)
+            return
+        shadow=_build_one(ShadowProviderConfig('jev',ticket['model']))
+        if ticket['flow']=='audn':
+            state=ticket['state']
+            record.update(shadow.compare(state['system'],state['user'],''))
+            for field in ('primary_decisions','primary_parse_error','action_matches','joint_matches'):
+                record.pop(field,None)
+        else:
+            record.update(shadow.evaluate(ticket['flow'],ticket['state'],baseline or {}))
+    except Exception:
+        record.update(status='error',error={'category':'shadow_internal','status':None})
+    record['schema_version']=2
+    record['latency_ms']=round((time.monotonic()-start)*1000)
+    _write_jev_record(ticket,record)
+
+
+def _primary_jev_record(ticket, baseline):
+    from jev_shadow import _screened, _parse_prompt, _normalize_primary
+    record=_jev_record(ticket,'primary')
+    try:
+        encoded=json.dumps(baseline,allow_nan=False)
+        if len(encoded.encode())>100_000 or _screened('',encoded,''):
+            record.update(status='skipped',reason='primary_evidence_screen')
+        else:
+            record.update(status='ok',baseline=baseline)
+            if ticket['flow']=='audn':
+                record['primary_latency_ms']=baseline.get('latency_ms')
+                if baseline.get('status')=='ok':
+                    try:
+                        facts,similar=_parse_prompt(ticket['state']['user'])
+                        record['primary_decisions']=_normalize_primary(baseline.get('text',''),facts,similar)
+                    except (ValueError,KeyError,TypeError):
+                        record['primary_parse_error']='invalid_primary_decisions'
+    except Exception:
+        record.update(status='error',error={'category':'primary_record','status':None})
+    _write_jev_record(ticket,record)
+
+
+def _jev_ticket(flow,state,source,primary_model):
+    cfg=_jev_config(flow)
+    if cfg is None:
+        return None
+    encoded=json.dumps(state,allow_nan=False)
+    # Reject before retaining large snapshots in the work queue.
+    if len(encoded.encode())>100_000:
+        state={'_shadow_skip':'state_size_limit'}
+    else:
+        state=json.loads(encoded)
+    return {'flow':flow,'state':state,'source':source,'primary_model':primary_model,
+            'call_id':uuid.uuid4().hex,'model':cfg.model or 'jev-latest',
+            'prompt_hash':hashlib.sha256(encoded.encode()).hexdigest()[:16],
+            'log_dir':os.environ.get('SHADOW_LOG_DIR','/tmp')}
+
+
+def start_jev(flow: str, state: dict, source: str = '', primary_model: str | None = None):
+    """Start an independent Jev decision. Return an opaque ticket for local pairing."""
+    try:
+        ticket=_jev_ticket(flow,state,source,primary_model)
+        if ticket and _enqueue_jev(_run_jev,ticket,None,'shadow'):
+            return ticket
+    except Exception:
+        logger.warning('Jev shadow start suppressed for %s',flow)
+    return None
+
+
+def finish_jev(ticket, baseline: dict) -> None:
+    """Record the primary outcome without waiting for Jev, including primary failures."""
+    if ticket is None:
+        return
+    try:
+        encoded=json.dumps(baseline,allow_nan=False)
+        if len(encoded.encode())>100_000:
+            baseline={'status':'skipped','reason':'baseline_size_limit'}
+        else:
+            baseline=json.loads(encoded)
+        _enqueue_jev(_primary_jev_record,ticket,baseline)
+    except Exception:
+        logger.warning('Jev primary observation suppressed')
+
+
+def observe_jev(flow: str, state: dict, baseline: dict, source: str = '', primary_model: str | None = None) -> None:
+    """Evaluate supplied evidence in the background. Never change or block its caller."""
+    try:
+        ticket=_jev_ticket(flow,state,source,primary_model)
+        if ticket:
+            encoded=json.dumps(baseline,allow_nan=False)
+            baseline=json.loads(encoded) if len(encoded.encode())<=100_000 else {'status':'skipped','reason':'baseline_size_limit'}
+            _enqueue_jev(_run_jev,ticket,baseline,'combined')
+    except Exception:
+        logger.warning('Jev observation suppressed for %s',flow)

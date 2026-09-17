@@ -21,7 +21,7 @@ from typing import Callable, Optional, List
 
 from auth_context import source_matches_prefixes
 from entity_locks import EntityLockManager
-from shadow_runner import build_shadow_providers, fanout_shadow_async
+from shadow_runner import build_shadow_providers, fanout_shadow_async, observe_jev, start_jev, finish_jev
 from transcript_hygiene import clean_transcript, redact_secrets
 from project_memory import (
     is_reserved_namespace_source,
@@ -733,6 +733,9 @@ def extract_facts(
             )
             facts = facts[:EXTRACT_MAX_FACTS]
 
+        observe_jev("extraction", {"system": system, "conversation": messages,
+                    "facts": facts, "variant": "two_call"}, {"facts": facts},
+                    source=source, primary_model=getattr(provider, "model", None))
         logger.info("Extracted %d facts (context=%s)", len(facts), context)
         if return_error:
             return facts, None, tokens
@@ -876,12 +879,16 @@ def run_audn(
             for i, mems in similar_per_fact.items()
         }
 
+    ticket = start_jev("audn", {"system": audn_system, "user": prompt},
+                       source=source, primary_model=getattr(provider, "model", None))
+    baseline = {"status": "error", "error": "primary_failure"}
+    primary_start = time.monotonic()
     try:
-        primary_start = time.monotonic()
         result = provider.complete(audn_system, prompt)
         primary_latency_ms = int((time.monotonic() - primary_start) * 1000)
+        baseline = {"status": "ok", "text": result.text, "latency_ms": primary_latency_ms}
         try:
-            shadows = build_shadow_providers()
+            shadows = [s for s in build_shadow_providers() if s.provider_name != "jev"]
             if shadows:
                 fanout_shadow_async(
                     call_type="audn",
@@ -909,6 +916,9 @@ def run_audn(
     except Exception as e:
         logger.error("AUDN cycle failed: %s", e)
         return [{"action": "FALLBACK_ADD", "fact_index": i} for i in range(len(facts))], {"input": 0, "output": 0}, audn_artifacts
+    finally:
+        baseline.setdefault("latency_ms", int((time.monotonic() - primary_start) * 1000))
+        finish_jev(ticket, baseline)
 
 
 SINGLE_CALL_PROMPT = """You are a memory extraction and classification system.
@@ -994,6 +1004,10 @@ def extract_and_decide_single_call(
         if action["action"] not in ("ADD", "NOOP"):
             action["action"] = "ADD"
 
+    observe_jev("extraction", {"system": prompt, "conversation": user_prompt,
+                "facts": actions[:max_facts], "variant": "single_call"},
+                {"actions": actions[:max_facts]}, source=source,
+                primary_model=getattr(provider, "model", None))
     return actions[:max_facts], usage, None
 
 
@@ -1423,6 +1437,7 @@ def _apply_maintenance(
     max_links: int = None,
     min_link_score: float = None,
     source: Optional[str] = None,
+    facts: Optional[list[dict]] = None,
 ) -> dict:
     """Post-execution maintenance: auto-linking and compaction detection.
 
@@ -1435,6 +1450,8 @@ def _apply_maintenance(
         min_link_score = EXTRACT_MIN_LINK_SCORE
 
     links_created = []
+    relationship_pairs = []
+    total_pairs = 0
     compaction_candidates = []
     similar_per_fact = audn_artifacts.get("similar_per_fact", {})
     result_actions = exec_result.get("actions", [])
@@ -1479,6 +1496,13 @@ def _apply_maintenance(
             for target in targets:
                 target_id = target["id"]
                 rrf = _mem_score(target)
+                if facts and isinstance(fact_index, int) and 0 <= fact_index < len(facts):
+                    total_pairs += 1
+                    if len(relationship_pairs) < 20:
+                        relationship_pairs.append({
+                            "from_memory": {"id": new_id, "text": facts[fact_index]["text"], "source": source},
+                            "to_memory": {key: target[key] for key in ("id", "text", "source", "created_at", "updated_at") if key in target},
+                        })
                 try:
                     engine.add_link(new_id, target_id, "related_to")
                     links_created.append({"from_id": new_id, "to_id": target_id, "rrf_score": round(rrf, 6)})
@@ -1489,6 +1513,9 @@ def _apply_maintenance(
 
     if links_created:
         logger.info("Auto-linked %d edges during extraction", len(links_created))
+    if relationship_pairs:
+        observe_jev("relationships", {"pairs": relationship_pairs, "total_pairs": total_pairs},
+                    {"proposed_type": "related_to", "links_created": links_created}, source=source or "")
 
     # --- Compaction detection ---
     for fact_idx, similar in similar_per_fact.items():
@@ -1783,7 +1810,7 @@ def run_extraction(
     # Step 4b: Post-execution maintenance (auto-linking + compaction detection)
     try:
         maintenance = _apply_maintenance(
-            engine, decisions, result, audn_artifacts, source=source
+            engine, decisions, result, audn_artifacts, source=source, facts=facts
         )
         result["links_created"] = maintenance["links_created"]
         result["compaction_candidates"] = maintenance["compaction_candidates"]

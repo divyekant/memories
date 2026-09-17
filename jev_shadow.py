@@ -325,6 +325,350 @@ def _screened(system: str, user: str, primary_text: str) -> bool:
     return bool(secret_types or _VCK_RE.search(combined) or _DIRECT_KEY_RE.search(combined))
 
 
+class _InvalidInput(ValueError):
+    pass
+
+
+def _json_copy(value: Any) -> Any:
+    try:
+        return json.loads(
+            json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        )
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        raise _InvalidInput from None
+
+
+def _json_bytes(value: Any) -> bytes:
+    try:
+        return json.dumps(
+            value, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        raise _InvalidInput from None
+
+
+def _safe_value(value: Any) -> tuple[Any, bool]:
+    copied = _json_copy(value)
+    return copied, len(_json_bytes(copied)) <= MAX_REQUEST_BYTES
+
+
+def _value_screened(value: Any) -> bool:
+    return _screened("", _json_bytes(value).decode("utf-8"), "")
+
+
+def _choice_question(instructions: str, criteria: tuple[str, ...] | list[str] | dict[str, str]) -> dict[str, Any]:
+    if isinstance(criteria, dict):
+        choices = criteria
+    else:
+        choices = {choice: choice for choice in criteria}
+    return {
+        "type": "choice",
+        "instructions": instructions,
+        "criteria": choices,
+    }
+
+
+_SUPPORT_CHOICES = ("supported", "unsupported", "unclear")
+_DURABILITY_CHOICES = ("durable", "ephemeral", "unclear")
+_CATEGORY_CHOICES = ("decision", "learning", "detail", "unclear")
+_PRIMARY_RELATION_FIELDS = frozenset({"proposed_type"})
+_PRIMARY_EXTRACTION_FIELDS = frozenset(
+    {
+        "action",
+        "assertion_status",
+        "category",
+        "confidence",
+        "project_kind",
+        "project_relevance",
+        "reason",
+        "visibility",
+    }
+)
+
+
+def _build_extraction(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], int, int]:
+    facts = state.get("facts")
+    if not isinstance(facts, list):
+        raise _InvalidInput
+    variant = state.get("variant", "two_call")
+    if variant not in {"two_call", "single_call"}:
+        raise _InvalidInput
+    total_count = len(facts)
+    limit = 25 if variant == "single_call" else 30
+    selected = facts[:limit]
+    evaluation_facts: list[dict[str, Any]] = []
+    for index, fact in enumerate(selected):
+        if not isinstance(fact, dict) or not isinstance(fact.get("text"), str):
+            raise _InvalidInput
+        evaluation_facts.append(
+            {
+                "index": index,
+                **{
+                    key: value
+                    for key, value in fact.items()
+                    if key not in _PRIMARY_EXTRACTION_FIELDS | {"index"}
+                },
+            }
+        )
+    evaluation_state = {
+        "system": state.get("system", ""),
+        "conversation": state.get("conversation", ""),
+        "facts": evaluation_facts,
+        "variant": variant,
+    }
+    if not isinstance(evaluation_state["system"], str):
+        raise _InvalidInput
+    if not selected:
+        return evaluation_state, {}, 0, total_count
+    questions: dict[str, dict[str, Any]] = {}
+    for index in range(len(selected)):
+        questions[f"support_{index}"] = _choice_question(
+            f"For fact index {index}, classify whether the supplied conversation supports the fact. Preserve speaker attribution and conditions.",
+            _SUPPORT_CHOICES,
+        )
+        questions[f"durability_{index}"] = _choice_question(
+            f"For fact index {index}, classify whether the fact is durable or limited to the current session.",
+            _DURABILITY_CHOICES,
+        )
+        questions[f"category_{index}"] = _choice_question(
+            f"For fact index {index}, classify the fact as a decision, learning, or detail. Use unclear when the evidence does not decide.",
+            _CATEGORY_CHOICES,
+        )
+        if variant == "single_call":
+            questions[f"storage_{index}"] = _choice_question(
+                f"For fact index {index}, choose whether the single-call extractor should store it as ADD or NOOP. Use unclear when the evidence does not decide.",
+                ("ADD", "NOOP", "unclear"),
+            )
+    return evaluation_state, questions, len(selected), total_count
+
+
+def _build_relationships(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], int, int]:
+    pairs = state.get("pairs")
+    if not isinstance(pairs, list):
+        raise _InvalidInput
+    total_count = state.get("total_pairs", len(pairs))
+    if type(total_count) is not int or total_count < len(pairs):
+        total_count = len(pairs)
+    selected = pairs[:20]
+    if any(not isinstance(pair, dict) for pair in selected):
+        raise _InvalidInput
+    evaluation_state = {
+        "pairs": [
+            {
+                key: value
+                for key, value in pair.items()
+                if key not in _PRIMARY_RELATION_FIELDS
+            }
+            for pair in selected
+        ]
+    }
+    if not selected:
+        return evaluation_state, {}, 0, total_count
+    questions: dict[str, dict[str, Any]] = {}
+    for index in range(len(selected)):
+        questions[f"relation_{index}"] = _choice_question(
+            f"For pair index {index}, classify the relationship between from_memory and to_memory.",
+            ("related_to", "supersedes", "conflicts_with", "depends_on", "none", "unclear"),
+        )
+        questions[f"direction_{index}"] = _choice_question(
+            f"For pair index {index}, classify the direction of the relationship.",
+            ("from_to", "to_from", "both", "none", "unclear"),
+        )
+    return evaluation_state, questions, len(selected), total_count
+
+
+def _memory_choice_ids(candidates: list[dict[str, Any]]) -> list[str]:
+    choices: list[str] = []
+    for candidate in candidates:
+        if "id" not in candidate or isinstance(candidate["id"], bool) or candidate["id"] is None:
+            raise _InvalidInput
+        choice = f"m_{candidate['id']}"
+        if choice in choices:
+            raise _InvalidInput
+        choices.append(choice)
+    return choices
+
+
+def _build_retrieval(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], int, int]:
+    query = state.get("query")
+    candidates = state.get("candidates")
+    context = state.get("context", {})
+    if not isinstance(query, str) or not isinstance(candidates, list) or not isinstance(context, dict):
+        raise _InvalidInput
+    total_count = state.get("total_candidates", len(candidates))
+    if type(total_count) is not int or total_count < len(candidates):
+        total_count = len(candidates)
+    selected = candidates[:20]
+    if any(not isinstance(candidate, dict) for candidate in selected):
+        raise _InvalidInput
+    ids = _memory_choice_ids(selected)
+    evaluation_state = {"query": query, "candidates": selected, "context": context}
+    questions: dict[str, dict[str, Any]] = {
+        "query_intent": _choice_question(
+            "Classify the intent of the supplied retrieval query.",
+            ("lookup", "temporal", "comparison", "relationship", "unclear"),
+        ),
+        "best_candidate": _choice_question(
+            "Choose the best supplied candidate for the query. Choose none when no candidate is relevant.",
+            {"none": "No supplied candidate is relevant.", **{choice: f"Supplied candidate {choice[2:]}." for choice in ids}},
+        ),
+    }
+    for index in range(len(selected)):
+        questions[f"relevance_{index}"] = _choice_question(
+            f"For candidate index {index}, classify relevance to the supplied query.",
+            ("direct", "supporting", "irrelevant", "unclear"),
+        )
+        questions[f"temporal_fit_{index}"] = _choice_question(
+            f"For candidate index {index}, classify its temporal fit for the supplied query.",
+            ("current", "historical", "unknown", "not_applicable"),
+        )
+    return evaluation_state, questions, len(selected), total_count
+
+
+def _build_consolidation(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], int, int]:
+    phase = state.get("phase")
+    memories = state.get("memories")
+    if phase not in {"before_merge", "after_merge"} or not isinstance(memories, list):
+        raise _InvalidInput
+    if any(not isinstance(memory, dict) for memory in memories):
+        raise _InvalidInput
+    proposed_texts = state.get("proposed_texts", [])
+    if not isinstance(proposed_texts, list) or any(not isinstance(text, str) for text in proposed_texts):
+        raise _InvalidInput
+    evaluation_state = {
+        "phase": phase,
+        "memories": memories,
+        "proposed_texts": proposed_texts,
+    }
+    for key in ("system", "prompt"):
+        if key in state:
+            if not isinstance(state[key], str):
+                raise _InvalidInput
+            evaluation_state[key] = state[key]
+    if not memories:
+        return evaluation_state, {}, 0, 0
+    questions = {
+        "compatibility": _choice_question(
+            "Classify whether the supplied memories are compatible for consolidation.",
+            ("compatible", "conflicting", "different_context", "unclear"),
+        )
+    }
+    if phase == "after_merge":
+        questions.update(
+            {
+                "preservation": _choice_question(
+                    "Classify whether the consolidated result preserves the supplied details.",
+                    ("preserved", "lost_detail", "unsupported_addition", "unclear"),
+                ),
+                "supported": _choice_question(
+                    "Classify whether the consolidated result is supported by the supplied memories.",
+                    _SUPPORT_CHOICES,
+                ),
+            }
+        )
+    return evaluation_state, questions, len(memories), len(memories)
+
+
+def _build_pruning(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], int, int]:
+    candidates = state.get("candidates")
+    rules = state.get("rules")
+    evidence = state.get("evidence", [])
+    if not isinstance(candidates, list) or not isinstance(rules, dict) or not isinstance(evidence, list):
+        raise _InvalidInput
+    total_count = state.get("total_candidates", len(candidates))
+    if type(total_count) is not int or total_count < len(candidates):
+        total_count = len(candidates)
+    selected = candidates[:20]
+    if any(not isinstance(candidate, dict) for candidate in selected):
+        raise _InvalidInput
+    evaluation_state = {"candidates": selected, "rules": rules, "evidence": evidence}
+    if not selected:
+        return evaluation_state, {}, 0, total_count
+    questions = {
+        f"disposition_{index}": _choice_question(
+            f"For candidate index {index}, classify the evidence-based disposition. Age or non-use alone does not prove obsolescence; use only supplied candidates and namespaces.",
+            ("explicitly_obsolete", "still_useful", "insufficient_evidence"),
+        )
+        for index in range(len(selected))
+    }
+    return evaluation_state, questions, len(selected), total_count
+
+
+def _build_promotion(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], int, int]:
+    system, user = state.get("system"), state.get("user")
+    if not isinstance(system, str) or not isinstance(user, str):
+        raise _InvalidInput
+    evaluation_state = {"system": system, "user": user}
+    questions = {
+        "decision": _choice_question(
+            "Choose the review decision for the supplied candidate and evidence.",
+            ("approve", "reject", "defer"),
+        ),
+        "support": _choice_question(
+            "Classify whether the supplied evidence supports the candidate.",
+            _SUPPORT_CHOICES,
+        ),
+        "shareability": _choice_question(
+            "Classify whether the candidate is safe to share under the supplied review rules.",
+            ("shareable", "private_or_sensitive", "unclear"),
+        ),
+    }
+    return evaluation_state, questions, 1, 1
+
+
+def _build_flow(flow: str, state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], int, int]:
+    builders = {
+        "extraction": _build_extraction,
+        "relationships": _build_relationships,
+        "retrieval": _build_retrieval,
+        "consolidation": _build_consolidation,
+        "pruning": _build_pruning,
+        "promotion": _build_promotion,
+    }
+    try:
+        builder = builders[flow]
+    except (KeyError, TypeError):
+        raise _InvalidInput from None
+    return builder(state)
+
+
+def _evaluation_record(
+    *,
+    flow: str | None,
+    status: str,
+    model: str,
+    state: dict[str, Any] | None,
+    baseline: dict[str, Any] | None,
+    shadow_answers: dict[str, dict[str, Any]] | None = None,
+    served_model: str | None = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    evaluated_count: int = 0,
+    total_count: int = 0,
+    error: dict[str, Any] | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "schema_version": 2,
+        "status": status,
+        "flow": flow,
+        "state": state,
+        "baseline": baseline,
+        "shadow_answers": shadow_answers or {},
+        "requested_model": model,
+        "served_model": served_model,
+        "shadow_input_tokens": input_tokens,
+        "shadow_output_tokens": output_tokens,
+        "evaluated_count": evaluated_count,
+        "total_count": total_count,
+    }
+    if error is not None:
+        result["error"] = error
+    if reason is not None:
+        result["reason"] = reason
+    return result
+
+
 class JevShadow:
     provider_name = "jev"
     endpoint = ENDPOINT
@@ -529,4 +873,188 @@ class JevShadow:
             joint_matches=joint_matches,
             invalid_targets=sum(not decision["target_valid"] for decision in shadow_decisions),
             primary_parse_error=primary_parse_error,
+        )
+
+    def evaluate(
+        self,
+        flow: str,
+        state: dict[str, Any],
+        baseline: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Evaluate a bounded, read-only memory flow without sending its baseline."""
+        flow_name = flow if isinstance(flow, str) else None
+        safe_state: dict[str, Any] | None = None
+        safe_baseline: dict[str, Any] | None = None
+        evaluated_count = 0
+        total_count = 0
+        try:
+            raw_state = _json_copy(state)
+            raw_baseline = _json_copy(baseline)
+            if not isinstance(raw_state, dict) or not isinstance(raw_baseline, dict):
+                raise _InvalidInput
+            if _value_screened(raw_state) or _value_screened(raw_baseline):
+                return _evaluation_record(
+                    flow=flow_name,
+                    status="skipped",
+                    model=self.model,
+                    state=None,
+                    baseline=None,
+                    reason="secret_screen",
+                )
+            safe_state, state_bounded = _safe_value(raw_state)
+            safe_baseline, baseline_bounded = _safe_value(raw_baseline)
+            if not state_bounded or not baseline_bounded:
+                return _evaluation_record(
+                    flow=flow_name,
+                    status="skipped",
+                    model=self.model,
+                    state=safe_state if state_bounded else None,
+                    baseline=safe_baseline if baseline_bounded else None,
+                    reason="payload_size_limit",
+                )
+            evaluation_state, questions, evaluated_count, total_count = _build_flow(
+                flow_name, raw_state
+            )
+            safe_state, state_bounded = _safe_value(evaluation_state)
+            if not state_bounded or len(questions) > 100:
+                return _evaluation_record(
+                    flow=flow_name,
+                    status="skipped",
+                    model=self.model,
+                    state=safe_state if state_bounded else None,
+                    baseline=safe_baseline,
+                    evaluated_count=evaluated_count,
+                    total_count=total_count,
+                    reason="payload_size_limit" if not state_bounded else "question_limit",
+                )
+            if not questions:
+                return _evaluation_record(
+                    flow=flow_name,
+                    status="skipped",
+                    model=self.model,
+                    state=safe_state,
+                    baseline=safe_baseline,
+                    evaluated_count=evaluated_count,
+                    total_count=total_count,
+                    reason="empty",
+                )
+            payload = {
+                "model": self.model,
+                "state": safe_state,
+                "questions": questions,
+            }
+            if len(_json_bytes(payload)) > MAX_REQUEST_BYTES:
+                return _evaluation_record(
+                    flow=flow_name,
+                    status="skipped",
+                    model=self.model,
+                    state=safe_state,
+                    baseline=safe_baseline,
+                    evaluated_count=evaluated_count,
+                    total_count=total_count,
+                    reason="payload_size_limit",
+                )
+        except _InvalidInput:
+            return _evaluation_record(
+                flow=flow_name,
+                status="error",
+                model=self.model,
+                state=safe_state,
+                baseline=safe_baseline,
+                error=_error("invalid_input"),
+            )
+        except Exception:
+            return _evaluation_record(
+                flow=flow_name,
+                status="error",
+                model=self.model,
+                state=safe_state,
+                baseline=safe_baseline,
+                error=_error("internal"),
+            )
+
+        response_status: int | None = None
+        try:
+            response_status, body = self._post(payload)
+            served_model, shadow_answers, input_tokens, output_tokens = _validate_response(
+                body, questions
+            )
+        except _HTTPFailure as exc:
+            return _evaluation_record(
+                flow=flow_name,
+                status="error",
+                model=self.model,
+                state=safe_state,
+                baseline=safe_baseline,
+                evaluated_count=evaluated_count,
+                total_count=total_count,
+                error=_error("http", exc.status),
+            )
+        except httpx.TimeoutException:
+            return _evaluation_record(
+                flow=flow_name,
+                status="error",
+                model=self.model,
+                state=safe_state,
+                baseline=safe_baseline,
+                evaluated_count=evaluated_count,
+                total_count=total_count,
+                error=_error("timeout"),
+            )
+        except _ResponseTooLarge:
+            return _evaluation_record(
+                flow=flow_name,
+                status="error",
+                model=self.model,
+                state=safe_state,
+                baseline=safe_baseline,
+                evaluated_count=evaluated_count,
+                total_count=total_count,
+                error=_error("response_too_large"),
+            )
+        except _InvalidResponse:
+            return _evaluation_record(
+                flow=flow_name,
+                status="error",
+                model=self.model,
+                state=safe_state,
+                baseline=safe_baseline,
+                evaluated_count=evaluated_count,
+                total_count=total_count,
+                error=_error("invalid_response", response_status),
+            )
+        except httpx.HTTPError:
+            return _evaluation_record(
+                flow=flow_name,
+                status="error",
+                model=self.model,
+                state=safe_state,
+                baseline=safe_baseline,
+                evaluated_count=evaluated_count,
+                total_count=total_count,
+                error=_error("transport"),
+            )
+        except Exception:
+            return _evaluation_record(
+                flow=flow_name,
+                status="error",
+                model=self.model,
+                state=safe_state,
+                baseline=safe_baseline,
+                evaluated_count=evaluated_count,
+                total_count=total_count,
+                error=_error("internal"),
+            )
+        return _evaluation_record(
+            flow=flow_name,
+            status="ok",
+            model=self.model,
+            state=safe_state,
+            baseline=safe_baseline,
+            shadow_answers=shadow_answers,
+            served_model=served_model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            evaluated_count=evaluated_count,
+            total_count=total_count,
         )
