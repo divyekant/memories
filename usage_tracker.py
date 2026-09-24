@@ -68,7 +68,7 @@ class NullTracker:
     def log_search_feedback(self, memory_id: int, query: str = "", signal: str = "", search_id: str = "") -> None:
         pass
 
-    def get_feedback_scores(self, memory_ids: list[int]) -> dict[int, int]:
+    def get_feedback_scores(self, memory_ids: list[int] | None = None) -> dict[int, int]:
         return {}
 
     def get_feedback_history(self, memory_id: int, limit: int = 50) -> list[dict]:
@@ -359,20 +359,27 @@ class UsageTracker:
         except Exception:
             logger.debug("Failed to log search feedback", exc_info=True)
 
-    def get_feedback_scores(self, memory_ids: list[int]) -> dict[int, int]:
-        """Batch fetch net feedback score (useful - not_useful) for given memory IDs."""
-        if not memory_ids:
+    def get_feedback_scores(self, memory_ids: list[int] | None = None) -> dict[int, int]:
+        """Net feedback score (useful - not_useful) per memory.
+
+        With no IDs, reads every feedback row. The feedback table is small, so
+        this costs less than one parameter per memory in the corpus.
+        """
+        if memory_ids is not None and not memory_ids:
             return {}
+        where, params = "", []
+        if memory_ids is not None:
+            where = f"WHERE memory_id IN ({','.join('?' * len(memory_ids))}) "
+            params = memory_ids
         conn = self._connect()
         try:
-            placeholders = ",".join("?" * len(memory_ids))
             rows = conn.execute(
-                f"SELECT memory_id, "
-                f"SUM(CASE WHEN signal='useful' THEN 1 ELSE 0 END) - "
-                f"SUM(CASE WHEN signal='not_useful' THEN 1 ELSE 0 END) as net "
-                f"FROM search_feedback WHERE memory_id IN ({placeholders}) "
-                f"GROUP BY memory_id",
-                memory_ids,
+                "SELECT memory_id, "
+                "SUM(CASE WHEN signal='useful' THEN 1 ELSE 0 END) - "
+                "SUM(CASE WHEN signal='not_useful' THEN 1 ELSE 0 END) as net "
+                f"FROM search_feedback {where}"
+                "GROUP BY memory_id",
+                params,
             ).fetchall()
             return {row[0]: row[1] for row in rows}
         finally:

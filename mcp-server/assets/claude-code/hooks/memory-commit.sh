@@ -64,21 +64,13 @@ fi
 # Transcript format: each line is {type, message: {role, content}, ...}
 # Content can be string or array of {type: "text"|"tool_use"|"tool_result", text: "..."}
 # We only want entries that have actual text, skipping pure tool_use/tool_result entries.
-MESSAGES=$(tail -"$TAIL_LINES" "$TRANSCRIPT_PATH" 2>/dev/null | jq -sr --argjson pairs "$MSG_PAIRS" '
+MESSAGES=$(tail -"$TAIL_LINES" "$TRANSCRIPT_PATH" 2>/dev/null | jq -sr --argjson pairs "$MSG_PAIRS" "${_MEMORIES_TURN_TEXT_JQ:-}"'
   [
     .[]
     | select(.type == "user" or .type == "assistant")
     | {
         role: .type,
-        text: (
-          if .message.content | type == "string" then
-            .message.content
-          elif .message.content | type == "array" then
-            [.message.content[] | select(.type == "text") | .text] | join(" ")
-          else
-            ""
-          end
-        )
+        text: turn_text
       }
     | select(.text != "" and (.text | length) > 10)
   ]

@@ -123,21 +123,13 @@ extract_recent_context() {
     return 0
   fi
 
-  tail -200 "$transcript_path" 2>/dev/null | jq -sr '
+  tail -200 "$transcript_path" 2>/dev/null | jq -sr "${_MEMORIES_TURN_TEXT_JQ:-}"'
     [
       .[]
       | select(.type == "user" or .type == "assistant")
       | {
           role: .type,
-          text: (
-            if .message.content | type == "string" then
-              .message.content
-            elif .message.content | type == "array" then
-              [.message.content[] | select(.type == "text") | .text] | join(" ")
-            else
-              ""
-            end
-          )
+          text: turn_text
         }
       | select(.text != "" and (.text | length) > 4)
     ]
@@ -269,6 +261,7 @@ fi
 # Intent-based prefix biasing (additional search for fix/debug/setup prompts)
 if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ -n "$INTENT_PREFIXES" ] && [ -n "$PROJECT" ]; then
   for intent_prefix in $INTENT_PREFIXES; do
+    case ", $SCOPED_PREFIX_LIST, " in *", $intent_prefix, "*) continue ;; esac
     queue_search "$ENRICHED_QUERY" "$intent_prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD"
   done
 fi

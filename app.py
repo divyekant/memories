@@ -2514,10 +2514,8 @@ async def search(request_body: SearchRequest, request: Request):
                 request_body.recency_weight = adj.recency_weight
     try:
         fb_scores = None
-        if request_body.feedback_weight > 0:
-            fb_scores = usage_tracker.get_feedback_scores(
-                [m["id"] for m in getattr(memory, "metadata", [])]
-            )
+        if request_body.feedback_weight > 0 and getattr(memory, "metadata", None):
+            fb_scores = usage_tracker.get_feedback_scores()
         if request_body.hybrid:
             search_kwargs = dict(
                 query=request_body.query,
@@ -2536,7 +2534,7 @@ async def search(request_body: SearchRequest, request: Request):
                 until=request_body.until,
             )
             search_kwargs.update(scope_kwargs)
-            results = memory.hybrid_search(**search_kwargs)
+            results = await run_in_threadpool(memory.hybrid_search, **search_kwargs)
         else:
             search_kwargs = dict(
                 query=request_body.query,
@@ -2548,7 +2546,7 @@ async def search(request_body: SearchRequest, request: Request):
                 until=request_body.until,
             )
             search_kwargs.update(scope_kwargs)
-            results = memory.search(**search_kwargs)
+            results = await run_in_threadpool(memory.search, **search_kwargs)
         results = annotate_relative_scores(auth.filter_results(results))
         result_count = len(results)
         _log_usage_event(request, "search", request_body.source)
@@ -2594,10 +2592,8 @@ async def search_explain(request_body: SearchRequest, request: Request):
     logger.info("Search explain: q=%r k=%d", request_body.query[:80], request_body.k)
     try:
         fb_scores = None
-        if request_body.feedback_weight > 0:
-            fb_scores = usage_tracker.get_feedback_scores(
-                [m["id"] for m in getattr(memory, "metadata", [])]
-            )
+        if request_body.feedback_weight > 0 and getattr(memory, "metadata", None):
+            fb_scores = usage_tracker.get_feedback_scores()
         search_kwargs = dict(
             query=request_body.query,
             k=request_body.k,
@@ -2661,10 +2657,8 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 request_body.recency_weight = adj.recency_weight
     try:
         fb_scores = None
-        if request_body.feedback_weight > 0:
-            fb_scores = usage_tracker.get_feedback_scores(
-                [m["id"] for m in getattr(memory, "metadata", [])]
-            )
+        if request_body.feedback_weight > 0 and getattr(memory, "metadata", None):
+            fb_scores = usage_tracker.get_feedback_scores()
         if request_body.hybrid:
             search_kwargs = dict(
                 query=request_body.query,
@@ -2683,7 +2677,7 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 until=request_body.until,
             )
             search_kwargs.update(scope_kwargs)
-            results = memory.hybrid_search(**search_kwargs)
+            results = await run_in_threadpool(memory.hybrid_search, **search_kwargs)
         else:
             search_kwargs = dict(
                 query=request_body.query,
@@ -2695,7 +2689,7 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 until=request_body.until,
             )
             search_kwargs.update(scope_kwargs)
-            results = memory.search(**search_kwargs)
+            results = await run_in_threadpool(memory.search, **search_kwargs)
         results = annotate_relative_scores(auth.filter_results(results))
         from evidence_packet import build_evidence_packet
 
@@ -2738,7 +2732,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     until=item.until,
                 )
                 search_kwargs.update(scope_kwargs)
-                results = memory.hybrid_search(**search_kwargs)
+                results = await run_in_threadpool(memory.hybrid_search, **search_kwargs)
             else:
                 search_kwargs = dict(
                     query=item.query,
@@ -2749,7 +2743,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     until=item.until,
                 )
                 search_kwargs.update(scope_kwargs)
-                results = memory.search(**search_kwargs)
+                results = await run_in_threadpool(memory.search, **search_kwargs)
             results = annotate_relative_scores(auth.filter_results(results))
             batch_result_count = len(results)
             for rank, r in enumerate(results, 1):
