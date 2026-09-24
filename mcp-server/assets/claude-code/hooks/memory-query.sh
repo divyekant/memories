@@ -261,6 +261,7 @@ fi
 # Intent-based prefix biasing (additional search for fix/debug/setup prompts)
 if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ -n "$INTENT_PREFIXES" ] && [ -n "$PROJECT" ]; then
   for intent_prefix in $INTENT_PREFIXES; do
+    case ", $SCOPED_PREFIX_LIST, " in *", $intent_prefix, "*) continue ;; esac
     queue_search "$ENRICHED_QUERY" "$intent_prefix" "$MEMORIES_QUERY_SCOPED_K" "$MEMORIES_QUERY_SCOPED_THRESHOLD"
   done
 fi

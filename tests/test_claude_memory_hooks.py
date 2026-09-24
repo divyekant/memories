@@ -695,6 +695,25 @@ def test_codex_memory_query_does_not_silently_skip_short_prompt_without_context(
     assert event["hook_results_injected"] is False
 
 
+def test_memory_query_searches_each_prefix_once(tmp_path: Path) -> None:
+    """Intent prefixes that repeat a scoped prefix must not send a second search."""
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": "fix the flaky extraction retry in the worker queue",
+    }
+    result, calls, _ = _run_hook(QUERY_SCRIPT, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0, result.stderr
+    prefixes = [
+        call["body"].get("source_prefix")
+        for call in calls
+        if str(call["url"]).endswith("/search") and call["body"].get("source_prefix")
+    ]
+    assert "learning/memories" in prefixes
+    assert "bug-fix/memories" in prefixes
+    assert len(prefixes) == len(set(prefixes)), prefixes
+
+
 def test_memory_query_redacts_details_for_active_search_required_prompts(tmp_path: Path) -> None:
     responses = [
         {

@@ -2514,10 +2514,8 @@ async def search(request_body: SearchRequest, request: Request):
                 request_body.recency_weight = adj.recency_weight
     try:
         fb_scores = None
-        if request_body.feedback_weight > 0:
-            fb_scores = usage_tracker.get_feedback_scores(
-                [m["id"] for m in getattr(memory, "metadata", [])]
-            )
+        if request_body.feedback_weight > 0 and getattr(memory, "metadata", None):
+            fb_scores = usage_tracker.get_feedback_scores()
         if request_body.hybrid:
             search_kwargs = dict(
                 query=request_body.query,
@@ -2594,10 +2592,8 @@ async def search_explain(request_body: SearchRequest, request: Request):
     logger.info("Search explain: q=%r k=%d", request_body.query[:80], request_body.k)
     try:
         fb_scores = None
-        if request_body.feedback_weight > 0:
-            fb_scores = usage_tracker.get_feedback_scores(
-                [m["id"] for m in getattr(memory, "metadata", [])]
-            )
+        if request_body.feedback_weight > 0 and getattr(memory, "metadata", None):
+            fb_scores = usage_tracker.get_feedback_scores()
         search_kwargs = dict(
             query=request_body.query,
             k=request_body.k,
@@ -2661,10 +2657,8 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 request_body.recency_weight = adj.recency_weight
     try:
         fb_scores = None
-        if request_body.feedback_weight > 0:
-            fb_scores = usage_tracker.get_feedback_scores(
-                [m["id"] for m in getattr(memory, "metadata", [])]
-            )
+        if request_body.feedback_weight > 0 and getattr(memory, "metadata", None):
+            fb_scores = usage_tracker.get_feedback_scores()
         if request_body.hybrid:
             search_kwargs = dict(
                 query=request_body.query,

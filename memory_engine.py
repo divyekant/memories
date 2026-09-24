@@ -13,6 +13,7 @@ import shutil
 import tempfile
 import threading
 import gc
+from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -302,6 +303,13 @@ class MemoryEngine:
         }
 
         self.bm25_index: Optional[BM25Okapi] = None
+        # Per-search caches. The hooks send one query to several source
+        # prefixes at once, and each search used to rescan the whole corpus.
+        self._search_cache_lock = threading.Lock()
+        self._bm25_generation = 0
+        self._bm25_score_cache: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+        self._links_generation = 0
+        self._related_adjacency_cache: Optional[tuple] = None
         self._id_map: Dict[int, int] = {}      # memory_id -> index in self.metadata
         self._next_id: int = 0                  # monotonic counter for new IDs
         self._bm25_pos_to_id: List[int] = []   # BM25 corpus position -> memory_id
@@ -404,11 +412,32 @@ class MemoryEngine:
         corpus = [m["text"].lower().split() for m in self.metadata]
         self.bm25_index = BM25Okapi(corpus)
         self._bm25_pos_to_id = [m["id"] for m in self.metadata]
+        self._bm25_generation += 1
+
+    _BM25_SCORE_CACHE_SIZE = 32
+
+    def _bm25_scores(self, tokens: List[str]) -> np.ndarray:
+        """BM25 scores for every document, cached per query and index build."""
+        index = self.bm25_index
+        key = (self._bm25_generation, id(index), tuple(tokens))
+        # Compute under the lock: parallel fan-out requests for one query then
+        # wait for the first result instead of each scanning the corpus.
+        with self._search_cache_lock:
+            scores = self._bm25_score_cache.get(key)
+            if scores is None:
+                scores = index.get_scores(tokens)
+                self._bm25_score_cache[key] = scores
+                if len(self._bm25_score_cache) > self._BM25_SCORE_CACHE_SIZE:
+                    self._bm25_score_cache.popitem(last=False)
+            else:
+                self._bm25_score_cache.move_to_end(key)
+        return scores
 
     def _rebuild_id_map(self):
         """Rebuild the sparse ID lookup structures from current metadata."""
         self._id_map = {m["id"]: i for i, m in enumerate(self.metadata)}
         self._bm25_pos_to_id = [m["id"] for m in self.metadata]
+        self._links_generation += 1
         self._next_id = max(self._id_map.keys(), default=-1) + 1
 
     def reload_from_qdrant(self):
@@ -1526,6 +1555,7 @@ class MemoryEngine:
         created_at = datetime.now(timezone.utc).isoformat()
         link = {"to_id": to_id, "type": link_type, "created_at": created_at}
         links.append(link)
+        self._links_generation += 1
         self.save()
 
         logger.info("Link added: %d --%s--> %d", from_id, link_type, to_id)
@@ -1544,6 +1574,7 @@ class MemoryEngine:
 
         removed = len(meta["links"]) < original_len
         if removed:
+            self._links_generation += 1
             if not meta["links"]:
                 del meta["links"]
             self.save()
@@ -1553,6 +1584,7 @@ class MemoryEngine:
 
     def _scrub_links_to(self, target_id: int) -> None:
         """Remove all incoming links pointing to target_id from other memories."""
+        self._links_generation += 1
         for m in self.metadata:
             links = m.get("links")
             if not links:
@@ -2663,6 +2695,19 @@ class MemoryEngine:
                 adj.setdefault(tid, set()).add(mid)
         return adj
 
+    def _related_adjacency(self) -> Dict[int, Set[int]]:
+        """The related_to graph, rebuilt only after links or the memory set change.
+
+        Callers must not mutate the returned graph.
+        """
+        key = (self._links_generation, id(self.metadata), len(self.metadata))
+        cached = self._related_adjacency_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        adj = self._build_adjacency("related_to")
+        self._related_adjacency_cache = (key, adj)
+        return adj
+
     def _filter_adjacency(
         self,
         adj: Dict[int, Set[int]],
@@ -2681,7 +2726,11 @@ class MemoryEngine:
             return adj
 
         visible = set()
-        for m in self.metadata:
+        # Only nodes in the graph can appear in the result.
+        for node in adj:
+            if not self._id_exists(node):
+                continue
+            m = self._get_meta_by_id(node)
             if source_prefix and not self._source_matches_scope(
                 str(m.get("source", "")), source_prefix, source_boundary
             ):
@@ -2735,7 +2784,7 @@ class MemoryEngine:
             return candidates, info
 
         # 1. Build and filter adjacency
-        full_adj = self._build_adjacency("related_to")
+        full_adj = self._related_adjacency()
         adj = self._filter_adjacency(
             full_adj,
             source_prefix,
@@ -2948,11 +2997,14 @@ class MemoryEngine:
         bm25_ranked = []
         if self.bm25_index is not None:
             tokenized = query.lower().split()
-            bm25_scores = self.bm25_index.get_scores(tokenized)
+            bm25_scores = self._bm25_scores(tokenized)
+            # Only documents that share a query term can score. Zero-score
+            # entries never reach the RRF loop, so skip them before filtering.
+            bm25_hits = [(int(pos), float(bm25_scores[pos])) for pos in np.flatnonzero(bm25_scores > 0)]
             if source_prefix or source_exact is not None or allowed_prefixes is not None:
                 bm25_ranked = [
                     (pos, score)
-                    for pos, score in enumerate(bm25_scores)
+                    for pos, score in bm25_hits
                     if pos < len(self._bm25_pos_to_id)
                     and (
                         (
@@ -2981,7 +3033,7 @@ class MemoryEngine:
             else:
                 bm25_ranked = [
                     (pos, score)
-                    for pos, score in enumerate(bm25_scores)
+                    for pos, score in bm25_hits
                     if pos < len(self._bm25_pos_to_id)
                     and (include_archived or not self._get_meta_by_id(self._bm25_pos_to_id[pos]).get("archived"))
                 ]
