@@ -747,9 +747,17 @@ def test_memory_query_searches_each_prefix_once(tmp_path: Path) -> None:
     assert len(prefixes) == len(set(prefixes)), prefixes
 
 
+def _seed_backend_version(tmp_path: Path, version: str) -> dict[str, str]:
+    """The prompt hook reads the backend version from the session-start cache."""
+    cache = tmp_path / "backend-version.json"
+    cache.write_text(json.dumps({"url": "http://127.0.0.1:9999", "version": version, "checked_at": int(time.time())}))
+    return {"MEMORIES_BACKEND_VERSION_CACHE": str(cache)}
+
+
 @pytest.mark.parametrize("script", [QUERY_SCRIPT, RECALL_SCRIPT], ids=["query", "recall"])
 def test_hook_sends_one_batch_request_for_its_prefix_searches(tmp_path: Path, script: Path) -> None:
     responses = [
+        {"url_suffix": "/health", "response": {"status": "ok", "service": "memories", "version": "5.16.1"}},
         {
             "url_suffix": "/search",
             "source_prefix": "codex/memories",
@@ -757,7 +765,9 @@ def test_hook_sends_one_batch_request_for_its_prefix_searches(tmp_path: Path, sc
         }
     ]
     payload = {"cwd": "/Users/example/memories", "prompt": "explain how the extraction worker retries failed jobs"}
-    result, calls, _ = _run_hook(script, tmp_path, payload, responses=responses)
+    result, calls, _ = _run_hook(
+        script, tmp_path, payload, responses=responses, extra_env=_seed_backend_version(tmp_path, "5.16.1")
+    )
 
     assert result.returncode == 0, result.stderr
     batch_calls = [call for call in calls if str(call["url"]).endswith("/search/batch")]
@@ -770,6 +780,7 @@ def test_hook_sends_one_batch_request_for_its_prefix_searches(tmp_path: Path, sc
 @pytest.mark.parametrize("script", [QUERY_SCRIPT, RECALL_SCRIPT], ids=["query", "recall"])
 def test_hook_falls_back_to_single_searches_without_batch_endpoint(tmp_path: Path, script: Path) -> None:
     responses = [
+        {"url_suffix": "/health", "response": {"status": "ok", "service": "memories", "version": "5.16.1"}},
         {"url_suffix": "/search/batch", "status": 404, "response": {"detail": "Not Found"}},
         {
             "url_suffix": "/search",
@@ -778,13 +789,32 @@ def test_hook_falls_back_to_single_searches_without_batch_endpoint(tmp_path: Pat
         },
     ]
     payload = {"cwd": "/Users/example/memories", "prompt": "explain how the extraction worker retries failed jobs"}
-    result, calls, home_dir = _run_hook(script, tmp_path, payload, responses=responses)
+    result, calls, home_dir = _run_hook(
+        script, tmp_path, payload, responses=responses, extra_env=_seed_backend_version(tmp_path, "5.16.1")
+    )
 
     assert result.returncode == 0, result.stderr
     single_prefixes = {call["body"].get("source_prefix", "") for call in calls if str(call["url"]).endswith("/search")}
     assert {"claude-code/memories", "codex/memories"} <= single_prefixes
     assert "Single hit." in result.stdout or "id=7" in result.stdout
     assert not (home_dir / ".config" / "memories" / "backend-down").exists()
+
+
+@pytest.mark.parametrize("script", [QUERY_SCRIPT, RECALL_SCRIPT], ids=["query", "recall"])
+def test_hook_does_not_batch_against_an_older_backend(tmp_path: Path, script: Path) -> None:
+    """A 5.16.0 backend runs batch items one after another; keep per-prefix calls."""
+    responses = [
+        {"url_suffix": "/health", "response": {"status": "ok", "service": "memories", "version": "5.16.0"}},
+    ]
+    payload = {"cwd": "/Users/example/memories", "prompt": "explain how the extraction worker retries failed jobs"}
+    result, calls, _ = _run_hook(
+        script, tmp_path, payload, responses=responses, extra_env=_seed_backend_version(tmp_path, "5.16.0")
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not [call for call in calls if str(call["url"]).endswith("/search/batch")]
+    single_prefixes = {call["body"].get("source_prefix", "") for call in calls if str(call["url"]).endswith("/search")}
+    assert {"claude-code/memories", "codex/memories"} <= single_prefixes
 
 
 def test_memory_query_redacts_details_for_active_search_required_prompts(tmp_path: Path) -> None:

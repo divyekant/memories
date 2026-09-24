@@ -1942,6 +1942,43 @@ _search_fanout() {
   done
 }
 
+# /search/batch runs every item through the /search code, at the same time,
+# from this version on. An older backend runs batch items one after another
+# with different ranking, so hooks send it one request per search instead.
+_MEMORIES_BATCH_MIN_VERSION="5.16.1"
+
+_version_at_least() {
+  jq -n --arg a "$1" --arg b "$2" \
+    '($a | split(".") | map(tonumber? // 0)) >= ($b | split(".") | map(tonumber? // 0))' 2>/dev/null \
+    | grep -q true
+}
+
+# Backend version from /health, cached for 10 minutes per URL. With
+# MEMORIES_VERSION_PROBE=0 it reads only the cache, so the prompt hook never
+# pays for a probe; the session-start hook probes and fills the cache.
+_backend_version() {
+  local url="$1"
+  local cache="${MEMORIES_BACKEND_VERSION_CACHE:-$HOME/.config/memories/backend-version.json}"
+  local now version budget
+  now=$(date +%s)
+  if [ -f "$cache" ]; then
+    version=$(jq -r --arg u "$url" --argjson now "$now" \
+      'select(.url == $u and ($now - (.checked_at // 0)) < 600) | .version // empty' "$cache" 2>/dev/null) || version=""
+    if [ -n "$version" ]; then
+      printf '%s' "$version"
+      return 0
+    fi
+  fi
+  [ "${MEMORIES_VERSION_PROBE:-1}" = "1" ] || return 1
+  budget=$(_hook_call_budget 1) || return 1
+  version=$(curl -sf --max-time "$budget" "$url/health" 2>/dev/null | jq -r '.version // empty' 2>/dev/null) || version=""
+  [ -n "$version" ] || return 1
+  mkdir -p "$(dirname "$cache")" 2>/dev/null
+  jq -nc --arg u "$url" --arg v "$version" --argjson now "$now" '{url: $u, version: $v, checked_at: $now}' \
+    > "$cache.$$" 2>/dev/null && mv "$cache.$$" "$cache" 2>/dev/null
+  printf '%s' "$version"
+}
+
 # Write one response to every "out" file in a spec.
 _search_fanout_write_all() {
   local spec="$1" response="$2" out
@@ -1970,6 +2007,9 @@ _search_memories_batch() {
     _search_fanout_write_all "$spec" "$empty"
     return 0
   fi
+  local version
+  version=$(_backend_version "$url") || return 1
+  _version_at_least "$version" "$_MEMORIES_BATCH_MIN_VERSION" || return 1
   # One request carries every search, so it gets a longer cap than one search.
   local cap=6 call_budget
   if ! call_budget=$(_hook_call_budget "$cap"); then
@@ -1999,7 +2039,9 @@ _search_memories_batch() {
   out="${raw%$'\n'*}"
 
   if [ $curl_rc -ne 0 ] || [ -z "$raw" ] || [ "$status" = "$raw" ]; then
-    if _should_trip_breaker "$curl_rc" "$call_budget" "$cap"; then
+    # Judge fairness against the single-search cap: a SessionStart budget can
+    # never reach 75% of the batch cap, so a hung /search would never trip.
+    if _should_trip_breaker "$curl_rc" "$call_budget" 4; then
       _breaker_trip "$name"
     fi
     MEMORIES_BACKEND_DOWN=1

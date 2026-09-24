@@ -11,11 +11,14 @@
   `POST /search/batch`, so it opens one connection, does one auth lookup, and
   gets one circuit-breaker verdict. Routed multi-backend setups, and backends
   that return 404, 405, or 422 for `/search/batch`, still get one request for
-  each prefix. The Codex hooks are not changed.
+  each prefix. The hooks batch only against a 5.16.1 or later backend. The
+  session-start hook reads the version from `/health` and caches it for 10
+  minutes in `~/.config/memories/backend-version.json`. The prompt hook reads
+  only that cache. The Codex hooks are not changed.
 - **`/search/batch` items behave like `/search`.** Each item runs through the
   `/search` code, with query-intent detection, the feedback signal, and
-  `include_archived`. Items run at the same time, and results keep the request
-  order.
+  `include_archived`. Up to 8 items run at the same time, and results keep the
+  request order.
 
 ### Fixed
 - **Session-start recall no longer skips the deferred-work search.** On the

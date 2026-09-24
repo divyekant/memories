@@ -2717,7 +2717,14 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
     auth = _get_auth(request)
     for item in request_body.queries:
         _validated_search_scope_kwargs(item, auth)  # reject a bad item before any search runs
-    outputs = await asyncio.gather(*(search(item, request) for item in request_body.queries))
+    # A batch may hold 200 items; cap its share of the thread pool.
+    limit = asyncio.Semaphore(8)
+
+    async def run(item: SearchRequest) -> Dict[str, Any]:
+        async with limit:
+            return await search(item, request)
+
+    outputs = await asyncio.gather(*(run(item) for item in request_body.queries))
     return {"results": list(outputs), "count": len(outputs)}
 
 

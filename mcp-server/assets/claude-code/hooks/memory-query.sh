@@ -264,7 +264,7 @@ if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ -n "$INTENT_PREFIXES" ] && [ -n 
   done
 fi
 
-_search_fanout "$SEARCH_SPEC" search_memories
+MEMORIES_VERSION_PROBE=0 _search_fanout "$SEARCH_SPEC" search_memories
 
 RAW_RESPONSES=$(
   result_index=0

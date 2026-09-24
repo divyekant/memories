@@ -242,10 +242,9 @@ class TestSearchEndpointRelativeScore:
             {"id": 7, "text": "x", "source": "test/x", "rrf_score": 0.008},
             {"id": 8, "text": "y", "source": "test/y", "rrf_score": 0.002},
         ]
-        mock_engine.hybrid_search.side_effect = [
-            [dict(r) for r in HYBRID_RESULTS],
-            low_scale,
-        ]
+        # Batch items run at the same time, so key results by query, not call order.
+        by_query = {"a": HYBRID_RESULTS, "b": low_scale}
+        mock_engine.hybrid_search.side_effect = lambda **kw: [dict(r) for r in by_query[kw["query"]]]
         response = test_client.post(
             "/search/batch",
             json={"queries": [{"query": "a"}, {"query": "b"}]},
