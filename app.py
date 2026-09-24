@@ -2536,7 +2536,7 @@ async def search(request_body: SearchRequest, request: Request):
                 until=request_body.until,
             )
             search_kwargs.update(scope_kwargs)
-            results = memory.hybrid_search(**search_kwargs)
+            results = await run_in_threadpool(memory.hybrid_search, **search_kwargs)
         else:
             search_kwargs = dict(
                 query=request_body.query,
@@ -2548,7 +2548,7 @@ async def search(request_body: SearchRequest, request: Request):
                 until=request_body.until,
             )
             search_kwargs.update(scope_kwargs)
-            results = memory.search(**search_kwargs)
+            results = await run_in_threadpool(memory.search, **search_kwargs)
         results = annotate_relative_scores(auth.filter_results(results))
         result_count = len(results)
         _log_usage_event(request, "search", request_body.source)
@@ -2683,7 +2683,7 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 until=request_body.until,
             )
             search_kwargs.update(scope_kwargs)
-            results = memory.hybrid_search(**search_kwargs)
+            results = await run_in_threadpool(memory.hybrid_search, **search_kwargs)
         else:
             search_kwargs = dict(
                 query=request_body.query,
@@ -2695,7 +2695,7 @@ async def search_evidence(request_body: SearchRequest, request: Request):
                 until=request_body.until,
             )
             search_kwargs.update(scope_kwargs)
-            results = memory.search(**search_kwargs)
+            results = await run_in_threadpool(memory.search, **search_kwargs)
         results = annotate_relative_scores(auth.filter_results(results))
         from evidence_packet import build_evidence_packet
 
@@ -2738,7 +2738,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     until=item.until,
                 )
                 search_kwargs.update(scope_kwargs)
-                results = memory.hybrid_search(**search_kwargs)
+                results = await run_in_threadpool(memory.hybrid_search, **search_kwargs)
             else:
                 search_kwargs = dict(
                     query=item.query,
@@ -2749,7 +2749,7 @@ async def search_batch(request_body: SearchBatchRequest, request: Request):
                     until=item.until,
                 )
                 search_kwargs.update(scope_kwargs)
-                results = memory.search(**search_kwargs)
+                results = await run_in_threadpool(memory.search, **search_kwargs)
             results = annotate_relative_scores(auth.filter_results(results))
             batch_result_count = len(results)
             for rank, r in enumerate(results, 1):

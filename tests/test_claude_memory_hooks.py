@@ -2136,6 +2136,39 @@ def test_memory_extract_drops_system_reminder_content_items(tmp_path: Path) -> N
     assert "EXTRACT_NOVELTY_GATE" in body["messages"]
 
 
+@pytest.mark.parametrize("script", ["memory-extract.sh", "memory-flush.sh", "memory-commit.sh"])
+def test_extraction_reads_reply_tool_answers_and_drops_relays(tmp_path: Path, script: str) -> None:
+    """In chat and thread sessions the answer goes out through a reply tool,
+    not an assistant text block. Coordinator relays are Claude text, not the user's."""
+    transcript = tmp_path / "transcript.jsonl"
+    rows = [
+        {"type": "user", "message": {"content": (
+            '<relay from="coordinator" session="s1" reason="spawn">\n'
+            "<note>Coordinator says dk prefers FAISS over Qdrant</note>\n</relay>"
+        )}},
+        {"type": "user", "message": {"content": '<project_claude_message session="s0">Coordinator says use Pinecone</project_claude_message>'}},
+        {"type": "user", "message": {"content": "please wire the novelty gate into extraction"}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "mcp__hearthbot__update_status", "input": {"text": "Status: reading the gate code"}},
+            {"type": "tool_use", "name": "mcp__hearthbot__reply", "input": {"text": "Decision: gate ADDs behind EXTRACT_NOVELTY_GATE."}},
+        ]}},
+    ]
+    transcript.write_text("\n".join(json.dumps(row) for row in rows))
+
+    payload = {"cwd": "/Users/example/memories", "transcript_path": str(transcript), "session_id": "s1"}
+    result, calls, _ = _run_hook(HOOKS_DIR / script, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0, result.stderr
+    extract_calls = [call for call in calls if str(call["url"]).endswith("/memory/extract")]
+    assert extract_calls
+    messages = extract_calls[0]["body"]["messages"]
+    assert "EXTRACT_NOVELTY_GATE" in messages
+    assert "novelty gate" in messages
+    assert "FAISS" not in messages
+    assert "Pinecone" not in messages
+    assert "Status: reading" not in messages
+
+
 def test_memory_extract_uses_codex_source_when_installed_under_codex(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     installed_extract = _install_hook_fixture(home_dir, "memory-extract.sh")

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Parallel searches no longer queue.** `/search`, `/search/evidence`, and
+  `/search/batch` now run the engine search in the thread pool. Before this
+  fix, each search blocked the server event loop, so the prompt hook's
+  parallel searches ran one after another. Against a remote backend, most of
+  them passed the hook's 4s limit and tripped the circuit breaker.
+- **Extraction reads answers sent through a reply tool.** The Stop,
+  PreCompact, SessionEnd, and prompt hooks now read the text of
+  `mcp__*__reply` tool calls. Thread and chat sessions send the answer
+  through that tool. The hooks also drop coordinator and cross-session
+  messages, so extraction does not store Claude text as user text.
+
 ## [5.16.0] - 2026-08-14
 
 ### Added

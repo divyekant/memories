@@ -85,26 +85,13 @@ MESSAGES=""
 # memories) are dropped before the per-message clip so they can never be
 # re-extracted. The backend applies the same hygiene defensively.
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-  MESSAGES=$(tail -"$TAIL_LINES" "$TRANSCRIPT_PATH" 2>/dev/null | jq -sr --argjson pairs "$MSG_PAIRS" '
+  MESSAGES=$(tail -"$TAIL_LINES" "$TRANSCRIPT_PATH" 2>/dev/null | jq -sr --argjson pairs "$MSG_PAIRS" "${_MEMORIES_TURN_TEXT_JQ:-}"'
     [
       .[]
       | select(.type == "user" or .type == "assistant")
       | {
           role: .type,
-          text: (
-            if .message.content | type == "string" then
-              .message.content
-            elif .message.content | type == "array" then
-              [
-                .message.content[]
-                | select(.type == "text")
-                | .text
-                | select(test("^\\s*<system-reminder>") | not)
-              ] | join(" ")
-            else
-              ""
-            end
-          )
+          text: turn_text
         }
       | select(.text != "" and (.text | length) > 10)
     ]
