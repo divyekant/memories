@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Parallel searches no longer queue.** `/search`, `/search/evidence`, and
+  `/search/batch` now run the engine search in the thread pool. Before this
+  fix, each search blocked the server event loop, so the prompt hook's
+  parallel searches ran one after another. Against a remote backend, most of
+  them passed the hook's 4s limit and tripped the circuit breaker.
+- **Search no longer scans the whole corpus for each request.** With 64,716
+  memories, one hybrid search took 1.5 to 2s on the production droplet.
+  - The feedback signal reads the feedback table. Before, it sent every memory
+    ID to SQLite on each search.
+  - BM25 scores are computed once for each query and index build. The hooks
+    send one query to several source prefixes, so a prompt now pays for one
+    BM25 pass, not six or seven.
+  - The BM25 source filter looks only at documents that share a query term.
+  - Graph expansion keeps the `related_to` graph until a link or the memory
+    set changes. The scope filter checks only memories that have links.
+  - On a 32,973-memory copy of real data, the engine time for one prompt's
+    searches went from 0.43s to 0.11s.
+- **The prompt hook sends each source prefix once.** A `fix` or `how` prompt
+  searched `learning/{project}` twice.
+- **Extraction reads answers sent through a reply tool.** The Stop,
+  PreCompact, SessionEnd, and prompt hooks now read the text of
+  `mcp__*__reply` tool calls. Thread and chat sessions send the answer
+  through that tool. The hooks also drop coordinator and cross-session
+  messages, so extraction does not store Claude text as user text.
+
 ## [5.16.0] - 2026-08-14
 
 ### Added
