@@ -69,8 +69,8 @@ Brief (summarized from dk): a small model that holds the **skill** of memory (le
 | Part | Mechanism | Flag |
 |------|-----------|:----:|
 | **A1** | **Base model** | |
-| A1.1 | `ettin-reranker-32m-v1` default; `-68m-v1` as an arm; 17M as a floor. Cross-encoder, 8k context. Published MTEB retrieval NDCG@10: 17M 0.5576, 32M 0.5779, 68M 0.5915 (Qwen3-Reranker-0.6B 0.5940). Figures from the brief; verify on the model cards before use. | |
-| A1.2 | Export to ONNX int8. Run with ONNX Runtime, which the container already uses for `onnx_embedder.py`. | |
+| A1.1 | `cross-encoder/ettin-reranker-68m-v1` default after P0; `-32m-v1` as the latency arm; `-17m-v1` as a floor. Apache-2.0. Cross-encoder, 8k context. MTEB(eng, v2) retrieval NDCG@10 (mean over 6 first-stage embedders, including all-MiniLM-L6-v2): 17M 0.5576, 32M 0.5779, 68M 0.5915; Qwen3-Reranker-0.6B 0.5940. Checked on the model card on 2026-09-24. | |
+| A1.2 | Use the published ONNX int8 file (`onnx/model_qint8_arm64.onnx`, 32 MB; an AVX2 file exists for x86). The ONNX file holds the transformer only. The score head (Dense + GELU, LayerNorm, Dense; about 150K parameters) runs in numpy. Run with ONNX Runtime, which the container already uses for `onnx_embedder.py`. | |
 | **A2** | **Recall head** (first skill) | |
 | A2.1 | Score each `(query, candidate)` pair from the top N of CUR1 (N=20, same cap as the Jev retrieval flow). | |
 | A2.2 | Softmax over candidate scores plus a learned `none` score. Output: reordered list and `P(best)`. | |
@@ -241,6 +241,87 @@ If P0 or P2 fails the stop rule, P3–P7 do not start.
 | D4 | Training data | Train on fictional and synthetic data. Use private data for evaluation only. |
 | D5 | Body sharing | A7-A: one fine-tuned copy per skill. Merge to A7-B only if the merged model matches each separate head. |
 | D6 | Query intent head | In scope with the Recall head (A2.3). |
+
+## P0 result (2026-09-24): zero-shot rerank on LongMemEval_s
+
+Script: `eval/run_rerank_pilot.py`. Raw results: `eval/results/rerank-pilot-32m.json` and `eval/results/rerank-pilot-68m.json` (local only; `eval/results/` is in `.gitignore`).
+
+Method:
+
+- 120 questions, 20 per category, seed 7, abstention questions excluded. Each question has a fresh in-process `MemoryEngine` with local Qdrant. No Docker, no service.
+- Baseline: `hybrid_search(k=50)` with engine defaults. The reranker reorders the top 20 results and keeps the rest.
+- Metrics are session-level, with the same rules as `compute_recall_at_k`.
+- Scores use the published ONNX int8 files, max 1024 tokens per pair. The model-card example ranks correctly for both models.
+
+| Metric | Hybrid | 32M rerank | 68M rerank |
+|--------|-------:|-----------:|-----------:|
+| recall@1 | 0.825 | 0.875 | 0.925 |
+| recall@5 | 0.983 | 0.983 | 0.992 |
+| MRR | 0.893 | 0.924 | 0.953 |
+| NDCG@5 | 0.894 | 0.918 | 0.946 |
+| NDCG@5 delta, bootstrap 95% interval | | [-0.005, 0.051] | [0.028, 0.078] |
+| MRR wins / losses (questions) | | 12 / 7 | 18 / 4 |
+| Rerank time per question (20 pairs), p50 / p95 | | 0.40 s / 0.47 s | 1.09 s / 1.27 s |
+| Process peak RSS | | 1.8 GB | 2.0 GB |
+
+NDCG@5 by category:
+
+| Category | Hybrid | 32M | 68M |
+|----------|-------:|----:|----:|
+| multi-session | 0.831 | 0.867 | 0.893 |
+| temporal-reasoning | 0.727 | 0.871 | 0.875 |
+| knowledge-update | 0.992 | 1.000 | 1.000 |
+| single-session-user | 0.963 | 0.963 | 1.000 |
+| single-session-assistant | 1.000 | 1.000 | 1.000 |
+| single-session-preference | 0.851 | 0.804 | 0.907 |
+
+Reading:
+
+- The 68M model meets the D1 rule on this set: +0.052 NDCG@5, and the interval is above 0. No category drops.
+- The 32M model does not meet D1: +0.023, and the interval includes 0. The preference category drops by 0.047 NDCG@5 and 0.05 recall@5.
+- Hybrid search puts a gold session in the top 20 for all 120 questions. On this set, the ranking inside the top 20 limits quality, not candidate recall.
+
+Limits of this result:
+
+- LongMemEval is the regression set (D1), not the gold set. The P1 gold set on production data is still necessary for the proceed decision.
+- The baseline calls the engine directly. The `/search` route also applies `reference_date` temporal intent. The temporal-reasoning gain can be smaller against the real route.
+- LongMemEval memories are raw 3,000-character session chunks. Production memories are short extracted facts, so production pairs are shorter and faster. The latency figures above do not apply to production. Measure latency on production-length text before P3.
+- 120 questions give wide intervals. The 68M lower bound (0.028) is close to 0.03.
+
+### Follow-up: vector-only retrieval + 68M rerank
+
+Question from dk: can a plain vector store plus the model replace hybrid search? Same 120 questions, `--retriever vector` (`MemoryEngine.search`, no BM25, no graph). Raw results: `eval/results/rerank-pilot-68m-vector.json` (local only).
+
+| Metric | Vector only | Vector + 68M | Hybrid + 68M |
+|--------|------------:|-------------:|-------------:|
+| Gold session in top 20 | 0.983 | 0.983 | 1.000 |
+| recall@1 | 0.867 | 0.908 | 0.925 |
+| recall@5 | 0.975 | 0.983 | 0.992 |
+| NDCG@5 | 0.901 | 0.942 | 0.946 |
+
+- Vector + 68M minus hybrid + 68M, NDCG@5: -0.003, bootstrap 95% interval [-0.017, 0.007]. This set shows no measurable difference.
+- Vector-only search misses the gold session in the top 20 for 2 of 120 questions. Both are temporal-reasoning questions. Hybrid search misses none.
+- LongMemEval queries are conversational and contain few exact identifiers. Production memories contain names, versions, ports, and file paths, where keyword match helps most. The P1 gold set on production data decides whether BM25 stays.
+
+Consequence: the 68M model replaces the 32M model as the Recall default for P1 and P2. The 32M model stays as the latency arm.
+
+## P3 shadow (2026-09-24)
+
+dk approved P3 on 2026-09-24 and closed the Jev experiment (PR #108). The Recall shadow is `rerank_shadow.py`.
+
+| Setting | Default | Reason |
+|---------|---------|--------|
+| `RERANK_SHADOW_ENABLED` | `false` | Opt-in. |
+| `RERANK_SHADOW_SAMPLE_RATE` | `0.2` | The droplet has 4 CPUs, and CI runners use up to 2. Each observation adds one read-only search and one rerank. |
+| `RERANK_SHADOW_TOP_N` | `20` | Same cut-off as P0. |
+| `RERANK_SHADOW_MAX_TOKENS` | `512` | Production memories are short facts. |
+| ONNX threads | `1` | Limit CPU use on the shared droplet. |
+
+- The shadow re-reads the top 20 with `hybrid_search(reinforce=False)`. The default search reinforces the returned memories, and `hybrid_search_explain` skips the BM25 cache from PR #109, so both are unsuitable.
+- The shadow embeds the query a second time. Cache the query vector if the embedder lock shows contention.
+- One task runs at a time. A new request is dropped while a task runs.
+- Records hold the query SHA-256. `retrieval_log` holds the query text, so records can be joined to it for P1 labels.
+- Local measurement (M4 Pro, 1 thread): 20 short memory-like pairs take about 216 ms. Measure again on the droplet.
 
 ## Out of scope
 

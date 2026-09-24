@@ -34,6 +34,7 @@ from memory_engine import MemoryEngine, annotate_relative_scores
 from runtime_memory import MemoryTrimmer
 from audit_log import AuditLog, NullAuditLog
 from usage_tracker import UsageTracker, NullTracker
+import rerank_shadow
 from extraction_profiles import ExtractionProfiles
 from transcript_hygiene import clean_transcript
 from project_memory import (
@@ -205,6 +206,7 @@ embedder_auto_reloader = EmbedderAutoReloadController(
     max_queue_depth=EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH,
 )
 usage_tracker: UsageTracker | NullTracker = NullTracker()  # replaced in lifespan if enabled
+rerank_shadow_instance: "rerank_shadow.RerankShadow | None" = None  # set in lifespan if enabled
 audit_log: AuditLog | NullAuditLog = NullAuditLog()  # replaced in lifespan if enabled
 metrics_started_at = time.time()
 metrics_lock = threading.Lock()
@@ -1287,6 +1289,15 @@ async def lifespan(app: FastAPI):
         memory.config.get("model"),
         memory.dim,
     )
+    global rerank_shadow_instance
+    try:
+        rerank_shadow_instance = rerank_shadow.from_env()
+        if rerank_shadow_instance is not None:
+            rerank_shadow_instance.warm()
+            logger.info("Rerank shadow enabled: model=%s sample_rate=%s", rerank_shadow_instance.model, rerank_shadow_instance.sample_rate)
+    except Exception:
+        rerank_shadow_instance = None
+        logger.warning("Rerank shadow disabled: setup failed", exc_info=True)
     global usage_tracker
     if _env_bool("USAGE_TRACKING", False):
         usage_tracker = UsageTracker(os.path.join(DATA_DIR, "usage.db"))
@@ -1331,6 +1342,8 @@ async def lifespan(app: FastAPI):
             task.cancel()
         await asyncio.gather(*extract_workers, return_exceptions=True)
         extract_workers.clear()
+    if rerank_shadow_instance is not None:
+        rerank_shadow_instance.close(wait=False)
     logger.info("Shutting down — saving index...")
     memory.save()
     logger.info("Shutdown complete.")
@@ -2478,6 +2491,22 @@ def _validated_search_scope_kwargs(
     return scope_kwargs
 
 
+def _observe_rerank_shadow(query: str, k: int, results: list, search_kwargs: dict, auth) -> None:
+    """Hand the query to the reranker shadow. Read-only; never affects the response."""
+    shadow = rerank_shadow_instance
+    if shadow is None:
+        return
+
+    def fetch():
+        kwargs = {**search_kwargs, "k": max(k, shadow.top_n), "reinforce": False}
+        return auth.filter_results(memory.hybrid_search(**kwargs))
+
+    try:
+        shadow.observe("/search", query, k, [r.get("id") for r in results], fetch)
+    except Exception:
+        logger.warning("Rerank shadow observe failed", exc_info=True)
+
+
 @app.post("/search")
 async def search(request_body: SearchRequest, request: Request):
     """Search for similar memories (vector-only or hybrid)"""
@@ -2548,6 +2577,8 @@ async def search(request_body: SearchRequest, request: Request):
             search_kwargs.update(scope_kwargs)
             results = await run_in_threadpool(memory.search, **search_kwargs)
         results = annotate_relative_scores(auth.filter_results(results))
+        if request_body.hybrid:
+            _observe_rerank_shadow(request_body.query, request_body.k, results, search_kwargs, auth)
         result_count = len(results)
         _log_usage_event(request, "search", request_body.source)
         for rank, r in enumerate(results, 1):

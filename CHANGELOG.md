@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Added
+- **Reranker shadow for `/search` (off by default).** Set
+  `RERANK_SHADOW_ENABLED=true` to score the top 20 hybrid candidates with
+  `cross-encoder/ettin-reranker-68m-v1` (ONNX int8, pinned revision) in one
+  background thread. The shadow never changes a response and never writes
+  memory state: it re-reads candidates with `hybrid_search(reinforce=False)`.
+  - One task runs at a time. A request that arrives while the task runs is
+    dropped, not queued. ONNX uses one thread.
+  - `RERANK_SHADOW_SAMPLE_RATE` (default `0.2`) sets the share of hybrid
+    searches that the shadow observes.
+  - Records go to `SHADOW_LOG_DIR/rerank-shadow-<model>.jsonl` and rotate at
+    10 MiB with five backups. Records hold a SHA-256 of the query, not the
+    query text.
+  - The first start downloads the model (about 70 MB) into `MODEL_CACHE_DIR`
+    in the background. If the load fails, the shadow turns itself off until
+    the next restart. A bad shadow setting disables the shadow, not the
+    service.
+- `hybrid_search(reinforce=False)` runs a search without reinforcement writes.
+- `eval/run_rerank_pilot.py` compares zero-shot rerank against hybrid or
+  vector-only search on LongMemEval_s, in process, with no service.
+
 ### Fixed
 - **Parallel searches no longer queue.** `/search`, `/search/evidence`, and
   `/search/batch` now run the engine search in the thread pool. Before this
