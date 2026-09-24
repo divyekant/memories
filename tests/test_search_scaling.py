@@ -58,3 +58,23 @@ def test_related_graph_is_built_once_until_links_change(engine):
         engine.remove_link(1, 3, "related_to")
         engine.hybrid_search(query="qdrant", graph_weight=0.1)
         assert spy.call_count == 3
+
+
+def test_search_between_delete_and_bm25_rebuild_keeps_ids_aligned(engine):
+    """Searches run on worker threads, so they can land after a delete has
+    rebuilt the id map but before the BM25 index is rebuilt."""
+    now = datetime.now(timezone.utc).isoformat()
+    engine.metadata = [
+        {"id": 1, "text": "alpha", "source": "t", "created_at": now},
+        {"id": 2, "text": "zebra stripes", "source": "t", "created_at": now},
+        {"id": 3, "text": "other thing", "source": "t", "created_at": now},
+    ]
+    engine._rebuild_id_map()
+    engine._rebuild_bm25()
+
+    engine.metadata = [m for m in engine.metadata if m["id"] != 1]
+    engine._rebuild_id_map()  # delete path, before _rebuild_bm25()
+
+    for prefix in (None, "t"):
+        ids = [r["id"] for r in engine.hybrid_search(query="zebra", source_prefix=prefix, graph_weight=0)]
+        assert ids == [2], (prefix, ids)
