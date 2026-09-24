@@ -1338,7 +1338,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Memories API",
-    version="5.16.0",
+    version="5.16.1",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
 )
@@ -1815,7 +1815,7 @@ async def health(request: Request):
 
     Unauthenticated callers get minimal response; authenticated callers get full stats.
     """
-    base = {"status": "ok", "service": "memories", "version": "5.16.0"}
+    base = {"status": "ok", "service": "memories", "version": "5.16.1"}
     # Only include detailed stats for authenticated callers
     if not API_KEY or hmac.compare_digest(
         request.headers.get("X-API-Key", "").encode(), API_KEY.encode()
@@ -2708,59 +2708,24 @@ async def search_evidence(request_body: SearchRequest, request: Request):
 
 @app.post("/search/batch")
 async def search_batch(request_body: SearchBatchRequest, request: Request):
-    """Run multiple searches in one request."""
+    """Run multiple searches in one request.
+
+    Each item runs through the same code as POST /search, so a batch returns
+    what the same searches would return one at a time. Items run at the same
+    time on the thread pool, and results keep the request order.
+    """
     auth = _get_auth(request)
-    scope_kwargs_by_item = [
-        _validated_search_scope_kwargs(item, auth)
-        for item in request_body.queries
-    ]
-    try:
-        outputs = []
-        for item, scope_kwargs in zip(request_body.queries, scope_kwargs_by_item):
-            if item.hybrid:
-                search_kwargs = dict(
-                    query=item.query,
-                    k=item.k,
-                    threshold=item.threshold,
-                    vector_weight=item.vector_weight,
-                    source_prefix=item.source_prefix,
-                    recency_weight=item.recency_weight,
-                    recency_half_life_days=item.recency_half_life_days,
-                    confidence_weight=item.confidence_weight,
-                    graph_weight=item.graph_weight,
-                    since=item.since,
-                    until=item.until,
-                )
-                search_kwargs.update(scope_kwargs)
-                results = await run_in_threadpool(memory.hybrid_search, **search_kwargs)
-            else:
-                search_kwargs = dict(
-                    query=item.query,
-                    k=item.k,
-                    threshold=item.threshold,
-                    source_prefix=item.source_prefix,
-                    since=item.since,
-                    until=item.until,
-                )
-                search_kwargs.update(scope_kwargs)
-                results = await run_in_threadpool(memory.search, **search_kwargs)
-            results = annotate_relative_scores(auth.filter_results(results))
-            batch_result_count = len(results)
-            for rank, r in enumerate(results, 1):
-                if "id" in r:
-                    usage_tracker.log_retrieval(
-                        memory_id=r["id"],
-                        query=item.query[:200],
-                        source=item.source,
-                        rank=rank,
-                        result_count=batch_result_count,
-                    )
-            _log_usage_event(request, "search", item.source)
-            outputs.append({"query": item.query, "results": results, "count": batch_result_count})
-        return {"results": outputs, "count": len(outputs)}
-    except Exception as e:
-        logger.exception("Batch search failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    for item in request_body.queries:
+        _validated_search_scope_kwargs(item, auth)  # reject a bad item before any search runs
+    # A batch may hold 200 items; cap its share of the thread pool.
+    limit = asyncio.Semaphore(8)
+
+    async def run(item: SearchRequest) -> Dict[str, Any]:
+        async with limit:
+            return await search(item, request)
+
+    outputs = await asyncio.gather(*(run(item) for item in request_body.queries))
+    return {"results": list(outputs), "count": len(outputs)}
 
 
 # -- Memory CRUD --------------------------------------------------------------

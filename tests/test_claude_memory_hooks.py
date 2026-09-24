@@ -326,6 +326,39 @@ done
 # GET requests have no body — use null for jq compatibility
 if [ -z "$body" ]; then body="null"; fi
 
+# POST /search/batch behaves like one POST /search per item, unless a rule
+# targets /search/batch itself (for example, an old backend's 404). Each item
+# is logged as its own /search call, then the batch call is logged.
+if [[ "$url" == */search/batch ]] && \
+   [ "$(jq '[.[] | select(.url_suffix == "/search/batch")] | length' "$FAKE_CURL_RESPONSES")" = "0" ]; then
+  # Items run at the same time, as the backend runs them.
+  batch_dir=$(mktemp -d)
+  batch_n=0
+  while IFS= read -r item; do
+    ( "$0" -s -w '%{http_code}' -X POST "${url%/batch}" -d "$item" > "$batch_dir/$batch_n" 2>/dev/null; echo $? > "$batch_dir/$batch_n.rc" ) &
+    batch_n=$((batch_n + 1))
+  done < <(jq -c '.queries[]' <<<"$body")
+  wait
+  batch_status=200
+  batch_results="[]"
+  for ((i = 0; i < batch_n; i++)); do
+    item_rc=$(cat "$batch_dir/$i.rc")
+    if [ "$item_rc" -ne 0 ]; then exit "$item_rc"; fi
+    item_raw=$(cat "$batch_dir/$i")
+    item_status="${item_raw: -3}"
+    item_body="${item_raw%???}"
+    item_body="${item_body%$'\n'}"
+    if [ "$item_status" != "200" ] && [ "$batch_status" = "200" ]; then batch_status="$item_status"; fi
+    batch_results=$(jq -c --argjson r "$item_body" '. + [$r]' <<<"$batch_results")
+  done
+  jq -nc --arg url "$url" --argjson body "$body" '{url: $url, body: $body, headers: []}' >> "$FAKE_CURL_CALLS"
+  jq -nc --argjson r "$batch_results" '{results: $r, count: ($r | length)}'
+  case "$write_out" in
+    *'%{http_code}'*) printf '\n%s' "$batch_status" ;;
+  esac
+  exit 0
+fi
+
 headers_json=$(printf '%s\n' "${headers[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')
 jq -nc --arg url "$url" --argjson body "$body" --argjson headers "$headers_json" \
   '{url: $url, body: $body, headers: $headers}' >> "$FAKE_CURL_CALLS"
@@ -586,7 +619,7 @@ def test_memory_query_uses_transcript_context_for_short_followups(tmp_path: Path
     assert "## Follow-up Response Hint" in ctx
     assert "Search memories for the new topic" in ctx
     # Verify dual search: at least one scoped AND at least one unscoped
-    search_calls = [call for call in calls if call["body"] is not None]
+    search_calls = [call for call in calls if str(call["url"]).endswith("/search")]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     assert any(p == "" for p in prefixes), f"Expected unscoped search, got: {prefixes}"
     assert any(p == "claude-code/memories" for p in prefixes), f"Expected scoped search, got: {prefixes}"
@@ -712,6 +745,76 @@ def test_memory_query_searches_each_prefix_once(tmp_path: Path) -> None:
     assert "learning/memories" in prefixes
     assert "bug-fix/memories" in prefixes
     assert len(prefixes) == len(set(prefixes)), prefixes
+
+
+def _seed_backend_version(tmp_path: Path, version: str) -> dict[str, str]:
+    """The prompt hook reads the backend version from the session-start cache."""
+    cache = tmp_path / "backend-version.json"
+    cache.write_text(json.dumps({"url": "http://127.0.0.1:9999", "version": version, "checked_at": int(time.time())}))
+    return {"MEMORIES_BACKEND_VERSION_CACHE": str(cache)}
+
+
+@pytest.mark.parametrize("script", [QUERY_SCRIPT, RECALL_SCRIPT], ids=["query", "recall"])
+def test_hook_sends_one_batch_request_for_its_prefix_searches(tmp_path: Path, script: Path) -> None:
+    responses = [
+        {"url_suffix": "/health", "response": {"status": "ok", "service": "memories", "version": "5.16.1"}},
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {"results": [{"id": 7, "text": "Batched hit.", "source": "codex/memories", "similarity": 0.9}], "count": 1},
+        }
+    ]
+    payload = {"cwd": "/Users/example/memories", "prompt": "explain how the extraction worker retries failed jobs"}
+    result, calls, _ = _run_hook(
+        script, tmp_path, payload, responses=responses, extra_env=_seed_backend_version(tmp_path, "5.16.1")
+    )
+
+    assert result.returncode == 0, result.stderr
+    batch_calls = [call for call in calls if str(call["url"]).endswith("/search/batch")]
+    assert len(batch_calls) == 1
+    batched_prefixes = {item.get("source_prefix", "") for item in batch_calls[0]["body"]["queries"]}
+    assert {"claude-code/memories", "codex/memories"} <= batched_prefixes
+    assert "Batched hit." in result.stdout or "id=7" in result.stdout
+
+
+@pytest.mark.parametrize("script", [QUERY_SCRIPT, RECALL_SCRIPT], ids=["query", "recall"])
+def test_hook_falls_back_to_single_searches_without_batch_endpoint(tmp_path: Path, script: Path) -> None:
+    responses = [
+        {"url_suffix": "/health", "response": {"status": "ok", "service": "memories", "version": "5.16.1"}},
+        {"url_suffix": "/search/batch", "status": 404, "response": {"detail": "Not Found"}},
+        {
+            "url_suffix": "/search",
+            "source_prefix": "codex/memories",
+            "response": {"results": [{"id": 7, "text": "Single hit.", "source": "codex/memories", "similarity": 0.9}], "count": 1},
+        },
+    ]
+    payload = {"cwd": "/Users/example/memories", "prompt": "explain how the extraction worker retries failed jobs"}
+    result, calls, home_dir = _run_hook(
+        script, tmp_path, payload, responses=responses, extra_env=_seed_backend_version(tmp_path, "5.16.1")
+    )
+
+    assert result.returncode == 0, result.stderr
+    single_prefixes = {call["body"].get("source_prefix", "") for call in calls if str(call["url"]).endswith("/search")}
+    assert {"claude-code/memories", "codex/memories"} <= single_prefixes
+    assert "Single hit." in result.stdout or "id=7" in result.stdout
+    assert not (home_dir / ".config" / "memories" / "backend-down").exists()
+
+
+@pytest.mark.parametrize("script", [QUERY_SCRIPT, RECALL_SCRIPT], ids=["query", "recall"])
+def test_hook_does_not_batch_against_an_older_backend(tmp_path: Path, script: Path) -> None:
+    """A 5.16.0 backend runs batch items one after another; keep per-prefix calls."""
+    responses = [
+        {"url_suffix": "/health", "response": {"status": "ok", "service": "memories", "version": "5.16.0"}},
+    ]
+    payload = {"cwd": "/Users/example/memories", "prompt": "explain how the extraction worker retries failed jobs"}
+    result, calls, _ = _run_hook(
+        script, tmp_path, payload, responses=responses, extra_env=_seed_backend_version(tmp_path, "5.16.0")
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not [call for call in calls if str(call["url"]).endswith("/search/batch")]
+    single_prefixes = {call["body"].get("source_prefix", "") for call in calls if str(call["url"]).endswith("/search")}
+    assert {"claude-code/memories", "codex/memories"} <= single_prefixes
 
 
 def test_memory_query_redacts_details_for_active_search_required_prompts(tmp_path: Path) -> None:
@@ -1433,16 +1536,17 @@ def test_memory_recall_scopes_results_and_writes_memory_file(tmp_path: Path) -> 
     assert "Claude read hooks should search project-scoped memories" not in memory_text
     assert "## Memory Playbook" not in memory_text
 
-    search_calls = [call for call in calls if call["body"] is not None]
+    search_calls = [call for call in calls if str(call["url"]).endswith("/search")]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     # 4th call is the dedicated deferred-work surfacing search
-    assert prefixes == [
+    # Prefix searches run concurrently, so only the set of calls is fixed.
+    assert sorted(prefixes) == sorted([
         "claude-code/memories",
         "codex/memories",
         "learning/memories",
         "wip/memories",
         "wip/memories",
-    ]
+    ])
 
     # Deferred work section should appear when wip results exist
     assert "Deferred Work" in ctx
@@ -1650,16 +1754,17 @@ def test_memory_recall_uses_codex_source_prefixes_when_installed_under_codex(tmp
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "candidate memory id=1" in ctx
     assert "Codex sessions should recall project decisions" not in ctx
-    search_calls = [call for call in calls if call["body"] is not None]
+    search_calls = [call for call in calls if str(call["url"]).endswith("/search")]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     # 4th call is the dedicated deferred-work surfacing search
-    assert prefixes == [
+    # Prefix searches run concurrently, so only the set of calls is fixed.
+    assert sorted(prefixes) == sorted([
         "codex/memories",
         "claude-code/memories",
         "learning/memories",
         "wip/memories",
         "wip/memories",
-    ]
+    ])
 
 
 def test_codex_memory_recall_logs_session_metrics_and_attributes_searches(tmp_path: Path) -> None:
@@ -3543,7 +3648,7 @@ def test_dual_search_strategy_unscoped_and_all_default_prefixes(tmp_path: Path) 
     assert "Project-scoped result" in ctx
 
     # Verify search calls: at least one unscoped and each default project family.
-    search_calls = [call for call in calls if call["body"] is not None]
+    search_calls = [call for call in calls if str(call["url"]).endswith("/search")]
     prefixes = [call["body"].get("source_prefix", "") for call in search_calls]
     assert any(p == "" for p in prefixes), f"Expected at least one unscoped search, got prefixes: {prefixes}"
     assert any(p == "claude-code/memories" for p in prefixes), f"Expected claude-code/memories scoped search, got: {prefixes}"

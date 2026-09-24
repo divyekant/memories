@@ -192,6 +192,7 @@ if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ]; then
   done
 fi
 PREFIX_FANOUT_DIR=$(mktemp -d)
+PREFIX_FANOUT_SPEC="$PREFIX_FANOUT_DIR/spec.jsonl"
 IFS=',' read -r -a prefix_templates <<< "$MEMORIES_SOURCE_PREFIXES"
 prefix_idx=0
 for raw_prefix in "${prefix_templates[@]}"; do
@@ -215,14 +216,12 @@ for raw_prefix in "${prefix_templates[@]}"; do
     learning/*|wip/*) limit=2 ;;
   esac
 
-  # Issue in parallel. Sequentially these summed past the hook budget on any
-  # non-local backend. Files are collected by numeric prefix index below so
-  # collaborative project/person/legacy ordering remains deterministic even
-  # though the HTTP requests run concurrently.
-  (
-    search_memories "$query" "$prefix" "$limit" "$MEMORIES_RECALL_SCOPED_THRESHOLD" \
-      > "$PREFIX_FANOUT_DIR/p_${prefix_idx}" 2>/dev/null
-  ) &
+  # Queue the search. _search_fanout below sends them together, as one batch
+  # request or in parallel. Files are collected by numeric prefix index below
+  # so collaborative project/person/legacy ordering remains deterministic.
+  jq -nc --arg out "$PREFIX_FANOUT_DIR/p_${prefix_idx}" --arg q "$query" --arg p "$prefix" \
+    --argjson k "$limit" --argjson t "$MEMORIES_RECALL_SCOPED_THRESHOLD" \
+    '{out: $out, query: $q, prefix: $p, limit: $k, threshold: $t}' >> "$PREFIX_FANOUT_SPEC"
 
   if [ "$PROJECT_CONTEXT_ACTIVE" = "true" ] && [ "$prefix" = "$WIP_PREFIX" ]; then
     WIP_SEARCHED=true
@@ -238,7 +237,7 @@ done
 # Collect after the fan-out. Numeric iteration preserves configured prefix
 # order (glob order would place p_10 before p_2). Auth status is read from the
 # response JSON so it survives the subshells that produced it.
-wait 2>/dev/null || true
+_search_fanout "$PREFIX_FANOUT_SPEC" search_memories
 for ((fanout_idx = 1; fanout_idx <= prefix_idx; fanout_idx++)); do
   _fanout_file="$PREFIX_FANOUT_DIR/p_${fanout_idx}"
   [ -e "$_fanout_file" ] || continue
