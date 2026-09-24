@@ -2985,8 +2985,11 @@ class MemoryEngine:
         source_exact: Optional[str] = None,
         source_boundary: bool = False,
         allowed_prefixes: Optional[List[str]] = None,
+        reinforce: bool = True,
     ) -> List[Dict[str, Any]]:
         """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
+
+        reinforce=False makes the search read-only (no last_reinforced_at writes).
 
         When recency_weight > 0, a third recency signal is blended into RRF
         scoring. The vector_weight and bm25_weight are scaled down proportionally
@@ -3010,6 +3013,7 @@ class MemoryEngine:
             include_archived=include_archived,
             since=since,
             until=until,
+            reinforce_results=reinforce,
         )
 
         bm25_ranked = []
@@ -3123,7 +3127,8 @@ class MemoryEngine:
                         if vec_match and vec_match["similarity"] < threshold:
                             continue
                     results.append(result)
-                    self.reinforce(doc_id)
+                    if reinforce:
+                        self.reinforce(doc_id)
             return results
 
         # --- Graph expansion path (graph_weight > 0) ---
@@ -3142,7 +3147,7 @@ class MemoryEngine:
         )
 
         return self._merge_graph_results(
-            rrf_scores, graph_candidates, k, vector_results, threshold, reinforce=True
+            rrf_scores, graph_candidates, k, vector_results, threshold, reinforce=reinforce
         )
 
     def _search_no_reinforce(

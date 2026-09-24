@@ -71,6 +71,9 @@ services:
       - SHADOW_OMLX_URL=${SHADOW_OMLX_URL:-}
       - SHADOW_OMLX_API_KEY=${SHADOW_OMLX_API_KEY:-}
       - SHADOW_LOG_DIR=${SHADOW_LOG_DIR:-/data/shadow-logs}
+      # Reranker shadow for /search (off by default). Logs to SHADOW_LOG_DIR.
+      - RERANK_SHADOW_ENABLED=${RERANK_SHADOW_ENABLED:-false}
+      - RERANK_SHADOW_SAMPLE_RATE=${RERANK_SHADOW_SAMPLE_RATE:-0.2}
       # Training data collection (passive, for future fine-tuning)
       - EXTRACT_TRAINING_DATA_DIR=${EXTRACT_TRAINING_DATA_DIR:-}
       # Usage analytics (opt-in)
