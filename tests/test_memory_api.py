@@ -189,6 +189,29 @@ def test_search_batch_forwards_source_prefix_unions(client):
     assert mock_engine.search.call_args.kwargs["allowed_prefixes"] == vector_prefixes
 
 
+def test_search_batch_items_match_single_search(client):
+    """Hooks send one batch per prompt, so each item must behave like /search."""
+    test_client, mock_engine = client
+    item = {
+        "query": "what did we decide last week?",
+        "source_prefix": "claude-code/memories",
+        "include_archived": True,
+        "feedback_weight": 0.2,
+        "k": 3,
+        "threshold": 0.3,
+    }
+
+    single = test_client.post("/search", json=item, headers={"X-API-Key": "test-key"})
+    single_kwargs = dict(mock_engine.hybrid_search.call_args.kwargs)
+    batch = test_client.post("/search/batch", json={"queries": [item]}, headers={"X-API-Key": "test-key"})
+    batch_kwargs = dict(mock_engine.hybrid_search.call_args.kwargs)
+
+    assert single.status_code == 200 and batch.status_code == 200
+    assert batch_kwargs["since"] is not None
+    assert batch_kwargs == single_kwargs
+    assert batch.json()["results"][0] == single.json()
+
+
 def test_search_batch_rejects_mixed_source_scope_fields_before_querying(client):
     test_client, mock_engine = client
 

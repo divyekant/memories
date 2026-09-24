@@ -227,17 +227,15 @@ fi
 # --- Dual search strategy ---
 RAW_RESPONSES=""
 SEARCH_TMPDIR=$(mktemp -d 2>/dev/null || mktemp -d -t memories-query)
-SEARCH_JOBS=()
+SEARCH_SPEC="$SEARCH_TMPDIR/spec.jsonl"
 SEARCH_INDEX=0
 
 queue_search() {
   local query="$1" prefix="$2" limit="$3" threshold="$4"
   local outfile="$SEARCH_TMPDIR/result_${SEARCH_INDEX}.json"
   SEARCH_INDEX=$((SEARCH_INDEX + 1))
-  (
-    search_memories "$query" "$prefix" "$limit" "$threshold" > "$outfile" || true
-  ) &
-  SEARCH_JOBS+=("$!")
+  jq -nc --arg out "$outfile" --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
+    '{out: $out, query: $q, prefix: $p, limit: $k, threshold: $t}' >> "$SEARCH_SPEC"
 }
 
 # Strategy A: enriched unscoped (cross-project, semantic)
@@ -266,11 +264,7 @@ if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ -n "$INTENT_PREFIXES" ] && [ -n 
   done
 fi
 
-if [ "${#SEARCH_JOBS[@]}" -gt 0 ]; then
-  for job in "${SEARCH_JOBS[@]}"; do
-    wait "$job" || true
-  done
-fi
+_search_fanout "$SEARCH_SPEC" search_memories
 
 RAW_RESPONSES=$(
   result_index=0

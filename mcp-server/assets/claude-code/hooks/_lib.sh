@@ -1725,6 +1725,23 @@ _get_backends_for_op() {
 
 # -- Multi-Backend Search --------------------------------------------------
 
+# JSON body for one POST /search (also one item of POST /search/batch).
+_search_body() {
+  local query="$1" prefix="${2:-}" limit="${3:-5}" threshold="${4:-0.4}"
+  if [ -n "$prefix" ]; then
+    if [ "${PROJECT_CONTEXT_ACTIVE:-false}" = "true" ]; then
+      jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
+        '{query: $q, source_prefix: $p, source_boundary: true, k: $k, hybrid: true, threshold: $t}'
+    else
+      jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
+        '{query: $q, source_prefix: $p, k: $k, hybrid: true, threshold: $t}'
+    fi
+  else
+    jq -nc --arg q "$query" --argjson k "$limit" --argjson t "$threshold" \
+      '{query: $q, k: $k, hybrid: true, threshold: $t}'
+  fi
+}
+
 _search_memories_multi() {
   local query="$1"
   local prefix="${2:-}"
@@ -1737,18 +1754,7 @@ _search_memories_multi() {
   count=$(echo "$backends" | jq 'length')
 
   local body
-  if [ -n "$prefix" ]; then
-    if [ "${PROJECT_CONTEXT_ACTIVE:-false}" = "true" ]; then
-      body=$(jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
-        '{query: $q, source_prefix: $p, source_boundary: true, k: $k, hybrid: true, threshold: $t}')
-    else
-      body=$(jq -nc --arg q "$query" --arg p "$prefix" --argjson k "$limit" --argjson t "$threshold" \
-        '{query: $q, source_prefix: $p, k: $k, hybrid: true, threshold: $t}')
-    fi
-  else
-    body=$(jq -nc --arg q "$query" --argjson k "$limit" --argjson t "$threshold" \
-      '{query: $q, k: $k, hybrid: true, threshold: $t}')
-  fi
+  body=$(_search_body "$query" "$prefix" "$limit" "$threshold")
 
   if [ "$count" -le 1 ]; then
     # Single backend — direct call (backward compat, no overhead). Breaker
@@ -1900,6 +1906,139 @@ _search_memories_multi() {
   ' | jq -c '{results: ., count: length}'
 
   rm -rf "$tmpdir"
+}
+
+# -- Batched search fan-out ---------------------------------------------------
+# A hook runs several searches per prompt or session start, one per source
+# prefix. The spec file has one JSON line per search:
+#   {"out": "<file>", "query": "...", "prefix": "...", "limit": N, "threshold": X}
+# Each response is written to its "out" file.
+#
+# A single backend gets one POST /search/batch: one connection, one auth
+# lookup, and one breaker verdict. Routed multi-backend setups, and backends
+# without a compatible /search/batch, get one request per search in parallel
+# through $2 (default _search_memories_multi).
+_search_fanout() {
+  local spec="$1" single_fn="${2:-_search_memories_multi}"
+  [ -s "$spec" ] || return 0
+  if _search_memories_batch "$spec"; then
+    return 0
+  fi
+  local item pids=()
+  while IFS= read -r item; do
+    (
+      "$single_fn" \
+        "$(printf '%s' "$item" | jq -r '.query')" \
+        "$(printf '%s' "$item" | jq -r '.prefix // ""')" \
+        "$(printf '%s' "$item" | jq -r '.limit')" \
+        "$(printf '%s' "$item" | jq -r '.threshold')" \
+        > "$(printf '%s' "$item" | jq -r '.out')" 2>/dev/null || true
+    ) &
+    pids+=("$!")
+  done < "$spec"
+  local pid
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+}
+
+# Write one response to every "out" file in a spec.
+_search_fanout_write_all() {
+  local spec="$1" response="$2" out
+  while IFS= read -r out; do
+    printf '%s' "$response" > "$out"
+  done < <(jq -r '.out' "$spec")
+}
+
+# One POST /search/batch for every search in a spec. Returns 1 when the
+# caller must fall back to one request per search. Otherwise returns 0 after
+# it writes every "out" file, with empty results when the backend failed.
+_search_memories_batch() {
+  local spec="$1"
+  local backends
+  backends=$(_get_backends_for_op "search")
+  [ "$(printf '%s' "$backends" | jq 'length')" = "1" ] || return 1
+
+  local url key name
+  url=$(printf '%s' "$backends" | jq -r '.[0].url')
+  key=$(printf '%s' "$backends" | jq -r '.[0].api_key')
+  name=$(printf '%s' "$backends" | jq -r '.[0].name // "default"')
+
+  local empty='{"results":[],"count":0}'
+  if _breaker_open "$name"; then
+    MEMORIES_BACKEND_DOWN=1
+    _search_fanout_write_all "$spec" "$empty"
+    return 0
+  fi
+  # One request carries every search, so it gets a longer cap than one search.
+  local cap=6 call_budget
+  if ! call_budget=$(_hook_call_budget "$cap"); then
+    MEMORIES_BACKEND_DOWN=1
+    _search_fanout_write_all "$spec" "$empty"
+    return 0
+  fi
+
+  local item body
+  body=$(
+    while IFS= read -r item; do
+      _search_body \
+        "$(printf '%s' "$item" | jq -r '.query')" \
+        "$(printf '%s' "$item" | jq -r '.prefix // ""')" \
+        "$(printf '%s' "$item" | jq -r '.limit')" \
+        "$(printf '%s' "$item" | jq -r '.threshold')"
+    done < "$spec" | jq -sc '{queries: .}'
+  ) || return 1
+
+  local raw curl_rc status out
+  raw=$(curl -s --max-time "$call_budget" -w '\n%{http_code}' -X POST "$url/search/batch" \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: $key" \
+    -d "$body" 2>/dev/null)
+  curl_rc=$?
+  status="${raw##*$'\n'}"
+  out="${raw%$'\n'*}"
+
+  if [ $curl_rc -ne 0 ] || [ -z "$raw" ] || [ "$status" = "$raw" ]; then
+    if _should_trip_breaker "$curl_rc" "$call_budget" "$cap"; then
+      _breaker_trip "$name"
+    fi
+    MEMORIES_BACKEND_DOWN=1
+    _search_fanout_write_all "$spec" "$empty"
+    return 0
+  fi
+  case "$status" in
+    2??) ;;
+    401)
+      _breaker_reset "$name"
+      MEMORIES_AUTH_FAILED=1
+      _search_fanout_write_all "$spec" '{"results":[],"count":0,"auth_failed":true}'
+      return 0
+      ;;
+    404|405|422)
+      # The backend is up but has no compatible /search/batch.
+      return 1
+      ;;
+    *)
+      _breaker_trip "$name"
+      MEMORIES_BACKEND_DOWN=1
+      _search_fanout_write_all "$spec" "$empty"
+      return 0
+      ;;
+  esac
+  _breaker_reset "$name"
+
+  local idx=0 response prefix
+  while IFS= read -r item; do
+    response=$(printf '%s' "$out" | jq -c --argjson i "$idx" '.results[$i] // {"results":[],"count":0}' 2>/dev/null) \
+      || response="$empty"
+    prefix=$(printf '%s' "$item" | jq -r '.prefix // ""')
+    if [ "${PROJECT_CONTEXT_ACTIVE:-false}" = "true" ] && [ -n "$prefix" ]; then
+      response=$(printf '%s' "$response" | _memories_filter_search_response_for_prefix "$prefix") || response="$empty"
+    fi
+    printf '%s' "$response" > "$(printf '%s' "$item" | jq -r '.out')"
+    idx=$((idx + 1))
+  done < "$spec"
+  return 0
 }
 
 # -- Multi-Backend Extract -------------------------------------------------

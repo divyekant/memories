@@ -48,3 +48,21 @@ def test_concurrent_searches_run_in_parallel(app_module, hybrid):
     assert all(r.status_code == 200 for r in responses)
     # Serial execution takes 4 x 0.4s = 1.6s.
     assert elapsed < 1.0
+
+
+def test_batch_items_run_in_parallel(app_module):
+    async def run():
+        transport = httpx.ASGITransport(app=app_module.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            start = time.monotonic()
+            response = await client.post(
+                "/search/batch",
+                json={"queries": [{"query": f"q{i}", "k": 3} for i in range(4)]},
+                headers={"X-API-Key": "test-key"},
+            )
+            return time.monotonic() - start, response
+
+    elapsed, response = asyncio.run(run())
+    assert response.status_code == 200
+    assert [item["query"] for item in response.json()["results"]] == ["q0", "q1", "q2", "q3"]
+    assert elapsed < 1.0
