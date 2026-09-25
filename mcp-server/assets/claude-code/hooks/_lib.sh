@@ -899,6 +899,30 @@ _MEMORIES_TURN_TEXT_JQ='def turn_text:
     ]
   | join(" ");'
 
+# jq def that reduces prompt or transcript text to the words a person wrote,
+# for use in a search query. Projects sessions wrap each prompt in <wake> and
+# <relay> envelopes: the attributes are ids and routing data, and ids in the
+# message bodies are opaque. Both only add noise to /search.
+_MEMORIES_QUERY_TEXT_JQ='def query_text:
+  gsub("<system-reminder\\b[\\s\\S]*?</system-reminder>"; " ")
+  | gsub("<system-note\\b[\\s\\S]*?</system-note>"; " ")
+  | gsub("<previous-body\\b[\\s\\S]*?</previous-body>"; " ")
+  | (if test("<(wake|relay)[\\s>]") then
+      ([match("<(message|note|cited)\\b[^>]*>([\\s\\S]*?)</(message|note|cited)>"; "g") | .captures[1].string // ""]
+        | join("\n")) as $bodies
+      | if ($bodies | test("\\S")) then $bodies else . end
+    else . end)
+  | gsub("</?[A-Za-z][\\w:-]*(\\s[^<>]*)?/?>"; " ")
+  | gsub("[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}"; " ")
+  | gsub("(?<![A-Za-z0-9])[a-z]+_[0-9][A-Za-z0-9]{9,}"; " ")
+  | gsub("(?<![A-Za-z0-9])(?=[A-Za-z]*[0-9])(?=[0-9]*[A-Za-z])[A-Za-z0-9]{16,}(?![A-Za-z0-9])"; " ");'
+
+_memories_query_text() {
+  local text
+  text=$(cat)
+  printf '%s' "$text" | jq -Rsr "$_MEMORIES_QUERY_TEXT_JQ query_text" 2>/dev/null || printf '%s' "$text"
+}
+
 _memories_filter_search_response_for_prefix() {
   local prefix="${1:-}"
   jq -c --arg prefix "$prefix" '

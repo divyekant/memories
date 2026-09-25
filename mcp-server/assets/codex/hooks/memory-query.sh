@@ -36,6 +36,7 @@ else
   # classifier identical and gate the playbook on candidate count only.
   _active_search_pattern() { printf '%s' '(^|[^a-z])(did we already|do you remember|remember (how|what|where|when|why|the)|recall|already decide|where did we|how did we|what did we|what was the last|where we left|left off|resume|continue where|previous|prior|earlier|last (fix|time|decision|session|run)|deferred|blocked|follow.?up|next steps|what.?s the plan|what is the plan|current plan|existing plan|release gate|gated)([^a-z]|$)'; }
   _playbook_injection_mode() { if [ "${2:-0}" -ge 1 ] 2>/dev/null; then printf 'full'; else printf 'minimal'; fi; }
+  _memories_query_text() { cat; }
 fi
 
 INPUT=$(cat)
@@ -123,18 +124,25 @@ build_response_hint() {
 build_keyword_bag() {
   local prompt="$1"
   local project="$2"
-  local bag="$project"
-  local identifiers
-  identifiers=$(echo "$prompt" | { grep -oE '[A-Z][a-z]+([A-Z][a-z]+)+|[a-z]+_[a-z_]+|[A-Z_]{3,}' 2>/dev/null || true; } | sort -u | head -10 | tr '\n' ' ')
-  local versions
-  versions=$(echo "$prompt" | { grep -oE 'v[0-9]+\.[0-9]+[0-9.]*|#[0-9]+|PR[- ]?[0-9]+' 2>/dev/null || true; } | sort -u | head -5 | tr '\n' ' ')
-  local nouns
-  local stopwords="ok okay wait wtf dammit hmm yes no sure right well so but and the this that is are was were we you i it a an of to in for on with from by at or not do does did dont doesnt didnt can cant could would should have has had been be will just also like think feel want need know see get got let lets go make made way thing stuff something there then than what when where which who how why about into more some only other its here very after before because being our them they these those out uses use used using"
-  nouns=$(echo "$prompt" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z' ' ' | tr -s ' ' | \
-    awk -v stops="$stopwords" 'BEGIN{n=split(stops,a," ");for(i=1;i<=n;i++)s[a[i]]=1} {for(i=1;i<=NF;i++)if(length($i)>=3 && !($i in s))print $i}' | \
-    sort -u | head -15 | tr '\n' ' ')
-  bag="$bag $identifiers $versions $nouns"
-  echo "$bag" | tr -s ' ' | sed 's/^ //;s/ $//'
+  local word_limit="${3:-15}"
+  local stopwords="ok okay wait wtf dammit hmm yes no sure right well so but and the this that is are was were we you i it a an of to in for on with from by at or not do does did dont doesnt didnt can cant could would should have has had been be will just also like think feel want need know see get got let lets go make made way thing stuff something there then than what when where which who how why about into more some only other its here very after before because being our them they these those out uses use used using http https www com"
+  # Terms are ranked by count, then by first position. A long prompt is cut
+  # to its repeated terms, not to the terms that sort first alphabetically.
+  # Identifiers must be whole tokens, so a fragment of an opaque id never
+  # counts as a CamelCase or CONSTANT name.
+  printf '%s' "$prompt" | jq -Rsr --arg project "$project" --arg stops "$stopwords" --argjson word_limit "$word_limit" '
+    def ranked: . as $all
+      | reduce range(length) as $i ({}; .[$all[$i]] |= ((. // {n: 0, at: $i}) | .n += 1))
+      | to_entries | sort_by(-.value.n, .value.at) | map(.key);
+    def tokens($re): [match($re; "g") | .string] | ranked;
+    ($stops | split(" ") | map({(.): true}) | add) as $stop
+    | [$project]
+      + (tokens("(?<![\\w.-])[\\w-]*\\w\\.(sh|py|js|mjs|ts|tsx|jsx|json|jsonl|md|yaml|yml|toml|go|rs|sql|css|html|db|lock)(?![\\w-])|(?<!\\w)(_?[a-z][a-z0-9]*(_[a-z0-9]+)+|[A-Z][a-z0-9]+([A-Z][a-z0-9]+)+|[A-Z][A-Z0-9]*(_[A-Z0-9]+)+|[A-Z]{3,}[0-9]*)(?!\\w)") | .[0:10])
+      + (tokens("(?<!\\w)(v[0-9]+(\\.[0-9]+)+|PR[- ]?[0-9]+)(?![\\w.])|#[0-9]+") | .[0:5])
+      + ([match("[A-Za-z]+"; "g") | .string | ascii_downcase | select(length >= 3 and ($stop[.] | not))] | ranked | .[0:$word_limit])
+    | map(select(. != ""))
+    | reduce .[] as $t ([]; if any(.[]; ascii_downcase == ($t | ascii_downcase)) then . else . + [$t] end)
+    | join(" ")' 2>/dev/null || printf '%s' "$project"
 }
 
 extract_recent_context() {
@@ -146,7 +154,7 @@ extract_recent_context() {
   # Flexible transcript parsing: supports Claude Code (.type + .message.content),
   # legacy Codex JSONL (.message.role + .content), and current Codex rollout
   # response items (.payload.role + .payload.content).
-  tail -200 "$transcript_path" 2>/dev/null | jq -sr '
+  tail -200 "$transcript_path" 2>/dev/null | jq -sr "${_MEMORIES_QUERY_TEXT_JQ:-def query_text: .;}"'
     [
       .[]
       | select(
@@ -174,6 +182,7 @@ extract_recent_context() {
             elif ((.text // null) | type) == "string" then .text
             else ""
             end
+            | query_text
           )
         }
       | select(.text != "" and (.text | length) > 4)
@@ -201,7 +210,9 @@ search_memories() {
 }
 
 CONTEXT=$(extract_recent_context "$TRANSCRIPT_PATH")
-PROMPT_LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
+# Search on the words a person wrote, not on envelopes, reminders, and ids.
+QUERY_PROMPT=$(printf '%s' "$PROMPT" | _memories_query_text)
+PROMPT_LOWER=$(printf '%s' "$QUERY_PROMPT" | tr '[:upper:]' '[:lower:]')
 ACTIVE_SEARCH_REQUIRED=0
 ACTIVE_SEARCH_PATTERN="$(_active_search_pattern)"
 if printf '%s' "$PROMPT_LOWER" | grep -qiE "$ACTIVE_SEARCH_PATTERN"; then
@@ -216,7 +227,7 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
 fi
 
 # Key term extraction — pull identifiers from the prompt
-KEY_TERMS=$(echo "$PROMPT" | { grep -oE '[A-Z][a-z]+([A-Z][a-z]+)+|[a-z]+_[a-z_]+|[A-Z_]{3,}' 2>/dev/null || true; } | sort -u | head -10 | tr '\n' ', ' | sed 's/,$//')
+KEY_TERMS=$(build_keyword_bag "$QUERY_PROMPT" "" 0 | cut -d' ' -f1-10 | sed 's/ /, /g')
 [ -n "$KEY_TERMS" ] && KEY_TERMS="Terms: $KEY_TERMS"
 
 # Intent-based prefix biasing
@@ -231,34 +242,34 @@ esac
 # Build enriched keyword-bag query
 KEYWORD_BAG=""
 if [ -n "$PROJECT" ]; then
-  KEYWORD_BAG=$(build_keyword_bag "$PROMPT" "$PROJECT")
+  KEYWORD_BAG=$(build_keyword_bag "$QUERY_PROMPT" "$PROJECT")
 fi
 
 # Include conversation context identifiers in the enriched query
 if [ -n "$CONTEXT" ]; then
-  CONTEXT_TERMS=$(echo "$CONTEXT" | { grep -oE '[A-Z][a-z]+([A-Z][a-z]+)+|[a-z]+_[a-z_]+' 2>/dev/null || true; } | sort -u | head -5 | tr '\n' ' ')
-  ENRICHED_QUERY="$KEYWORD_BAG $CONTEXT_TERMS"
+  CONTEXT_TERMS=$(build_keyword_bag "$CONTEXT" "" 0 | cut -d' ' -f1-5)
+  ENRICHED_QUERY=$(printf '%s %s' "$KEYWORD_BAG" "$CONTEXT_TERMS" | awk '{for (i = 1; i <= NF; i++) if (!seen[tolower($i)]++) printf "%s%s", (n++ ? " " : ""), $i}')
 else
   ENRICHED_QUERY="$KEYWORD_BAG"
 fi
 
 # For very short prompts with no enrichment, fall back to original query
 if [ -z "$ENRICHED_QUERY" ] || [ ${#ENRICHED_QUERY} -lt 5 ]; then
-  ENRICHED_QUERY="$PROMPT"
+  ENRICHED_QUERY="$QUERY_PROMPT"
   if [ -n "$CONTEXT" ]; then
-    ENRICHED_QUERY=$(printf 'Project: %s\nRecent conversation:\n%s\nCurrent prompt: %s' "${PROJECT:-unknown}" "$CONTEXT" "$PROMPT")
+    ENRICHED_QUERY=$(printf 'Project: %s\nRecent conversation:\n%s\nCurrent prompt: %s' "${PROJECT:-unknown}" "$CONTEXT" "$QUERY_PROMPT")
   fi
 fi
 
 # Preserve original verbose query for fallback
-QUERY_TEXT="$PROMPT"
+QUERY_TEXT="$QUERY_PROMPT"
 if [ -n "$CONTEXT" ]; then
   FALLBACK_PREFIX=""
   [ -n "$FILE_CONTEXT" ] && FALLBACK_PREFIX="$FILE_CONTEXT\n"
   [ -n "$KEY_TERMS" ] && FALLBACK_PREFIX="${FALLBACK_PREFIX}$KEY_TERMS\n"
-  QUERY_TEXT=$(printf '%s\nProject: %s\nRecent conversation:\n%s\nCurrent prompt: %s' "$FALLBACK_PREFIX" "${PROJECT:-unknown}" "$CONTEXT" "$PROMPT")
+  QUERY_TEXT=$(printf '%s\nProject: %s\nRecent conversation:\n%s\nCurrent prompt: %s' "$FALLBACK_PREFIX" "${PROJECT:-unknown}" "$CONTEXT" "$QUERY_PROMPT")
 elif [ -n "$FILE_CONTEXT" ] || [ -n "$KEY_TERMS" ]; then
-  QUERY_TEXT=$(printf '%s\n%s\n%s' "$FILE_CONTEXT" "$KEY_TERMS" "$PROMPT")
+  QUERY_TEXT=$(printf '%s\n%s\n%s' "$FILE_CONTEXT" "$KEY_TERMS" "$QUERY_PROMPT")
 fi
 
 # Skip if no meaningful input
@@ -443,7 +454,7 @@ fi
 # (prior-work prompts); candidate matches alone get the memories block with a
 # short preamble; nothing matched gets a 1-2 line reminder. Keeps per-prompt
 # token cost proportional to need.
-PLAYBOOK_MODE=$(_playbook_injection_mode "$PROMPT" "$CANDIDATE_COUNT")
+PLAYBOOK_MODE=$(_playbook_injection_mode "$QUERY_PROMPT" "$CANDIDATE_COUNT")
 
 if [ "$PLAYBOOK_MODE" = "minimal" ]; then
   _log_info "Playbook gate: minimal reminder (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"

@@ -3596,6 +3596,115 @@ build_keyword_bag "ok so the UserPrefs module uses fetch_config and the MAX_RETR
         assert filler not in words, f"Filler word '{filler}' should not be in output: {output!r}"
 
 
+# Sanitized from a real Projects wake prompt. The ids are fake but keep the
+# real shape: prefix, underscore, 26+ mixed-case base58 characters.
+PROJECTS_WAKE_PROMPT = (
+    '<relay from="coordinator" session="session_01RM3nXESRKFCfBDXJ2QtAM3" current-time="2026-09-25T04:27:42Z" reason="spawn">\n'
+    "  The note below was written by the coordinator session, a Claude session, not by your user.\n"
+    "  <note>Fix the build_keyword_bag ranking in memory-query.sh; see [hooks thread](#cmsg_017FTnxwGQbDvFJiuEPb4V3TFYGXsRuooDKQXykkHA9a3f).</note>\n"
+    "</relay>\n"
+    '<wake reason="mention" current-time="2026-09-25T04:27:41Z">\n'
+    '  <project id="chan_017FTnxwGQbDvFJiuEPb4V3T" type="project">\n'
+    '    <message trigger="true" from="human" trust="principal" author-id="user_01BNwB99V2mcQ9SZ5Gg7NFEW" '
+    'id="cmsg_017FTnxwGQbDvFJiuEPb4V3TFYGXsRuooDKQXykkHA9a3f" sent-at="2026-09-25T04:27:31Z" mention="true">'
+    "Why does the reranker lose on hooks queries? Check the reranker shadow log for PR #110.</message>\n"
+    "  </project>\n"
+    "</wake>\n"
+    "<system-reminder>Contents of CLAUDE.md: IMPORTANT always search memories</system-reminder>"
+)
+ENVELOPE_NOISE = {
+    "cmsg", "chan", "cse", "session", "author", "mention", "trigger", "human", "trust", "principal",
+    "wake", "relay", "coordinator", "current", "time", "bnwb", "ftnxwgqbdvf", "important", "claude",
+}
+
+
+@pytest.mark.parametrize("hooks_dir", [HOOKS_DIR, CODEX_HOOKS_DIR], ids=["claude-code", "codex"])
+def test_query_text_keeps_only_the_words_a_person_wrote(hooks_dir: Path) -> None:
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1"; _memories_query_text', "_", str(hooks_dir / "_lib.sh")],
+        input=PROJECTS_WAKE_PROMPT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    text = result.stdout
+    assert "Why does the reranker lose on hooks queries?" in text
+    assert "build_keyword_bag ranking in memory-query.sh" in text
+    assert "PR #110" in text
+    for noise in ["<", "cmsg_", "user_01", "chan_", "session_01", "author-id", "note below", "CLAUDE.md"]:
+        assert noise not in text, (noise, text)
+
+
+def test_query_text_drops_opaque_ids_and_keeps_plain_prompts() -> None:
+    prompt = (
+        "deploy 3f2b8c1d-4e5a-4b6c-9d7e-8f9a0b1c2d3e and sha 4d6bc1fa9e8e2b3c7d1f "
+        "for toolu_01AbCdEfGhIjKlMnOp, keep claude-haiku-4-5-20251001 and MEMORIES_URL"
+    )
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1"; _memories_query_text', "_", str(HOOKS_DIR / "_lib.sh")],
+        input=prompt,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    words = result.stdout.split()
+    assert words == ["deploy", "and", "sha", "for", ",", "keep", "claude-haiku-4-5-20251001", "and", "MEMORIES_URL"]
+
+
+def test_build_keyword_bag_ranks_repeated_terms_before_alphabetical_ones(tmp_path: Path) -> None:
+    prompt = (
+        "absolute accepted accepts accurately adequate adjacent. The reranker is slow. "
+        "Profile the reranker and the reranker cache, and the RERANK_SHADOW_ENABLED flag in _lib.sh. "
+        "Zebra xylophone. Also check fragments like xKpExNje and MAX_RETRIES."
+    )
+    test_script = tmp_path / "rank_bag.sh"
+    test_script.write_text(
+        f"""#!/bin/bash
+set -euo pipefail
+eval "$(sed -n '/^build_keyword_bag()/,/^}}/p' "{QUERY_SCRIPT}")"
+build_keyword_bag "$1" "memories"
+"""
+    )
+    result = subprocess.run(["bash", str(test_script), prompt], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    words = result.stdout.split()
+    assert words[0] == "memories"
+    assert {"RERANK_SHADOW_ENABLED", "_lib.sh", "MAX_RETRIES"} <= set(words)
+    nouns = [w for w in words[1:] if w.islower() and "." not in w and "_" not in w]
+    assert nouns[0] == "reranker", words
+    # A CamelCase shape inside a longer token is not an identifier.
+    assert "KpExNje" not in words and "xKpExNje" not in words
+
+
+@pytest.mark.parametrize(
+    "script", [QUERY_SCRIPT, CODEX_HOOKS_DIR / "memory-query.sh"], ids=["claude-code", "codex"]
+)
+def test_memory_query_search_terms_exclude_projects_envelope_noise(tmp_path: Path, script: Path) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "user", "message": {"content": PROJECTS_WAKE_PROMPT}}) + "\n"
+        + json.dumps({"type": "assistant", "message": {"content": "The ShadowLog shows the reranker loses on keyword bags."}})
+        + "\n"
+    )
+    payload = {
+        "cwd": "/Users/example/memories",
+        "prompt": PROJECTS_WAKE_PROMPT,
+        "transcript_path": str(transcript),
+    }
+    result, calls, _ = _run_hook(script, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0, result.stderr
+    queries = [call["body"]["query"] for call in calls if str(call["url"]).endswith("/search")]
+    assert queries
+    enriched = next(q for q in queries if q.startswith("memories "))
+    words = {w.lower() for w in re.findall(r"[A-Za-z]+", enriched)}
+    assert {"reranker", "hooks", "shadowlog"} <= words, enriched
+    assert not words & ENVELOPE_NOISE, enriched
+    for query in queries:
+        assert "cmsg_" not in query and "user_01" not in query and "<" not in query, query
+
+
 def test_dual_search_strategy_unscoped_and_all_default_prefixes(tmp_path: Path) -> None:
     """Dual search fires unscoped plus all default project source families."""
     responses = [
