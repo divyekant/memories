@@ -310,7 +310,7 @@ class MemoryEngine:
         # (index, position -> memory id) from one build. Deletes rebuild
         # _bm25_pos_to_id before the index, so searches must not mix the two.
         self._bm25_snapshot: Optional[tuple] = None
-        self._bm25_score_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
+        self._bm25_score_cache: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
         self._links_generation = 0
         self._related_adjacency_cache: Optional[tuple] = None
         self._id_map: Dict[int, int] = {}      # memory_id -> index in self.metadata
@@ -417,7 +417,11 @@ class MemoryEngine:
         corpus = [m["text"].lower().split() for m in self.metadata]
         self.bm25_index = BM25Okapi(corpus)
         self._bm25_pos_to_id = [m["id"] for m in self.metadata]
-        self._bm25_snapshot = (self.bm25_index, list(self._bm25_pos_to_id))
+        self._bm25_snapshot = (self._bm25_generation, self.bm25_index, list(self._bm25_pos_to_id))
+        # Scores from an older build are never read again. Drop them, so the
+        # cache holds only arrays for this build and no old index stays alive.
+        with self._search_cache_lock:
+            self._bm25_score_cache.clear()
 
     _BM25_SCORE_CACHE_SIZE = 32
 
@@ -430,17 +434,17 @@ class MemoryEngine:
         snapshot = self._bm25_snapshot
         if snapshot is None:
             return []
-        index, pos_to_id = snapshot
-        key = tuple(tokens)
+        generation, index, pos_to_id = snapshot
+        # The key holds the build generation, not the index, so a cached
+        # entry never keeps an old index alive.
+        key = (generation, tuple(tokens))
         # Compute under the lock: parallel fan-out requests for one query then
         # wait for the first result instead of each scanning the corpus.
         with self._search_cache_lock:
-            cached = self._bm25_score_cache.get(key)
-            if cached is not None and cached[0] is index:
-                scores = cached[1]
-            else:
+            scores = self._bm25_score_cache.get(key)
+            if scores is None:
                 scores = index.get_scores(tokens)
-                self._bm25_score_cache[key] = (index, scores)
+                self._bm25_score_cache[key] = scores
             self._bm25_score_cache.move_to_end(key)
             if len(self._bm25_score_cache) > self._BM25_SCORE_CACHE_SIZE:
                 self._bm25_score_cache.popitem(last=False)

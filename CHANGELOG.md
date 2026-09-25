@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+- **The BM25 score cache no longer keeps old indexes in memory.** Every write
+  rebuilds the BM25 index. Since 5.16.1, each cache entry also held a
+  reference to the index it came from, so up to 32 old indexes stayed alive.
+  On the production droplet the backend grew from 0.7 GB to 2.5 GB within
+  minutes of a restart, and to 3 GB over a day. Cache keys now hold the build
+  generation, and a rebuild clears the cache. With a 32,973-memory copy of
+  real data, 15 rebuilds grew peak RSS by 982 MB before this fix and by
+  103 MB after it.
+
 ## [5.16.1] - 2026-09-24
 
 ### Changed
