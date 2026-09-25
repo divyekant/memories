@@ -78,3 +78,20 @@ def test_search_between_delete_and_bm25_rebuild_keeps_ids_aligned(engine):
     for prefix in (None, "t"):
         ids = [r["id"] for r in engine.hybrid_search(query="zebra", source_prefix=prefix, graph_weight=0)]
         assert ids == [2], (prefix, ids)
+
+
+def test_bm25_score_cache_does_not_keep_old_indexes_alive(engine):
+    """Every write rebuilds the BM25 index. The score cache must not hold a
+    reference to an old index, or each rebuild leaks a full index."""
+    import gc
+    import weakref
+
+    old_indexes = []
+    for i in range(5):
+        engine.hybrid_search(query=f"qdrant {i}", graph_weight=0)
+        old_indexes.append(weakref.ref(engine.bm25_index))
+        engine.metadata.append({"id": 100 + i, "text": f"note {i}", "source": "wip/p", "created_at": "2026-01-01T00:00:00+00:00"})
+        engine._rebuild_id_map()
+        engine._rebuild_bm25()
+    gc.collect()
+    assert [ref() is None for ref in old_indexes] == [True] * 5
