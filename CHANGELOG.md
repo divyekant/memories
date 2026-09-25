@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [5.16.2] - 2026-09-24
+
+### Fixed
+- **The BM25 score cache no longer keeps old indexes in memory.** Every write
+  rebuilds the BM25 index. Since 5.16.1, each cache entry also held a
+  reference to the index it came from, so up to 32 old indexes stayed alive.
+  On the production droplet the backend grew from 0.7 GB to 2.5 GB within
+  minutes of a restart, and to 3 GB over a day. Cache keys now hold the build
+  generation, and a rebuild clears the cache. With a 32,973-memory copy of
+  real data, 15 rebuilds grew peak RSS by 982 MB before this fix and by
+  103 MB after it.
+- **The prompt hooks search on the words a person wrote.** In Claude Projects
+  sessions, each prompt is a `<wake>` or `<relay>` envelope. The keyword bag
+  used to take its terms from the envelope attributes and ids, for example
+  `cmsg`, `chan`, `author`, and fragments of user and message ids. The new
+  `_memories_query_text` helper in `_lib.sh` keeps only the message, note, and
+  cited bodies. It also removes `<system-reminder>` blocks, tags, prefixed ids,
+  UUIDs, and long opaque tokens. The Claude Code and Codex prompt hooks apply
+  it to the prompt and to each recent transcript turn. On 70 local Projects
+  prompts, the share of query terms that no person wrote went from 76% to 2%.
+- **Keyword-bag terms are ranked by count.** The bag used to keep the first
+  15 words in alphabetical order, so a long prompt gave terms such as
+  `absolute accepted accepts`. Terms are now ranked by count, then by first
+  position. Identifiers must be whole tokens, and file names such as
+  `memory-query.sh` are kept.
+
 ## [5.16.1] - 2026-09-24
 
 ### Changed
