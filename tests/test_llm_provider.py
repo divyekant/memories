@@ -32,6 +32,43 @@ class TestProviderFactory:
             with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
                 get_provider()
 
+    @pytest.mark.parametrize("env, want_key, want_model", [
+        # Legacy .env: OAuth token in ANTHROPIC_API_KEY keeps Haiku 4.5.
+        ({"ANTHROPIC_API_KEY": "sk-ant-oat01-x"}, "sk-ant-oat01-x", "claude-haiku-4-5-20251001"),
+        ({"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"}, "sk-ant-oat01-x", "claude-haiku-4-5-20251001"),
+        # Both set, no switch: the API key wins.
+        ({"ANTHROPIC_API_KEY": "sk-ant-api03-k", "ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"},
+         "sk-ant-api03-k", "claude-haiku-5-5"),
+        ({"ANTHROPIC_API_KEY": "sk-ant-api03-k", "ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x",
+          "ANTHROPIC_AUTH": "oauth"}, "sk-ant-oat01-x", "claude-haiku-4-5-20251001"),
+        ({"ANTHROPIC_API_KEY": "sk-ant-api03-k", "ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x",
+          "ANTHROPIC_AUTH": "API_KEY"}, "sk-ant-api03-k", "claude-haiku-5-5"),
+        # EXTRACT_MODEL still overrides the per-auth default.
+        ({"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x", "EXTRACT_MODEL": "claude-haiku-5-5"},
+         "sk-ant-oat01-x", "claude-haiku-5-5"),
+    ])
+    def test_anthropic_auth_switch(self, env, want_key, want_model):
+        from llm_provider import get_provider
+        with patch.dict(os.environ, {"EXTRACT_PROVIDER": "anthropic", **env}, clear=True), \
+             patch("llm_provider.AnthropicProvider.__init__", return_value=None) as init:
+            get_provider()
+        key = init.call_args.kwargs["api_key"]
+        assert key == want_key
+        from llm_provider import _default_anthropic_model
+        model = init.call_args.kwargs["model"] or _default_anthropic_model(key)
+        assert model == want_model
+
+    @pytest.mark.parametrize("env, match", [
+        ({"ANTHROPIC_AUTH": "bogus", "ANTHROPIC_API_KEY": "k"}, "ANTHROPIC_AUTH"),
+        ({"ANTHROPIC_AUTH": "oauth", "ANTHROPIC_API_KEY": "sk-ant-api03-k"}, "ANTHROPIC_OAUTH_TOKEN"),
+        ({"ANTHROPIC_AUTH": "api_key", "ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"}, "ANTHROPIC_API_KEY"),
+    ])
+    def test_anthropic_auth_switch_errors(self, env, match):
+        from llm_provider import get_provider
+        with patch.dict(os.environ, {"EXTRACT_PROVIDER": "anthropic", **env}, clear=True):
+            with pytest.raises(ValueError, match=match):
+                get_provider()
+
     def test_openai_provider_requires_key(self):
         env = {"EXTRACT_PROVIDER": "openai"}
         with patch.dict(os.environ, env, clear=True):
@@ -229,11 +266,53 @@ class TestAnthropicOAuth:
         mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
 
         with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
-            provider = AnthropicProvider(api_key="sk-ant-api03-fake")
+            provider = AnthropicProvider(api_key="sk-ant-api03-fake", model="claude-haiku-4-5-20251001")
             provider.complete("sys", "usr")
 
         call = mock_anthropic.Anthropic.return_value.messages.create.call_args
         assert call.kwargs["temperature"] == 0.0
+        assert "output_config" not in call.kwargs
+
+    def test_anthropic_workspace_id_sent_as_header(self):
+        """Keys not scoped to a workspace need anthropic-workspace-id (400 otherwise)."""
+        mock_anthropic = MagicMock()
+        env = {"EXTRACT_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "sk-ant-usr-k",
+               "ANTHROPIC_WORKSPACE_ID": "wrkspc_01X"}
+        with patch.dict("sys.modules", {"anthropic": mock_anthropic}), \
+             patch.dict(os.environ, env, clear=True):
+            from llm_provider import get_provider
+            get_provider()
+        mock_anthropic.Anthropic.assert_called_once_with(
+            api_key="sk-ant-usr-k",
+            default_headers={"anthropic-workspace-id": "wrkspc_01X"},
+        )
+
+    def test_anthropic_default_model_is_haiku_5_5(self):
+        from llm_provider import DEFAULT_MODELS
+        assert DEFAULT_MODELS["anthropic"] == "claude-haiku-5-5"
+
+    def test_anthropic_haiku_5_5_omits_temperature_and_reads_text_block(self):
+        """Haiku 5.5 rejects temperature (400) and can start with a thinking block."""
+        from llm_provider import AnthropicProvider
+
+        mock_anthropic = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = [
+            MagicMock(type="thinking", thinking=""),
+            MagicMock(type="text", text='{"actions": []}'),
+        ]
+        mock_response.usage = MagicMock(input_tokens=10, output_tokens=5)
+        mock_anthropic.Anthropic.return_value.messages.create.return_value = mock_response
+
+        with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
+            provider = AnthropicProvider(api_key="sk-ant-api03-fake")
+            result = provider.complete("sys", "usr")
+
+        call = mock_anthropic.Anthropic.return_value.messages.create.call_args
+        assert call.kwargs["model"] == "claude-haiku-5-5"
+        assert "temperature" not in call.kwargs
+        assert call.kwargs["output_config"] == {"effort": "low"}
+        assert result.text == '{"actions": []}'
 
 
 class TestOllamaProvider:

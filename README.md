@@ -4,7 +4,7 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **OpenCode**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v5.16.2):**
+**Key capabilities (v5.17.0):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
 - **Write doctrine** — corrections supersede instead of being dropped: a colliding write replaces the similar memory and archives the old version with a supersedes link (`on_duplicate: supersede|skip|add`); agents update facts via `memory_update`
 - **Secret redaction** — credential-shaped content (API keys, JWTs, tokens, URL credentials) is redacted before any extraction LLM call or storage, with a context guard that spares placeholders and localhost DSNs
@@ -1506,7 +1506,10 @@ Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough 
 |----------|---------|-------------|
 | `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `chatgpt-subscription`, `ollama`, or empty to disable |
 | `EXTRACT_MODEL` | (per provider) | Model override |
-| `ANTHROPIC_API_KEY` | (none) | Required for Anthropic provider (standard key or `sk-ant-oat01-` OAuth token) |
+| `ANTHROPIC_API_KEY` | (none) | Standard Anthropic API key (`sk-ant-api03-`). An `sk-ant-oat01-` OAuth token here still works |
+| `ANTHROPIC_OAUTH_TOKEN` | (none) | Anthropic subscription OAuth token (`sk-ant-oat01-`). This token can only call Haiku 4.5 |
+| `ANTHROPIC_AUTH` | (API key when set) | `api_key` or `oauth`. Selects the Anthropic credential. The default model follows the credential: Haiku 5.5 for an API key, Haiku 4.5 for an OAuth token |
+| `ANTHROPIC_WORKSPACE_ID` | (none) | Workspace ID (`wrkspc_…`). Required for an API key that is not scoped to a workspace (for example `sk-ant-usr-`). Sent as the `anthropic-workspace-id` header |
 | `OPENAI_API_KEY` | (none) | Required for OpenAI provider |
 | `CHATGPT_REFRESH_TOKEN` | (none) | Required for ChatGPT Subscription provider (from `python -m memories auth chatgpt`) |
 | `CHATGPT_CLIENT_ID` | (none) | Required for ChatGPT Subscription provider |

@@ -88,6 +88,16 @@ class TestAuthStatus:
             assert status["provider"] == "anthropic"
             assert status["configured"] is True
             assert "sk-ant-api03****" in status["key_preview"]
+            assert status["auth"] == "api_key"
+
+    def test_status_with_anthropic_oauth_switch(self):
+        from memories_auth import get_auth_status
+        env = {"EXTRACT_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "sk-ant-api03-test",
+               "ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-test", "ANTHROPIC_AUTH": "oauth"}
+        with patch.dict(os.environ, env, clear=True):
+            status = get_auth_status()
+            assert status["auth"] == "oauth"
+            assert status["key_preview"].startswith("sk-ant-oat01")
 
     def test_status_with_chatgpt_subscription(self):
         from memories_auth import get_auth_status

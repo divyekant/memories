@@ -511,8 +511,11 @@ OpenCode source-prefix policy searches exact project scopes: `opencode/{project}
 | `MEMORIES_SOURCE_PREFIX` | `codex` | Legacy notify-hook prefix used only by `memory-codex-notify.sh` |
 | `MEMORIES_SOURCE` | (empty) | Legacy notify-hook full source override used only by `memory-codex-notify.sh` |
 | `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `chatgpt-subscription`, `ollama`, or empty to disable |
-| `EXTRACT_MODEL` | (per provider) | Override model. Defaults: `claude-haiku-4-5-20251001`, `gpt-4.1-nano`, `gemma3:4b` |
-| `ANTHROPIC_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=anthropic` |
+| `EXTRACT_MODEL` | (per provider) | Override model. Defaults: `claude-haiku-5-5` (Anthropic API key), `claude-haiku-4-5-20251001` (Anthropic OAuth token), `gpt-4.1-nano`, `gemma3:4b` |
+| `ANTHROPIC_API_KEY` | (none) | Standard Anthropic API key (`sk-ant-api03-`). Set this or `ANTHROPIC_OAUTH_TOKEN` when `EXTRACT_PROVIDER=anthropic` |
+| `ANTHROPIC_OAUTH_TOKEN` | (none) | Anthropic subscription OAuth token (`sk-ant-oat01-`). This token can only call Haiku 4.5 |
+| `ANTHROPIC_AUTH` | (API key when set) | `api_key` or `oauth`. Selects the Anthropic credential. Restart the service after a change |
+| `ANTHROPIC_WORKSPACE_ID` | (none) | Workspace ID (`wrkspc_…`). Required for an API key that is not scoped to a workspace (for example `sk-ant-usr-`). Sent as the `anthropic-workspace-id` header |
 | `OPENAI_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=openai` |
 | `CHATGPT_REFRESH_TOKEN` | (none) | Required when `EXTRACT_PROVIDER=chatgpt-subscription` (from `python -m memories auth chatgpt`) |
 | `CHATGPT_CLIENT_ID` | (none) | Required when `EXTRACT_PROVIDER=chatgpt-subscription` |
@@ -562,7 +565,7 @@ curl -s -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/extract/status |
 curl -s -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/metrics | jq '.embedder_reload'
 
 # Expected (if configured):
-# {"enabled": true, "provider": "anthropic", "model": "claude-haiku-4-5-20251001", "status": "healthy"}
+# {"enabled": true, "provider": "anthropic", "model": "claude-haiku-5-5", "status": "healthy"}
 
 # Test extraction manually (async-first: returns 202 + job_id)
 JOB_ID=$(curl -s -X POST http://localhost:8900/memory/extract \

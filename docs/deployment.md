@@ -46,7 +46,10 @@ The recommended deployment uses Docker Compose with OrbStack or Docker Desktop.
 |----------|---------|-------------|
 | `API_KEY` | (required) | Access key for the Memories API |
 | `EXTRACT_PROVIDER` | `anthropic` | LLM provider for extraction (anthropic/openai/ollama) |
-| `ANTHROPIC_API_KEY` | — | Required if EXTRACT_PROVIDER=anthropic |
+| `ANTHROPIC_API_KEY` | — | Standard Anthropic API key. Set this or `ANTHROPIC_OAUTH_TOKEN` if EXTRACT_PROVIDER=anthropic |
+| `ANTHROPIC_OAUTH_TOKEN` | — | Anthropic subscription OAuth token. Can only call Haiku 4.5 |
+| `ANTHROPIC_AUTH` | API key when set | `api_key` or `oauth`. Selects the Anthropic credential |
+| `ANTHROPIC_WORKSPACE_ID` | (none) | Workspace ID (`wrkspc_…`). Required for an API key that is not scoped to a workspace (for example `sk-ant-usr-`). Sent as the `anthropic-workspace-id` header |
 | `OPENAI_API_KEY` | — | Required if EXTRACT_PROVIDER=openai |
 | `EMBEDDER_MODEL` | `all-MiniLM-L6-v2` | Sentence transformer model for embeddings |
 | `EMBEDDER_AUTO_RELOAD_ENABLED` | `true` | Auto-reload embedder on model change |

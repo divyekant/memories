@@ -476,10 +476,19 @@ def judge_extraction(judge_provider, text: str, facts: list[dict]) -> dict:
 
 def get_models(filter_names: list[str] | None = None) -> dict:
     """Build model provider map. Skip unavailable models gracefully."""
+    def haiku(model, effort=None):
+        provider = AnthropicProvider(api_key=api_key, model=model, workspace_id=workspace_id)
+        provider.effort = effort or provider.effort
+        return provider
+
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    workspace_id = os.environ.get("ANTHROPIC_WORKSPACE_ID") or None
 
     all_models = {
-        "haiku": lambda: AnthropicProvider(api_key=api_key, model="claude-haiku-4-5-20251001"),
+        "haiku": lambda: haiku("claude-haiku-4-5-20251001"),
+        "haiku-5.5": lambda: haiku("claude-haiku-5-5"),
+        "haiku-5.5-medium": lambda: haiku("claude-haiku-5-5", "medium"),
+        "haiku-5.5-high": lambda: haiku("claude-haiku-5-5", "high"),
         "qwen3:4b": lambda: NoThinkOllamaProvider(base_url="http://localhost:11434", model="qwen3:4b"),
         "qwen3.5:9b": lambda: NoThinkOllamaProvider(base_url="http://localhost:11434", model="qwen3.5:9b"),
         "qwen3.5:4b": lambda: NoThinkOllamaProvider(base_url="http://localhost:11434", model="qwen3.5:4b"),
@@ -515,7 +524,11 @@ def run_eval(models_filter: list[str] | None = None, output_path: str = "") -> d
         sys.exit(1)
 
     # Initialize constant judge
-    judge = AnthropicProvider(api_key=api_key, model="claude-haiku-4-5-20251001")
+    judge = AnthropicProvider(
+        api_key=api_key,
+        model="claude-haiku-4-5-20251001",
+        workspace_id=os.environ.get("ANTHROPIC_WORKSPACE_ID") or None,
+    )
     print(f"Judge initialized: Anthropic Haiku (constant across all models)")
 
     models = get_models(models_filter)

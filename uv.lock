@@ -542,7 +542,7 @@ wheels = [
 
 [[package]]
 name = "memories"
-version = "5.16.2"
+version = "5.17.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

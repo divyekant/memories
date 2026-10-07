@@ -72,10 +72,12 @@ def get_auth_status() -> dict:
     status = {"provider": provider, "configured": True}
 
     if provider == "anthropic":
-        key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if key:
+        from llm_provider import _is_oauth_token, resolve_anthropic_credential
+        try:
+            key = resolve_anthropic_credential()
+            status["auth"] = "oauth" if _is_oauth_token(key) else "api_key"
             status["key_preview"] = key[:12] + "****" if len(key) > 12 else "****"
-        else:
+        except ValueError:
             status["configured"] = False
 
     elif provider == "openai":

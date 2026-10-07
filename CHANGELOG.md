@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+## [5.17.0] - 2026-10-07
+
+### Changed
+- **The default Anthropic extraction model is `claude-haiku-5-5`.** It was
+  `claude-haiku-4-5-20251001`. Haiku 5.5 returns a 400 for `temperature`, so
+  the provider sends `temperature` only to pre-4.7 models (`claude-3*`,
+  `claude-haiku-4*`, `claude-sonnet-4*`). Other models get
+  `output_config.effort: "low"` (`AnthropicProvider.effort`). The provider now reads the answer from the
+  `text` blocks, because a Haiku 5.5 response can start with a `thinking`
+  block. `max_tokens` goes from 1024 to 4096 to leave room for thinking. To
+  keep Haiku 4.5 with an API key, set `EXTRACT_MODEL=claude-haiku-4-5-20251001`.
+- **Anthropic API key and OAuth token side by side.** Set the standard key in
+  `ANTHROPIC_API_KEY` and the subscription token in `ANTHROPIC_OAUTH_TOKEN`.
+  `ANTHROPIC_AUTH=api_key|oauth` selects one. If `ANTHROPIC_AUTH` is not set,
+  the API key is used when it is set. The default model follows the
+  credential: Haiku 5.5 for an API key, Haiku 4.5 for an OAuth token. The
+  subscription token gets HTTP 429 on every other model. An OAuth token in
+  `ANTHROPIC_API_KEY` still works and keeps Haiku 4.5. `memories auth status`
+  shows the selected credential as `auth`.
+- **`ANTHROPIC_WORKSPACE_ID`** sends the `anthropic-workspace-id` header. An
+  API key that is not scoped to a workspace (for example `sk-ant-usr-`) gets
+  HTTP 400 without this header.
+- **Extraction eval** (`eval/run_extraction_eval.py`) adds `haiku-5.5`
+  (default effort `low`), `haiku-5.5-medium` and `haiku-5.5-high`. On the
+  20-text corpus with the Haiku 4.5 judge, quality was: Haiku 4.5 0.969,
+  Haiku 5.5 `low` 0.964, `medium` 0.920, `high` 0.914. At `medium` and `high`,
+  one Docker debugging text returned `[]` after thinking. The other 19 texts
+  scored the same at every effort level. Per text, latency was 2.3 s for
+  Haiku 4.5, 1.5 s at `low` and 2.6 s at `high`. One run cost about $0.029 on
+  Haiku 4.5, $0.004 at `low` and $0.006 at `high`. The default is `low`
+  because it is the only effort level that matched Haiku 4.5.
+- **Usage pricing** adds `claude-haiku-5-5` at $0.10 / $0.50 per 1M tokens
+  for prompts of 100K tokens or fewer. Haiku 4.5 changes to its list price,
+  $1.00 / $5.00.
+
 ## [5.16.2] - 2026-09-24
 
 ### Fixed
