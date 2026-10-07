@@ -230,3 +230,20 @@ def test_validation_accepts_isolated_eval_target(tmp_path: Path) -> None:
 
     assert report.ok
     assert report.errors == []
+
+
+def test_validation_accepts_anthropic_oauth_token_for_judge(tmp_path: Path, monkeypatch) -> None:
+    mcp_server = tmp_path / "index.js"
+    mcp_server.write_text("console.log('mcp');")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_OAUTH_TOKEN", "sk-ant-oat01-test")
+
+    report = validate_eval_setup(
+        memories_url="http://localhost:8901",
+        mcp_server_path=str(mcp_server),
+        require_claude=False,
+        require_judge=True,
+        judge_provider="anthropic",
+    )
+
+    assert not any("ANTHROPIC_API_KEY" in error for error in report.errors)

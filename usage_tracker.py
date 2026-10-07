@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 # Per-model pricing (USD per 1M tokens)
 MODEL_PRICING = {
     # Anthropic
-    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
+    "claude-haiku-5-5": {"input": 0.10, "output": 0.50},  # prompts <=100K tokens; $0.50/$2.50 above
+    "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
     "claude-sonnet-4-5-20250514": {"input": 3.00, "output": 15.00},
     # OpenAI
     "gpt-4.1-nano": {"input": 0.10, "output": 0.40},

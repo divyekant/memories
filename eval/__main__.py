@@ -93,7 +93,11 @@ def main():
     try:
         sys.path.insert(0, os.getcwd())
         from llm_provider import get_provider
-        provider = get_provider()
+        from eval.longmemeval import ANTHROPIC_JUDGE_MODEL
+        pin = os.environ.get("EXTRACT_PROVIDER", "").strip().lower() == "anthropic"
+        provider = get_provider(
+            model=os.environ.get("EXTRACT_MODEL", "").strip() or (ANTHROPIC_JUDGE_MODEL if pin else None)
+        )
         if provider:
             judge = LLMJudge(provider)
             logger.info("LLM judge enabled: %s/%s", provider.provider_name, provider.model)

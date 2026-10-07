@@ -64,6 +64,10 @@ LONGMEMEVAL_CATEGORIES = [
 ]
 
 
+# Pinned so judge scores stay comparable with baselines taken before Haiku 5.5.
+ANTHROPIC_JUDGE_MODEL = "claude-haiku-4-5-20251001"
+
+
 class LongMemEvalRunner:
     DEFAULT_MAX_MEMORY_CHARS = 3000
     DEFAULT_CONTEXT_RESULTS = 2
@@ -459,8 +463,11 @@ class LongMemEvalRunner:
         old_model = os.environ.get("EXTRACT_MODEL", "")
         try:
             os.environ["EXTRACT_PROVIDER"] = self.judge_provider
-            if self.judge_model:
-                os.environ["EXTRACT_MODEL"] = self.judge_model
+            model = self.judge_model or (
+                ANTHROPIC_JUDGE_MODEL if self.judge_provider == "anthropic" else None
+            )
+            if model:
+                os.environ["EXTRACT_MODEL"] = model
             self._judge = get_provider()
         finally:
             # Restore previous env

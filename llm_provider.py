@@ -4,7 +4,9 @@ Supports five provider sources via environment variables:
   EXTRACT_PROVIDER: "anthropic", "openai", "chatgpt-subscription", or "ollama" (empty = disabled)
   EXTRACT_MODEL: model name (defaults per provider)
 
-  anthropic:              ANTHROPIC_API_KEY (standard sk-ant-api03- or OAuth sk-ant-oat01- token)
+  anthropic:              ANTHROPIC_API_KEY (sk-ant-api03-) and/or ANTHROPIC_OAUTH_TOKEN (sk-ant-oat01-);
+                          ANTHROPIC_AUTH=api_key|oauth picks one (default: API key when set)
+                          ANTHROPIC_WORKSPACE_ID for API keys not scoped to a workspace
   openai:                 OPENAI_API_KEY
   chatgpt-subscription:   CHATGPT_REFRESH_TOKEN + CHATGPT_CLIENT_ID (OAuth token exchange)
   ollama:                 OLLAMA_URL (default: http://host.docker.internal:11434)
@@ -33,10 +35,12 @@ class CompletionResult:
 
 # Default models per provider
 DEFAULT_MODELS = {
-    "anthropic": "claude-haiku-4-5-20251001",
+    "anthropic": "claude-haiku-5-5",
     "openai": "gpt-4.1-nano",
     "ollama": "gemma3:4b",
 }
+# Subscription OAuth tokens get 429 on every model except Haiku 4.5 (checked 2026-10-07).
+OAUTH_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 # temperature=0 for deterministic extraction and judging.
 # This applies to all providers (Anthropic, OpenAI, ChatGPT-subscription, Ollama).
 # Intentional: production extraction benefits from deterministic output.
@@ -64,6 +68,32 @@ class LLMProvider(ABC):
 def _is_oauth_token(key: str) -> bool:
     """Check if an Anthropic key is an OAuth subscription token."""
     return key.startswith("sk-ant-oat01-")
+
+
+def _default_anthropic_model(key: str) -> str:
+    return OAUTH_DEFAULT_MODEL if _is_oauth_token(key) else DEFAULT_MODELS["anthropic"]
+
+
+def resolve_anthropic_credential() -> str:
+    """Pick the Anthropic credential from ANTHROPIC_AUTH, ANTHROPIC_API_KEY, ANTHROPIC_OAUTH_TOKEN."""
+    creds = {
+        "api_key": ("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", "").strip()),
+        "oauth": ("ANTHROPIC_OAUTH_TOKEN", os.environ.get("ANTHROPIC_OAUTH_TOKEN", "").strip()),
+    }
+    auth = os.environ.get("ANTHROPIC_AUTH", "").strip().lower()
+    if auth and auth not in creds:
+        raise ValueError(f"ANTHROPIC_AUTH must be 'api_key' or 'oauth', got '{auth}'")
+    if auth:
+        var, cred = creds[auth]
+        if not cred:
+            raise ValueError(f"{var} required when ANTHROPIC_AUTH={auth}")
+        return cred
+    cred = creds["api_key"][1] or creds["oauth"][1]
+    if not cred:
+        raise ValueError(
+            "ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN required when EXTRACT_PROVIDER=anthropic"
+        )
+    return cred
 
 
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -156,6 +186,13 @@ def _make_oauth_httpx_client(oauth_state: "_OAuthState"):
     return httpx.Client(transport=_OAuthTransport(base_transport, oauth_state))
 
 
+# Opus 4.7+ rejects temperature, so Opus 4 entries are listed one by one.
+_SAMPLING_MODEL_PREFIXES = (
+    "claude-3", "claude-haiku-4", "claude-sonnet-4",
+    "claude-opus-4-0", "claude-opus-4-1", "claude-opus-4-2025", "claude-opus-4-5", "claude-opus-4-6",
+)
+
+
 class AnthropicProvider(LLMProvider):
     """Anthropic API provider (Claude models).
 
@@ -166,15 +203,16 @@ class AnthropicProvider(LLMProvider):
 
     provider_name = "anthropic"
     supports_audn = True
+    effort = "low"  # models that reject temperature only; low matched Haiku 4.5 on the extraction eval
 
-    def __init__(self, api_key: str, model: str | None = None):
+    def __init__(self, api_key: str, model: str | None = None, workspace_id: str | None = None):
         try:
             import anthropic
         except ImportError:
             raise ImportError(
                 "anthropic package required. Install with: pip install anthropic>=0.40.0"
             )
-        self.model = model or DEFAULT_MODELS["anthropic"]
+        self.model = model or _default_anthropic_model(api_key)
         self._oauth: _OAuthState | None = None
 
         if _is_oauth_token(api_key):
@@ -187,19 +225,31 @@ class AnthropicProvider(LLMProvider):
                 http_client=http_client,
             )
             logger.info("Using OAuth subscription token (sk-ant-oat01-) with custom transport")
+        elif workspace_id:
+            # Keys not scoped to a workspace (e.g. sk-ant-usr-) get 400 without this header.
+            self.client = anthropic.Anthropic(
+                api_key=api_key,
+                default_headers={"anthropic-workspace-id": workspace_id},
+            )
         else:
             self.client = anthropic.Anthropic(api_key=api_key)
 
     def complete(self, system: str, user: str) -> CompletionResult:
+        kwargs = {}
+        # ponytail: prefix list of pre-4.7 models; Haiku 5.5 and newer reject temperature (400).
+        if self.model.startswith(_SAMPLING_MODEL_PREFIXES):
+            kwargs["temperature"] = DEFAULT_TEMPERATURE
+        else:
+            kwargs["output_config"] = {"effort": self.effort}
         response = self.client.messages.create(
             model=self.model,
-            max_tokens=1024,
-            temperature=DEFAULT_TEMPERATURE,
+            max_tokens=4096,  # room for adaptive thinking on newer models
             system=system,
             messages=[{"role": "user", "content": user}],
+            **kwargs,
         )
         return CompletionResult(
-            text=response.content[0].text,
+            text="".join(b.text for b in response.content if b.type == "text"),
             input_tokens=getattr(response.usage, "input_tokens", 0),
             output_tokens=getattr(response.usage, "output_tokens", 0),
         )
@@ -471,10 +521,11 @@ def get_provider(
     effective_model = effective_model.strip() or None
 
     if effective_provider == "anthropic":
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY required when EXTRACT_PROVIDER=anthropic")
-        return AnthropicProvider(api_key=api_key, model=effective_model)
+        return AnthropicProvider(
+            api_key=resolve_anthropic_credential(),
+            model=effective_model,
+            workspace_id=os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip() or None,
+        )
 
     elif effective_provider == "openai":
         api_key = os.environ.get("OPENAI_API_KEY", "").strip()

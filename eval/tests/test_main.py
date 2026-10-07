@@ -60,7 +60,7 @@ def test_memories_url_env_overrides_config(tmp_path, monkeypatch):
     monkeypatch.setattr(eval_main, "save_report", lambda *args, **kwargs: "report.json")
     monkeypatch.setattr(eval_main, "format_summary", lambda *args, **kwargs: "summary")
     monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: None)
-    monkeypatch.setitem(sys.modules, "llm_provider", SimpleNamespace(get_provider=lambda: None))
+    monkeypatch.setitem(sys.modules, "llm_provider", SimpleNamespace(get_provider=lambda **_: None))
 
     eval_main.main()
 
