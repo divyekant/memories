@@ -8,7 +8,7 @@
 - **The default Anthropic extraction model is `claude-haiku-5-5`.** It was
   `claude-haiku-4-5-20251001`. Haiku 5.5 returns a 400 for `temperature`, so
   the provider sends `temperature` only to pre-4.7 models (`claude-3*`,
-  `claude-haiku-4*`, `claude-sonnet-4*`). Other models get
+  `claude-haiku-4*`, `claude-sonnet-4*`, and Opus 4.0 to 4.6). Other models get
   `output_config.effort: "low"` (`AnthropicProvider.effort`). The provider now reads the answer from the
   `text` blocks, because a Haiku 5.5 response can start with a `thinking`
   block. `max_tokens` goes from 1024 to 4096 to leave room for thinking. To
@@ -33,6 +33,13 @@
   Haiku 4.5, 1.5 s at `low` and 2.6 s at `high`. One run cost about $0.029 on
   Haiku 4.5, $0.004 at `low` and $0.006 at `high`. The default is `low`
   because it is the only effort level that matched Haiku 4.5.
+- **Eval judges stay on Haiku 4.5.** If no judge model is set, the
+  LongMemEval judge and the scenario eval judge use
+  `claude-haiku-4-5-20251001` with the anthropic provider, so their scores
+  stay comparable with earlier baselines.
+- **Eval preflight** accepts `ANTHROPIC_OAUTH_TOKEN` for the anthropic judge.
+  The eval removes `ANTHROPIC_OAUTH_TOKEN` from the environment of the
+  Claude Code process under test, as it does for `ANTHROPIC_API_KEY`.
 - **Usage pricing** adds `claude-haiku-5-5` at $0.10 / $0.50 per 1M tokens
   for prompts of 100K tokens or fewer. Haiku 4.5 changes to its list price,
   $1.00 / $5.00.

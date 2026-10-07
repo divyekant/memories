@@ -608,3 +608,28 @@ class TestOMLXProvider:
             {"role": "user", "content": "usr"},
         ]
         assert kwargs["temperature"] == 0.0
+
+
+@pytest.mark.parametrize("model, sends_temperature", [
+    ("claude-haiku-4-5-20251001", True),
+    ("claude-sonnet-4-6", True),
+    ("claude-opus-4-20250514", True),
+    ("claude-opus-4-1", True),
+    ("claude-opus-4-5", True),
+    ("claude-opus-4-6", True),
+    ("claude-opus-4-7", False),
+    ("claude-opus-4-8", False),
+    ("claude-haiku-5-5", False),
+])
+def test_anthropic_sampling_vs_effort_by_model(model, sends_temperature):
+    """Pre-4.7 models take temperature and may reject effort; newer ones reject temperature."""
+    from llm_provider import AnthropicProvider
+    mock_anthropic = MagicMock()
+    mock_anthropic.Anthropic.return_value.messages.create.return_value = MagicMock(
+        content=[MagicMock(type="text", text="[]")], usage=MagicMock(input_tokens=1, output_tokens=1)
+    )
+    with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
+        AnthropicProvider(api_key="sk-ant-api03-k", model=model).complete("s", "u")
+    kwargs = mock_anthropic.Anthropic.return_value.messages.create.call_args.kwargs
+    assert ("temperature" in kwargs) is sends_temperature
+    assert ("output_config" in kwargs) is not sends_temperature

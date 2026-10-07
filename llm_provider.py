@@ -186,7 +186,11 @@ def _make_oauth_httpx_client(oauth_state: "_OAuthState"):
     return httpx.Client(transport=_OAuthTransport(base_transport, oauth_state))
 
 
-_SAMPLING_MODEL_PREFIXES = ("claude-3", "claude-haiku-4", "claude-sonnet-4")
+# Opus 4.7+ rejects temperature, so Opus 4 entries are listed one by one.
+_SAMPLING_MODEL_PREFIXES = (
+    "claude-3", "claude-haiku-4", "claude-sonnet-4",
+    "claude-opus-4-0", "claude-opus-4-1", "claude-opus-4-2025", "claude-opus-4-5", "claude-opus-4-6",
+)
 
 
 class AnthropicProvider(LLMProvider):

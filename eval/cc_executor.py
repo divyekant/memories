@@ -12,6 +12,7 @@ logger = logging.getLogger("eval.cc")
 
 AGENT_ENV_BLOCKLIST = {
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_OAUTH_TOKEN",
     "OPENAI_API_KEY",
     "CHATGPT_REFRESH_TOKEN",
     "EXTRACT_PROVIDER",

@@ -176,6 +176,7 @@ class TestStrictMcpConfig:
         mock_run.return_value = MagicMock(stdout="response")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "judge-key")
         monkeypatch.setenv("OPENAI_API_KEY", "openai-judge-key")
+        monkeypatch.setenv("ANTHROPIC_OAUTH_TOKEN", "sk-ant-oat01-judge")
         executor = CCExecutor(
             memories_url="http://localhost:8901",
             memories_api_key="eval-key",
@@ -187,6 +188,7 @@ class TestStrictMcpConfig:
             env = mock_run.call_args.kwargs["env"]
             assert "ANTHROPIC_API_KEY" not in env
             assert "OPENAI_API_KEY" not in env
+            assert "ANTHROPIC_OAUTH_TOKEN" not in env
             assert env["MEMORIES_API_KEY"] == "eval-key"
         finally:
             executor.cleanup_project(project_dir)

@@ -18,8 +18,9 @@ JUDGE_PROVIDER_MODULES = {
     "anthropic": "anthropic",
     "openai": "openai",
 }
+# Any one of the listed variables satisfies the check.
 JUDGE_PROVIDER_ENV_KEYS = {
-    "anthropic": "ANTHROPIC_API_KEY",
+    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"),
     "openai": "OPENAI_API_KEY",
     "chatgpt-subscription": "CHATGPT_REFRESH_TOKEN",
 }
@@ -121,9 +122,11 @@ def validate_eval_setup(
                 report.errors.append(
                     f"Unknown judge provider {provider}; supported providers: {', '.join(sorted(known_providers))}."
                 )
-            env_key = JUDGE_PROVIDER_ENV_KEYS.get(provider)
-            if env_key and not os.getenv(env_key, "").strip():
-                report.errors.append(f"{env_key} is required when judge_provider={provider}.")
+            env_keys = JUDGE_PROVIDER_ENV_KEYS.get(provider)
+            if isinstance(env_keys, str):
+                env_keys = (env_keys,)
+            if env_keys and not any(os.getenv(k, "").strip() for k in env_keys):
+                report.errors.append(f"{' or '.join(env_keys)} is required when judge_provider={provider}.")
             module = JUDGE_PROVIDER_MODULES.get(provider)
             if module and importlib_util.find_spec(module) is None:
                 report.errors.append(

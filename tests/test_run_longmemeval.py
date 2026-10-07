@@ -248,3 +248,15 @@ def test_process_question_single_mode_retry_resets_and_cleans_owned_project():
     assert executor.cleanup_calls == ["/tmp/owned-system-eval"]
     assert result["retried"] is True
     assert result["first_error_kind"] == "timeout"
+
+
+def test_anthropic_judge_defaults_to_pinned_haiku_4_5(monkeypatch):
+    """The judge stays on Haiku 4.5 so scores stay comparable with old baselines."""
+    import llm_provider
+    from eval.longmemeval import LongMemEvalRunner
+
+    seen = {}
+    monkeypatch.setattr(llm_provider, "get_provider", lambda: seen.setdefault("model", __import__("os").environ.get("EXTRACT_MODEL")))
+    monkeypatch.delenv("EXTRACT_MODEL", raising=False)
+    LongMemEvalRunner(client=MagicMock(), judge_provider="anthropic").init_judge()
+    assert seen["model"] == "claude-haiku-4-5-20251001"
