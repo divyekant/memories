@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [5.18.0] - 2026-10-29
+
 ### Fixed
 - **Claude Projects threads: extraction reads Claude's replies.** Projects
   threads send each reply through `mcp__hearthbot__post_message`. The
