@@ -358,16 +358,22 @@ class TestHybridSearch:
         assert engine._bm25_query_tokens("Which file is .stripe-version in?") == ["file", ".stripe-version"]
         # A query of only stopwords keeps its words, so BM25 still has terms.
         assert engine._bm25_query_tokens("what is the") == ["what", "is", "the"]
+        # Only "?" is stripped, so the query still matches index tokens such as "typeerror:".
+        assert engine._bm25_query_tokens("TypeError: bad cast") == ["typeerror:", "bad", "cast"]
 
     def test_stopword_overlap_gives_no_bm25_hit(self, engine):
         """RRF counts rank, not score, so a stopword-only match must not enter the BM25 list."""
         engine.add_memories(
             texts=["Log calls use %-style lazy arguments, never f-strings.",
-                   "What the team is doing on the matcher is the slow part."],
-            sources=["t/a", "t/b"],
+                   "What the team is doing on the matcher is the slow part.",
+                   "Deploys run from the main branch only.",
+                   "Backups are taken nightly at two.",
+                   "Qdrant stores vectors on local disk."],
+            sources=["t/a", "t/b", "t/c", "t/d", "t/e"],
         )
-        hits = engine._bm25_hits(engine._bm25_query_tokens("What is the logging convention?"))
-        assert hits == []
+        query = "What is the logging convention?"
+        assert engine._bm25_hits(query.lower().split()), "old tokens must hit the stopword-only memory"
+        assert engine._bm25_hits(engine._bm25_query_tokens(query)) == []
 
 
 class TestDelete:

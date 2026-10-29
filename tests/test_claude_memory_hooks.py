@@ -2318,6 +2318,22 @@ def _tool_io_transcript(tmp_path: Path) -> Path:
         {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "t4", "content": "batch_size = 750 <system-reminder>INJECTED-NOTE</system-reminder>"}]}},
         {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t5", "name": "Bash", "input": {"command": "cat .env"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t5", "content": "STRIPE_SECRET_KEY=sk_live_51abcDEF234ghi"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t6", "name": "Bash", "input": {"command": "memories search 'stripe pin'"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t6", "content": "CLI-RECALLED-FACT"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t7", "name": "Read", "input": {"file_path": "/home/u/.claude/projects/x/memory/MEMORY.md"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t7", "content": "INDEX-RECALLED-FACT"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "echo no id"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": "NOID-MARKER"}]}},
+        {"type": "assistant", "message": {"content": [
             {"type": "text", "text": "The handler reads the pinned version from .stripe-version."}]}},
     ]
     transcript.write_text("\n".join(json.dumps(row) for row in rows))
@@ -2342,6 +2358,32 @@ def test_memory_flush_sends_clipped_tool_io(tmp_path: Path) -> None:
     assert "HEAD-MARKER" in messages
     assert "TAIL-MARKER" in messages
     assert "MIDDLE-MARKER" not in messages
+    assert "STRIPE_SECRET_KEY=" in messages
+    assert "sk_live_51abcDEF234ghi" not in messages
+    assert "memories search" not in messages
+    assert "CLI-RECALLED-FACT" not in messages
+    assert "INDEX-RECALLED-FACT" not in messages
+    assert "NOID-MARKER" not in messages
+
+
+def test_memory_flush_keeps_newest_tool_output_when_text_is_long(tmp_path: Path) -> None:
+    """Text has its own budget, so the newest tool output is never cut off."""
+    transcript = tmp_path / "transcript.jsonl"
+    rows = [{"type": "user", "message": {"content": f"message {i} " + "w" * 1400}} for i in range(20)]
+    rows += [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "make report"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "NEWEST-TOOL-OUTPUT"}]}},
+    ]
+    transcript.write_text("\n".join(json.dumps(row) for row in rows))
+    payload = {"cwd": "/Users/example/memories", "transcript_path": str(transcript)}
+    result, calls, _ = _run_hook(HOOKS_DIR / "memory-flush.sh", tmp_path, payload, responses=[])
+
+    assert result.returncode == 0, result.stderr
+    messages = calls[0]["body"]["messages"]
+    assert "NEWEST-TOOL-OUTPUT" in messages
+    assert len(messages) <= 12000 + 30 * (500 + 24)
 
 
 def test_memory_flush_tool_io_can_be_turned_off(tmp_path: Path) -> None:

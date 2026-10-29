@@ -10,12 +10,17 @@
   transcript parser in `_lib.sh` matched only `mcp__*__reply`, so the Stop,
   PreCompact, and SessionEnd hooks did not see the replies. The parser now
   matches both tool names.
+- **Secret redaction catches prefixed env names.** The key-value pattern did
+  not match `MEMORIES_API_KEY=...`, `STRIPE_SECRET_KEY=...`, or
+  `CLOUDFLARE_API_TOKEN=...`, because `_` is a word character and `\b` did not
+  match before the key word. The pattern now allows a name prefix, and it also
+  matches `token` and `secret`.
 - **Hybrid search ignores stopwords in the BM25 query.** RRF fuses results by
   rank, not by score. Thus a memory that shared only words such as "what" or
   "the" with the query got a BM25 rank and moved above the correct memory. The
-  BM25 query now drops common question words and function words, and trailing
-  `?`, `!`, `,`, `;`, and `:` characters. A query that has only stopwords keeps
-  its words. The document index does not change.
+  BM25 query now drops common question words and function words, and a
+  trailing `?`. A query that has only stopwords keeps its words. The document
+  index does not change.
 
 ### Changed
 - **The PreCompact flush sends clipped tool calls and tool output.** The Stop
@@ -25,8 +30,12 @@
   `Glob`, `Edit`, `MultiEdit`, `Write`, and `WebFetch`. It adds only the tool
   items in the window of the last 20 text messages. Each output keeps its
   first 125 and last 375 characters, because errors and totals are usually at
-  the end. The flush does not send memory tools or messaging tools, so it
-  does not extract recalled memories again. `MEMORIES_FLUSH_TOOL_ITEMS`
+  the end. The flush does not send memory tools, messaging tools, the
+  `memories` CLI, or reads of memory files (`MEMORY.md`, `/memory/`), so it
+  does not extract recalled memories again. It also replaces the values of
+  `*KEY*`, `*TOKEN*`, `*SECRET*`, and `*PASSWORD*` assignments in tool output
+  with `[REDACTED]`. Text keeps its own `MEMORIES_FLUSH_MSG_CAP` budget, so the
+  newest tool output is not cut off. `MEMORIES_FLUSH_TOOL_ITEMS`
   (default `30`) sets the maximum number of tool items. Set it to `0` to turn
   off this behavior. `MEMORIES_FLUSH_TOOL_CHARS` (default `500`) sets the
   characters for each item. The server redacts credential-shaped values

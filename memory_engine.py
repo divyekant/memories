@@ -435,7 +435,7 @@ class MemoryEngine:
     @classmethod
     def _bm25_query_tokens(cls, query: str) -> List[str]:
         """BM25 query terms without stopwords; a stopword-only query keeps its words."""
-        tokens = [t.rstrip("?!,;:") for t in query.lower().split()]
+        tokens = [t.rstrip("?") for t in query.lower().split()]
         return [t for t in tokens if t and t not in cls._BM25_STOPWORDS] or query.lower().split()
 
     _BM25_SCORE_CACHE_SIZE = 32

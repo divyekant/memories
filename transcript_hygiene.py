@@ -124,7 +124,9 @@ _SECRET_PATTERNS = [
     (
         "key_value_secret",
         re.compile(
-            r"(?i)\b((?:api[_-]?key|x-api-key|access[_-]?token|auth[_-]?token|secret[_-]?key|client[_-]?secret|password|passwd)\s*[=:]\s*[\"']?)([^\s\"',;]{8,})"
+            # Env names put a prefix before the key word (STRIPE_SECRET_KEY,
+            # CLOUDFLARE_API_TOKEN), and "_" is a word character, so \b cannot be used.
+            r"(?i)(?<![A-Za-z0-9])((?:[A-Z0-9_]*?(?:api[_-]?key|x-api-key|access[_-]?token|auth[_-]?token|secret[_-]?key|client[_-]?secret|password|passwd|token|secret))\s*[=:]\s*[\"']?)([^\s\"',;]{8,})"
         ),
     ),
 ]

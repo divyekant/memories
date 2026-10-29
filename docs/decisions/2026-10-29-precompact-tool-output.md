@@ -27,8 +27,12 @@ The PreCompact flush adds clipped tool calls and tool output to its input,
 and the pre-compact prompt keeps one-time results. The extractor pays the
 extra tokens, not the main context. A later lookup stays at memory size.
 
-- Send only built-in tools. Memory and messaging tools return recalled or
-  Claude-written text, which must not be extracted again.
+- Send only built-in tools, and skip calls that read stored memories (the
+  `memories` CLI, `MEMORY.md`, `/memory/` paths). Memory and messaging tools
+  return recalled or Claude-written text, which must not be extracted again.
+- Redact key, token, secret, and password assignments in tool output on the
+  client, and widen the server pattern, because tool output can print an
+  `.env` file.
 - Keep the head and the tail of each output, because errors and totals are
   usually at the end.
 - Do not change the Stop hook or the Stop prompt.
