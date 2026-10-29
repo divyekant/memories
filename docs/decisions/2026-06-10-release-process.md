@@ -54,6 +54,11 @@ Stop cutting a release per work item. The flow is now:
   commit. During v5.11.0 `gh` did refuse — but only because the tag existed
   locally and not on the remote, which it treats as ambiguous; that refusal is
   a side effect of one particular state, not a guarantee to rely on.
+- **If the tag cannot be pushed** (a cloud session pushes only its own
+  branch), run the `Release` workflow on `main` with the version and the
+  merge commit. It does the same checks, pushes the tag, creates the release,
+  and starts `publish-npm.yml`. A release made by the workflow token does not
+  start other workflows, so the workflow starts the publish itself.
 - **A client-only release (hooks, skills, CLI — no backend change) needs no
   deploy, and must freeze every backend-facing version source together:**
   `mcp-server/assets/backend/BACKEND_VERSION`, **both** version strings in

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- **Release workflow.** `.github/workflows/release.yml` tags a commit on
+  `main`, creates the GitHub release from its CHANGELOG section, and starts
+  the npm publish. Run it from the Actions tab or the API when a tag cannot be
+  pushed, for example from a cloud session. It stops if the tag exists, if
+  the commit is not on `main`, or if `mcp-server/package.json` has a different
+  version.
+
 ## [5.18.0] - 2026-10-29
 
 ### Fixed
