@@ -353,6 +353,22 @@ class TestHybridSearch:
         results = populated_engine.hybrid_search("Memories", k=3)
         assert any("Memories" in r["text"] for r in results)
 
+    def test_bm25_query_drops_stopwords(self, engine):
+        assert engine._bm25_query_tokens("What is the logging convention?") == ["logging", "convention"]
+        assert engine._bm25_query_tokens("Which file is .stripe-version in?") == ["file", ".stripe-version"]
+        # A query of only stopwords keeps its words, so BM25 still has terms.
+        assert engine._bm25_query_tokens("what is the") == ["what", "is", "the"]
+
+    def test_stopword_overlap_gives_no_bm25_hit(self, engine):
+        """RRF counts rank, not score, so a stopword-only match must not enter the BM25 list."""
+        engine.add_memories(
+            texts=["Log calls use %-style lazy arguments, never f-strings.",
+                   "What the team is doing on the matcher is the slow part."],
+            sources=["t/a", "t/b"],
+        )
+        hits = engine._bm25_hits(engine._bm25_query_tokens("What is the logging convention?"))
+        assert hits == []
+
 
 class TestDelete:
     def test_delete_by_id(self, populated_engine):

@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Claude Projects threads: extraction reads Claude's replies.** Projects
+  threads send each reply through `mcp__hearthbot__post_message`. The
+  transcript parser in `_lib.sh` matched only `mcp__*__reply`, so the Stop,
+  PreCompact, and SessionEnd hooks did not see the replies. The parser now
+  matches both tool names.
+- **Hybrid search ignores stopwords in the BM25 query.** RRF fuses results by
+  rank, not by score. Thus a memory that shared only words such as "what" or
+  "the" with the query got a BM25 rank and moved above the correct memory. The
+  BM25 query now drops common question words and function words, and trailing
+  `?`, `!`, `,`, `;`, and `:` characters. A query that has only stopwords keeps
+  its words. The document index does not change.
+
+### Changed
+- **The PreCompact flush sends clipped tool calls and tool output.** The Stop
+  hook does not see tool results. Thus a one-time result, such as an exact
+  error, a total, or a pinned version, was lost at compaction. The flush now
+  adds the calls and the output of the built-in tools `Bash`, `Read`, `Grep`,
+  `Glob`, `Edit`, `MultiEdit`, `Write`, and `WebFetch`. It adds only the tool
+  items in the window of the last 20 text messages. Each output keeps its
+  first 125 and last 375 characters, because errors and totals are usually at
+  the end. The flush does not send memory tools or messaging tools, so it
+  does not extract recalled memories again. `MEMORIES_FLUSH_TOOL_ITEMS`
+  (default `30`) sets the maximum number of tool items. Set it to `0` to turn
+  off this behavior. `MEMORIES_FLUSH_TOOL_CHARS` (default `500`) sets the
+  characters for each item. The server redacts credential-shaped values
+  before extraction, as for all extraction input.
+- **The pre-compact extraction prompt keeps one-time tool results.** The
+  prompt for `context=pre_compact` now keeps exact error messages, totals and
+  timings from one-time runs, pinned versions, and names of created objects.
+  It skips routine output. The prompt for `context=stop` does not change.
+- **AUDN updates a memory when a new fact adds a specific detail.** Before,
+  the UPDATE rule covered only changed information. Thus a richer fact, such
+  as "the Stripe API version is pinned in `.stripe-version` (currently
+  `2026-03-31.basil`)", got NOOP against "the Stripe API version is pinned in
+  `.stripe-version`", and the version was lost. UPDATE now also covers a new
+  value, version, name, or exact error that the existing memory lacks. NOOP
+  is for a fact that adds nothing. This rule applies to all extraction
+  contexts.
+
 ## [5.17.0] - 2026-10-07
 
 ### Changed

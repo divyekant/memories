@@ -530,10 +530,15 @@ Categorize each fact:
 
 Include DETAIL-category items you would normally skip — file paths, config patterns, naming conventions.
 
+Lines that start with "tool call:" or "tool output:" are commands that were run and their clipped results.
+From them, keep one-time results that are costly or impossible to get again: exact error messages, totals
+and timings from one-time runs, pinned versions, and names of created objects (indexes, tests, files).
+Say what produced each one. Skip routine output: passing test lists, log lines, file text that can be read again.
+
 DO NOT extract:
 - Task completion status ("done", "all tests pass", "deployed successfully")
 - Commit hashes, PR numbers, or branch names
-- Counts or metrics ("44 tests", "5 files changed")
+- Counts or metrics ("44 tests", "5 files changed"), except the one-time results above
 - Session-specific context ("currently working on...", "next step is...")
 - Generic programming knowledge any developer would know
 
@@ -568,12 +573,14 @@ the existing similar memories.
 Actions:
 - ADD: No similar memory exists. Store as new.
 - UPDATE: An existing memory covers the same topic but the information
-  has changed. Provide old_id and new_text that replaces it.
+  has changed, or the new fact adds a specific detail that the memory lacks
+  (a value, a version, a name, or an exact error). Provide old_id and
+  new_text that replaces it and keeps both the old and the new details.
 - DELETE: An existing memory is no longer true and no replacement exists.
   Use when something was removed, stopped, or revoked entirely
   (e.g. "removed Redis" should DELETE "we use Redis for caching").
   If there IS a replacement, use UPDATE instead. Provide old_id.
-- NOOP: The fact is already captured by an existing memory. Provide existing_id.
+- NOOP: The fact adds nothing beyond an existing memory. Provide existing_id.
 - CONFLICT: The new fact directly contradicts an existing memory, but BOTH
   may be valid (e.g. different contexts, evolving decisions, unresolved
   disagreement). Use this instead of UPDATE when you aren't sure which
