@@ -41,6 +41,17 @@ class TestPatterns:
         assert "god-is-an-astronaut" not in out
         assert "key_value_secret" in types
 
+    def test_prefixed_env_assignments(self):
+        """`cat .env` output in a tool result: names carry a prefix before the key word."""
+        text = ("MEMORIES_API_KEY=mk_9f8e7d6c5b4a3210\n"
+                "STRIPE_SECRET_KEY=sk_live_51abcDEF234ghi\n"
+                "CLOUDFLARE_API_TOKEN=Zx9yW8vU7tS6rQ5pO4nM")
+        out, types = redact_secrets(text)
+        for value in ("mk_9f8e7d6c5b4a3210", "sk_live_51abcDEF234ghi", "Zx9yW8vU7tS6rQ5pO4nM"):
+            assert value not in out
+        assert "MEMORIES_API_KEY=" in out
+        assert "key_value_secret" in types
+
     def test_telegram_bot_token(self):
         out, types = redact_secrets("bot 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw_")
         assert "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw_" not in out

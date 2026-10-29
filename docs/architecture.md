@@ -380,7 +380,7 @@ distinct from shell hooks:
 | `SubagentStart` | `memory-subagent-recall.sh` | Inject project memories into spawned subagents |
 | `UserPromptSubmit` | `memory-query.sh` | Inject relevant memories into prompt context |
 | `Stop` | `memory-extract.sh` | Extract and store learnings from conversation |
-| `PreCompact` | `memory-flush.sh` | Flush pending memories before compaction |
+| `PreCompact` | `memory-flush.sh` | Extract facts from the last 20 text messages and clipped built-in tool calls and output before compaction |
 | `PostCompact` | `memory-rehydrate.sh` | Claude/Cursor rehydration; Codex's event is silent (`suppressOutput` only) |
 | `PostToolUse` | `memory-observe.sh` | Observability for memory MCP tool calls |
 | `PostToolUse` | `memory-tool-observe.sh` | Record write/edit/bash context for richer extraction |

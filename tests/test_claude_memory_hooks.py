@@ -2276,6 +2276,9 @@ def test_extraction_reads_reply_tool_answers_and_drops_relays(tmp_path: Path, sc
             {"type": "tool_use", "name": "mcp__hearthbot__update_status", "input": {"text": "Status: reading the gate code"}},
             {"type": "tool_use", "name": "mcp__hearthbot__reply", "input": {"text": "Decision: gate ADDs behind EXTRACT_NOVELTY_GATE."}},
         ]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "mcp__hearthbot__post_message", "input": {"text": "Result: the gate blocks duplicate ADDs."}},
+        ]}},
     ]
     transcript.write_text("\n".join(json.dumps(row) for row in rows))
 
@@ -2287,10 +2290,123 @@ def test_extraction_reads_reply_tool_answers_and_drops_relays(tmp_path: Path, sc
     assert extract_calls
     messages = extract_calls[0]["body"]["messages"]
     assert "EXTRACT_NOVELTY_GATE" in messages
+    assert "blocks duplicate ADDs" in messages
     assert "novelty gate" in messages
     assert "FAISS" not in messages
     assert "Pinecone" not in messages
     assert "Status: reading" not in messages
+
+
+def _tool_io_transcript(tmp_path: Path) -> Path:
+    transcript = tmp_path / "transcript.jsonl"
+    rows = [
+        {"type": "user", "message": {"content": "check which Stripe API version we pin"}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cat .stripe-version"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "2026-03-31.basil"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t2", "name": "mcp__memories__memory_search", "input": {"query": "stripe pin"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t2", "content": "RECALLED-FACT from an old session"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t3", "name": "Bash", "input": {"command": "cat big.log"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t3", "content": [{"type": "text", "text": "HEAD-MARKER " + "x" * 400 + " MIDDLE-MARKER " + "y" * 400 + " TAIL-MARKER"}]}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t4", "name": "Read", "input": {"file_path": "/repo/config.toml"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t4", "content": "batch_size = 750 <system-reminder>INJECTED-NOTE</system-reminder>"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t5", "name": "Bash", "input": {"command": "cat .env"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t5", "content": "STRIPE_SECRET_KEY=sk_live_51abcDEF234ghi"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t6", "name": "Bash", "input": {"command": "memories search 'stripe pin'"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t6", "content": "CLI-RECALLED-FACT"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t7", "name": "Read", "input": {"file_path": "/home/u/.claude/projects/x/memory/MEMORY.md"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t7", "content": "INDEX-RECALLED-FACT"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "echo no id"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": "NOID-MARKER"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "The handler reads the pinned version from .stripe-version."}]}},
+    ]
+    transcript.write_text("\n".join(json.dumps(row) for row in rows))
+    return transcript
+
+
+def test_memory_flush_sends_clipped_tool_io(tmp_path: Path) -> None:
+    """Pre-compact flush is the only chance to keep one-time tool output."""
+    payload = {"cwd": "/Users/example/memories", "transcript_path": str(_tool_io_transcript(tmp_path))}
+    result, calls, _ = _run_hook(HOOKS_DIR / "memory-flush.sh", tmp_path, payload, responses=[])
+
+    assert result.returncode == 0, result.stderr
+    messages = calls[0]["body"]["messages"]
+    assert "tool call: Bash: cat .stripe-version" in messages
+    assert "tool output: 2026-03-31.basil" in messages
+    assert "tool call: Read: /repo/config.toml" in messages
+    assert "batch_size = 750" in messages
+    assert "reads the pinned version" in messages
+    assert "memory_search" not in messages
+    assert "RECALLED-FACT" not in messages
+    assert "INJECTED-NOTE" not in messages
+    assert "HEAD-MARKER" in messages
+    assert "TAIL-MARKER" in messages
+    assert "MIDDLE-MARKER" not in messages
+    assert "STRIPE_SECRET_KEY=" in messages
+    assert "sk_live_51abcDEF234ghi" not in messages
+    assert "memories search" not in messages
+    assert "CLI-RECALLED-FACT" not in messages
+    assert "INDEX-RECALLED-FACT" not in messages
+    assert "NOID-MARKER" not in messages
+
+
+def test_memory_flush_keeps_newest_tool_output_when_text_is_long(tmp_path: Path) -> None:
+    """Text has its own budget, so the newest tool output is never cut off."""
+    transcript = tmp_path / "transcript.jsonl"
+    rows = [{"type": "user", "message": {"content": f"message {i} " + "w" * 1400}} for i in range(20)]
+    rows += [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "make report"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "NEWEST-TOOL-OUTPUT"}]}},
+    ]
+    transcript.write_text("\n".join(json.dumps(row) for row in rows))
+    payload = {"cwd": "/Users/example/memories", "transcript_path": str(transcript)}
+    result, calls, _ = _run_hook(HOOKS_DIR / "memory-flush.sh", tmp_path, payload, responses=[])
+
+    assert result.returncode == 0, result.stderr
+    messages = calls[0]["body"]["messages"]
+    assert "NEWEST-TOOL-OUTPUT" in messages
+    assert len(messages) <= 12000 + 30 * (500 + 24)
+
+
+def test_memory_flush_tool_io_can_be_turned_off(tmp_path: Path) -> None:
+    payload = {"cwd": "/Users/example/memories", "transcript_path": str(_tool_io_transcript(tmp_path))}
+    result, calls, _ = _run_hook(
+        HOOKS_DIR / "memory-flush.sh", tmp_path, payload, responses=[],
+        extra_env={"MEMORIES_FLUSH_TOOL_ITEMS": "0"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    messages = calls[0]["body"]["messages"]
+    assert "reads the pinned version" in messages
+    assert "2026-03-31.basil" not in messages
+
+
+def test_stop_extraction_still_ignores_tool_io(tmp_path: Path) -> None:
+    payload = {"cwd": "/Users/example/memories", "transcript_path": str(_tool_io_transcript(tmp_path))}
+    result, calls, _ = _run_hook(EXTRACT_SCRIPT, tmp_path, payload, responses=[])
+
+    assert result.returncode == 0, result.stderr
+    messages = calls[0]["body"]["messages"]
+    assert "reads the pinned version" in messages
+    assert "2026-03-31.basil" not in messages
 
 
 def test_memory_extract_uses_codex_source_when_installed_under_codex(tmp_path: Path) -> None:

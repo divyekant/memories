@@ -423,6 +423,21 @@ class MemoryEngine:
         with self._search_cache_lock:
             self._bm25_score_cache.clear()
 
+    # Question words and function words. RRF fuses by rank, not by score, so
+    # a memory that shares only "what" or "the" with a query still gets a full
+    # BM25 rank and pushes the right memory down.
+    _BM25_STOPWORDS = frozenset(
+        "a an and are as at be by can could did do does for from had has have how i in is it "
+        "of on or our should that the this to was we were what when where which who why will with "
+        "would you".split()
+    )
+
+    @classmethod
+    def _bm25_query_tokens(cls, query: str) -> List[str]:
+        """BM25 query terms without stopwords; a stopword-only query keeps its words."""
+        tokens = [t.rstrip("?") for t in query.lower().split()]
+        return [t for t in tokens if t and t not in cls._BM25_STOPWORDS] or query.lower().split()
+
     _BM25_SCORE_CACHE_SIZE = 32
 
     def _bm25_hits(self, tokens: List[str]) -> List[Tuple[int, float]]:
@@ -3018,7 +3033,7 @@ class MemoryEngine:
 
         bm25_ranked = []
         if self.bm25_index is not None:
-            tokenized = query.lower().split()
+            tokenized = self._bm25_query_tokens(query)
 
             def _visible(doc_id: int) -> bool:
                 try:
@@ -3280,7 +3295,7 @@ class MemoryEngine:
         # --- BM25 retrieval ---
         bm25_ranked = []
         if self.bm25_index is not None:
-            tokenized = query.lower().split()
+            tokenized = self._bm25_query_tokens(query)
             bm25_scores = self.bm25_index.get_scores(tokenized)
             if source_prefix or source_exact is not None or allowed_prefixes is not None:
                 bm25_ranked = [
@@ -3343,7 +3358,7 @@ class MemoryEngine:
         # Count how many were filtered by source prefix
         filtered_by_source = 0
         if (source_prefix or source_exact is not None or allowed_prefixes is not None) and self.bm25_index is not None:
-            tokenized = query.lower().split()
+            tokenized = self._bm25_query_tokens(query)
             raw_bm25 = self.bm25_index.get_scores(tokenized)
             total_bm25_with_score = sum(1 for s in raw_bm25 if s > 0)
             bm25_after_source = len([

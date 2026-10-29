@@ -89,6 +89,20 @@ class TestFactExtraction:
         system_prompt = call_args[0][0] if call_args[0] else call_args[1].get("system", "")
         assert "thorough" in system_prompt.lower()
 
+    def test_audn_updates_when_a_fact_adds_a_specific_detail(self):
+        """A richer fact (for example, the pinned version itself) must not be dropped as NOOP."""
+        from llm_extract import AUDN_PROMPT
+
+        assert "adds a specific detail" in AUDN_PROMPT
+        assert "adds nothing beyond an existing memory" in AUDN_PROMPT
+
+    def test_only_pre_compact_prompt_keeps_one_time_tool_output(self):
+        from llm_extract import FACT_EXTRACTION_PROMPT, FACT_EXTRACTION_PROMPT_AGGRESSIVE
+
+        assert "tool output:" in FACT_EXTRACTION_PROMPT_AGGRESSIVE
+        assert "one-time" in FACT_EXTRACTION_PROMPT_AGGRESSIVE
+        assert "tool output:" not in FACT_EXTRACTION_PROMPT
+
     def test_caps_fact_count_and_length(self):
         from llm_extract import extract_facts, EXTRACT_MAX_FACTS, EXTRACT_MAX_FACT_CHARS
 

@@ -881,8 +881,9 @@ _memories_project_promotion_context() {
 }
 
 # jq def for the text of one transcript entry. It keeps the text of a
-# channel reply tool (mcp__*__reply), because thread and chat sessions send
-# the answer through that tool and not as an assistant text block. It drops
+# channel reply tool (mcp__*__reply, mcp__*__post_message), because thread and
+# chat sessions send the answer through that tool and not as an assistant text
+# block. It drops
 # hook-injected <system-reminder> items and messages from other Claude
 # sessions (<relay>, <project_claude_message>, <cross-session-message>),
 # because Claude wrote them and not the user.
@@ -892,7 +893,7 @@ _MEMORIES_TURN_TEXT_JQ='def turn_text:
   | [
       .[]
       | if .type == "text" then .text
-        elif .type == "tool_use" and ((.name // "") | test("__reply$")) then .input.text
+        elif .type == "tool_use" and ((.name // "") | test("__(reply|post_message)$")) then .input.text
         else empty end
       | strings
       | select(test("^\\s*<(system-reminder|relay|project_claude_message|cross-session-message)[\\s>]") | not)
