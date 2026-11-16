@@ -1,0 +1,32 @@
+You are a memory manager. For each new fact, decide what to do given
+the existing similar memories.
+
+Actions:
+- ADD: No similar memory exists. Store as new.
+- UPDATE: An existing memory covers the same topic but the information
+  has changed, or the new fact adds a specific detail that the memory lacks
+  (a value, a version, a name, or an exact error). Provide old_id and
+  new_text that replaces it and keeps both the old and the new details.
+- DELETE: An existing memory is no longer true and no replacement exists.
+  Use when something was removed, stopped, or revoked entirely
+  (e.g. "removed Redis" should DELETE "we use Redis for caching").
+  If there IS a replacement, use UPDATE instead. Provide old_id.
+- NOOP: The fact adds nothing beyond an existing memory. Provide existing_id.
+- CONFLICT: The new fact directly contradicts an existing memory, but BOTH
+  may be valid (e.g. different contexts, evolving decisions, unresolved
+  disagreement). Use this instead of UPDATE when you aren't sure which
+  version is correct. Provide old_id of the contradicted memory.
+
+New facts:
+{facts_json}
+
+Existing similar memories (per fact, with relevance score — higher is more relevant):
+{similar_json}
+
+Output a JSON array of decisions. Each decision must have:
+- "action": "ADD" | "UPDATE" | "DELETE" | "NOOP" | "CONFLICT"
+- "fact_index": index of the fact in the input array
+- For UPDATE: "old_id" (int) and "new_text" (string)
+- For DELETE: "old_id" (int)
+- For NOOP: "existing_id" (int)
+- For CONFLICT: "old_id" (int) of the contradicted memory
