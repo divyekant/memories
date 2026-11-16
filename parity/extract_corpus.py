@@ -7,7 +7,7 @@ grows from empty, so later transcripts find similar records and get UPDATE,
 DELETE, NOOP and CONFLICT decisions on real records.
 
 The fake LLM of `parity/extract_pipeline.py` gives replies that are a function
-of the prompt only. The check compares the prompts, the job results and all
+of the prompt and of the highest record ID that earlier jobs returned. The check compares the prompts, the job results and all
 stored records with `parity/golden/extract/corpus.ndjson`, the capture of
 Python v5.19.0.
 
@@ -17,12 +17,15 @@ rank_bm25 scores but not equal (docs/decisions/2026-11-16-rust-keyword-index.md)
 Thus the check has two parts:
 
 - Strict, byte for byte or value for value: the fact prompts, the decision
-  prompts outside the similar list, the actions and counts of each job, the
-  links that each job made, and all stored records.
-- With the gate G3 tolerance for hybrid search: the similar lists and the
-  compaction candidates. 90% or more of the lists must be equal, and the mean
-  overlap of the IDs must be 0.90 or more. The RRF scores, and the input
-  token count of the decision call, are not compared.
+  prompts outside the similar list, the JSON format of the similar list, the
+  text of each record that is in both similar lists, the actions and counts
+  of each job, the links that each job made, the compaction candidates
+  without their IDs and scores, and all stored records.
+- With the gate G3 tolerance for hybrid search: the IDs and order of the
+  similar lists, and the IDs of the compaction candidates. 90% or more of the
+  similar lists must be equal, and the mean overlap of the IDs must be 0.90
+  or more. Not compared: the shown relevance, the RRF scores, and the input
+  tokens of the decision call of a case whose similar lists differ.
 
 The fake LLM picks the target of a decision with a tie rule (the lowest ID of
 the records with the highest shown relevance), so that a small change of order
@@ -88,7 +91,7 @@ def h(text):
     return int.from_bytes(hashlib.sha256(text.encode()).digest()[:4], "big")
 
 
-# -- replies: a function of the prompt only ----------------------------------------
+# -- replies: a function of the prompt and STATE ---------------------------------
 
 def sentences(text):
     out = []
@@ -196,6 +199,7 @@ def run(base_url, port):
     server = ThreadingHTTPServer(("127.0.0.1", port), Fake)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     out = []
+    STATE["max_id"] = -1
     with httpx.Client(base_url=base_url, timeout=60) as client:
         for case in cases():
             # Two calls at most: stage 1 and stage 2.
@@ -219,12 +223,19 @@ def run(base_url, port):
 # -- check ------------------------------------------------------------------------
 
 def split_prompt(user):
-    """(the prompt without the similar list, the similar list or None)."""
+    """(the prompt without the similar list, the similar list or None).
+
+    The marker records whether the list has the Python format (compact JSON,
+    ASCII escapes), so that the strict compare finds a format change.
+    """
     if SIMILAR_START not in user:
         return user, None
     i = user.index(SIMILAR_START) + len(SIMILAR_START)
     j = user.index(SIMILAR_END, i)
-    return user[:i] + "<similar>" + user[j:], json.loads(user[i:j])
+    raw = user[i:j]
+    similar = json.loads(raw)
+    fmt = "python" if raw == json.dumps(similar, separators=(",", ":")) else "other"
+    return f"{user[:i]}<similar:{fmt}>{user[j:]}", similar
 
 
 def overlap(a, b):
@@ -232,26 +243,32 @@ def overlap(a, b):
     return 1.0 if not a and not b else len(a & b) / max(len(a), len(b))
 
 
-def search_lists(case):
-    """The ID lists that come from hybrid search: similar lists and compaction candidates."""
+def similar_lists(case):
+    """The similar list of each fact of each decision prompt: {key: [entries]}."""
     out = {}
     for n, p in enumerate(case.get("prompts") or []):
         _, similar = split_prompt(p["user"])
         for fact, mems in (similar or {}).items():
-            out[f"prompt{n}/fact{fact}"] = [m["id"] for m in mems]
-    for c in ((case.get("job") or {}).get("result") or {}).get("compaction_candidates") or []:
-        out[f"compaction/fact{c['fact_index']}"] = c["memory_ids"]
+            out[f"prompt{n}/fact{fact}"] = mems
     return out
 
 
-def strict_part(case):
+def candidates(case):
+    return {c["fact_index"]: c for c in
+            ((case.get("job") or {}).get("result") or {}).get("compaction_candidates") or []}
+
+
+def strict_part(case, lists_equal):
     case = json.loads(json.dumps(case))
     case["prompts"] = [{"system": p["system"], "user": split_prompt(p["user"])[0]}
                        for p in case.get("prompts") or []]
     result = (case.get("job") or {}).get("result") or {}
-    result.pop("compaction_candidates", None)
-    # The fake LLM counts input tokens from the prompt length, which includes the similar list.
-    (result.get("tokens") or {}).get("audn", {}).pop("input", None)
+    for c in result.get("compaction_candidates") or []:
+        c.pop("memory_ids", None)
+        c.pop("avg_rrf_score", None)
+    if not lists_equal:
+        # The fake LLM counts input tokens from the prompt length, which includes the similar list.
+        (result.get("tokens") or {}).get("audn", {}).pop("input", None)
     for link in result.get("links_created") or []:
         link.pop("rrf_score", None)
     return case
@@ -261,29 +278,45 @@ def check(got, golden, min_equal=0.90, min_overlap=0.90):
     problems, lists, equal, overlaps = [], 0, 0, []
     by_name = {c["name"]: c for c in golden}
     for case in got:
-        want = by_name.get(case["name"])
+        name = case["name"]
+        want = by_name.get(name)
         if want is None:
-            problems.append(f"{case['name']}: not in the golden file")
+            problems.append(f"{name}: not in the golden file")
             continue
-        a, b = strict_part(want), strict_part(case)
+        want_lists, got_lists = similar_lists(want), similar_lists(case)
+        case_equal = True
+        for key in sorted(want_lists.keys() | got_lists.keys()):
+            x, y = want_lists.get(key, []), got_lists.get(key, [])
+            ids_x, ids_y = [m["id"] for m in x], [m["id"] for m in y]
+            lists += 1
+            equal += ids_x == ids_y
+            case_equal &= x == y
+            overlaps.append(overlap(ids_x, ids_y))
+            if ids_x != ids_y:
+                print(f"note: {name} {key}: {ids_x} != {ids_y}")
+            # A record in both lists must show the same text.
+            text_x, text_y = {m["id"]: m["text"] for m in x}, {m["id"]: m["text"] for m in y}
+            for mid in text_x.keys() & text_y.keys():
+                if text_x[mid] != text_y[mid]:
+                    problems.append(f"{name} {key}: record {mid} has a different text")
+        want_c, got_c = candidates(want), candidates(case)
+        for fact in want_c.keys() & got_c.keys():
+            ids_x, ids_y = want_c[fact]["memory_ids"], got_c[fact]["memory_ids"]
+            overlaps.append(overlap(ids_x, ids_y))
+            if ids_x != ids_y:
+                print(f"note: {name} compaction/fact{fact}: {ids_x} != {ids_y}")
+        a, b = strict_part(want, case_equal), strict_part(case, case_equal)
         if a.get("prompts") != b.get("prompts"):
-            problems.append(f"{case['name']}: the prompts differ outside the similar lists")
+            problems.append(f"{name}: the prompts differ outside the similar lists")
         a = normalize({k: v for k, v in a.items() if k != "prompts"}, extra=EXTRA_VOLATILE)
         b = normalize({k: v for k, v in b.items() if k != "prompts"}, extra=EXTRA_VOLATILE)
-        problems += [f"{case['name']}: {d}" for d in diff_values(a, b)]
-        want_lists, got_lists = search_lists(want), search_lists(case)
-        for key in want_lists.keys() | got_lists.keys():
-            x, y = want_lists.get(key, []), got_lists.get(key, [])
-            lists += 1
-            equal += x == y
-            overlaps.append(overlap(x, y))
-            if x != y:
-                print(f"note: {case['name']} {key}: {x} != {y}")
+        problems += [f"{name}: {d}" for d in diff_values(a, b)]
     missing = by_name.keys() - {c["name"] for c in got}
     problems += [f"{n}: missing" for n in sorted(missing)]
     share = equal / lists if lists else 1.0
     mean = sum(overlaps) / len(overlaps) if overlaps else 1.0
-    print(f"hybrid search lists: {equal} of {lists} equal ({share:.3f}), mean ID overlap {mean:.3f}")
+    print(f"similar lists: {equal} of {lists} equal ({share:.3f}); "
+          f"mean ID overlap with the compaction candidates {mean:.3f}")
     if share < min_equal or mean < min_overlap:
         problems.append(f"hybrid search lists below the G3 tolerance: {share:.3f} equal, {mean:.3f} overlap")
     return problems

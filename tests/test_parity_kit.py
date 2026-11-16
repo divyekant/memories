@@ -291,7 +291,9 @@ def test_corpus_decision_uses_the_tie_rule_and_spares_the_highest_id():
     assert ec.target([]) is None
     prompt = _audn_prompt({"0": sims})
     assert ec.split_prompt(prompt)[1] == {"0": sims}
-    assert "<similar>" in ec.split_prompt(prompt)[0]
+    assert "<similar:python>" in ec.split_prompt(prompt)[0]
+    loose = prompt.replace(json.dumps({"0": sims}, separators=(",", ":")), json.dumps({"0": sims}, indent=2))
+    assert "<similar:other>" in ec.split_prompt(loose)[0]
     ec.STATE["max_id"] = 4
     try:
         status, body = ec.reply("You are a memory manager. Output only valid JSON.", prompt)
@@ -320,3 +322,23 @@ def test_corpus_check_tolerates_search_order_but_not_other_changes():
     other_text = copy.deepcopy(base)
     other_text["prompts"][0]["system"] = "t"
     assert ec.check([other_text], [base])
+
+
+def test_corpus_check_compares_similar_text_and_candidate_sources():
+    from parity import extract_corpus as ec
+    sims = [{"id": i, "text": f"t{i}", "relevance": 0.01} for i in range(3)]
+    base = {"name": "c", "enqueue": [202, {}], "prompts": [{"system": "s", "user": _audn_prompt({"0": sims})}],
+            "job": {"status": "completed", "error": None, "result": {
+                "actions": [], "tokens": {"audn": {"input": 3}},
+                "compaction_candidates": [{"fact_index": 0, "memory_ids": [0, 1], "avg_rrf_score": 0.01,
+                                           "sources": ["a"], "cross_source": False}]}}}
+    assert ec.check([copy.deepcopy(base)], [base]) == []
+    text = copy.deepcopy(base)
+    text["prompts"][0]["user"] = _audn_prompt({"0": [dict(sims[0], text="WRONG")] + sims[1:]})
+    assert ec.check([text], [base])
+    sources = copy.deepcopy(base)
+    sources["job"]["result"]["compaction_candidates"][0]["sources"] = ["x"]
+    assert ec.check([sources], [base])
+    tokens = copy.deepcopy(base)
+    tokens["job"]["result"]["tokens"]["audn"]["input"] = 4
+    assert ec.check([tokens], [base])  # compared when the similar lists are equal

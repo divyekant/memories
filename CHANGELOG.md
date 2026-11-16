@@ -8,9 +8,9 @@
   `eval/run_extraction_eval.py` and the scenario memories) through the
   extraction pipeline of the two servers. A fake LLM gives replies that are a
   function of the prompt. The Rust server gives the same prompts, actions,
-  links and stored records as Python v5.19.0 (0 differences). 321 of 323
-  hybrid search lists are equal. The 2 other lists differ by the known
-  keyword index design. The live part (24 probes with a real model) waits for
+  links and stored records as Python v5.19.0 (0 differences). 206 of 207
+  similar lists from hybrid search are equal. The other list differs by the
+  known keyword index design. The live part (24 probes with a real model) waits for
   approval. No change to the Python server or to a client. Details:
   `docs/rust-rewrite/gates/G4.md`.
 - **Rust extraction pipeline (rewrite task P4-3).** The Rust server runs the
