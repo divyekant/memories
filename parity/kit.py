@@ -31,11 +31,12 @@ def _volatile_key(key):
 
 
 # Values inside strings that change on each run.
+# Keep the ID rules first. A hex ID can hold 14 digits in a row, which the compact timestamp rule also matches.
 VOLATILE_TEXT = [
-    (re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?"), "<ts>"),
-    (re.compile(r"\d{8}[_T-]?\d{6}(_\d+)?"), "<ts>"),
     (re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"), "<uuid>"),
     (re.compile(r"\b(mem_)?[0-9a-f]{32}\b"), "<hex>"),
+    (re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?"), "<ts>"),
+    (re.compile(r"\d{8}[_T-]?\d{6}(_\d+)?"), "<ts>"),
 ]
 _VAR = re.compile(r"\{\{([A-Za-z0-9_:.-]+)\}\}")
 
