@@ -7,6 +7,7 @@ port="$2"
 mkdir -p "$data_dir"
 cd "$(dirname "$0")/.."
 # The provider points at a closed port, so each extract job ends with a provider failure (wire rule W7).
+# PARITY_OLLAMA_URL points it at a stub with recorded replies (task P5-3).
 exec env \
   API_KEY="${PARITY_ADMIN_KEY:-parity-admin-key}" \
   DATA_DIR="$data_dir" \
@@ -16,7 +17,7 @@ exec env \
   USAGE_TRACKING=true \
   AUDIT_LOG=true \
   EXTRACT_PROVIDER=ollama \
-  OLLAMA_URL=http://127.0.0.1:9 \
+  OLLAMA_URL="${PARITY_OLLAMA_URL:-http://127.0.0.1:9}" \
   MAINTENANCE_ENABLED=false \
   CLOUD_SYNC_ENABLED=false \
   PYTHONHASHSEED=0 \

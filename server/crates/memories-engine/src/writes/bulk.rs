@@ -152,7 +152,7 @@ pub fn duplicate_pairs(
 
 impl Writer {
     /// The records of `ids` from the store, in pages.
-    async fn records(&self, ids: &[u64]) -> Result<Vec<Record>> {
+    pub(super) async fn records(&self, ids: &[u64]) -> Result<Vec<Record>> {
         let mut out = Vec::with_capacity(ids.len());
         for page in ids.chunks(PAGE) {
             out.extend(self.e().store.get_many(page).await?);
@@ -525,7 +525,7 @@ impl Writer {
     // ---- deduplicate -----------------------------------------------------------
 
     /// `find_duplicates` from the stored dense vectors.
-    async fn find_duplicates(&self, threshold: f64) -> Result<Vec<Value>> {
+    pub(super) async fn find_duplicates(&self, threshold: f64) -> Result<Vec<Value>> {
         if self.e().count() < 2 {
             return Ok(Vec::new());
         }
