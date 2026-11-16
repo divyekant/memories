@@ -1,6 +1,7 @@
 """Command line of the parity kit.
 
-  python -m parity capture --base-url URL [--out FILE]     run the scenario, record the replies
+  python -m parity capture --base-url URL [--out FILE] [--scenario main|search]
+                                                         run the scenario, record the replies
   python -m parity replay  --base-url URL --input FILE --out FILE
   python -m parity diff    LEFT RIGHT                     exit 1 if a reply differs
 
@@ -13,7 +14,9 @@ import json
 import os
 import sys
 
-from parity import kit, scenario
+from parity import kit, scenario, search_scenario
+
+SCENARIOS = {"main": scenario.build, "search": lambda: scenario.fill(search_scenario.build())}
 
 
 def _names(text):
@@ -37,6 +40,8 @@ def main(argv=None):
         s.add_argument("--out", default=str(kit.GOLDEN_PATH) if name == "capture" else None, required=name == "replay")
         s.add_argument("--allow-nonempty", action="store_true",
                        help="run on a server that holds records (the scenario deletes records)")
+        if name == "capture":
+            s.add_argument("--scenario", choices=sorted(SCENARIOS), default="main")
         if name == "replay":
             s.add_argument("--input", default=str(kit.GOLDEN_PATH))
             s.add_argument("--only", type=_names)
@@ -57,7 +62,7 @@ def main(argv=None):
         return 1 if problems else 0
 
     if args.cmd == "capture":
-        cases, extra_vars = scenario.build(), {}
+        cases, extra_vars = SCENARIOS[args.scenario](), {}
     else:
         cases, extra_vars = kit.select(kit.load(args.input), args.only), dict(args.var)
     try:

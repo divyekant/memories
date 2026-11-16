@@ -6,6 +6,8 @@ pub mod auth;
 pub mod error;
 pub mod healthcheck;
 pub mod keys;
+pub mod model;
+pub mod search;
 pub mod shell;
 
 use std::path::PathBuf;
@@ -119,6 +121,11 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/api/keys/{key_id}"),
     ("GET", "/audit"),
     ("POST", "/audit/purge"),
+    ("POST", "/search"),
+    ("POST", "/search/batch"),
+    ("POST", "/search/explain"),
+    ("POST", "/search/evidence"),
+    ("POST", "/memory/is-novel"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -140,7 +147,12 @@ pub fn app(state: Arc<AppState>) -> Router {
             patch(admin::update_key).delete(admin::revoke_key),
         )
         .route("/audit", get(admin::get_audit))
-        .route("/audit/purge", post(admin::purge_audit));
+        .route("/audit/purge", post(admin::purge_audit))
+        .route("/search", post(search::search))
+        .route("/search/batch", post(search::search_batch))
+        .route("/search/explain", post(search::search_explain))
+        .route("/search/evidence", post(search::search_evidence))
+        .route("/memory/is-novel", post(search::is_novel));
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
     let public = stubs(

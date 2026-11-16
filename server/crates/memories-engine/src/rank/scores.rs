@@ -17,11 +17,15 @@ fn is_py_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
+/// Python `text.split()`: the words between runs of white space.
+pub fn py_split(text: &str) -> Vec<&str> {
+    text.split(is_py_space).filter(|t| !t.is_empty()).collect()
+}
+
 /// Python `text.lower().split()`: the BM25 tokens of a stored text.
 pub fn doc_tokens(text: &str) -> Vec<String> {
-    text.to_lowercase()
-        .split(is_py_space)
-        .filter(|t| !t.is_empty())
+    py_split(&text.to_lowercase())
+        .into_iter()
         .map(str::to_owned)
         .collect()
 }

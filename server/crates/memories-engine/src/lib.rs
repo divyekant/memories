@@ -2,6 +2,7 @@
 
 pub mod catalog;
 pub mod engine;
+pub mod evidence;
 pub mod keyword;
 pub mod rank;
 pub mod records;
