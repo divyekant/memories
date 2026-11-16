@@ -176,7 +176,7 @@ jobs:
   rust-parity:
     # Exit checks of the Rust tasks: replay their golden cases against the Rust server.
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     services:
       qdrant:
         image: qdrant/qdrant:v1.15.4
@@ -231,6 +231,15 @@ jobs:
           QDRANT_URL=http://127.0.0.1:6333 \
           ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
             server/scripts/parity_search.sh server/target/debug/memories-server
+
+      - name: P2-4 gate G3, corpus and graph parts (synthetic data)
+        # The step before leaves memories_v2 in the throwaway Qdrant service.
+        run: |
+          curl -s -X DELETE http://127.0.0.1:6333/collections/memories_v2 > /dev/null
+          curl -s -X DELETE http://127.0.0.1:6333/collections/memories > /dev/null
+          QDRANT_URL=http://127.0.0.1:6333 \
+          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
+            server/scripts/gate_g3.sh server/target/debug/memories-server
 
   rust-image:
     # Build the Rust image on each architecture. Then start the bundled compose

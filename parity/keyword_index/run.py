@@ -4,9 +4,11 @@ Usage:
   python -m parity.keyword_index.run --qdrant 1.15.4=http://127.0.0.1:6333 \
       [--qdrant 1.20.1=http://127.0.0.1:6433] [--dataset seed|longmemeval|all] \
       [--questions N] [--cache DIR] [--out results.json]
+  python -m parity.keyword_index.run --qdrant 1.15.4=http://127.0.0.1:6333 --dataset grow
 
 The script makes the collection "p0_2_keyword" on each Qdrant server (it
 deletes a collection of that name first) and deletes it after each corpus.
+The grow dataset (task P2-4) uses the collection "p2_4_grow" in the same way.
 Do not point it at a Qdrant server that holds data of an install.
 """
 
@@ -293,11 +295,99 @@ def run_scale(servers, out, n_docs):
     out["scale"] = report
 
 
+GROW = "p2_4_grow"
+
+
+def run_grow(url, out, n_docs, step=2000, batch=100):
+    """The avgdl rule of decision P0-2 on a store that grows (task P2-4).
+
+    Short synthetic records come first, then long LongMemEval chunks, so the
+    average length grows about 20 times. Three sparse vectors per point:
+    "stale" keeps the avgdl of its write time, "rule" also gets a full pass
+    when the rule allows it (1,000 records or more, more than 25% from the
+    last pass; the 1 hour limit is not simulated), "exact" uses the current
+    average at each checkpoint. Each checkpoint compares them with rank_bm25.
+    """
+    from eval.generate_synthetic_memories import generate_all
+    from eval.longmemeval import LongMemEvalRunner
+
+    lme = LongMemEvalRunner(client=None)
+    texts = [m["text"] for m in generate_all(2000)]
+    questions = []
+    for q in lme.load_dataset():
+        questions.append(str(q.get("question", "")))
+        for session in q.get("haystack_sessions", []):
+            texts += [c for c in lme._chunk_session(session, max_chars=lme.DEFAULT_MAX_MEMORY_CHARS) if c.strip()]
+        if len(texts) >= n_docs:
+            break
+    docs = [bs.doc_tokens(t) for t in texts[:n_docs]]
+    rnd = random.Random(20261116)
+    short_queries = []
+    for _ in range(100):
+        words = [w for w in rnd.choice(docs[:2000]) if w.isalpha() and w not in bs.STOPWORDS]
+        short_queries.append(["what", "about"] + rnd.sample(words, min(len(words), rnd.randint(1, 4))) if words else ["config"])
+    lme_queries = [bs.query_tokens(q) for q in questions]
+
+    client = QdrantClient(url=url, timeout=120, check_compatibility=False)
+    if client.collection_exists(GROW):
+        client.delete_collection(GROW)
+    names = ("stale", "rule", "exact")
+    client.create_collection(GROW, vectors_config={}, sparse_vectors_config={
+        n: models.SparseVectorParams(modifier=models.Modifier.IDF) for n in names})
+
+    def sv(vec):
+        return models.SparseVector(indices=list(vec), values=list(vec.values()))
+
+    def rewrite(name, ids, avgdl):
+        for start in range(0, len(ids), 256):
+            client.update_vectors(GROW, [models.PointVectors(id=i, vector={name: sv(bs.doc_vector(docs[i], avgdl))})
+                                         for i in ids[start:start + 256]], wait=True)
+
+    total = 0
+    last_pass = None
+    passes, checkpoints = [], []
+    for start in range(0, len(docs), batch):
+        points = []
+        for i in range(start, min(start + batch, len(docs))):
+            total += len(docs[i])
+            avg = total / (i + 1)
+            vec = sv(bs.doc_vector(docs[i], avg))
+            points.append(models.PointStruct(id=i, vector={"stale": vec, "rule": vec, "exact": vec}))
+        client.upsert(GROW, points, wait=True)
+        n = start + len(points)
+        avg = total / n
+        if n >= 1000 and (last_pass is None or abs(avg - last_pass) / last_pass > 0.25):
+            rewrite("rule", list(range(n)), avg)
+            last_pass = avg
+            passes.append({"records": n, "avgdl": round(avg, 2)})
+        if n % step == 0 or n == len(docs):
+            rewrite("exact", list(range(n)), avg)
+            bm25 = BM25Okapi(docs[:n])
+            qs = short_queries + lme_queries[:100]
+            row = {"records": n, "avgdl": round(avg, 2), "rule_avgdl": round(last_pass or avg, 2)}
+            for name in names:
+                ov, top1 = [], []
+                for tokens in qs:
+                    py = python_rank(bm25, tokens, TOP)
+                    q = bs.query_vector(tokens)
+                    got = [int(p.id) for p in client.query_points(GROW, query=sv(q), using=name, limit=TOP).points]
+                    scores = bm25.get_scores(tokens)
+                    ov.append(tie_overlap(scores, py, got))
+                    top1.append(tie_top1(scores, py, got))
+                row[name] = {"tie_overlap_at_10": mean(ov), "tie_top1_same": mean(top1)}
+            checkpoints.append(row)
+            print(json.dumps(row), flush=True)
+    client.delete_collection(GROW)
+    out["grow"] = {"docs": len(docs), "queries_per_checkpoint": 100 + min(100, len(lme_queries)),
+                   "passes": passes, "checkpoints": checkpoints}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--qdrant", action="append", required=True, help="name=url")
-    ap.add_argument("--dataset", default="all", choices=["seed", "longmemeval", "all", "scale"])
+    ap.add_argument("--dataset", default="all", choices=["seed", "longmemeval", "all", "scale", "grow"])
     ap.add_argument("--scale-docs", type=int, default=66000)
+    ap.add_argument("--grow-docs", type=int, default=20000)
     ap.add_argument("--questions", type=int, default=0, help="0 = all 500")
     ap.add_argument("--hybrid-every", type=int, default=5, help="hybrid R@5 on every Nth question")
     ap.add_argument("--cache", default=".cache/p0_2_embeddings")
@@ -311,6 +401,8 @@ def main():
         run_longmemeval(servers, out, args.questions, Path(args.cache), args.hybrid_every)
     if args.dataset == "scale":
         run_scale(servers, out, args.scale_docs)
+    if args.dataset == "grow":
+        run_grow(next(iter(servers.values())).url, out, args.grow_docs)
     text = json.dumps(out, indent=2)
     print(text)
     if args.out:

@@ -1,0 +1,38 @@
+{
+  "corpus": {
+    "vector_differences": [],
+    "vector_top10_same_tie_aware": 1.0,
+    "queries": 600,
+    "vector_top10_same": 1.0,
+    "vector_top10_same_order": 1.0,
+    "hybrid_top1_same": 0.955,
+    "hybrid_top1_same_tie_aware": 0.9567,
+    "hybrid_top5_overlap": 0.9487,
+    "hybrid_top10_overlap": 0.9535
+  },
+  "graph": {
+    "python": {
+      "graph_off": 1.0,
+      "graph_on": 1.0
+    },
+    "rust": {
+      "graph_off": 1.0,
+      "graph_on": 1.0
+    },
+    "scenarios": 10
+  },
+  "seconds": 103,
+  "verdict": {
+    "pass": true,
+    "checks": {
+      "vector_top10_same": true,
+      "hybrid_top1_same": true,
+      "hybrid_top5_overlap": true,
+      "graph_off": true,
+      "graph_on": true
+    },
+    "not_run": [
+      "longmemeval"
+    ]
+  }
+}
