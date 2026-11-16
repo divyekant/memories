@@ -5,12 +5,13 @@ use std::collections::HashMap;
 
 use memories_types::Record;
 use qdrant_client::qdrant::{
-    CountPointsBuilder, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder,
+    Condition, CountPointsBuilder, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder,
     DeletePointsBuilder, Distance, FacetCountsBuilder, FieldType, Filter, GetPointsBuilder,
-    Modifier, PointId, PointStruct, PointsIdsList, ReadConsistency, RetrievedPoint,
-    ScrollPointsBuilder, SetPayloadPointsBuilder, SparseVectorParamsBuilder,
-    SparseVectorsConfigBuilder, UpsertPointsBuilder, Value, Vector, VectorParamsBuilder,
-    VectorsConfigBuilder, WriteOrdering, facet_value, point_id, vectors_config,
+    Modifier, PointId, PointStruct, PointsIdsList, QueryPointsBuilder, ReadConsistency,
+    RetrievedPoint, ScoredPoint, ScrollPointsBuilder, SetPayloadPointsBuilder,
+    SparseVectorParamsBuilder, SparseVectorsConfigBuilder, UpsertPointsBuilder, Value, Vector,
+    VectorParamsBuilder, VectorsConfigBuilder, WriteOrdering, facet_value, point_id,
+    vectors_config,
 };
 use qdrant_client::{Payload, Qdrant};
 use serde_json::{Map, Value as Json};
@@ -119,6 +120,34 @@ fn to_record(id: Option<PointId>, payload: HashMap<String, Value>) -> Result<Rec
 
 fn retrieved(point: RetrievedPoint) -> Result<Record, StoreError> {
     to_record(point.id, point.payload)
+}
+
+fn scored(point: ScoredPoint) -> Result<(Record, f32), StoreError> {
+    Ok((to_record(point.id, point.payload)?, point.score))
+}
+
+/// The scope filter of `_build_source_filter`: `source` in `sources` (when
+/// given; an empty list matches no record), and no archived record unless
+/// `include_archived`.
+pub fn scope_filter(sources: Option<&[String]>, include_archived: bool) -> Option<Filter> {
+    let must: Vec<Condition> = match sources {
+        None => Vec::new(),
+        Some([]) => vec![Condition::matches("source", "__no_match__".to_string())],
+        Some(list) => vec![Condition::matches("source", list.to_vec())],
+    };
+    let must_not = if include_archived {
+        Vec::new()
+    } else {
+        vec![Condition::matches("archived", true)]
+    };
+    if must.is_empty() && must_not.is_empty() {
+        return None;
+    }
+    Some(Filter {
+        must,
+        must_not,
+        ..Default::default()
+    })
 }
 
 fn ids(ids: &[u64]) -> Vec<PointId> {
@@ -325,6 +354,26 @@ impl QdrantStore {
         Ok(())
     }
 
+    /// Like [`Self::set_payload`], but an ID with no point is skipped, not an
+    /// error (the selector is a `has_id` filter).
+    pub async fn set_payload_existing(
+        &self,
+        id_list: &[u64],
+        fields: Map<String, Json>,
+    ) -> Result<(), StoreError> {
+        check_fields(id_list.first().copied().unwrap_or_default(), &fields)?;
+        let filter = Filter::must([Condition::has_id(id_list.iter().copied())]);
+        self.client
+            .set_payload(
+                SetPayloadPointsBuilder::new(&self.collection, Payload::from(fields))
+                    .points_selector(filter)
+                    .wait(self.wait)
+                    .ordering(self.ordering),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Replace the full payload of the point of `record` (a field that the
     /// record does not have is removed). The vectors do not change.
     pub async fn replace_payload(&self, record: &Record) -> Result<(), StoreError> {
@@ -387,6 +436,63 @@ impl QdrantStore {
             None => None,
         };
         Ok((records, next))
+    }
+
+    /// The nearest points to `vector` by cosine similarity, high first, with
+    /// the score. Only scores of `threshold` or more.
+    pub async fn search_dense(
+        &self,
+        vector: Vec<f32>,
+        limit: u64,
+        threshold: Option<f32>,
+        filter: Option<Filter>,
+    ) -> Result<Vec<(Record, f32)>, StoreError> {
+        let mut request = QueryPointsBuilder::new(&self.collection)
+            .query(vector)
+            .using(DENSE_VECTOR)
+            .limit(limit)
+            .with_payload(true)
+            .read_consistency(self.consistency.value.expect("set in new"));
+        if let Some(t) = threshold {
+            request = request.score_threshold(t);
+        }
+        if let Some(f) = filter {
+            request = request.filter(f);
+        }
+        let response = self.client.query(request).await?;
+        response.result.into_iter().map(scored).collect()
+    }
+
+    /// The keyword hits of the sparse `query` (token index, weight), high
+    /// first. Qdrant adds the IDF. Hits with score 0 are not returned.
+    pub async fn search_keyword(
+        &self,
+        query: Vec<(u32, f32)>,
+        limit: u64,
+        filter: Option<Filter>,
+    ) -> Result<Vec<(Record, f32)>, StoreError> {
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (indices, values): (Vec<u32>, Vec<f32>) = query.into_iter().unzip();
+        let mut request = QueryPointsBuilder::new(&self.collection)
+            .query(qdrant_client::qdrant::Query::new_nearest(
+                qdrant_client::qdrant::VectorInput::new_sparse(indices, values),
+            ))
+            .using(KEYWORD_VECTOR)
+            .limit(limit)
+            .with_payload(true)
+            .read_consistency(self.consistency.value.expect("set in new"));
+        if let Some(f) = filter {
+            request = request.filter(f);
+        }
+        let response = self.client.query(request).await?;
+        response
+            .result
+            .into_iter()
+            .filter(|p| p.score > 0.0)
+            .map(scored)
+            .collect()
     }
 
     /// The exact count of the points that match `filter`.

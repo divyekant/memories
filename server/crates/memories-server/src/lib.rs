@@ -18,6 +18,7 @@ use axum::{
     middleware::from_fn_with_state,
     routing::{MethodFilter, get, on, patch, post},
 };
+use memories_engine::Engine;
 use memories_types::config;
 use serde_json::{Value, json};
 use tower_http::catch_panic::CatchPanicLayer;
@@ -77,10 +78,22 @@ pub struct AppState {
     pub failures: Failures,
     pub metrics: Metrics,
     pub trusted: TrustedProxies,
+    /// The store, embedder and catalog. `None` when `QDRANT_URL` is not set:
+    /// the routes that need them answer 503.
+    pub engine: Option<Arc<Engine>>,
 }
 
 impl AppState {
     pub fn new(cfg: &Config, keys: KeyStore, audit: Option<AuditLog>) -> Arc<Self> {
+        Self::with_engine(cfg, keys, audit, None)
+    }
+
+    pub fn with_engine(
+        cfg: &Config,
+        keys: KeyStore,
+        audit: Option<AuditLog>,
+        engine: Option<Arc<Engine>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             api_key: cfg.api_key.clone(),
             auth_rate_limit: cfg.auth_rate_limit,
@@ -89,6 +102,7 @@ impl AppState {
             failures: Failures::default(),
             metrics: Metrics::new(cfg.metrics_latency_samples),
             trusted: TrustedProxies::parse(&cfg.forwarded_allow_ips),
+            engine,
         })
     }
 }
