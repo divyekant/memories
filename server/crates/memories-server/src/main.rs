@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use memories_engine::Engine;
+use memories_engine::writes::{DEFAULT_IDENTICAL_THRESHOLD, Writer};
 use memories_server::{AppState, Config, audit::AuditLog, keys::KeyStore};
 use memories_store::QdrantSettings;
 use memories_types::config;
@@ -94,14 +95,14 @@ fn main() -> std::process::ExitCode {
         None
     };
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
-    let engine = match runtime.block_on(open_engine(&cfg)) {
-        Ok(e) => e,
+    let writer = match runtime.block_on(open_writer(&cfg)) {
+        Ok(w) => w,
         Err(msg) => {
             tracing::error!("cannot start: {msg}");
             return std::process::ExitCode::FAILURE;
         }
     };
-    let state = AppState::with_engine(&cfg, keys, audit, engine);
+    let state = AppState::with_writer(&cfg, keys, audit, writer);
     runtime.block_on(serve(port, state));
     std::process::ExitCode::SUCCESS
 }
@@ -131,6 +132,25 @@ async fn open_engine(cfg: &Config) -> Result<Option<Arc<Engine>>, String> {
         "engine ready"
     );
     Ok(Some(Arc::new(engine)))
+}
+
+/// The write flow over the engine. `DOCTRINE_IDENTICAL_THRESHOLD` is a number
+/// (Python reads it with `float()` on each doctrine add).
+async fn open_writer(cfg: &Config) -> Result<Option<Arc<Writer>>, String> {
+    let Some(engine) = open_engine(cfg).await? else {
+        return Ok(None);
+    };
+    let raw = std::env::var("DOCTRINE_IDENTICAL_THRESHOLD").ok();
+    let threshold = match raw.as_deref().map(str::trim) {
+        None => DEFAULT_IDENTICAL_THRESHOLD,
+        Some(v) => v.parse::<f64>().map_err(|_| {
+            format!("DOCTRINE_IDENTICAL_THRESHOLD={v:?} is not a valid number. Set a number or remove it.")
+        })?,
+    };
+    let writer = Writer::open(engine, cfg.data_dir.clone(), threshold)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(Arc::new(writer)))
 }
 
 async fn serve(port: u16, state: Arc<AppState>) {

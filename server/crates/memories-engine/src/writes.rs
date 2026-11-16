@@ -116,11 +116,12 @@ pub struct Writer {
 }
 
 /// `str(meta.get("source", ""))`.
-fn source_of(r: &Record) -> String {
+pub fn source_of(r: &Record) -> String {
     Entry::of(r).source
 }
 
-fn text_of(r: &Record) -> Option<String> {
+/// The stored text, if it is a string.
+pub fn text_of(r: &Record) -> Option<String> {
     match &r.text {
         Some(t) => Some(t.clone()),
         None => r

@@ -8,6 +8,7 @@ pub mod healthcheck;
 pub mod keys;
 pub mod shell;
 pub mod validate;
+pub mod writes;
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
@@ -20,6 +21,7 @@ use axum::{
     routing::{MethodFilter, get, on, patch, post},
 };
 use memories_engine::Engine;
+use memories_engine::writes::Writer;
 use memories_types::config;
 use serde_json::{Value, json};
 use tower_http::catch_panic::CatchPanicLayer;
@@ -82,6 +84,8 @@ pub struct AppState {
     /// The store, embedder and catalog. `None` when `QDRANT_URL` is not set:
     /// the routes that need them answer 503.
     pub engine: Option<Arc<Engine>>,
+    /// The write flow of the engine. `None` when `engine` is `None`.
+    pub writer: Option<Arc<Writer>>,
 }
 
 impl AppState {
@@ -104,7 +108,22 @@ impl AppState {
             metrics: Metrics::new(cfg.metrics_latency_samples),
             trusted: TrustedProxies::parse(&cfg.forwarded_allow_ips),
             engine,
+            writer: None,
         })
+    }
+
+    /// The state with the engine of `writer`.
+    pub fn with_writer(
+        cfg: &Config,
+        keys: KeyStore,
+        audit: Option<AuditLog>,
+        writer: Option<Arc<Writer>>,
+    ) -> Arc<Self> {
+        let engine = writer.as_ref().map(|w| w.engine.clone());
+        let mut st = Arc::into_inner(Self::with_engine(cfg, keys, audit, engine))
+            .expect("a new state has one reference");
+        st.writer = writer;
+        Arc::new(st)
     }
 }
 
@@ -120,6 +139,13 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/api/keys/{key_id}"),
     ("GET", "/audit"),
     ("POST", "/audit/purge"),
+    ("POST", "/memory/add"),
+    ("POST", "/memory/add-batch"),
+    ("POST", "/memory/upsert"),
+    ("POST", "/memory/upsert-batch"),
+    ("PATCH", "/memory/{memory_id}"),
+    ("DELETE", "/memory/{memory_id}"),
+    ("POST", "/memory/delete-batch"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -141,7 +167,16 @@ pub fn app(state: Arc<AppState>) -> Router {
             patch(admin::update_key).delete(admin::revoke_key),
         )
         .route("/audit", get(admin::get_audit))
-        .route("/audit/purge", post(admin::purge_audit));
+        .route("/audit/purge", post(admin::purge_audit))
+        .route("/memory/add", post(writes::add))
+        .route("/memory/add-batch", post(writes::add_batch))
+        .route("/memory/upsert", post(writes::upsert))
+        .route("/memory/upsert-batch", post(writes::upsert_batch))
+        .route(
+            "/memory/{memory_id}",
+            patch(writes::patch).delete(writes::delete),
+        )
+        .route("/memory/delete-batch", post(writes::delete_batch));
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
     let public = stubs(

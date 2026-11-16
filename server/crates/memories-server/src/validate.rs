@@ -5,6 +5,9 @@ use serde_json::{Map, Value, json};
 
 use crate::error::{ApiError, int_parsing, item, missing, py_int, string_too_short};
 
+/// A pydantic `pattern` and the function that does the same match.
+pub type Pattern<'a> = (&'a str, fn(&str) -> bool);
+
 /// The fields of one JSON object at `loc` (`["body"]` or `["body", "memories", 0]`).
 pub struct Fields<'a> {
     map: &'a Map<String, Value>,
@@ -49,7 +52,7 @@ impl<'a> Fields<'a> {
         name: &str,
         required: bool,
         (min, max): (usize, usize),
-        pattern: Option<(&str, fn(&str) -> bool)>,
+        pattern: Option<Pattern<'_>>,
     ) -> Option<String> {
         let v = if required {
             self.required(name)?
@@ -118,8 +121,8 @@ impl<'a> Fields<'a> {
                 (Some(0), _) => Ok(false),
                 (Some(1), _) => Ok(true),
                 (Some(_), _) => Err("bool_parsing"),
-                (None, Some(f)) if f == 0.0 => Ok(false),
-                (None, Some(f)) if f == 1.0 => Ok(true),
+                (None, Some(0.0)) => Ok(false),
+                (None, Some(1.0)) => Ok(true),
                 _ => Err("bool_type"),
             },
             Value::String(s) => match s.to_lowercase().as_str() {
@@ -188,18 +191,21 @@ impl<'a> Fields<'a> {
     }
 }
 
-/// One item of a list of models: `model_type` if it is not an object.
+/// One item of a list of models: `model_attributes_type` if it is not an object.
 pub fn model<'a>(
     v: &'a Value,
     loc: Vec<Value>,
     errors: &mut Vec<Value>,
-    class: &str,
 ) -> Option<&'a Map<String, Value>> {
     let m = v.as_object();
     if m.is_none() {
-        let msg = format!("Input should be a valid dictionary or instance of {class}");
-        let e = item("model_type", Value::Array(loc), &msg, v.clone());
-        errors.push(with_ctx(e, json!({"class_name": class})));
+        let msg = "Input should be a valid dictionary or object to extract fields from";
+        errors.push(item(
+            "model_attributes_type",
+            Value::Array(loc),
+            msg,
+            v.clone(),
+        ));
     }
     m
 }
@@ -351,7 +357,7 @@ mod tests {
         let mut errors = Vec::new();
         let mut f = Fields::new(&m, vec![json!("body")], &mut errors);
         f.list("memories", (1, 500), |v, loc, errs| {
-            let m = model(v, loc.clone(), errs, "AddMemoryRequest")?;
+            let m = model(v, loc.clone(), errs)?;
             add_request(m, loc, errs);
             Some(())
         });
@@ -361,15 +367,14 @@ mod tests {
             json!([
                 {"type": "string_too_short", "loc": ["body", "memories", 0, "text"], "msg": "String should have at least 1 character", "input": "", "ctx": {"min_length": 1}},
                 {"type": "missing", "loc": ["body", "memories", 0, "source"], "msg": "Field required", "input": {"text": ""}},
-                {"type": "model_type", "loc": ["body", "memories", 1], "msg": "Input should be a valid dictionary or instance of AddMemoryRequest", "input": 5, "ctx": {"class_name": "AddMemoryRequest"}},
+                {"type": "model_attributes_type", "loc": ["body", "memories", 1], "msg": "Input should be a valid dictionary or object to extract fields from", "input": 5},
                 {"type": "bool_parsing", "loc": ["body", "deduplicate"], "msg": "Input should be a valid boolean, unable to interpret input", "input": 2}
             ])
         );
         let check = |body: Value| {
             let m = obj(body);
             let mut errors = Vec::new();
-            Fields::new(&m, vec![json!("body")], &mut errors)
-                .list("ids", (1, 2), |v, l, e| int(v, l, e));
+            Fields::new(&m, vec![json!("body")], &mut errors).list("ids", (1, 2), int);
             Value::Array(errors)
         };
         assert_eq!(

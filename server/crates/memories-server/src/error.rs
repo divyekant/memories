@@ -126,6 +126,42 @@ impl<S: Send + Sync> FromRequest<S> for JsonBody {
     type Rejection = Response;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let BodyResult(r) = BodyResult::from_request(req, state).await?;
+        r.map(JsonBody).map_err(IntoResponse::into_response)
+    }
+}
+
+/// Like [`JsonBody`], but a body error does not stop the request. The route
+/// puts the error items after its path and query items, as FastAPI does.
+/// A JSON decode error is `Err(Some(..))` with only its own item.
+pub struct BodyResult(pub Result<Map<String, Value>, ApiError>);
+
+impl BodyResult {
+    /// The body map. A body error goes into `errors` (after the path and query
+    /// items) and gives `None`. A JSON decode error is the reply alone, as in
+    /// FastAPI.
+    pub fn take(self, errors: &mut Vec<Value>) -> Result<Option<Map<String, Value>>, ApiError> {
+        match self.0 {
+            Ok(m) => Ok(Some(m)),
+            Err(e) if is_json_invalid(&e) => Err(e),
+            Err(e) => {
+                if let Value::Array(items) = e.detail {
+                    errors.extend(items);
+                }
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn is_json_invalid(e: &ApiError) -> bool {
+    e.detail[0]["type"] == "json_invalid"
+}
+
+impl<S: Send + Sync> FromRequest<S> for BodyResult {
+    type Rejection = Response;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let is_json = req
             .headers()
             .get(header::CONTENT_TYPE)
@@ -133,9 +169,7 @@ impl<S: Send + Sync> FromRequest<S> for JsonBody {
         let bytes = Bytes::from_request(req, state)
             .await
             .map_err(IntoResponse::into_response)?;
-        object_body(&bytes, is_json.unwrap_or(true))
-            .map(JsonBody)
-            .map_err(IntoResponse::into_response)
+        Ok(Self(object_body(&bytes, is_json.unwrap_or(true))))
     }
 }
 
