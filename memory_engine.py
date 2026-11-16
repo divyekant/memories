@@ -291,6 +291,20 @@ class MemoryEngine:
         self._write_lock = threading.RLock()
         self._entity_locks = EntityLockManager()
 
+        # save() and _rebuild_bm25() are grouped: a background thread does the
+        # work at most once per delay. A full save and a full BM25 build each
+        # take seconds on a large corpus, so one per write froze the server.
+        # 0 does the work at once, in the caller thread.
+        self._persist_delay = float(os.getenv("MEMORIES_PERSIST_DELAY_SEC", "2"))
+        self._persist_lock = threading.Lock()
+        self._persist_wakeup = threading.Event()
+        self._save_pending = False
+        self._bm25_pending = False
+        self._flusher: Optional[threading.Thread] = None
+        self._closing = threading.Event()
+        self._save_io_lock = threading.Lock()
+        self._bm25_build_lock = threading.Lock()
+
         self.metadata: List[Dict[str, Any]] = []
         self.config = {
             "model": self._active_embed_model(),
@@ -407,17 +421,35 @@ class MemoryEngine:
     # ------------------------------------------------------------------
 
     def _rebuild_bm25(self):
-        """Rebuild BM25 index from current metadata."""
-        self._bm25_generation += 1
-        if not self.metadata:
-            self.bm25_index = None
-            self._bm25_pos_to_id = []
-            self._bm25_snapshot = None
+        """Ask for a BM25 rebuild. With a persist delay, the flush thread does it."""
+        if self._persist_delay <= 0:
+            self._rebuild_bm25_now()
             return
-        corpus = [m["text"].lower().split() for m in self.metadata]
-        self.bm25_index = BM25Okapi(corpus)
-        self._bm25_pos_to_id = [m["id"] for m in self.metadata]
-        self._bm25_snapshot = (self._bm25_generation, self.bm25_index, list(self._bm25_pos_to_id))
+        with self._persist_lock:
+            self._bm25_pending = True
+        self._wake_flusher()
+
+    def _rebuild_bm25_now(self):
+        """Rebuild BM25 index from current metadata."""
+        # Copy the corpus under the write lock, then build outside it, so writes
+        # do not wait for the build. The build lock keeps builds in order.
+        with self._write_lock:
+            self._bm25_build_lock.acquire()
+            docs = [(m["id"], m["text"]) for m in self.metadata]
+        try:
+            self._bm25_generation += 1
+            if not docs:
+                self.bm25_index = None
+                self._bm25_pos_to_id = []
+                self._bm25_snapshot = None
+                return
+            index = BM25Okapi([text.lower().split() for _, text in docs])
+            pos_to_id = [mid for mid, _ in docs]
+            self.bm25_index = index
+            self._bm25_pos_to_id = pos_to_id
+            self._bm25_snapshot = (self._bm25_generation, index, list(pos_to_id))
+        finally:
+            self._bm25_build_lock.release()
         # Scores from an older build are never read again. Drop them, so the
         # cache holds only arrays for this build and no old index stays alive.
         with self._search_cache_lock:
@@ -472,7 +504,6 @@ class MemoryEngine:
     def _rebuild_id_map(self):
         """Rebuild the sparse ID lookup structures from current metadata."""
         self._id_map = {m["id"]: i for i, m in enumerate(self.metadata)}
-        self._bm25_pos_to_id = [m["id"] for m in self.metadata]
         self._links_generation += 1
         self._next_id = max(self._id_map.keys(), default=-1) + 1
 
@@ -750,6 +781,7 @@ class MemoryEngine:
         backup_path.mkdir(exist_ok=True)
 
         if self.metadata_path.exists():
+            self._save_now()  # include writes that wait for the flush thread
             shutil.copy2(self.metadata_path, backup_path / "metadata.json")
         if self.config_path.exists():
             shutil.copy2(self.config_path, backup_path / "config.json")
@@ -3243,6 +3275,9 @@ class MemoryEngine:
         Returns the same results as hybrid_search PLUS an ``explain`` dict
         containing candidate lists, filtering counts, and scoring parameters.
         """
+        if self._bm25_pending:
+            # The explain path reads bm25_index directly, so it must be current.
+            self._rebuild_bm25_now()
         if not self.metadata:
             return {
                 "results": [],
@@ -4140,6 +4175,69 @@ class MemoryEngine:
     # ------------------------------------------------------------------
 
     def save(self):
+        """Ask for a metadata/config save. With a persist delay, the flush thread does it."""
+        if self._persist_delay <= 0:
+            self._save_now()
+            return
+        with self._persist_lock:
+            self._save_pending = True
+        self._wake_flusher()
+
+    def flush(self):
+        """Do all pending BM25 and save work now. Call before reading the files."""
+        with self._persist_lock:
+            save, bm25 = self._save_pending, self._bm25_pending
+            self._save_pending = self._bm25_pending = False
+        try:
+            if bm25:
+                self._rebuild_bm25_now()
+            if save:
+                self._save_now()
+        except BaseException:
+            with self._persist_lock:
+                self._save_pending |= save
+                self._bm25_pending |= bm25
+            raise
+
+    _FLUSHER_IDLE_SEC = 60
+
+    def _wake_flusher(self):
+        with self._persist_lock:
+            if self._flusher is None or not self._flusher.is_alive():
+                self._flusher = threading.Thread(
+                    target=self._flush_loop, name="memories-flush", daemon=True
+                )
+                self._flusher.start()
+            self._persist_wakeup.set()
+
+    def _flush_loop(self):
+        while not self._closing.is_set():
+            if not self._persist_wakeup.wait(self._FLUSHER_IDLE_SEC):
+                # Exit when idle, so the thread does not keep the engine alive.
+                with self._persist_lock:
+                    if not self._persist_wakeup.is_set():
+                        self._flusher = None
+                        return
+                continue
+            self._closing.wait(self._persist_delay)
+            self._persist_wakeup.clear()
+            try:
+                self.flush()
+            except Exception:
+                logger.exception("Deferred save failed; retrying after the delay")
+                self._persist_wakeup.set()
+
+    def close(self):
+        """Stop the flush thread and write all pending work. Later saves run at once."""
+        self._persist_delay = 0
+        self._closing.set()
+        self._persist_wakeup.set()
+        flusher = self._flusher
+        if flusher is not None and flusher is not threading.current_thread():
+            flusher.join()
+        self.flush()
+
+    def _save_now(self):
         """Persist metadata/config to disk atomically.
 
         The metadata file is the canonical store (tens of MB); a truncate-write
@@ -4152,15 +4250,32 @@ class MemoryEngine:
         path rename each other's file away mid-cycle — the loser crashes with
         ENOENT and the winner can install a half-written file.
 
-        This makes concurrent save() calls file-safe; it does NOT serialize
-        metadata mutation itself — mutate-and-save under self._write_lock.
+        The snapshot is taken under self._write_lock, and the save I/O lock keeps
+        saves in order, so an older snapshot never replaces a newer file.
         """
-        for path, payload in ((self.metadata_path, self.metadata), (self.config_path, self.config)):
+        with self._write_lock:
+            self._save_io_lock.acquire()
+            try:
+                # No indent: the C encoder is several times faster on a large corpus.
+                payloads = (
+                    (self.metadata_path, json.dumps(self.metadata)),
+                    (self.config_path, json.dumps(self.config, indent=2)),
+                )
+            except BaseException:
+                self._save_io_lock.release()
+                raise
+        try:
+            self._write_payloads(payloads)
+        finally:
+            self._save_io_lock.release()
+
+    def _write_payloads(self, payloads):
+        for path, text in payloads:
             fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
             tmp_path = Path(tmp_name)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, indent=2)
+                    f.write(text)
                     f.flush()
                     os.fsync(f.fileno())
                 if path.exists():
@@ -4237,7 +4352,7 @@ class MemoryEngine:
                 self._reindex_store_from_metadata()
 
         self._check_integrity()
-        self._rebuild_bm25()
+        self._rebuild_bm25_now()
         self._migrate_timestamps()
 
     def rebuild_from_files(self, file_paths: List[str]) -> Dict[str, Any]:

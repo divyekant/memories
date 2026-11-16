@@ -300,8 +300,10 @@ else
   ' 2>/dev/null) || RESULTS_JSON="[]"
 fi
 
-# Fallback if dual strategy returns empty
-if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ "$RESULTS_JSON" = "[]" ]; then
+# Fallback if dual strategy returns empty. Not when the backend was slow or
+# down: one more search then adds load and time and finds nothing.
+if [ "$PROJECT_CONTEXT_ACTIVE" != "true" ] && [ "$RESULTS_JSON" = "[]" ] \
+  && [ "${MEMORIES_BACKEND_SLOW:-0}" != "1" ] && [ "${MEMORIES_BACKEND_DOWN:-0}" != "1" ]; then
   FALLBACK_RESPONSE=$(search_memories "$QUERY_TEXT" "" "$MEMORIES_QUERY_FALLBACK_K" "$MEMORIES_QUERY_FALLBACK_THRESHOLD")
   RESULTS_JSON=$(printf '%s' "$FALLBACK_RESPONSE" | jq -c '.results // []' 2>/dev/null) || RESULTS_JSON="[]"
 fi
@@ -365,10 +367,10 @@ PLAYBOOK_MODE=$(_playbook_injection_mode "$QUERY_PROMPT" "$CANDIDATE_COUNT")
 
 if [ "$PLAYBOOK_MODE" = "minimal" ]; then
   _log_info "Playbook gate: minimal reminder (candidates=$CANDIDATE_COUNT, prompt ${#PROMPT} chars)"
-  jq -n --arg down "${MEMORIES_BACKEND_DOWN:-0}" --arg sharing "$PROJECT_SHARING_GUIDANCE" '{
+  jq -n --arg down "${MEMORIES_BACKEND_DOWN:-0}" --arg slow "${MEMORIES_BACKEND_SLOW:-0}" --arg sharing "$PROJECT_SHARING_GUIDANCE" '{
 	hookSpecificOutput: {
 	  hookEventName: "UserPromptSubmit",
-	  additionalContext: ((if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first (load it with ToolSearch(\"+memory_search\") if needed)." end) + (if ($sharing | length) > 0 then "\n\n" + $sharing else "" end))
+	  additionalContext: ((if $down == "1" then "Memories note: the memory backend is unreachable (circuit open) — recall and capture are temporarily disabled for this prompt." elif $slow == "1" then "Memories note: the memory backend was slow to answer, so hook recall has no results for this prompt. The service is up: memory_search can still work." else "Memories MCP note: no stored memories matched this prompt via keyword retrieval. If this task turns out to depend on prior decisions or project history, call memory_search first (load it with ToolSearch(\"+memory_search\") if needed)." end) + (if ($sharing | length) > 0 then "\n\n" + $sharing else "" end))
 	}
 }'
   exit 0

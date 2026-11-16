@@ -6,6 +6,7 @@ had just created, and a truncate-write save could corrupt the canonical store.
 """
 
 import json
+import threading
 import os
 import time
 from pathlib import Path
@@ -223,6 +224,9 @@ def _bare_engine(tmp_path):
     eng.config_path = tmp_path / "config.json"
     eng.metadata = [{"id": 1, "text": "x", "source": "s"}]
     eng.config = {"model": "m"}
+    eng._persist_delay = 0
+    eng._write_lock = threading.RLock()
+    eng._save_io_lock = threading.Lock()
     return eng
 
 

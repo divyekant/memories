@@ -508,6 +508,7 @@ OpenCode source-prefix policy searches exact project scopes: `opencode/{project}
 | `MEMORIES_ENV_FILE` | `~/.config/memories/env` | Hook env file path for Claude/Codex hooks and OpenClaw QMD sync snippets; OpenCode MCP sources this file via `zsh -lc` |
 | `MEMORIES_SOURCE_PREFIXES` | client-specific | Retrieval prefixes for settings-based hooks. Defaults to `claude-code/{project},codex/{project},learning/{project},wip/{project}` for Claude/Cursor and `codex/{project},claude-code/{project},learning/{project},wip/{project}` under `~/.codex/hooks/memory`. OpenCode plugin recall uses `opencode/{project},claude-code/{project},codex/{project},learning/{project},wip/{project}`. |
 | `MEMORIES_EXTRACT_SOURCE` | client-specific | Extraction source for settings-based hooks. Defaults to `claude-code/{project}` for Claude/Cursor and `codex/{project}` under `~/.codex/hooks/memory`. OpenCode-authored extracted memories should use `opencode/{project}` when extraction is added. |
+| `MEMORIES_EXTRACT_RETRY_DELAYS` | `5 15 45 120` | Seconds between background retries when `/memory/extract` returns 429 or 503 (queue full). |
 | `MEMORIES_SOURCE_PREFIX` | `codex` | Legacy notify-hook prefix used only by `memory-codex-notify.sh` |
 | `MEMORIES_SOURCE` | (empty) | Legacy notify-hook full source override used only by `memory-codex-notify.sh` |
 | `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `chatgpt-subscription`, `ollama`, or empty to disable |

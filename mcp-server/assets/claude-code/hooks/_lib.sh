@@ -1276,37 +1276,14 @@ _breaker_reset() {
 
 # Should a failed call be recorded against the backend? Returns 0 to trip.
 #
-# A curl timeout (exit 28) is only evidence about the backend if the backend
-# got the time we meant to give it. `_hook_call_budget` shrinks each call's
-# --max-time as the hook's deadline is consumed, so a SessionStart recall's
-# later calls run with budgets far below what a real request needs (measured:
-# /search takes 1.2-2.1s against a live backend, while the minimum-call floor
-# is 0.3s). Tripping on those blames the backend for our own deadline, and
-# because _health_check skips probing any backend whose breaker is already
-# open, the NEXT session reports "not reachable" without a single probe — a
-# healthy backend, reported down, for the whole cooldown.
-#
-# _health_check deliberately leaves breaker state untouched when the budget
-# is too small to probe fairly; this is the same invariant for the search
-# path, which previously lacked it. Any non-timeout failure (connection
-# refused, TLS, HTTP error) is real evidence and still trips.
-# "Starved" must mean materially less time than we intended, not merely less.
-# Health and version probes run before search, so ordinary overhead shaves a
-# 4s cap to ~3.9s; treating that as inconclusive would leave a genuinely
-# hanging backend un-tripped and re-paying its full timeout every session.
-# A call that got most of the intended cap is real evidence.
-_MEMORIES_BREAKER_FAIR_BUDGET_RATIO="${MEMORIES_BREAKER_FAIR_BUDGET_RATIO:-0.75}"
-
+# A timeout (curl exit 28) means the backend is slow, not down: a server that
+# is busy with a long write answers late, but it answers. A trip on a timeout
+# marked a healthy backend down for the whole cooldown, for every session that
+# shares the breaker file. Only a failed connection, a TLS failure, or an HTTP
+# error is evidence of an outage. The budget and cap arguments are kept for
+# callers and are not used.
 _should_trip_breaker() {
-  local rc="$1" budget="$2" cap="$3"
-  [ "$rc" = "28" ] || return 0
-  local fair
-  # Default to tripping if jq is unavailable or the comparison fails: losing
-  # the breaker entirely is worse than an occasional early trip.
-  fair=$(jq -n --argjson b "$budget" --argjson c "$cap" --argjson r "$_MEMORIES_BREAKER_FAIR_BUDGET_RATIO" \
-    '$b >= ($c * $r)' 2>/dev/null) || fair="true"
-  [ "$fair" = "true" ] && return 0
-  return 1
+  [ "$1" != "28" ]
 }
 
 # Health check — returns 0 if the ROUTED search backend set has at least
@@ -1383,17 +1360,19 @@ _health_check() {
     name=$(printf '%s' "$backend" | jq -r '.name')
     safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_' '_')
 
-    if _breaker_open "$name"; then
-      # Already known down from a recent trip — don't re-pay the timeout,
-      # just count it among the down set.
-      printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${safe}"
-      continue
-    fi
-
+    # Probe even when the breaker is open: a session start must report what
+    # it measured, not a trip that another session made.
     (
-      if curl -sf --max-time "$probe_budget" "$url/health" >/dev/null 2>&1; then
+      curl -sf --max-time "$probe_budget" "$url/health" >/dev/null 2>&1
+      probe_rc=$?
+      if [ "$probe_rc" -eq 0 ]; then
         _breaker_reset "$name"
         : > "$tmpdir/up_${safe}"
+      elif ! _should_trip_breaker "$probe_rc"; then
+        # Slow, not down: count it as up and leave the breaker as it is.
+        _log_warn "Memories backend '$name' health probe timed out; treating it as slow"
+        : > "$tmpdir/up_${safe}"
+        : > "$tmpdir/slow_${safe}"
       else
         _breaker_trip "$name"
         printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${safe}"
@@ -1415,6 +1394,9 @@ _health_check() {
     else
       MEMORIES_HEALTH_DOWN_NAMES="$(cat "$f")"
     fi
+  done
+  for f in "$tmpdir"/slow_*; do
+    [ -e "$f" ] && MEMORIES_BACKEND_SLOW=1
   done
   rm -rf "$tmpdir"
 
@@ -1803,7 +1785,7 @@ _search_memories_multi() {
     # left untouched (only OUR budget ran out, not the backend).
     local call_budget
     if ! call_budget=$(_hook_call_budget 4); then
-      MEMORIES_BACKEND_DOWN=1
+      MEMORIES_BACKEND_SLOW=1
       echo '{"results":[],"count":0}'
       return
     fi
@@ -1834,19 +1816,24 @@ _search_memories_multi() {
           MEMORIES_AUTH_FAILED=1
           echo '{"results":[],"count":0,"auth_failed":true}'
           ;;
-        *)
+        5??)
           _breaker_trip "$name"
           MEMORIES_BACKEND_DOWN=1
           echo '{"results":[],"count":0}'
           ;;
+        *)
+          # Reachable, but the request failed (for example 429 when busy).
+          _log_warn "Search on backend '$name' returned HTTP $status"
+          MEMORIES_BACKEND_SLOW=1
+          echo '{"results":[],"count":0}'
+          ;;
       esac
-    else
-      # Only record this against the backend if the failure was its fault and
-      # not our shrinking deadline — see _should_trip_breaker.
-      if _should_trip_breaker "$curl_rc" "$call_budget" 4; then
-        _breaker_trip "$name"
-      fi
+    elif _should_trip_breaker "$curl_rc"; then
+      _breaker_trip "$name"
       MEMORIES_BACKEND_DOWN=1
+      echo '{"results":[],"count":0}'
+    else
+      MEMORIES_BACKEND_SLOW=1
       echo '{"results":[],"count":0}'
     fi
     return
@@ -1986,9 +1973,13 @@ _backend_version() {
   local cache="${MEMORIES_BACKEND_VERSION_CACHE:-$HOME/.config/memories/backend-version.json}"
   local now version budget
   now=$(date +%s)
+  # Without a probe, an old cached version is better than none: with none,
+  # the prompt hook sends one request per search in place of one batch.
+  local max_age=600
+  [ "${MEMORIES_VERSION_PROBE:-1}" = "1" ] || max_age=31536000
   if [ -f "$cache" ]; then
-    version=$(jq -r --arg u "$url" --argjson now "$now" \
-      'select(.url == $u and ($now - (.checked_at // 0)) < 600) | .version // empty' "$cache" 2>/dev/null) || version=""
+    version=$(jq -r --arg u "$url" --argjson now "$now" --argjson max "$max_age" \
+      'select(.url == $u and ($now - (.checked_at // 0)) < $max) | .version // empty' "$cache" 2>/dev/null) || version=""
     if [ -n "$version" ]; then
       printf '%s' "$version"
       return 0
@@ -2038,7 +2029,7 @@ _search_memories_batch() {
   # One request carries every search, so it gets a longer cap than one search.
   local cap=6 call_budget
   if ! call_budget=$(_hook_call_budget "$cap"); then
-    MEMORIES_BACKEND_DOWN=1
+    MEMORIES_BACKEND_SLOW=1
     _search_fanout_write_all "$spec" "$empty"
     return 0
   fi
@@ -2064,12 +2055,12 @@ _search_memories_batch() {
   out="${raw%$'\n'*}"
 
   if [ $curl_rc -ne 0 ] || [ -z "$raw" ] || [ "$status" = "$raw" ]; then
-    # Judge fairness against the single-search cap: a SessionStart budget can
-    # never reach 75% of the batch cap, so a hung /search would never trip.
-    if _should_trip_breaker "$curl_rc" "$call_budget" 4; then
+    if _should_trip_breaker "$curl_rc"; then
       _breaker_trip "$name"
+      MEMORIES_BACKEND_DOWN=1
+    else
+      MEMORIES_BACKEND_SLOW=1
     fi
-    MEMORIES_BACKEND_DOWN=1
     _search_fanout_write_all "$spec" "$empty"
     return 0
   fi
@@ -2085,9 +2076,15 @@ _search_memories_batch() {
       # The backend is up but has no compatible /search/batch.
       return 1
       ;;
-    *)
+    5??)
       _breaker_trip "$name"
       MEMORIES_BACKEND_DOWN=1
+      _search_fanout_write_all "$spec" "$empty"
+      return 0
+      ;;
+    *)
+      _log_warn "Batch search on backend '$name' returned HTTP $status"
+      MEMORIES_BACKEND_SLOW=1
       _search_fanout_write_all "$spec" "$empty"
       return 0
       ;;
@@ -2161,9 +2158,45 @@ _extract_multi() {
     url=$(echo "$backend" | jq -r '.url')
     key=$(echo "$backend" | jq -r '.api_key')
     name=$(echo "$backend" | jq -r '.name')
-    curl -sf --max-time 30 -X POST "$url/memory/extract" \
-      -H "Content-Type: application/json" \
-      -H "X-API-Key: $key" \
-      -d "$body" > /dev/null 2>&1 || _log_error "Extract failed for backend $name"
+    local status
+    status=$(_extract_post "$url" "$key" "$body" 30)
+    case "$status" in
+      2??) ;;
+      429|503)
+        # The extract queue is full. Retry later in the background, so the
+        # hook does not hold the session and the job is not dropped.
+        _log_warn "Extract queue full on backend $name (HTTP $status); retrying in the background"
+        _extract_retry_later "$url" "$key" "$body" "$name" </dev/null >/dev/null 2>&1 &
+        disown 2>/dev/null || true
+        ;;
+      *) _log_error "Extract failed for backend $name (HTTP $status)" ;;
+    esac
   done
+}
+
+# POST /memory/extract once. Prints the HTTP status, or 000 when no response.
+_extract_post() {
+  local url="$1" key="$2" body="$3" max_time="$4" raw
+  raw=$(curl -s --max-time "$max_time" -w '\n%{http_code}' -X POST "$url/memory/extract" \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: $key" \
+    -d "$body" 2>/dev/null) || true
+  printf '%s' "${raw##*$'\n'}"
+}
+
+_MEMORIES_EXTRACT_RETRY_DELAYS="${MEMORIES_EXTRACT_RETRY_DELAYS:-5 15 45 120}"
+
+_extract_retry_later() {
+  local url="$1" key="$2" body="$3" name="$4" delay status=""
+  for delay in $_MEMORIES_EXTRACT_RETRY_DELAYS; do
+    sleep "$delay"
+    status=$(_extract_post "$url" "$key" "$body" 30)
+    case "$status" in
+      2??) _log_info "Extract retry accepted by backend $name"; return 0 ;;
+      429|503) ;;
+      *) break ;;
+    esac
+  done
+  _log_error "Extract failed for backend $name after retries (HTTP $status)"
+  return 1
 }
