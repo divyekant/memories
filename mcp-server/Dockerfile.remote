@@ -3,7 +3,7 @@
 # Minimal image: OAuth 2.1 + Streamable HTTP front door (remote/) fronting the
 # existing Memories backend over MEMORIES_URL. Does not run the backend itself
 # — pair with the `memories` service (see docker-compose.yml).
-FROM node:24-alpine
+FROM node:26.13.1-alpine
 
 WORKDIR /app
 
