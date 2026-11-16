@@ -332,6 +332,45 @@ async fn run(n: usize) -> Vec<(&'static str, BTreeMap<&'static str, u64>)> {
             "memory.deleted"
         ]
     );
+    // The delete removed the link to `old` from the link map too.
+    assert!(w.engine.catalog().ids_linking_to(old as i64).is_empty());
+
+    // Doctrine: an identical text is skipped, a pinned blocker wins, "add" adds.
+    let text = format!("Corpus fact 10: service s1 uses port {}", 4010);
+    let r = w
+        .add_with_doctrine(mem(&text, "test/corpus/0"), "supersede", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (r["action"].clone(), r["reason"].clone()),
+        (json!("skipped"), json!("identical"))
+    );
+    assert_eq!(r["blocked_by"], json!(base[10]));
+    let pin = Patch {
+        pinned: Some(true),
+        ..Patch::default()
+    };
+    w.update_memory(base[10] as i64, pin, None, false)
+        .await
+        .unwrap();
+    let r = w
+        .add_with_doctrine(mem(&text, "test/corpus/0"), "skip", None)
+        .await
+        .unwrap();
+    assert_eq!(r["reason"], "pinned_blocker");
+    let r = w
+        .add_with_doctrine(mem(&text, "test/corpus/0"), "add", None)
+        .await
+        .unwrap();
+    assert_eq!(r["action"], "added");
+
+    // A start counts the length sums again.
+    let (sum, count) = w.engine.state.doc_lengths().unwrap();
+    w.engine.state.set_doc_lengths(1, 1).unwrap();
+    Writer::open(w.engine.clone(), s.dir.clone(), 0.97)
+        .await
+        .unwrap();
+    assert_eq!(w.engine.state.doc_lengths().unwrap(), (sum, count));
     s.cleanup().await;
     calls
 }

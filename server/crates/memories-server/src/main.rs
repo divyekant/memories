@@ -186,9 +186,17 @@ async fn flush_reinforcements_forever(state: Arc<AppState>) {
 }
 
 async fn flush_reinforcements(state: &Arc<AppState>) {
-    if let Some(engine) = &state.engine
-        && let Err(e) = engine.flush_reinforcements().await
-    {
+    // The writer lock keeps a flush out of a write that reads, then writes a payload.
+    let result = match (&state.writer, &state.engine) {
+        (Some(w), _) => w.flush_reinforcements().await.map_err(|e| e.to_string()),
+        (None, Some(engine)) => engine
+            .flush_reinforcements()
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        (None, None) => Ok(()),
+    };
+    if let Err(e) = result {
         tracing::warn!(error = %e, "reinforcement write failed; will try again");
     }
 }

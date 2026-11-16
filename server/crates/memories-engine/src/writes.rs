@@ -173,22 +173,21 @@ impl Writer {
         if let Some(max) = engine.store.max_id().await? {
             engine.state.raise_id_floor(max + 1)?;
         }
-        let (_, count) = engine.state.doc_lengths()?;
-        if count != engine.count() as u64 {
-            let (mut sum, mut n, mut offset) = (0u64, 0u64, None);
-            loop {
-                let (records, next) = engine.store.scroll(None, offset, 1_000).await?;
-                for r in &records {
-                    sum += doc_tokens(text_of(r).as_deref().unwrap_or("")).len() as u64;
-                    n += 1;
-                }
-                match next {
-                    Some(o) => offset = Some(o),
-                    None => break,
-                }
+        // A crash between a point write and the sum update can leave the sums
+        // wrong, so count them again at each start (one scroll).
+        let (mut sum, mut n, mut offset) = (0u64, 0u64, None);
+        loop {
+            let (records, next) = engine.store.scroll(None, offset, 1_000).await?;
+            for r in &records {
+                sum += doc_tokens(text_of(r).as_deref().unwrap_or("")).len() as u64;
+                n += 1;
             }
-            engine.state.set_doc_lengths(sum, n)?;
+            match next {
+                Some(o) => offset = Some(o),
+                None => break,
+            }
         }
+        engine.state.set_doc_lengths(sum, n)?;
         Ok(Self {
             engine,
             events: EventBus::default(),
@@ -245,6 +244,15 @@ impl Writer {
     /// `get_memory` for the routes: the record or "Memory ID X not found".
     pub async fn get(&self, id: i64) -> Result<Record> {
         self.record(id).await?.ok_or_else(|| not_found(id))
+    }
+
+    /// Writes the pending reinforcements under the write lock. A write reads a
+    /// record, then writes its whole payload; a flush between the two would
+    /// lose the flushed value.
+    pub async fn flush_reinforcements(&self) -> Result<()> {
+        let _g = self.lock.lock().await;
+        self.e().flush_reinforcements().await?;
+        Ok(())
     }
 
     // ---- add -------------------------------------------------------------------
@@ -343,19 +351,24 @@ impl Writer {
         }
         let records: Vec<Record> = points.iter().map(|p| p.record.clone()).collect();
         let mut rest = points;
+        // Each stored chunk goes into the catalog and the sums at once, so a
+        // later failed chunk leaves no stored point that the catalog hides.
         while !rest.is_empty() {
             let tail = rest.split_off(rest.len().min(CHUNK));
+            let len: i64 = rest
+                .iter()
+                .map(|p| doc_len(p.record.text.as_deref().unwrap_or("")))
+                .sum();
+            let chunk: Vec<Record> = rest.iter().map(|p| p.record.clone()).collect();
             self.e().store.upsert(rest, self.e().dim).await?;
-            rest = tail;
-        }
-        self.e()
-            .state
-            .add_doc_lengths(added, records.len() as i64)?;
-        {
-            let mut c = self.e().catalog_mut();
-            for r in &records {
-                c.put(r);
+            {
+                let mut c = self.e().catalog_mut();
+                for r in &chunk {
+                    c.put(r);
+                }
             }
+            self.e().state.add_doc_lengths(len, chunk.len() as i64)?;
+            rest = tail;
         }
         for r in &records {
             let text = text_of(r).unwrap_or_default();
@@ -633,11 +646,14 @@ impl Writer {
                     keyword: doc_vector(text, avg),
                 };
                 self.e().store.upsert(vec![point], self.e().dim).await?;
+                self.e().catalog_mut().put(&r);
                 self.e().state.add_doc_lengths(delta, 0)?;
             }
-            None => self.e().store.replace_payload(&r).await?,
+            None => {
+                self.e().store.replace_payload(&r).await?;
+                self.e().catalog_mut().put(&r);
+            }
         }
-        self.e().catalog_mut().put(&r);
         let source = source_of(&r);
         self.events.emit(
             "memory.updated",

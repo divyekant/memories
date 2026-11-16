@@ -510,8 +510,11 @@ pub async fn delete_batch(
     let w = writer(&state)?;
     if auth.prefixes.is_some() {
         for &id in &ids {
-            if let Ok(r) = w.get(id).await {
-                require_write(&auth, &source_of(&r))?;
+            // Python skips only a missing record; any other error is a 500.
+            match w.get(id).await {
+                Ok(r) => require_write(&auth, &source_of(&r))?,
+                Err(WriteError::NotFound(_)) => {}
+                Err(e) => return Err(failed(e, false)),
             }
         }
     }

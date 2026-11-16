@@ -24,7 +24,7 @@ The code is `memories_engine::writes` (the write flow) and
 |---|---|
 | Duplicate threshold | 0.90 for `deduplicate` and for the doctrine check. |
 | Identical threshold | `DOCTRINE_IDENTICAL_THRESHOLD`, default 0.97. The server reads it at start. A value that is not a number stops the start. |
-| Order of writes | One lock puts all writes in sequence. |
+| Order of writes | One lock puts all writes and the reinforcement flush in sequence. Thus a flush cannot run between the read and the payload write of a write. |
 | Embedding | An add embeds the new texts. A PATCH embeds again only when the text changes. Other changes write the payload only. |
 | Keyword vector | Each new or changed text gets a keyword vector with the current `avgdl` (decision P0-2). The sums are in `state.db`, table `meta`. |
 | Catalog | Each write updates the source map and the link map. |
@@ -32,6 +32,8 @@ The code is `memories_engine::writes` (the write flow) and
 | Audit | The same actions as `_audit` in `app.py`. |
 | Policy | The project namespace policy, the reserved fields and the trusted authorship of `project_memory.py`. A policy error gives HTTP 422. |
 | ID counter | At start, the counter moves above the highest stored ID. |
+| Length sums at start | The server counts the sums again from the store at each start. |
+| Failed batch add | Each stored chunk of 100 points goes into the catalog and the sums before the next chunk. A failed chunk leaves no stored point that the catalog does not show. |
 
 ## Qdrant calls of each write
 
