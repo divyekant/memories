@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+- **Client and tool libraries are updated (Rust rewrite task P0-5).** The
+  check and each decision are in `docs/rust-rewrite/library-review.md`.
+  - MCP server: `@modelcontextprotocol/sdk` 1.32.2, `express` 5.3.0 and
+    `js-yaml` 4.3.2, with exact versions. `npm audit` finds 0 issues (11
+    before, 1 of them critical in `proxy-addr`).
+  - Remote MCP server image: `node:26.13.1-alpine`.
+  - CLI and tests: `click` 8.5.1 and `pytest` 9.2.0.
+  - GitHub Actions: `actions/checkout` v7.0.1, `actions/setup-node` v7.1.0
+    and `astral-sh/setup-uv` v10.3.3, pinned to a commit SHA. CI now runs
+    the MCP server tests on Node 26.
+  - The Python server libraries do not change.
+
 ## [5.19.0] - 2026-11-16
 
 ### Fixed
