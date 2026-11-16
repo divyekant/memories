@@ -15,6 +15,9 @@ Each version below is the newest stable release that was 2 days old or more on
 `server/Cargo.toml`. A crate goes into `Cargo.lock` only when a member crate
 uses it. On this date, only `memories-server` uses crates (axum, tokio, clap,
 serde_json, tracing).
+From task P1-2, `memories-embed` uses ort, tokenizers, reqwest, serde_json,
+thiserror, tokio and tracing. `rand` is pinned to 0.10.3, because 0.10.4 was
+less than 2 days old.
 
 | Crate | Version | Use | Note |
 |---|---|---|---|

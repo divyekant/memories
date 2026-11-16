@@ -80,6 +80,15 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
+      - name: Embedding parity with Python (gate G2)
+        # Same ONNX Runtime release and hash as the image. The test downloads the model.
+        run: |
+          curl -sSfLo "$RUNNER_TEMP/ort.tgz" https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-linux-x64-1.31.0.tgz
+          echo "cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57  $RUNNER_TEMP/ort.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP"
+          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
+            cargo test --locked -p memories-embed --test parity -- --ignored --nocapture
+
       - name: Script tests
         run: python3 -m unittest discover -s scripts -v
 

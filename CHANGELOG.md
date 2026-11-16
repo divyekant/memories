@@ -9,6 +9,12 @@
   server answers `GET /health` only. CI adds format, lint, test, `cargo deny`
   and crate age checks, and starts the bundled compose file with the Rust
   image on each architecture. No change to the Python server or to a client.
+- **Rust embedder (rewrite task P1-2, gate G2).** The crate `memories-embed`
+  runs `all-MiniLM-L6-v2` with ONNX Runtime 1.31.0 and gives the vectors of
+  the Python embedder (lowest cosine 0.9999997 on 1,000 fixed texts). It reads
+  and fills the same Hugging Face model cache. The ONNX Runtime CPU arena is
+  off, so memory after bulk embedding is 225 MB, not 1.27 GB. CI runs the
+  parity test. Details: `docs/decisions/2026-11-16-rust-embedder.md`.
 
 ### Changed
 - **Client and tool libraries are updated (Rust rewrite task P0-5).** The
