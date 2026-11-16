@@ -373,3 +373,16 @@ def test_intended_differences_name_bulk_cases_only():
     for name, d in kit.load_intended().items():
         assert name in bulk and name not in main, name
         assert d["reason"] and d["route"]
+
+
+def test_live_probes_and_agreement():
+    from parity import extract_live as live
+    names = [p["name"] for p in live.probes()]
+    assert len(names) == 24 == len(set(names))
+    assert sum(n.startswith("scenario/") for n in names) == 4
+    job = {"status": "completed", "result": {"actions": [{"action": "UPDATE"}, {"action": "add"}]}}
+    assert live.action(job) == ["add", "update"]
+    assert live.action({"status": "failed"}) == ["job failed"]
+    a = {"x": {"action": ["add"]}, "y": {"action": ["noop"]}}
+    b = {"x": {"action": ["add"]}, "y": {"action": ["add"]}}
+    assert live.agree(a, b) == 0.5
