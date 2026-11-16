@@ -176,21 +176,21 @@ def _no_auto_backups(v):
 # accepted difference from the two masked outputs; the rest must still be the same,
 # and the exit code still compares. Each reason names the record that accepts it.
 KNOWN = {
-    ("cli", "stats"): ("backup_count and created_at: no metadata.json copy and no metadata.json "
-                       "(docs/decisions/2026-11-16-rust-core-writes.md).",
+    ("cli", "stats"): (("backup_count and created_at: no metadata.json copy and no metadata.json "
+                       "(docs/decisions/2026-11-16-rust-core-writes.md)."),
                        _drop("backup_count", "created_at")),
-    ("cli", "health"): ("version 6.0.0 (G6.md, finding 1), and two more keys for an admin key "
-                        "(docs/decisions/2026-11-16-rust-extract-queue.md).",
+    ("cli", "health"): (("version 6.0.0 (G6.md, finding 1), and two more keys for an admin key "
+                        "(docs/decisions/2026-11-16-rust-extract-queue.md)."),
                         _drop("version", "extract_queue_depth", "extract_oldest_job_age_sec")),
-    ("cli", "backup-list"): ("the Rust server makes no metadata.json copy before a write, so the pre_* "
+    ("cli", "backup-list"): (("the Rust server makes no metadata.json copy before a write, so the pre_* "
                              "backups are not in the list "
-                             "(docs/decisions/2026-11-16-rust-core-writes.md, row `_backup`).",
+                             "(docs/decisions/2026-11-16-rust-core-writes.md, row `_backup`)."),
                              _no_auto_backups),
-    ("cli", "extract-status"): ("queue_max is 10,000 on the Rust server: the jobs are on disk "
-                                "(server/crates/memories-server/src/extract.rs, ExtractConfig).",
+    ("cli", "extract-status"): (("queue_max is 10,000 on the Rust server: the jobs are on disk "
+                                "(server/crates/memories-server/src/extract.rs, ExtractConfig)."),
                                 _drop("queue_max", "queue_remaining")),
-    ("installer", "doctor"): ("deployed version 6.0.0 differs from BACKEND_VERSION 5.19.0 until "
-                              "the release bump of task P7-2 (G6.md, finding 1).",
+    ("installer", "doctor"): (("deployed version 6.0.0 differs from BACKEND_VERSION 5.19.0 until "
+                              "the release bump of task P7-2 (G6.md, finding 1)."),
                               lambda v: re.sub(r"deployed: [^\n]*", "deployed: <version>", v)
                               if isinstance(v, str) else v),
 }
