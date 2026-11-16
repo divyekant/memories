@@ -469,12 +469,15 @@ fn embedder_reload() -> Value {
     })
 }
 
-/// The `GET /metrics` body. It adds a sample to the memory trend.
-async fn snapshot(state: &Arc<AppState>) -> Result<Value, Response> {
+/// The `GET /metrics` body. If `sample` is true, it adds a sample to the
+/// memory trend (only `GET /metrics` adds samples, as in Python).
+async fn snapshot(state: &Arc<AppState>, sample: bool) -> Result<Value, Response> {
     let total = state.engine.get().map_or(0, |e| e.count());
     let trend = {
         let mut t = state.trend.lock().unwrap_or_else(|p| p.into_inner());
-        t.push_back(json!({"timestamp": utc_now_iso(), "total_memories": total}));
+        if sample {
+            t.push_back(json!({"timestamp": utc_now_iso(), "total_memories": total}));
+        }
         while t.len() > state.trend_max {
             t.pop_front();
         }
@@ -504,7 +507,7 @@ async fn metrics(
     Extension(auth): Extension<AuthContext>,
 ) -> Reply {
     admin(&auth)?;
-    snapshot(&state).await.map(Json)
+    snapshot(&state, true).await.map(Json)
 }
 
 /// A Prometheus label value: `\`, `"` and line ends need an escape.
@@ -521,7 +524,7 @@ async fn prometheus(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Response, Response> {
     admin(&auth)?;
-    let m = snapshot(&state).await?;
+    let m = snapshot(&state, false).await?;
     let mut out = String::new();
     let mut metric = |name: &str, kind: &str, help: &str, rows: Vec<(String, Value)>| {
         let _ = writeln!(out, "# HELP {name} {help}");

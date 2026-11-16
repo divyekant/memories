@@ -308,6 +308,8 @@ async fn metrics_has_the_python_shape() {
     );
     assert_eq!(m["routes"]["GET /usage"]["count"], 1);
     assert_eq!(m["requests"]["active_http_requests"], 1);
+    // Only GET /metrics adds a trend sample, not the Prometheus route.
+    send(&st, "GET", "/metrics/prometheus", ADMIN, None).await;
     let (_, m) = get(&st, "/metrics", ADMIN).await;
     assert_eq!(m["memory"]["trend"]["samples"].as_array().unwrap().len(), 2);
 }

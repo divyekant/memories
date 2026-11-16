@@ -405,6 +405,10 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     workers.iter().for_each(|w| w.abort());
     flush_key_usage(&state).await;
     flush_reinforcements(&state).await;
+    // Python writes each usage row before it replies; write the queued rows before the exit.
+    if let Some(u) = &state.usage {
+        u.flush().await;
+    }
 }
 
 async fn flush_reinforcements_forever(state: Arc<AppState>) {

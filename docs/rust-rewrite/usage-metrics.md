@@ -29,10 +29,11 @@ give the replies of the Python `NullTracker`.
   channel. The route does not wait for the disk.
 - The writer takes up to 512 rows from the channel and writes them in one
   transaction.
-- The channel holds 10,000 rows. If the channel is full, the server drops the
+- The channel holds 50,000 rows. If the channel is full, the server drops the
   row and writes a warning to the log.
 - A read first sends a flush to the writer and waits for it. Thus a read sees
   all the rows of the calls before it.
+- At a stop, the server writes all the queued rows before it exits.
 - `POST /search/feedback` waits for its row, so the next search reads the new
   feedback score.
 - At start, the tracker adds the columns that Python added after v5.7.2, as

@@ -25,8 +25,8 @@
 #   QDRANT_URL=http://127.0.0.1:6333 server/scripts/parity_usage.sh <rust binary>
 # Needs the Python environment in .venv (uv sync --frozen), a Qdrant server
 # and ORT_DYLIB_PATH. The Rust server uses a new collection, which the script
-# deletes at the end. Set KEEP_WORK=<dir> to keep the replies, the logs and
-# usage.db after the run.
+# deletes at the end. Set KEEP_WORK=<dir> (a new directory) to keep the
+# replies, the logs and usage.db after the run.
 set -euo pipefail
 rust_bin="$(realpath "$1")"
 : "${QDRANT_URL:?set QDRANT_URL}"
@@ -45,7 +45,10 @@ cleanup() {
   if [ "$rc" -ne 0 ]; then
     for log in "$work"/*.log; do echo "== $log"; tail -n 50 "$log"; done >&2
   fi
-  if [ -n "${KEEP_WORK:-}" ]; then rm -rf "$KEEP_WORK"; cp -r "$work" "$KEEP_WORK"; fi
+  if [ -n "${KEEP_WORK:-}" ]; then
+    if [ -e "$KEEP_WORK" ]; then echo "KEEP_WORK=$KEEP_WORK exists; the run is not kept" >&2
+    else cp -r "$work" "$KEEP_WORK"; fi
+  fi
   rm -rf "$work"
 }
 trap cleanup EXIT

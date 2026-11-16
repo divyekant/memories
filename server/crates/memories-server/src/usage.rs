@@ -18,8 +18,9 @@ use tokio::sync::{mpsc, oneshot};
 use crate::keys::sql_to_json;
 
 /// Rows that wait for the writer. A row past this limit is dropped with a
-/// warning, as Python drops a row that it cannot write.
-const QUEUE_MAX: usize = 10_000;
+/// warning (Python writes each row in the request and drops none). The limit
+/// holds more than the rows of the largest `/search/batch` request.
+const QUEUE_MAX: usize = 50_000;
 /// The most rows in one write transaction.
 const BATCH_MAX: usize = 512;
 
@@ -332,8 +333,12 @@ impl Usage {
                     "SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?"
                 ))?
                 .exists([col])?;
-            if !has {
-                w.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), [])?;
+            // Python starts when a migration fails; so does this server.
+            if !has
+                && let Err(e) =
+                    w.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), [])
+            {
+                tracing::warn!("usage.db: cannot add {table}.{col}: {e}");
             }
         }
         w.execute(
