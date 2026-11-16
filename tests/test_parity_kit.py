@@ -345,3 +345,16 @@ def test_corpus_check_compares_similar_text_and_candidate_sources():
     tokens = copy.deepcopy(base)
     tokens["job"]["result"]["tokens"]["audn"]["input"] = 4
     assert ec.check([tokens], [base])  # compared when the similar lists are equal
+
+
+def test_live_probes_and_agreement():
+    from parity import extract_live as live
+    names = [p["name"] for p in live.probes()]
+    assert len(names) == 24 == len(set(names))
+    assert sum(n.startswith("scenario/") for n in names) == 4
+    job = {"status": "completed", "result": {"actions": [{"action": "UPDATE"}, {"action": "add"}]}}
+    assert live.action(job) == ["add", "update"]
+    assert live.action({"status": "failed"}) == ["job failed"]
+    a = {"x": {"action": ["add"]}, "y": {"action": ["noop"]}}
+    b = {"x": {"action": ["add"]}, "y": {"action": ["add"]}}
+    assert live.agree(a, b) == 0.5
