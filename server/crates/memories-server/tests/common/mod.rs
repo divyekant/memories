@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use memories_server::{AppState, Config, keys::KeyStore};
+use memories_server::{AppState, Config, audit::AuditLog, keys::KeyStore};
 
 pub fn temp_dir() -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
@@ -23,9 +23,17 @@ pub fn config(api_key: &str, rate_limit: i64) -> Config {
         auth_rate_limit: rate_limit,
         metrics_latency_samples: 200,
         forwarded_allow_ips: "127.0.0.1".into(),
+        audit_log: false,
     }
 }
 
 pub fn state(cfg: &Config) -> Arc<AppState> {
-    AppState::new(cfg, KeyStore::open(&cfg.data_dir.join("keys.db")).unwrap())
+    let audit = cfg
+        .audit_log
+        .then(|| AuditLog::open(&cfg.data_dir.join("audit.db")).unwrap());
+    AppState::new(
+        cfg,
+        KeyStore::open(&cfg.data_dir.join("keys.db")).unwrap(),
+        audit,
+    )
 }

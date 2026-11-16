@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use memories_server::{AppState, Config, keys::KeyStore};
+use memories_server::{AppState, Config, audit::AuditLog, keys::KeyStore};
 use memories_types::config;
 use tokio::net::TcpListener;
 
@@ -74,7 +74,22 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let state = AppState::new(&cfg, keys);
+    let audit = if cfg.audit_log {
+        let path = cfg.data_dir.join("audit.db");
+        match AuditLog::open(&path) {
+            Ok(a) => {
+                tracing::info!("Audit logging enabled");
+                Some(a)
+            }
+            Err(e) => {
+                tracing::error!("cannot start: cannot open {}: {e}", path.display());
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+    let state = AppState::new(&cfg, keys, audit);
     tokio::runtime::Runtime::new()
         .expect("tokio runtime")
         .block_on(serve(port, state));
