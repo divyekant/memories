@@ -93,6 +93,11 @@ impl Catalog {
         self.entries.get(&u64::try_from(id).ok()?)
     }
 
+    /// The records in ID order.
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &Entry)> {
+        self.entries.iter().map(|(id, e)| (*id, e))
+    }
+
     /// The distinct sources, sorted, with their record counts.
     pub fn sources(&self) -> &BTreeMap<String, u64> {
         &self.sources

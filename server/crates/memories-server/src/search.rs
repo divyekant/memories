@@ -2,6 +2,8 @@
 //! `/search/explain`, `/search/evidence` and `/memory/is-novel`.
 //!
 //! None of these routes writes an audit row in Python (no `_audit` call).
+//! `/search` (each item of a batch), `/search/evidence` and `/memory/is-novel`
+//! write usage rows (task P5-1).
 
 #![allow(clippy::result_large_err)]
 
@@ -10,7 +12,7 @@ use std::sync::Arc;
 use axum::{
     Extension, Json,
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use memories_engine::{
@@ -30,6 +32,7 @@ use crate::{
     error::{ApiError, JsonBody, item, list_too_short, missing},
     model::{Bounds, Model},
     shell::internal_error,
+    usage::Row,
 };
 
 /// The default of `graph_weight`. Python treats this exact value as "not given".
@@ -59,6 +62,8 @@ pub struct SearchBody {
     pub include_archived: bool,
     pub auto_intent: bool,
     pub reference_date: Option<String>,
+    /// Set by the intent step when it detected a time or graph intent.
+    pub auto_detected: bool,
 }
 
 const UNIT: Bounds = Bounds {
@@ -118,6 +123,7 @@ impl SearchBody {
             include_archived: include_archived?,
             auto_intent: auto_intent?,
             reference_date,
+            auto_detected: false,
         })
     }
 
@@ -183,6 +189,7 @@ impl SearchBody {
             internal_error()
         })?;
         if adj.auto_detected {
+            self.auto_detected = true;
             if adj.since.as_deref().is_some_and(|s| !s.is_empty()) && given(&self.since).is_none() {
                 self.since = adj.since;
             }
@@ -203,8 +210,9 @@ impl SearchBody {
         Ok(())
     }
 
-    fn args(&self) -> SearchArgs {
+    fn args(&self, feedback: Option<Vec<(i64, f64)>>) -> SearchArgs {
         SearchArgs {
+            feedback,
             query: self.query.clone(),
             k: self.k as usize,
             threshold: self.threshold,
@@ -244,6 +252,72 @@ fn failed(what: &str, e: impl std::fmt::Display) -> Response {
     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response()
 }
 
+/// The attribution headers of `_log_usage_event`, cut as Python cuts them.
+#[derive(Clone, Debug, Default)]
+pub struct Caller {
+    pub client: String,
+    pub session_id: String,
+    pub invocation: String,
+}
+
+impl Caller {
+    pub fn of(headers: &HeaderMap) -> Self {
+        // Starlette reads header bytes as Latin-1.
+        let h = |name: &str, n: usize| -> String {
+            headers
+                .get(name)
+                .map(|v| v.as_bytes().iter().map(|&b| b as char).take(n).collect())
+                .unwrap_or_default()
+        };
+        Self {
+            client: h("X-Memories-Client", 100),
+            session_id: h("X-Memories-Session-Id", 200),
+            invocation: h("X-Memories-Invocation", 100),
+        }
+    }
+
+    pub fn row(&self, operation: &str, source: &str, count: i64) -> Row {
+        Row::Api {
+            operation: operation.into(),
+            source: source.into(),
+            count,
+            client: self.client.clone(),
+            session_id: self.session_id.clone(),
+            invocation: self.invocation.clone(),
+        }
+    }
+}
+
+/// Writes a usage row if `USAGE_TRACKING` is on.
+pub fn log(state: &AppState, row: Row) {
+    if let Some(u) = &state.usage {
+        u.log(row);
+    }
+}
+
+/// `get_feedback_scores()` when `feedback_weight > 0` and the corpus is not
+/// empty, as Python reads them. `None` when usage tracking is off.
+async fn feedback_scores(
+    state: &Arc<AppState>,
+    engine: &Engine,
+    weight: f64,
+) -> Option<Vec<(i64, f64)>> {
+    if weight <= 0.0 || engine.count() == 0 {
+        return None;
+    }
+    state.usage.as_ref()?;
+    let st = state.clone();
+    let read = tokio::task::spawn_blocking(move || st.usage.as_ref().map(|u| u.feedback_scores()));
+    match read.await {
+        Ok(Some(Ok(scores))) => Some(scores),
+        Ok(Some(Err(e))) => {
+            tracing::warn!(error = %e, "usage.db: cannot read the feedback scores");
+            None
+        }
+        _ => None,
+    }
+}
+
 /// `auth.filter_results`, then `annotate_relative_scores`.
 fn filter_and_annotate(auth: &AuthContext, results: Vec<Value>) -> Vec<Value> {
     let mut kept: Vec<Value> = match &auth.prefixes {
@@ -270,11 +344,17 @@ fn filter_and_annotate(auth: &AuthContext, results: Vec<Value>) -> Vec<Value> {
 }
 
 async fn run_search(
+    state: &Arc<AppState>,
     engine: &Engine,
     body: &SearchBody,
     what: &str,
 ) -> Result<Vec<Value>, Response> {
-    let args = body.args();
+    let feedback = if body.hybrid {
+        feedback_scores(state, engine, body.feedback_weight).await
+    } else {
+        None
+    };
+    let args = body.args(feedback);
     let found = if body.hybrid {
         engine.hybrid_search(&args).await
     } else {
@@ -285,36 +365,86 @@ async fn run_search(
 
 /// `search()` of app.py for one checked body.
 async fn search_one(
-    state: &AppState,
+    state: &Arc<AppState>,
     auth: &AuthContext,
+    caller: &Caller,
     mut body: SearchBody,
 ) -> Result<Value, Response> {
     tracing::info!(query = %body.query.chars().take(80).collect::<String>(), k = body.k, hybrid = body.hybrid, "search");
     body.apply_intent()?;
-    search_body(state, auth, &body).await
+    search_body(state, auth, caller, &body).await
 }
 
 /// The part of `/search` after the intent step.
 async fn search_body(
-    state: &AppState,
+    state: &Arc<AppState>,
     auth: &AuthContext,
+    caller: &Caller,
     body: &SearchBody,
 ) -> Result<Value, Response> {
     let engine = engine(state)?;
-    let results = filter_and_annotate(auth, run_search(engine, body, "search").await?);
-    // shortcut: usage.db rows (retrievals, graph and temporal counts) come with task P5-1.
+    let results = filter_and_annotate(auth, run_search(state, engine, body, "search").await?);
+    log_search(state, caller, body, &results);
     Ok(json!({"query": body.query, "count": results.len(), "results": results}))
+}
+
+/// The usage rows of one search: the event, a retrieval row for each result,
+/// and the graph and temporal rows.
+fn log_search(state: &AppState, caller: &Caller, body: &SearchBody, results: &[Value]) {
+    let Some(u) = &state.usage else {
+        return;
+    };
+    let count = results.len() as i64;
+    let query: String = body.query.chars().take(200).collect();
+    u.log(caller.row("search", &body.source, 1));
+    for (rank, r) in results.iter().enumerate() {
+        if let Some(id) = r.get("id").and_then(Value::as_i64) {
+            u.log(Row::Retrieval {
+                memory_id: id,
+                query: query.clone(),
+                source: body.source.clone(),
+                rank: rank as i64 + 1,
+                result_count: count,
+            });
+        }
+    }
+    if body.graph_weight > 0.0 {
+        let graph = results
+            .iter()
+            .filter(|r| r["match_type"].as_str().unwrap_or("").contains("graph"))
+            .count() as i64;
+        u.log(Row::Graph {
+            query: query.clone(),
+            graph_weight: body.graph_weight,
+            direct_count: count - graph,
+            graph_count: graph,
+            total_results: count,
+        });
+    }
+    // Python: the test is truthy, but has_since is `since is not None`.
+    let set = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
+    if set(&body.since) || set(&body.until) {
+        u.log(Row::Temporal {
+            query,
+            has_since: body.since.is_some(),
+            has_until: body.until.is_some(),
+            auto_detected: body.auto_detected,
+        });
+    }
 }
 
 pub async fn search(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
     JsonBody(map): JsonBody,
 ) -> Result<Json<Value>, Response> {
     let body = SearchBody::from_map(&map).map_err(IntoResponse::into_response)?;
     body.check_scope(&auth)
         .map_err(IntoResponse::into_response)?;
-    search_one(&state, &auth, body).await.map(Json)
+    search_one(&state, &auth, &Caller::of(&headers), body)
+        .await
+        .map(Json)
 }
 
 pub async fn search_explain(
@@ -327,8 +457,9 @@ pub async fn search_explain(
     body.check_scope(&auth)
         .map_err(IntoResponse::into_response)?;
     let engine = engine(&state)?;
+    let feedback = feedback_scores(&state, engine, body.feedback_weight).await;
     let mut out = engine
-        .hybrid_search_explain(&body.args())
+        .hybrid_search_explain(&body.args(feedback))
         .await
         .map_err(|e| failed("search explain", e))?;
     let raw = match out["results"].take() {
@@ -345,6 +476,7 @@ pub async fn search_explain(
 pub async fn search_evidence(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
     JsonBody(map): JsonBody,
 ) -> Result<Json<Value>, Response> {
     let mut body = SearchBody::from_map(&map).map_err(IntoResponse::into_response)?;
@@ -352,8 +484,15 @@ pub async fn search_evidence(
         .map_err(IntoResponse::into_response)?;
     body.apply_intent()?;
     let engine = engine(&state)?;
-    let results = filter_and_annotate(&auth, run_search(engine, &body, "search evidence").await?);
+    let results = filter_and_annotate(
+        &auth,
+        run_search(&state, engine, &body, "search evidence").await?,
+    );
     let packet = build_evidence_packet(&body.query, &results);
+    log(
+        &state,
+        Caller::of(&headers).row("search_evidence", &body.source, 1),
+    );
     Ok(Json(json!({
         "query": body.query,
         "results": results,
@@ -423,6 +562,7 @@ pub fn parse_batch(map: &Map<String, Value>) -> Result<Vec<SearchBody>, ApiError
 pub async fn search_batch(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
     JsonBody(map): JsonBody,
 ) -> Result<Json<Value>, Response> {
     let bodies = parse_batch(&map).map_err(IntoResponse::into_response)?;
@@ -433,6 +573,7 @@ pub async fn search_batch(
     // Python order: each item takes a permit, then runs its intent step at
     // once, then waits on its search. The reply carries the first error in
     // time, so the results come back over a channel as each search ends.
+    let caller = Caller::of(&headers);
     let limit = Arc::new(Semaphore::new(BATCH_LIMIT));
     let total = bodies.len();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -447,9 +588,9 @@ pub async fn search_batch(
             take(done)?;
         }
         b.apply_intent()?;
-        let (state, auth, tx) = (state.clone(), auth.clone(), tx.clone());
+        let (state, auth, tx, caller) = (state.clone(), auth.clone(), tx.clone(), caller.clone());
         tokio::spawn(async move {
-            let r = search_body(&state, &auth, &b).await;
+            let r = search_body(&state, &auth, &caller, &b).await;
             drop(permit);
             let _ = tx.send((i, r));
         });
@@ -481,6 +622,7 @@ pub fn parse_is_novel(map: &Map<String, Value>) -> Result<(String, f64), ApiErro
 pub async fn is_novel(
     State(state): State<Arc<AppState>>,
     Extension(_auth): Extension<AuthContext>,
+    headers: HeaderMap,
     JsonBody(map): JsonBody,
 ) -> Result<Json<Value>, Response> {
     let (text, threshold) = parse_is_novel(&map).map_err(IntoResponse::into_response)?;
@@ -489,6 +631,7 @@ pub async fn is_novel(
         .is_novel(&text, threshold)
         .await
         .map_err(|e| failed("is-novel check", e))?;
+    log(&state, Caller::of(&headers).row("is_novel", "", 1));
     Ok(Json(
         json!({"is_novel": novel, "threshold": threshold, "most_similar": similar}),
     ))

@@ -11,10 +11,14 @@ pub mod migrate;
 pub mod model;
 pub mod search;
 pub mod shell;
+pub mod usage;
+pub mod usage_routes;
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::time::Instant;
 
 use axum::{
     Extension, Json, Router,
@@ -35,6 +39,7 @@ use crate::{
     extract::{Extract, ExtractConfig},
     keys::KeyStore,
     shell::{Metrics, ROUTES, TrustedProxies},
+    usage::Usage,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -50,6 +55,10 @@ pub struct Config {
     pub forwarded_allow_ips: String,
     /// `AUDIT_LOG`: write and read `audit.db`.
     pub audit_log: bool,
+    /// `USAGE_TRACKING`: write and read `usage.db`.
+    pub usage_tracking: bool,
+    /// `METRICS_TREND_SAMPLES`: the memory count samples that `GET /metrics` keeps.
+    pub metrics_trend_samples: usize,
 }
 
 impl Config {
@@ -60,6 +69,10 @@ impl Config {
         let (samples, warn) = config::parse_int(var("METRICS_LATENCY_SAMPLES").as_deref(), 200, 20);
         if let Some(w) = warn {
             tracing::warn!("METRICS_LATENCY_SAMPLES: {w}");
+        }
+        let (trend, warn) = config::parse_int(var("METRICS_TREND_SAMPLES").as_deref(), 120, 5);
+        if let Some(w) = warn {
+            tracing::warn!("METRICS_TREND_SAMPLES: {w}");
         }
         Ok(Self {
             data_dir: config::string("DATA_DIR", "/data").into(),
@@ -72,6 +85,8 @@ impl Config {
             metrics_latency_samples: samples as usize,
             forwarded_allow_ips: config::string("FORWARDED_ALLOW_IPS", "127.0.0.1"),
             audit_log: config::parse_bool(var("AUDIT_LOG").as_deref(), false),
+            usage_tracking: config::parse_bool(var("USAGE_TRACKING").as_deref(), false),
+            metrics_trend_samples: trend as usize,
         })
     }
 }
@@ -92,6 +107,12 @@ pub struct AppState {
     /// True while the first-start migration runs: only `/health` answers.
     pub migrating: AtomicBool,
     pub extract: Extract,
+    /// `None` when `USAGE_TRACKING` is off (the Python `NullTracker`).
+    pub usage: Option<Usage>,
+    pub started: Instant,
+    /// The memory count samples of `GET /metrics` (`memory_trend`).
+    pub trend: Mutex<VecDeque<Value>>,
+    pub trend_max: usize,
 }
 
 impl AppState {
@@ -110,6 +131,12 @@ impl AppState {
         extract: Extract,
         engine: Option<Arc<Engine>>,
     ) -> Arc<Self> {
+        // As Python: a usage.db that cannot open stops the start.
+        let usage = cfg.usage_tracking.then(|| {
+            let u = Usage::open(&cfg.data_dir.join("usage.db")).expect("cannot open usage.db");
+            tracing::info!("Usage tracking enabled");
+            u
+        });
         Arc::new(Self {
             api_key: cfg.api_key.clone(),
             auth_rate_limit: cfg.auth_rate_limit,
@@ -121,6 +148,10 @@ impl AppState {
             engine: engine.map(OnceLock::from).unwrap_or_default(),
             migrating: AtomicBool::new(false),
             extract,
+            usage,
+            started: Instant::now(),
+            trend: Mutex::default(),
+            trend_max: cfg.metrics_trend_samples,
         })
     }
 }
@@ -145,6 +176,19 @@ const SERVED: &[(&str, &str)] = &[
     ("POST", "/memory/extract"),
     ("GET", "/memory/extract/{job_id}"),
     ("GET", "/extract/status"),
+    ("GET", "/usage"),
+    ("GET", "/metrics"),
+    ("GET", "/metrics/search-quality"),
+    ("GET", "/metrics/extraction-quality"),
+    ("GET", "/metrics/quality-summary"),
+    ("GET", "/metrics/failures"),
+    ("GET", "/metrics/problem-queries"),
+    ("GET", "/metrics/stale-memories"),
+    ("GET", "/metrics/graph-search"),
+    ("GET", "/metrics/temporal-search"),
+    ("POST", "/search/feedback"),
+    ("GET", "/search/feedback/history"),
+    ("DELETE", "/search/feedback/{feedback_id}"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -175,6 +219,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/memory/extract", post(extract::enqueue))
         .route("/memory/extract/{job_id}", get(extract::get_job))
         .route("/extract/status", get(extract::status));
+    let protected = usage_routes::routes(protected);
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
     let public = stubs(
