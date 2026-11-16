@@ -40,7 +40,7 @@ pid=""
 export QDRANT_COLLECTION="parity_usage_$$"
 cleanup() {
   local rc=$?
-  [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  [ -n "$pid" ] && { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; } || true
   curl -s -X DELETE "$QDRANT_URL/collections/${QDRANT_COLLECTION}_v2" > /dev/null || true
   if [ "$rc" -ne 0 ]; then
     for log in "$work"/*.log; do echo "== $log"; tail -n 50 "$log"; done >&2

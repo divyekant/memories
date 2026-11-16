@@ -102,4 +102,4 @@ start_rust live
 .venv/bin/python -m parity replay --base-url "http://127.0.0.1:$rs_port" --allow-nonempty \
   --input "$work/python.ndjson" --out "$work/rust.ndjson"
 stop
-.venv/bin/python -m parity diff "$work/python.ndjson" "$work/rust.ndjson"
+.venv/bin/python -m parity diff --intended "$work/python.ndjson" "$work/rust.ndjson"

@@ -43,6 +43,10 @@ def _error_cases():
         c("merge-dup-400", "POST", "/memory/merge",
           json={"ids": ["{{seed1.3}}", "{{seed1.3}}"], "merged_text": "Parity duplicate merge.",
                 "source": "learning/voltis/merged"}),
+        # Python v5.19.0 adds the merged record before the 400. This delete removes it, so the
+        # two servers hold the same records again (Python then reuses the ID of the record).
+        c("merge-dup-cleanup", "POST", "/memory/delete-by-source",
+          json={"source_pattern": "learning/voltis/merged", "skip_snapshot": True}),
         c("merge-cross-422", "POST", "/memory/merge",
           json={"ids": ["{{seed1.4}}", "{{seed1.5}}"], "merged_text": "x", "source": "project/p1/notes"}),
         c("link-422", "POST", "/memory/abc/link", route="POST /memory/{memory_id}/link", json={"type": 5}),
@@ -58,6 +62,12 @@ def _error_cases():
           json={"to_id": SEED2, "type": "caused_by"}),
         c("link-dup-400", "POST", f"/memory/{SEED1}/link", route="POST /memory/{memory_id}/link",
           json={"to_id": SEED2, "type": "caused_by"}),
+        c("patch-rw-out-of-scope", "PATCH", f"/memory/{SEED1}", route="PATCH /memory/{memory_id}",
+          json={"text": "x"}, key="rw"),
+        c("keys-update-principal-404", "PATCH", "/api/keys/no-principal_id-key", route="PATCH /api/keys/{key_id}",
+          json={"name": "x"}),
+        c("search-intent-overflow", "POST", "/search",
+          json={"query": "what happened 1000000000 days ago", "source_prefix": "nothing/here/"}),
         c("unlink-422", "DELETE", "/memory/1/link/abc", route="DELETE /memory/{memory_id}/link/{target_id}"),
         c("unlink-missing-500", "DELETE", "/memory/999999/link/1",
           route="DELETE /memory/{memory_id}/link/{target_id}"),
@@ -119,7 +129,7 @@ def _delete_cases():
         c("dbp-renamed-dry", "POST", "/memory/delete-by-prefix",
           json={"source_prefix": "claude-code/voltis/design", "dry_run": True}),
         c("dedup-dry", "POST", "/memory/deduplicate", json={"threshold": 0.95, "dry_run": True}),
-        # Python v5.19.0 deletes, then replies 500 (its audit call fails).
+        # Python v5.19.0 deletes, then replies 500 (its audit call fails). See parity/intended.json.
         c("dedup", "POST", "/memory/deduplicate", json={"threshold": 0.95, "dry_run": False}),
         _inventory(5),
     ]

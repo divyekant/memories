@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **Rust server fixes 10 Python defects that earlier tasks kept for parity.**
+  For example, a scoped key that writes out of its scope gets 403, not 500.
+  `POST /memory/deduplicate` returns its result and writes the audit row.
+  `POST /memory/merge` with a repeated ID writes nothing. The parity diff reads
+  the fixes from `parity/intended.json`. No change to the Python server or to
+  a client. Details: `docs/decisions/2026-11-16-rust-fixed-python-defects.md`.
 - **Keyword vector pass of the Rust server (rewrite task P3-4).** A background
   job writes all the keyword vectors again with the current average document
   length, when the average moves more than 25% from the last pass (at most
@@ -17,6 +23,13 @@
   server tries each webhook call up to 3 times. The image build needs
   `--build-context webui=webui`. No change to the Python server or to a
   client. Details: `docs/decisions/2026-11-16-rust-events-webhooks-ui.md`.
+- **Gate G4 part b live run (rewrite task P4-4).** `parity/extract_live.py`
+  and `server/scripts/gate_g4_live.sh` send 24 dry-run probes to a Python
+  server and a Rust server with the same live model. With `gpt-4o-mini`,
+  Python agrees with Rust on 0.648 of the probes and with itself on 0.639.
+  The 90% condition of the plan is below the model noise; a new condition
+  waits for dk. No change to the Python server or to a client. Details:
+  `docs/rust-rewrite/gates/G4.md`.
 - **Gate G4 part a in CI (rewrite task P4-4).** `parity/extract_corpus.py`
   sends the 105 transcripts of the extraction evals (the 20 texts of
   `eval/run_extraction_eval.py` and the scenario memories) through the
