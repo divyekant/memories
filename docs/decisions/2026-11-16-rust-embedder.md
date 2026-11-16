@@ -75,7 +75,8 @@ gate G5. The peak during a batch of 64 long texts (about 830 MB) is not. The
 attention tensors of a batch of 64 texts at 256 tokens cause the peak. The
 crate `tract` would need the same tensors, so it is not a fix. A smaller
 batch for long texts lowers the peak and gives the same vectors, because
-padding does not change a vector. That change waits for a decision from dk.
+padding does not change a vector. dk decided on 2026-11-16: keep batches of 64
+now, and decide on this change after the G5 load test.
 
 ## Differences from Python
 
