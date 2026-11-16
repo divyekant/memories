@@ -1206,6 +1206,7 @@ When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools
 | `MODEL_CACHE_DIR` | (unset; Docker image sets `/data/model-cache`) | Optional writable cache path for downloaded model files |
 | `PRELOADED_MODEL_CACHE_DIR` | (unset; Docker image sets `/opt/model-cache`) | Optional read-only cache to seed `MODEL_CACHE_DIR` when empty |
 | `MAX_BACKUPS` | `10` | Number of backups to keep |
+| `MEMORIES_PERSIST_DELAY_SEC` | `2` | Seconds to group writes before one metadata save and one BM25 rebuild. `0` saves and rebuilds on each write |
 | `MAX_EXTRACT_MESSAGE_CHARS` | `120000` | Max characters accepted by `/memory/extract` |
 | `EXTRACT_MAX_INFLIGHT` | `2` | Max concurrent extraction jobs |
 | `MEMORY_TRIM_ENABLED` | `true` | Run post-extract GC/allocator trim |

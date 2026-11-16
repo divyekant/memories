@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Fixed
+- **No more false "not reachable" alerts.** On 2026-11-15, 13 sessions said
+  that Memories was not reachable, but the server was up. The causes and the
+  fixes:
+  - **Server: saves and BM25 rebuilds are grouped.** Each write rewrote the
+    full `metadata.json` (88 MB at 117k memories) and rebuilt the full BM25
+    index, which took several seconds. A background thread now does one save
+    and one rebuild at most every `MEMORIES_PERSIST_DELAY_SEC` seconds
+    (default 2). The save uses compact JSON, which the C encoder writes about
+    4 times faster. Shutdown and each backup write all pending work first.
+    A new memory is in vector search at once and in BM25 search after the
+    delay. Set `MEMORIES_PERSIST_DELAY_SEC=0` to keep the old behavior.
+  - **Hooks: a timeout means slow, not down.** Only a failed connection, a TLS
+    failure, or an HTTP 5xx opens the breaker. A timeout or a 4xx gives empty
+    recall for that prompt, and the prompt hook says that the backend is slow.
+    The prompt hook also skips its fallback search after a slow or failed
+    search.
+  - **Hooks: each session start does its own health check**, also when
+    another session opened the breaker. A health probe that times out counts
+    as slow, not as "not reachable".
+  - **Hooks: one batch search per prompt.** The prompt hook used the batch
+    endpoint only for 10 minutes after the session start, then sent one
+    request for each search. It now uses the cached backend version at any
+    age. An old backend still answers 404, and the hook then sends single
+    searches.
+  - **Hooks: extract retries on 429 and 503.** When the extract queue was
+    full, the hook dropped the job. It now retries in the background after 5,
+    15, 45 and 120 seconds (`MEMORIES_EXTRACT_RETRY_DELAYS`).
+  These hook changes apply to the Claude Code and the Codex hooks.
+
 ### Added
 - **Release workflow.** `.github/workflows/release.yml` tags a commit on
   `main`, creates the GitHub release from its CHANGELOG section, and starts

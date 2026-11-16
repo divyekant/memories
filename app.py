@@ -1332,7 +1332,7 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(*extract_workers, return_exceptions=True)
         extract_workers.clear()
     logger.info("Shutting down — saving index...")
-    memory.save()
+    memory.close()
     logger.info("Shutdown complete.")
 
 

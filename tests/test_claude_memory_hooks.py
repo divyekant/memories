@@ -4150,7 +4150,7 @@ def test_codex_memory_hooks_preexisting_open_breaker_does_not_crash(tmp_path: Pa
     output = json.loads(result.stdout)
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "not reachable" in ctx or "Memory Playbook" in ctx
-    assert calls == []
+    assert any(str(c["url"]).endswith("/health") for c in calls)
 
 
 def test_codex_memory_hooks_per_backend_breaker_isolation(tmp_path: Path) -> None:
@@ -5040,9 +5040,9 @@ def test_memory_hooks_preexisting_open_breaker_does_not_crash(tmp_path: Path) ->
     output = json.loads(result.stdout)
     ctx = output["hookSpecificOutput"]["additionalContext"]
     assert "not reachable" in ctx or "Memory Playbook" in ctx
-    # The already-open breaker must mean no curl calls were attempted for
-    # that (fast-skipped) backend.
-    assert calls == []
+    # A session start probes on its own, even when another session opened
+    # the breaker.
+    assert any(str(c["url"]).endswith("/health") for c in calls)
 
 
 def test_memory_hooks_slow_backend_stays_within_session_start_budget(tmp_path: Path) -> None:
@@ -5966,50 +5966,81 @@ def _codex_lib_eval(expr: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_breaker_trip_decision_distinguishes_starvation_from_a_hanging_backend() -> None:
-    """A curl timeout (exit 28) is evidence about the backend only if the
-    backend got substantially the time we meant to give it.
-
-    Measured against a real backend, /search takes 1.2-2.1s while the
-    minimum-call floor is 0.3s, so a SessionStart recall's tail calls are
-    issued with budgets that cannot succeed; tripping on those marks a healthy
-    backend down and the next session reports "not reachable" without probing.
-
-    But "starved" must mean materially less, not merely less: health and
-    version probes run before search, so overhead trims a 4s cap to ~3.9s. A
-    backend that hangs through 3.9 of 4 seconds IS unhealthy, and failing to
-    trip there makes every later session re-pay the full timeout.
-    """
-    cap = 4
-
-    # Got most of the intended cap and still timed out -> real evidence.
-    for budget in ("4", "3.9", "3.0"):  # 3.0 is the 0.75 boundary, inclusive
-        r = _lib_eval(f'_should_trip_breaker 28 {budget} {cap} && echo TRIP || echo NOTRIP')
-        assert r.stdout.strip() == "TRIP", f"budget={budget}: {r.stderr}"
-
-    # Materially starved -> our deadline, not their downtime.
-    for budget in ("2.9", "1.0", "0.54"):
-        r = _lib_eval(f'_should_trip_breaker 28 {budget} {cap} && echo TRIP || echo NOTRIP')
+@pytest.mark.parametrize("lib_eval", ["claude", "codex"])
+def test_timeout_never_trips_the_breaker(lib_eval: str) -> None:
+    """A timeout means slow, not down. Before, a 4 s search timeout during a
+    server save opened a 60 s breaker shared by every session, and new
+    sessions then reported "not reachable" for a healthy server."""
+    run = _lib_eval if lib_eval == "claude" else _codex_lib_eval
+    for budget in ("4", "3.0", "0.54"):
+        r = run(f'_should_trip_breaker 28 {budget} 4 && echo TRIP || echo NOTRIP')
         assert r.stdout.strip() == "NOTRIP", f"budget={budget}: {r.stderr}"
-
-    # Non-timeout failures say something real regardless of budget.
-    for rc in (7, 22, 52):
-        r = _lib_eval(f'_should_trip_breaker {rc} 0.54 {cap} && echo TRIP || echo NOTRIP')
+    for rc in (6, 7, 22, 35, 52):
+        r = run(f'_should_trip_breaker {rc} 4 4 && echo TRIP || echo NOTRIP')
         assert r.stdout.strip() == "TRIP", f"rc={rc}: {r.stderr}"
 
 
-def test_codex_breaker_timeout_budget_is_materially_short_not_trip() -> None:
-    cap = 4
-    for budget in ("4", "3.9", "3.0"):
-        result = _codex_lib_eval(
-            f'_should_trip_breaker 28 {budget} {cap} && echo TRIP || echo NOTRIP'
-        )
-        assert result.stdout.strip() == "TRIP", f"budget={budget}: {result.stderr}"
-    for budget in ("2.9", "1.0", "0.54"):
-        result = _codex_lib_eval(
-            f'_should_trip_breaker 28 {budget} {cap} && echo TRIP || echo NOTRIP'
-        )
-        assert result.stdout.strip() == "NOTRIP", f"budget={budget}: {result.stderr}"
+def test_session_start_health_timeout_is_not_reported_unreachable(tmp_path: Path) -> None:
+    responses = [{"url_suffix": "/health", "delay_seconds": 30}]
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+    result, _, home_dir = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses=responses)
+
+    assert result.returncode == 0, result.stderr
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "not reachable" not in ctx
+    assert not (home_dir / ".config" / "memories" / "backend-down").exists()
+
+
+def test_session_start_connection_failure_is_reported_unreachable(tmp_path: Path) -> None:
+    responses = [{"url_suffix": "/health", "fail": True}]
+    payload = {"cwd": "/Users/example/memories", "prompt": "hello"}
+    result, _, home_dir = _run_hook(RECALL_SCRIPT, tmp_path, payload, responses=responses)
+
+    assert result.returncode == 0, result.stderr
+    assert "not reachable" in json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert (home_dir / ".config" / "memories" / "backend-down").exists()
+
+
+def test_prompt_search_timeout_reports_slow_not_down(tmp_path: Path) -> None:
+    # The version cache is older than its 10 minute probe window: the prompt
+    # hook must still send one batch, not one request per search.
+    cache = tmp_path / "backend-version.json"
+    cache.write_text(json.dumps({"url": "http://127.0.0.1:9999", "version": "5.18.0", "checked_at": int(time.time()) - 7200}))
+    responses = [{"url_suffix": "/search/batch", "delay_seconds": 30}]
+    payload = {"cwd": "/Users/example/memories", "prompt": "explain how the extraction worker retries failed jobs"}
+    result, calls, home_dir = _run_hook(
+        QUERY_SCRIPT, tmp_path, payload, responses=responses,
+        extra_env={"MEMORIES_BACKEND_VERSION_CACHE": str(cache)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert [str(c["url"]).endswith("/search/batch") for c in calls] == [True], calls
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "slow" in ctx and "unreachable" not in ctx
+    assert not (home_dir / ".config" / "memories" / "backend-down").exists()
+
+
+@pytest.mark.parametrize("hooks_dir", [HOOKS_DIR, CODEX_HOOKS_DIR], ids=["claude", "codex"])
+def test_extract_retries_in_background_when_queue_is_full(tmp_path: Path, hooks_dir: Path) -> None:
+    responses = [{"url_suffix": "/memory/extract", "status": 429, "response": {"detail": "queue full"}}]
+    payload = {"cwd": "/Users/example/memories", "last_assistant_message": "Decision: retry extract jobs on 429."}
+    result, _, _ = _run_hook(
+        hooks_dir / "memory-extract.sh", tmp_path, payload, responses=responses,
+        extra_env={"MEMORIES_EXTRACT_RETRY_DELAYS": "0 0"},
+    )
+    assert result.returncode == 0, result.stderr
+
+    calls_file = tmp_path / "curl-calls.jsonl"
+
+    def extract_calls() -> int:
+        if not calls_file.exists():
+            return 0
+        return sum(1 for line in calls_file.read_text().splitlines() if "/memory/extract" in line)
+
+    deadline = time.time() + 10
+    while extract_calls() < 3 and time.time() < deadline:
+        time.sleep(0.1)
+    assert extract_calls() == 3  # the first try plus 2 retries
 
 
 def test_codex_breaker_names_with_punctuation_are_collision_free() -> None:

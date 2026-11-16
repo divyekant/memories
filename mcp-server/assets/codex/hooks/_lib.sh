@@ -1162,20 +1162,11 @@ _breaker_reset() {
   return 0
 }
 
-# A timeout is evidence about the backend only when it received a fair share
-# of the requested per-call budget. Shrinking deadline budgets must not trip a
-# healthy backend's breaker.
-_MEMORIES_BREAKER_FAIR_BUDGET_RATIO="${MEMORIES_BREAKER_FAIR_BUDGET_RATIO:-0.75}"
-
+# A timeout (curl exit 28) means the backend is slow, not down. Only a failed
+# connection, a TLS failure, or an HTTP error trips the breaker. The budget and
+# cap arguments are kept for callers and are not used.
 _should_trip_breaker() {
-  local rc="$1" budget="$2" cap="$3"
-  [ "$rc" = "28" ] || return 0
-  local fair
-  fair=$(jq -n --argjson b "$budget" --argjson c "$cap" \
-    --argjson r "$_MEMORIES_BREAKER_FAIR_BUDGET_RATIO" \
-    '$b >= ($c * $r)' 2>/dev/null) || fair="true"
-  [ "$fair" = "true" ] && return 0
-  return 1
+  [ "$1" != "28" ]
 }
 
 # Health check probes every routed search backend in parallel and leaves
@@ -1208,13 +1199,16 @@ _health_check() {
     backend_idx=$((backend_idx + 1))
     url=$(printf '%s' "$backend" | jq -r '.url')
     name=$(printf '%s' "$backend" | jq -r '.name')
-    if _breaker_open "$name"; then
-      printf '%s (%s)' "$name" "$url" > "$tmpdir/down_${backend_idx}"
-      continue
-    fi
+    # Probe even when the breaker is open: a session start must report what
+    # it measured, not a trip that another session made.
     (
-      if curl -sf --max-time "$probe_budget" "$url/health" >/dev/null 2>&1; then
+      curl -sf --max-time "$probe_budget" "$url/health" >/dev/null 2>&1
+      probe_rc=$?
+      if [ "$probe_rc" -eq 0 ]; then
         _breaker_reset "$name"
+        : > "$tmpdir/up_${backend_idx}"
+      elif ! _should_trip_breaker "$probe_rc"; then
+        _log_warn "Memories backend '$name' health probe timed out; treating it as slow"
         : > "$tmpdir/up_${backend_idx}"
       else
         _breaker_trip "$name"
@@ -1596,8 +1590,7 @@ _search_memories_multi() {
 
     local call_budget
     if ! call_budget=$(_hook_call_budget 4); then
-      MEMORIES_BACKEND_DOWN=1
-      echo '{"results":[],"count":0,"backend_down":true}'
+      echo '{"results":[],"count":0,"backend_down":false}'
       return
     fi
 
@@ -1627,18 +1620,24 @@ _search_memories_multi() {
           jq -nc --arg name "$name" --arg url "$url" --arg api_key_env "$api_key_env" --argjson env_backed "$env_backed" \
             '{results: [], count: 0, backend_down: false, auth_failed: true, auth_failed_backends: [{name: $name, url: $url, api_key_env: $api_key_env, env_backed: $env_backed}]}'
           ;;
-        *)
+        5??)
           _breaker_trip "$name"
           MEMORIES_BACKEND_DOWN=1
           echo '{"results":[],"count":0,"backend_down":true}'
           ;;
+        *)
+          # Reachable, but the request failed (for example 429 when busy).
+          _log_warn "Search on backend '$name' returned HTTP $status"
+          echo '{"results":[],"count":0,"backend_down":false}'
+          ;;
       esac
-    else
-      if _should_trip_breaker "$curl_rc" "$call_budget" 4; then
-        _breaker_trip "$name"
-      fi
+    elif _should_trip_breaker "$curl_rc"; then
+      _breaker_trip "$name"
       MEMORIES_BACKEND_DOWN=1
       echo '{"results":[],"count":0,"backend_down":true}'
+    else
+      # Timed out: slow, not down.
+      echo '{"results":[],"count":0,"backend_down":false}'
     fi
     return
   fi
@@ -1799,9 +1798,45 @@ _extract_multi() {
     url=$(echo "$backend" | jq -r '.url')
     key=$(echo "$backend" | jq -r '.api_key')
     name=$(echo "$backend" | jq -r '.name')
-    curl -sf --max-time 30 -X POST "$url/memory/extract" \
-      -H "Content-Type: application/json" \
-      -H "X-API-Key: $key" \
-      -d "$body" > /dev/null 2>&1 || _log_error "Extract failed for backend $name"
+    local status
+    status=$(_extract_post "$url" "$key" "$body" 30)
+    case "$status" in
+      2??) ;;
+      429|503)
+        # The extract queue is full. Retry later in the background, so the
+        # hook does not hold the session and the job is not dropped.
+        _log_warn "Extract queue full on backend $name (HTTP $status); retrying in the background"
+        _extract_retry_later "$url" "$key" "$body" "$name" </dev/null >/dev/null 2>&1 &
+        disown 2>/dev/null || true
+        ;;
+      *) _log_error "Extract failed for backend $name (HTTP $status)" ;;
+    esac
   done
+}
+
+# POST /memory/extract once. Prints the HTTP status, or 000 when no response.
+_extract_post() {
+  local url="$1" key="$2" body="$3" max_time="$4" raw
+  raw=$(curl -s --max-time "$max_time" -w '\n%{http_code}' -X POST "$url/memory/extract" \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: $key" \
+    -d "$body" 2>/dev/null) || true
+  printf '%s' "${raw##*$'\n'}"
+}
+
+_MEMORIES_EXTRACT_RETRY_DELAYS="${MEMORIES_EXTRACT_RETRY_DELAYS:-5 15 45 120}"
+
+_extract_retry_later() {
+  local url="$1" key="$2" body="$3" name="$4" delay status=""
+  for delay in $_MEMORIES_EXTRACT_RETRY_DELAYS; do
+    sleep "$delay"
+    status=$(_extract_post "$url" "$key" "$body" 30)
+    case "$status" in
+      2??) _log_info "Extract retry accepted by backend $name"; return 0 ;;
+      429|503) ;;
+      *) break ;;
+    esac
+  done
+  _log_error "Extract failed for backend $name after retries (HTTP $status)"
+  return 1
 }
