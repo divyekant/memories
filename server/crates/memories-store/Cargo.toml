@@ -9,9 +9,12 @@ publish.workspace = true
 [dependencies]
 memories-types.workspace = true
 qdrant-client.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
 
 [dev-dependencies]
 tokio.workspace = true

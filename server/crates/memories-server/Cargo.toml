@@ -20,6 +20,7 @@ reqwest.workspace = true
 rustix = { workspace = true, features = ["fs"] }
 rusqlite.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 sha2.workspace = true
 speedate.workspace = true
 strum.workspace = true
@@ -32,6 +33,7 @@ tracing-subscriber.workspace = true
 qdrant-client.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
 

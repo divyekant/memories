@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod audit;
 pub mod auth;
+pub mod backup;
 pub mod bulk;
 pub mod error;
 pub mod events;
@@ -66,6 +67,8 @@ pub struct Config {
     pub forwarded_allow_ips: String,
     /// `AUDIT_LOG`: write and read `audit.db`.
     pub audit_log: bool,
+    /// `MAX_BACKUPS`: the newest backup folders that stay (see `backup::survivors`).
+    pub max_backups: usize,
     /// `USAGE_TRACKING`: write and read `usage.db`.
     pub usage_tracking: bool,
     /// `METRICS_TREND_SAMPLES`: the memory count samples that `GET /metrics` keeps.
@@ -98,6 +101,8 @@ impl Config {
             metrics_latency_samples: samples as usize,
             forwarded_allow_ips: config::string("FORWARDED_ALLOW_IPS", "127.0.0.1"),
             audit_log: config::parse_bool(var("AUDIT_LOG").as_deref(), false),
+            max_backups: config::int_strict("MAX_BACKUPS", var("MAX_BACKUPS").as_deref(), 10)?
+                .max(0) as usize,
             usage_tracking: config::parse_bool(var("USAGE_TRACKING").as_deref(), false),
             metrics_trend_samples: trend as usize,
             ui_dir: config::string("UI_DIR", "/app/webui").into(),
@@ -137,6 +142,7 @@ pub struct AppState {
     pub ui_dir: PathBuf,
     /// True when the shutdown starts: the event streams end.
     pub shutdown: tokio::sync::watch::Sender<bool>,
+    pub max_backups: usize,
     /// `_missed_counts`: `POST /memory/missed` calls of each source since the start.
     pub missed: Mutex<HashMap<String, u64>>,
     /// Set at shutdown: the scheduled job stops between clusters and deletes.
@@ -192,6 +198,7 @@ impl AppState {
             webhooks,
             ui_dir: cfg.ui_dir.clone(),
             shutdown: tokio::sync::watch::channel(false).0,
+            max_backups: cfg.max_backups,
             missed: Mutex::default(),
             stopping: AtomicBool::new(false),
             jobs: tokio::sync::Mutex::new(()),
@@ -253,6 +260,14 @@ const SERVED: &[(&str, &str)] = &[
     ("POST", "/memory/extract/commit"),
     ("GET", "/memory/extract/{job_id}"),
     ("GET", "/extract/status"),
+    ("GET", "/backups"),
+    ("POST", "/backup"),
+    ("POST", "/restore"),
+    ("GET", "/snapshots"),
+    ("POST", "/snapshots"),
+    ("POST", "/snapshots/{name}/restore"),
+    ("GET", "/export"),
+    ("POST", "/import"),
     ("GET", "/extraction/profiles"),
     ("GET", "/extraction/profiles/{*prefix}"),
     ("PUT", "/extraction/profiles/{*prefix}"),
@@ -379,6 +394,16 @@ pub fn app(state: Arc<AppState>) -> Router {
             post(maintenance::embedder_reload),
         )
         .route("/index/build", post(maintenance::index_build))
+        .route("/backups", get(backup::list_backups))
+        .route("/backup", post(backup::create))
+        .route("/restore", post(backup::restore))
+        .route(
+            "/snapshots",
+            get(backup::list_snapshots).post(backup::create_snapshot),
+        )
+        .route("/snapshots/{name}/restore", post(backup::restore_snapshot))
+        .route("/export", get(backup::export))
+        .route("/import", post(backup::import))
         .route("/events/stream", get(events::stream))
         .route("/events/recent", get(events::recent))
         .route(

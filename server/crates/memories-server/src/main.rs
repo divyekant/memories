@@ -416,6 +416,7 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
         version = memories_server::VERSION,
         "memories-server started"
     );
+    tokio::spawn(memories_server::backup::schedule(state.clone()));
     if let Some(cfg) = migrate_first {
         state.migrating.store(true, Ordering::Release);
         let st = state.clone();

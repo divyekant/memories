@@ -165,6 +165,28 @@ fn avgdl(sum: i64, count: i64) -> f64 {
     }
 }
 
+/// Raise the ID floor above the highest stored ID, and count the document
+/// lengths of `state.db` again (one scroll).
+async fn recount(engine: &Engine) -> Result<()> {
+    if let Some(max) = engine.store.max_id().await? {
+        engine.state.raise_id_floor(max + 1)?;
+    }
+    let (mut sum, mut n, mut offset) = (0u64, 0u64, None);
+    loop {
+        let (records, next) = engine.store.scroll(None, offset, 1_000).await?;
+        for r in &records {
+            sum += doc_tokens(text_of(r).as_deref().unwrap_or("")).len() as u64;
+            n += 1;
+        }
+        match next {
+            Some(o) => offset = Some(o),
+            None => break,
+        }
+    }
+    engine.state.set_doc_lengths(sum, n)?;
+    Ok(())
+}
+
 fn not_found(id: i64) -> WriteError {
     WriteError::NotFound(format!("Memory ID {id} not found"))
 }
@@ -178,24 +200,9 @@ impl Writer {
         data_dir: PathBuf,
         identical_threshold: f64,
     ) -> Result<Self> {
-        if let Some(max) = engine.store.max_id().await? {
-            engine.state.raise_id_floor(max + 1)?;
-        }
         // A crash between a point write and the sum update can leave the sums
         // wrong, so count them again at each start (one scroll).
-        let (mut sum, mut n, mut offset) = (0u64, 0u64, None);
-        loop {
-            let (records, next) = engine.store.scroll(None, offset, 1_000).await?;
-            for r in &records {
-                sum += doc_tokens(text_of(r).as_deref().unwrap_or("")).len() as u64;
-                n += 1;
-            }
-            match next {
-                Some(o) => offset = Some(o),
-                None => break,
-            }
-        }
-        engine.state.set_doc_lengths(sum, n)?;
+        recount(&engine).await?;
         Ok(Self {
             engine,
             events: Arc::default(),
@@ -207,6 +214,25 @@ impl Writer {
 
     fn e(&self) -> &Engine {
         &self.engine
+    }
+
+    /// The write lock. While a caller holds it, the caller must not call a
+    /// write method of this writer: each one takes the lock.
+    pub async fn lock_writes(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.lock.lock().await
+    }
+
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+
+    /// Call with the lock held, after the collection changed outside the
+    /// write flow (a restore). Loads the catalog, counts the document lengths
+    /// again and raises the ID floor. Returns the record count.
+    pub async fn reload(&self) -> Result<usize> {
+        let n = self.e().load_catalog().await?;
+        recount(self.e()).await?;
+        Ok(n)
     }
 
     /// `is_novel(text, threshold, source_exact=...)`: a vector search for the

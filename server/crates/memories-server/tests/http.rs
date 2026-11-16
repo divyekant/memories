@@ -210,7 +210,7 @@ async fn not_found_method_not_allowed_and_not_ported() {
         assert_eq!(r.headers[header::ALLOW], "POST");
     }
 
-    let r = send(&st, get("/backups", Some(ADMIN))).await;
+    let r = send(&st, get("/sync/status", Some(ADMIN))).await;
     assert_eq!(r.status, StatusCode::NOT_IMPLEMENTED);
     assert_eq!(
         r.json(),
