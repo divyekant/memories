@@ -26,7 +26,8 @@ collection="parity_pipeline_$$"
 pid=""
 cleanup() {
   local rc=$?
-  [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  # Wait for the server to stop, so that the next run finds the port free.
+  [ -n "$pid" ] && { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; } || true
   if [ "$rc" -ne 0 ]; then
     for log in "$work"/*.log; do echo "== $log"; tail -n 80 "$log"; done >&2
   fi
