@@ -34,6 +34,47 @@ curl http://localhost:8000/health
 The server reads the port from `--port` or from the environment variable
 `PORT`. The default is 8000.
 
+## Configuration
+
+The server reads the environment variables of the Python server, with the
+same names and the same defaults. `crates/memories-types/src/config.rs` lists
+each variable with one of these states:
+
+| State | Effect at start |
+|---|---|
+| Supported | The server uses the value. |
+| Not used | The server starts. If the variable is set, the server logs one line. |
+| Refused | The server stops with a message. This applies to a value that the Python server also cannot start with, for example `AUTH_RATE_LIMIT=abc`. |
+
+## Auth
+
+- Send the key in the header `X-API-Key`. An empty header is the same as no
+  header.
+- `API_KEY` is the admin key. If `API_KEY` is empty, a request with no key
+  has admin access.
+- Managed keys are in `$DATA_DIR/keys.db`, the same file and schema as the
+  Python server. The server stores the SHA-256 hash of each key.
+- The roles are `admin`, `read-write` and `read-only`. A prefix such as
+  `codex/` matches `codex` and `codex/...`, but not `codex-other`.
+- After `AUTH_RATE_LIMIT` (default 50) failed attempts in 60 s, a client gets
+  HTTP 429. The client address follows uvicorn: a request from an address in
+  `FORWARDED_ALLOW_IPS` (default `127.0.0.1`) uses `X-Forwarded-For`.
+- The server writes `last_used_at` and `usage_count` of the managed keys
+  every 5 s and at shutdown, not at each request.
+
+A Python route that this server does not have yet gives HTTP 501. The route
+table is `ROUTES` in `crates/memories-server/src/shell.rs`.
+
+## Parity check
+
+The script below replays the golden cases of task P1-1 against the Rust
+server. The Python server first writes `keys.db`, then the Rust server reads
+it. Run it from the repository root after `uv sync --frozen`:
+
+```bash
+server/scripts/parity_auth.sh server/target/debug/memories-server
+```
+
 ## Build the image
 
 ```bash
