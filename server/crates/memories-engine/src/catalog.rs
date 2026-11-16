@@ -16,6 +16,8 @@ use crate::records::truthy;
 pub struct Entry {
     /// `str(meta.get("source", ""))`.
     pub source: String,
+    /// The stored source is a string or absent (Python string methods work on it).
+    pub source_is_str: bool,
     /// `meta.get("archived")` is truthy.
     pub archived: bool,
     /// `(to_id, type)` of each link, in stored order.
@@ -24,6 +26,11 @@ pub struct Entry {
 
 impl Entry {
     pub fn of(record: &Record) -> Self {
+        let source_is_str = record.source.is_some()
+            || matches!(
+                record.extra.get("source"),
+                None | Some(serde_json::Value::String(_))
+            );
         let source = match &record.source {
             Some(s) => s.clone(),
             None => match record.extra.get("source") {
@@ -44,6 +51,7 @@ impl Entry {
             .collect();
         Self {
             source,
+            source_is_str,
             archived,
             links,
         }

@@ -174,9 +174,10 @@ def substitute(obj, vars_):
 def _send(client, req):
     try:
         return _send_once(client, req)
-    except httpx.RemoteProtocolError:
+    except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError):
         # Uvicorn closes the connection after an error that no handler catches. The next
-        # request on that kept-alive connection was not read, so send it again once.
+        # request on that kept-alive connection was not read (the server answers it with a
+        # close or a reset), so send it again once on a new connection.
         return _send_once(client, req)
 
 

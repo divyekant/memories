@@ -441,6 +441,10 @@ pub async fn rename_folder(
     let trusted = trusted(&auth, &headers);
     let w = writer(&state)?;
     let child = format!("{old}/");
+    // Python raises on a non-string source (`startswith` of None): plain 500.
+    if w.engine.catalog().iter().any(|(_, e)| !e.source_is_str) {
+        return Err(internal_error());
+    }
     let targets: Vec<(i64, String, String)> = w
         .engine
         .catalog()

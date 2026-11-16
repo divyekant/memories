@@ -169,6 +169,10 @@ impl Writer {
         reason: &str,
     ) -> Result<Value> {
         let _g = self.lock.lock().await;
+        if self.e().catalog().iter().any(|(_, e)| !e.source_is_str) {
+            // Python: `pattern in None` raises, so nothing is deleted (HTTP 500).
+            return Err(invalid("a record has a source that is not a string"));
+        }
         let candidates: Vec<u64> = self
             .e()
             .catalog()
@@ -405,8 +409,11 @@ impl Writer {
             if max > 0 && resolved.len() + orphaned.len() >= max {
                 break;
             }
-            let other_id = cw
+            // `12.0 in _id_map` is true in Python.
+            let as_id = cw
                 .as_i64()
+                .or_else(|| cw.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64));
+            let other_id = as_id
                 .filter(|&id| self.e().catalog().contains(id))
                 .map(|id| id as u64);
             if let Some(o) = other_id
@@ -471,9 +478,17 @@ impl Writer {
                 loser.superseded_by = Some(winner_id as i64);
                 loser.extra.remove("superseded_by");
                 cache.insert(loser_id, loser);
+                dirty.insert(loser_id);
                 let winner = cache.get_mut(&winner_id).expect("in cache");
-                check_link(winner_id as i64, loser_id as i64, "supersedes")?;
-                push_link(winner, loser_id as i64, "supersedes")?;
+                let link = check_link(winner_id as i64, loser_id as i64, "supersedes")
+                    .and_then(|_| push_link(winner, loser_id as i64, "supersedes"));
+                if let Err(e) = link {
+                    // Python archives the loser before `add_link` fails, and keeps the
+                    // earlier changes: store them, so that the next call goes on.
+                    self.store_all(&cache, &dirty).await?;
+                    return Err(e);
+                }
+                let winner = cache.get_mut(&winner_id).expect("in cache");
                 let source = source_of(winner);
                 set_field(
                     winner,
@@ -488,17 +503,23 @@ impl Writer {
             }
             resolved.push(json!({"kept": winner_id, "archived": loser_id, "flagger": mid}));
         }
-        for id in &dirty {
-            let r = &cache[id];
-            self.e().store.replace_payload(r).await?;
-            self.e().catalog_mut().put(r);
-        }
+        self.store_all(&cache, &dirty).await?;
         Ok(json!({
             "dry_run": dry_run, "policy": policy,
             "resolved": resolved, "needs_review": review, "orphaned": orphaned,
             "resolved_count": resolved.len(), "needs_review_count": review.len(),
             "orphaned_count": orphaned.len(),
         }))
+    }
+
+    /// Writes the changed records of `resolve_conflicts`.
+    async fn store_all(&self, cache: &BTreeMap<u64, Record>, dirty: &BTreeSet<u64>) -> Result<()> {
+        for id in dirty {
+            let r = &cache[id];
+            self.e().store.replace_payload(r).await?;
+            self.e().catalog_mut().put(r);
+        }
+        Ok(())
     }
 
     // ---- deduplicate -----------------------------------------------------------
@@ -566,7 +587,13 @@ impl Writer {
             )
         };
         if dry_run {
-            let remove: HashSet<i64> = pairs.iter().map(|p| pair_ids(p).1).collect();
+            let remove: HashSet<i64> = pairs
+                .iter()
+                .map(|p| {
+                    let (x, y) = pair_ids(p);
+                    x.max(y)
+                })
+                .collect();
             let shown: Vec<&Value> = pairs.iter().take(20).collect();
             return Ok(
                 json!({"duplicate_pairs": pairs.len(), "would_remove": remove.len(),
@@ -586,12 +613,14 @@ impl Writer {
                 })
                 .collect()
         };
-        let remove: BTreeSet<u64> = pairs.iter().map(|&(_, b)| b as u64).collect();
+        let remove: BTreeSet<u64> = pairs.iter().map(|&(a, b)| a.max(b) as u64).collect();
         if remove.is_empty() {
             return Ok(json!({"duplicate_pairs": 0, "removed": 0,
                              "remaining": self.e().count(), "dry_run": false}));
         }
         let ids: Vec<u64> = remove.into_iter().collect();
+        // Python writes `_backup("pre_dedup")` first; a snapshot is the recovery point here.
+        self.snapshot("pre_dedup").await?;
         let records = self.records(&ids).await?;
         self.remove(&records).await?;
         Ok(json!({"duplicate_pairs": pairs.len(), "removed": ids.len(),
