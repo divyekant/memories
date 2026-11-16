@@ -33,6 +33,8 @@
 # The old collection must exist in QDRANT_URL, and config.json must name it in
 # qdrant_collection. The script copies the directory, and deletes the old
 # collection and <old collection>_v2 at the end. G5_EMBED_COUNT=0 skips step 3.
+# CAUTION: Point QDRANT_URL only at a test Qdrant server. The cleanup deletes
+# G5_COLLECTION, so a production server would lose its collection.
 set -euo pipefail
 rust_bin="$(realpath "$1")"
 out="$(realpath -m "$2")"
@@ -182,30 +184,54 @@ queue="$(curl -s "$url/extract/status" -H "X-API-Key: $key")"
 kill -9 "$srv"
 srv=""
 step "kill -9 with this queue: $queue"
+rc=0
+# The stop must hit queued jobs, or the job check proves nothing.
+depth="$(echo "$queue" | $py -c 'import json, sys; print(json.load(sys.stdin).get("queue_depth", 0))')"
+if [ "$depth" -eq 0 ]; then
+  step "FAIL: no job waited in the queue at the stop"
+  rc=1
+fi
 wait "$lp" || true
 start_server 3
-rc=0
 $py -m parity.g5 jobs-check "$url" "$key" "$work/jobs.txt" --timeout 1800 > "$out/jobs-check.json" || rc=1
 step "jobs-check: $(cat "$out/jobs-check.json")"
 stop_server
 run_sampled verify "$rust_bin" verify --sample 1000 || true
 # Search hits get last_reinforced_at (as in Python), so verify lists them as
-# field mismatches. The check reads the listed records and allows only that field.
+# field mismatches. verify names only 20 of them, so the check reads each
+# record of the collection and allows only a change of that field.
 $py - "$out/verify.json" "$DATA_DIR/metadata.json" "$QDRANT_URL/collections/${coll}_v2" <<'EOF' | tee -a "$out/steps.txt" || rc=1
 import json, sys, httpx
 v = json.load(open(sys.argv[1]))
-ids = set(v.get("field_mismatch_ids") or [])
-legacy = {r["id"]: r for r in json.load(open(sys.argv[2])) if r["id"] in ids}
-pts = httpx.post(f"{sys.argv[3]}/points", json={"ids": sorted(ids), "with_payload": True}).json()["result"]
-fields = set()
-for p in pts:
-    old, new = legacy[p["id"]], dict(p["payload"], id=p["id"])
-    fields |= {k for k in old.keys() | new.keys() if old.get(k) != new.get(k)}
-bad = {k: v[k] for k in ("missing_count", "vector_mismatch_count") if v.get(k)}
-if fields - {"last_reinforced_at"}:
-    bad["changed_fields"] = sorted(fields)
-print(json.dumps({"verify_ok": v.get("ok"), "extra": v.get("extra_count"),
-                  "field_mismatch": v.get("field_mismatch_count"), "fields_in_listed": sorted(fields), "problems": bad}))
+legacy = {r["id"]: r for r in json.load(open(sys.argv[2]))}
+bad = {k: v.get(k) for k in ("error",) if v.get(k)}
+for k in ("missing_count", "field_mismatch_count", "vector_mismatch_count", "extra_count", "collection_count"):
+    if not isinstance(v.get(k), int):
+        bad[f"no_{k}"] = True
+bad.update({k: v[k] for k in ("missing_count", "vector_mismatch_count") if v.get(k)})
+if v.get("collection_count") != len(legacy) - (v.get("missing_count") or 0) + (v.get("extra_count") or 0):
+    bad["count"] = [v.get("collection_count"), len(legacy), v.get("extra_count")]
+fields, changed, offset = {}, 0, None
+with httpx.Client(timeout=120) as c:
+    while True:
+        r = c.post(f"{sys.argv[3]}/points/scroll",
+                   json={"limit": 2000, "offset": offset, "with_payload": True, "with_vector": False}).json()["result"]
+        for p in r["points"]:
+            old = legacy.get(p["id"])
+            if old is None:
+                continue
+            new = dict(p["payload"], id=p["id"])
+            diff = {k for k in old.keys() | new.keys() if old.get(k) != new.get(k)}
+            changed += bool(diff)
+            for k in diff:
+                fields[k] = fields.get(k, 0) + 1
+        offset = r.get("next_page_offset")
+        if offset is None:
+            break
+if set(fields) - {"last_reinforced_at"}:
+    bad["changed_fields"] = fields
+print(json.dumps({"verify_ok": v.get("ok"), "extra": v.get("extra_count"), "field_mismatch": v.get("field_mismatch_count"),
+                  "records_changed": changed, "fields_changed": fields, "problems": bad}))
 sys.exit(1 if bad else 0)
 EOF
 step "total: $((SECONDS - t0)) s, rc $rc"
