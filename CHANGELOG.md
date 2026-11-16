@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **Parity kit for the Rust rewrite (`parity/`).** The kit sends a fixed set
+  of requests to a server, records the replies, and compares the replies of
+  two servers. It has 225 cases: a seed corpus, each of the 93 routes, and
+  each wire rule of the clients. The golden captures come from the Python
+  server. A new CI job replays them against a second Python server and
+  fails on a difference.
+- **Capture middleware.** If `PARITY_CAPTURE_DIR` is set, the server writes
+  each request and its reply to an NDJSON file in that directory. The default
+  is off. The file holds memory text. Key headers are redacted.
 - **Rust server workspace (rewrite task P0-4).** `server/` holds the cargo
   workspace of the Rust server, with six crates, a pinned toolchain, a
   committed `Cargo.lock` and `server/Dockerfile` for amd64 and arm64. The
