@@ -19,13 +19,14 @@ GOLDEN = kit.GOLDEN_PATH
 
 def test_normalize_masks_volatile_keys_but_keeps_type():
     body = {"created_at": "2026-11-16T07:00:00+00:00", "job_id": "ab" * 16,
-            "latency_ms": 12.5, "text": "stays", "id": 3, "updated_at": None}
+            "avg_latency_ms": 12.5, "text": "stays", "id": 3, "updated_at": None, "check_sec": 15}
     out = kit.normalize(body)
     assert out["text"] == "stays" and out["id"] == 3
     assert out["created_at"] == "<volatile:str>"
     assert out["job_id"] == "<volatile:str>"
-    assert out["latency_ms"] == "<volatile:float>"
+    assert out["avg_latency_ms"] == "<volatile:float>"
     assert out["updated_at"] is None
+    assert out["check_sec"] == 15  # a config value is not masked
 
 
 def test_normalize_masks_timestamps_and_ids_inside_strings():
@@ -42,6 +43,8 @@ def test_diff_float_tolerance():
 
 
 def test_diff_reports_type_and_key_differences():
+    assert kit.diff_values({"a": 1}, {"a": 1.0})
+    assert kit.diff_values({"a": True}, {"a": 1})
     assert kit.diff_values({"a": 1}, {"a": "1"})
     assert kit.diff_values({"a": 1}, {"a": 1, "b": 2})
     assert kit.diff_values([1, 2], [1])
@@ -127,6 +130,12 @@ def test_substitute_keeps_type_for_whole_value_and_formats_inside_strings():
     assert out == {"ids": [7], "path": "/memory/7", "k": "abc"}
 
 
+def test_run_records_a_dead_server_as_a_difference():
+    case = {"name": "x", "route": "GET /health", "request": {"method": "GET", "path": "/health"}}
+    recs = kit.run([case], "http://127.0.0.1:9", allow_nonempty=True, timeout=2)
+    assert recs[0]["response"]["status"] == 0 and recs[0]["response"]["body_type"] == "error"
+
+
 # -- capture middleware -------------------------------------------------------
 
 def _client(env):
@@ -148,10 +157,14 @@ def test_middleware_off_by_default():
 
 
 def test_middleware_records_request_and_reply_and_redacts_key(tmp_path):
-    client = _client({"PARITY_CAPTURE_DIR": str(tmp_path)})
-    r = client.post("/memory/add", json={"text": "t", "source": "s/x"},
-                    headers={"X-API-Key": "test-key", "X-Memories-Client": "codex"})
+    from parity_capture import ParityCaptureMiddleware
+
+    client = _client({})
+    mw = ParityCaptureMiddleware(client.app, str(tmp_path))
+    r = TestClient(mw).post("/memory/add", json={"text": "t", "source": "s/x"},
+                            headers={"X-API-Key": "test-key", "X-Memories-Client": "codex"})
     assert r.status_code == 200
+    mw.flush()
     files = list(tmp_path.glob("capture-*.ndjson"))
     assert len(files) == 1
     rec = json.loads(files[0].read_text().splitlines()[-1])
@@ -162,3 +175,18 @@ def test_middleware_records_request_and_reply_and_redacts_key(tmp_path):
     assert rec["response"]["status"] == 200 and rec["response"]["body"]["id"] == 1
     assert "test-key" not in files[0].read_text()
     assert oct(files[0].stat().st_mode & 0o777) == "0o600"
+
+
+def test_middleware_redacts_a_new_raw_key_and_keeps_the_daily_cap(tmp_path):
+    from datetime import datetime, timezone
+    from parity_capture import ParityCaptureMiddleware
+
+    mw = ParityCaptureMiddleware(None, str(tmp_path), max_mb_per_day=0.001)
+    now = datetime.now(timezone.utc)
+    body = json.dumps({"id": "k1", "key": "mem_" + "a" * 32}).encode()
+    mw._write("POST", "/api/keys", b"", [], b"", False, 200, "application/json", body, False, 1.0, now)
+    text = next(tmp_path.glob("capture-*.ndjson")).read_text()
+    assert "mem_" not in text and kit.REDACTED in text
+    big = json.dumps({"text": "x" * 2000}).encode()
+    mw._write("POST", "/search", b"", [], b"", False, 200, "application/json", big, False, 1.0, now)
+    assert mw.dropped == 1

@@ -23,7 +23,7 @@ KEYS = {"admin": "{{key:admin}}", "ro": "{{key:ro}}", "rw": "{{key:rw}}"}
 
 
 def c(name, method, path, route=None, *, json=None, body=None, query=None, key="admin",
-      headers=None, rules=(), save=None, until=None, max_ms=None, volatile=()):
+      headers=None, rules=(), save=None, until=None, max_ms=None, volatile=(), delay_s=None):
     h = {}
     if key is not None:
         h["X-API-Key"] = KEYS.get(key, key)
@@ -38,7 +38,8 @@ def c(name, method, path, route=None, *, json=None, body=None, query=None, key="
     if body is not None:
         request["body"] = body
     case = {"name": name, "route": route or f"{method} {path}", "rules": list(rules), "request": request}
-    for k, v in (("save", save), ("until", until), ("max_ms", max_ms), ("volatile", list(volatile))):
+    for k, v in (("save", save), ("until", until), ("max_ms", max_ms), ("volatile", list(volatile)),
+                 ("delay_s", delay_s)):
         if v:
             case[k] = v
     return case
@@ -52,8 +53,9 @@ M = "/memory/{memory_id}"
 
 def _rules_cases():
     return [
-        c("health-minimal", "GET", "/health", key=None, rules=["W1-health-minimal"]),
-        c("health-empty-key", "GET", "/health", key="", rules=["W1-health-minimal", "W6-lenient-input"]),
+        c("health-minimal", "GET", "/health", key=None, rules=["W1-health-minimal"], volatile=["version"]),
+        c("health-empty-key", "GET", "/health", key="", rules=["W1-health-minimal", "W6-lenient-input"],
+          volatile=["version"]),
         c("health-ready", "GET", "/health/ready", key=None),
         c("auth-wrong-key", "GET", "/stats", key="wrong-key", rules=["W2-401-wrong-key", "W4-json-error-body"]),
         c("auth-no-key", "GET", "/stats", key=None, rules=["W2-401-wrong-key"]),
@@ -100,7 +102,7 @@ def _read_cases():
         c("usage-session", "GET", "/usage", query="period=all&session_id=parity-session", rules=["W9-usage-headers"]),
         c("usage-7d", "GET", "/usage"),
         c("stats", "GET", "/stats", volatile=["backup_count"]),
-        c("health-full", "GET", "/health"),
+        c("health-full", "GET", "/health", volatile=["version"]),
         c("count-all", "GET", "/memories/count"),
         c("count-source", "GET", "/memories/count", query="source=claude-code/"),
         c("count-boundary", "GET", "/memories/count", query="source=codex/voltis&source_boundary=true"),
@@ -303,7 +305,7 @@ def _destructive_cases():
           json={"messages": long_messages, "source": "claude-code/voltis/extract", "context": "stop"},
           rules=["W5-extract-202-fast"], max_ms=2000, save={"job": "job_id"}),
         c("extract-job", "GET", "/memory/extract/{{job}}", route="GET /memory/extract/{job_id}",
-          rules=["W7-extract-failure-completed"],
+          rules=["W7-extract-failure-completed"], volatile=["error_message"],
           until={"path": "status", "in": ["completed", "failed"], "timeout_s": 60}),
         c("extract-job-404", "GET", "/memory/extract/nojob", route="GET /memory/extract/{job_id}"),
         c("extract-ro-403", "POST", "/memory/extract", json={"messages": "User: hi"}, key="ro"),
@@ -337,7 +339,8 @@ def _destructive_cases():
         c("index-build", "POST", "/index/build", json={}),
         c("export-after-index-build", "GET", "/export"),
         # Last: in embedded Qdrant mode a snapshot restore leaves the local store read-only.
-        c("snapshot-create", "POST", "/snapshots", save={"snap": "snapshot"}),
+        # Snapshot names have whole seconds. /index/build made a snapshot just before, so wait.
+        c("snapshot-create", "POST", "/snapshots", save={"snap": "snapshot"}, delay_s=1.1),
         c("snapshot-restore", "POST", "/snapshots/{{snap}}/restore", route="POST /snapshots/{name}/restore"),
         c("snapshot-restore-missing", "POST", "/snapshots/nope/restore", route="POST /snapshots/{name}/restore"),
     ]

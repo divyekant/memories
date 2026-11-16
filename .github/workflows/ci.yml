@@ -49,6 +49,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      - name: Cache the embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-all-MiniLM-L6-v2
+
       - name: Self-test of the kit
         run: uv run pytest -q tests/test_parity_kit.py
 

@@ -93,18 +93,30 @@ The replay needs the same settings as `run_python_server.sh`:
 The normalizer masks the values that change on each run. The diff keeps the
 key and the type of each masked value.
 
-- Keys that end in `_at`, `_ms`, `_sec`, `_path` and similar suffixes, and
-  keys such as `job_id`, `key_prefix` and `timestamp`. See `VOLATILE_KEY` in
-  `kit.py`.
+- Each key that ends in `_at`, and the keys in `VOLATILE_KEYS` in `kit.py`.
+  Each key in that set is there for a reason: a time, a random ID, a path in
+  the data directory, a latency, or a memory size of the Python process.
+  A configuration value is never masked.
 - The `id` of each item in `events`, because the event ID comes from the
   clock.
 - Timestamps, UUIDs and 32-character hex values inside strings and keys.
-- The keys in the `volatile` field of a case. The backup cases use this
-  field, because automatic backups are named by the second and two backups in
-  one second have the same name.
+- The keys in the `volatile` field of a case:
+  - The backup cases mask the backup count, because automatic backups are
+    named by the second and two backups in one second have the same name.
+  - The health cases mask `version`, because the Rust server has a new version.
+  - The extract job case masks `error_message`, because the error number of
+    a refused connection is different on Linux and macOS.
 
-Numbers compare with a tolerance of 0.0001. An integer and a float with the
-same value are equal.
+Two floats compare with a tolerance of 0.0001. An integer and a float are
+different, because a client can see the difference.
+
+If a case fails with an error (for example, the server closes the
+connection), the kit records status 0 with the error and continues. The diff
+then shows the case as a difference.
+
+A case with `delay_s` waits that number of seconds before the request. The
+snapshot case uses this field, because snapshot names have whole seconds and
+`/index/build` makes a snapshot just before.
 
 A case with `max_ms` fails if the reply of the server under test takes more
 time. The extract case uses this check for rule W5 (202 in less than 2 s).
@@ -121,8 +133,15 @@ that made it. Do not put it in the repository.
 - The middleware writes `<redacted>` in place of the `X-API-Key` and
   `Authorization` values. A replay sends the admin key in place of
   `<redacted>`.
-- For an event stream, the middleware records only the first chunk.
-- A request or reply body is recorded up to 4 MB.
+- The middleware also redacts the new raw key in the reply of `/api/keys`.
+- A request never waits for the file. A background thread writes the
+  records. If the queue (1000 records) is full, the record is lost.
+- `PARITY_CAPTURE_MAX_MB` sets the size limit of each daily file. The
+  default is 1024. After the limit, the records of that day are lost.
+- The middleware does not record `/ui` paths.
+- For an event stream, the middleware records only the first chunk with data.
+- A request or reply body is recorded up to 4 MB. A record with a cut body
+  has a `truncated` field.
 
 To replay a capture file from the middleware against a server that holds
 records, add `--allow-nonempty` to `replay`.
@@ -135,5 +154,8 @@ records, add `--allow-nonempty` to `replay`.
   last cases. Production uses a Qdrant server.
 - The scenario does not test the recency weight of search, because the score
   depends on the time between the add and the search.
+- A replay of a middleware capture sends the admin key for each request,
+  because the capture keeps no key. A request that a scoped key made can
+  thus get a different reply.
 - The text of some Python error messages depends on the order of a Python
   set. `run_python_server.sh` sets `PYTHONHASHSEED=0` to fix the order.
