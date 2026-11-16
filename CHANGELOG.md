@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- **Rust events, webhooks and web UI routes (rewrite task P5-5).** The Rust
+  server answers `GET /events/recent`, `GET /events/stream`, the three
+  `/webhooks` routes, `GET /ui` and `GET /ui/static/*` with the replies of the
+  Python server. The webhooks stay in `state.db` after a restart, and the
+  server tries each webhook call up to 3 times. The image build needs
+  `--build-context webui=webui`. No change to the Python server or to a
+  client. Details: `docs/decisions/2026-11-16-rust-events-webhooks-ui.md`.
 - **Gate G4 part a in CI (rewrite task P4-4).** `parity/extract_corpus.py`
   sends the 105 transcripts of the extraction evals (the 20 texts of
   `eval/run_extraction_eval.py` and the scenario memories) through the

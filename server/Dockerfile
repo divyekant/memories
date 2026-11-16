@@ -39,6 +39,8 @@ RUN --mount=from=ort,source=/ort.tgz,target=/tmp/ort.tgz \
     ! grep -q "not found" /tmp/ldd.txt && rm /tmp/ldd.txt
 
 COPY --from=build /memories-server /usr/local/bin/memories-server
+# The web UI files, from the build context "webui" (docker build --build-context webui=webui server).
+COPY --from=webui . /app/webui
 # The compose files of current installs run "python -c ..." for the health check.
 RUN ln -s memories-server /usr/local/bin/python && \
     ln -s memories-server /usr/local/bin/python3
@@ -50,6 +52,7 @@ RUN groupadd -r -g 999 memories && \
     chown -R memories:memories /data
 
 ENV DATA_DIR=/data \
+    UI_DIR=/app/webui \
     MODEL_CACHE_DIR=/data/model-cache \
     ORT_DYLIB_PATH=/opt/onnxruntime/lib/libonnxruntime.so
 

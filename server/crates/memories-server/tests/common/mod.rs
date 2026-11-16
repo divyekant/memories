@@ -27,6 +27,7 @@ pub fn config(api_key: &str, rate_limit: i64) -> Config {
         max_backups: 10,
         usage_tracking: false,
         metrics_trend_samples: 120,
+        ui_dir: "/nonexistent-ui".into(),
     }
 }
 

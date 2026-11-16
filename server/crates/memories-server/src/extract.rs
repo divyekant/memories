@@ -303,19 +303,17 @@ async fn worker(state: Arc<AppState>, pipeline: Arc<dyn Pipeline>, id: u64) {
 
 /// The `extraction.completed` event of a finished job.
 fn completed(state: &AppState, job_id: &str, source: &str, result: &Value) {
-    if let Some(w) = state.writer.get() {
-        let count = |k: &str| result.get(k).cloned().unwrap_or(json!(0));
-        w.events.emit(
-            "extraction.completed",
-            json!({
-                "job_id": job_id,
-                "source": source,
-                "stored_count": count("stored_count"),
-                "updated_count": count("updated_count"),
-                "conflict_count": count("conflict_count"),
-            }),
-        );
-    }
+    let count = |k: &str| result.get(k).cloned().unwrap_or(json!(0));
+    state.events.emit(
+        "extraction.completed",
+        json!({
+            "job_id": job_id,
+            "source": source,
+            "stored_count": count("stored_count"),
+            "updated_count": count("updated_count"),
+            "conflict_count": count("conflict_count"),
+        }),
+    );
 }
 
 /// The usage rows of a finished extraction: the outcome, and the tokens of

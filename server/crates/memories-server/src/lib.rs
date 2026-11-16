@@ -6,6 +6,7 @@ pub mod auth;
 pub mod backup;
 pub mod bulk;
 pub mod error;
+pub mod events;
 pub mod extract;
 pub mod healthcheck;
 pub mod keys;
@@ -38,6 +39,7 @@ use axum::{
     routing::{MethodFilter, delete, get, on, patch, post},
 };
 use memories_engine::Engine;
+use memories_engine::events::EventBus;
 use memories_engine::writes::Writer;
 use memories_types::config;
 use serde_json::{Value, json};
@@ -71,6 +73,8 @@ pub struct Config {
     pub usage_tracking: bool,
     /// `METRICS_TREND_SAMPLES`: the memory count samples that `GET /metrics` keeps.
     pub metrics_trend_samples: usize,
+    /// `UI_DIR`: the web UI files that `/ui` and `/ui/static` serve.
+    pub ui_dir: PathBuf,
 }
 
 impl Config {
@@ -101,6 +105,7 @@ impl Config {
                 .max(0) as usize,
             usage_tracking: config::parse_bool(var("USAGE_TRACKING").as_deref(), false),
             metrics_trend_samples: trend as usize,
+            ui_dir: config::string("UI_DIR", "/app/webui").into(),
         })
     }
 }
@@ -130,6 +135,13 @@ pub struct AppState {
     pub trend_max: usize,
     /// The write flow of the engine. Set with `engine`.
     pub writer: OnceLock<Arc<Writer>>,
+    /// The lifecycle events. The writer sends its events here.
+    pub events: Arc<EventBus>,
+    /// The webhooks in `state.db`.
+    pub webhooks: memories_store::Webhooks,
+    pub ui_dir: PathBuf,
+    /// True when the shutdown starts: the event streams end.
+    pub shutdown: tokio::sync::watch::Sender<bool>,
     pub max_backups: usize,
     /// `_missed_counts`: `POST /memory/missed` calls of each source since the start.
     pub missed: Mutex<HashMap<String, u64>>,
@@ -163,6 +175,8 @@ impl AppState {
             tracing::info!("Usage tracking enabled");
             u
         });
+        let webhooks = memories_store::Webhooks::open(&cfg.data_dir.join("state.db"))
+            .expect("cannot open state.db");
         Arc::new(Self {
             api_key: cfg.api_key.clone(),
             data_dir: cfg.data_dir.clone(),
@@ -180,6 +194,10 @@ impl AppState {
             trend: Mutex::default(),
             trend_max: cfg.metrics_trend_samples,
             writer: OnceLock::new(),
+            events: Arc::default(),
+            webhooks,
+            ui_dir: cfg.ui_dir.clone(),
+            shutdown: tokio::sync::watch::channel(false).0,
             max_backups: cfg.max_backups,
             missed: Mutex::default(),
             stopping: AtomicBool::new(false),
@@ -267,6 +285,13 @@ const SERVED: &[(&str, &str)] = &[
     ("POST", "/search/feedback"),
     ("GET", "/search/feedback/history"),
     ("DELETE", "/search/feedback/{feedback_id}"),
+    ("GET", "/events/stream"),
+    ("GET", "/events/recent"),
+    ("POST", "/webhooks"),
+    ("GET", "/webhooks"),
+    ("DELETE", "/webhooks/{webhook_id}"),
+    ("GET", "/ui"),
+    ("GET", "/ui/static/{*path}"),
     ("POST", "/maintenance/consolidate"),
     ("POST", "/maintenance/prune"),
     ("POST", "/maintenance/enforce-policies"),
@@ -378,7 +403,14 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/snapshots/{name}/restore", post(backup::restore_snapshot))
         .route("/export", get(backup::export))
-        .route("/import", post(backup::import));
+        .route("/import", post(backup::import))
+        .route("/events/stream", get(events::stream))
+        .route("/events/recent", get(events::recent))
+        .route(
+            "/webhooks",
+            post(events::create_webhook).get(events::list_webhooks),
+        )
+        .route("/webhooks/{webhook_id}", delete(events::delete_webhook));
     let protected = usage_routes::routes(protected);
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
@@ -386,7 +418,9 @@ pub fn app(state: Arc<AppState>) -> Router {
         Router::new()
             .route("/health", get(health))
             .route("/health/ready", get(health_ready))
-            .route("/openapi.json", get(openapi)),
+            .route("/openapi.json", get(openapi))
+            .route("/ui", get(events::ui_page))
+            .route("/ui/static/{*path}", get(events::ui_static)),
         true,
     );
     protected

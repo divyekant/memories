@@ -115,7 +115,8 @@ pub struct UpsertEntry {
 
 pub struct Writer {
     pub engine: Arc<Engine>,
-    pub events: EventBus,
+    /// The server puts its own bus here, so that the routes see the events.
+    pub events: Arc<EventBus>,
     lock: Mutex<()>,
     identical_threshold: f64,
     /// `DATA_DIR`: the snapshot manifest is in `snapshots/manifest.json`.
@@ -204,7 +205,7 @@ impl Writer {
         recount(&engine).await?;
         Ok(Self {
             engine,
-            events: EventBus::default(),
+            events: Arc::default(),
             lock: Mutex::new(()),
             identical_threshold,
             data_dir,

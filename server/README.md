@@ -171,6 +171,22 @@ in `docs/decisions/2026-11-16-rust-core-writes.md`. The bulk writes and the
 relation writes (task P3-2) have the same need. Their rules are in
 `docs/decisions/2026-11-16-rust-bulk-writes.md`.
 
+Events, webhooks and the web UI:
+
+- `GET /events/recent` and `GET /events/stream` (server-sent events) give
+  the last 100 lifecycle events of this process. A scoped key sees only the
+  events of its sources.
+- An admin key manages the webhooks with `POST /webhooks`, `GET /webhooks`
+  and `DELETE /webhooks/{webhook_id}`. The webhooks are in
+  `$DATA_DIR/state.db`, so they stay after a restart. The server tries each
+  webhook call up to 3 times.
+- `GET /ui` and `GET /ui/static/*` serve the files in `UI_DIR` (default
+  `/app/webui`, the `webui/` folder of the repository). These routes need no
+  key.
+
+The rules and the differences from the Python server are in
+`docs/decisions/2026-11-16-rust-events-webhooks-ui.md`.
+
 A Python route that this server does not have yet gives HTTP 501. The route
 table is `ROUTES` in `crates/memories-server/src/shell.rs`.
 
@@ -189,7 +205,15 @@ QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
   server/scripts/parity_bulk.sh server/target/debug/memories-server
 QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
   server/scripts/parity_promotions.sh server/target/debug/memories-server
+QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+  NODE_PATH=<node_modules with playwright> \
+  server/scripts/parity_events.sh server/target/debug/memories-server
 ```
+
+`parity_events.sh` is the check of task P5-5. The Rust server does the
+seed writes itself, because the event history is in the memory of the
+process. Then the script runs `webui_check.cjs`, which opens each page of
+the web UI in Chromium and fails on a console error or a failed request.
 
 `parity_auth.sh` is the check of task P1-1. `parity_keys_audit.sh` is the
 check of task P5-2. It also makes a key on each server and uses the key on
@@ -213,8 +237,11 @@ QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so>
 ## Build the image
 
 ```bash
-docker build -t ghcr.io/divyekant/memories:rust-local server
+docker build --build-context webui=webui -t ghcr.io/divyekant/memories:rust-local server
 ```
+
+The image copies the web UI files from the build context `webui`. Without
+`--build-context webui=webui`, the build fails.
 
 To test the image with the bundled compose file, run this command from the
 repository root:
