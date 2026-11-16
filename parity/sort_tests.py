@@ -42,7 +42,7 @@ CLIENT_FILES = re.compile(
     r"test_(cli_.*|claude_memory_hooks|codex_.*|opencode_plugin|installer|mcp_server_stdio|client_sdk|"
     r"worktree_project|project_memory|playbook_gate)\.py$")
 TOOL_FILES = re.compile(
-    r"test_(parity_kit|g3|g6_clients|benchmarks|longmemeval|run_longmemeval|active_search_eval|run_active_search_eval|"
+    r"test_(parity_kit|g3|g5|g6_clients|benchmarks|longmemeval|run_longmemeval|active_search_eval|run_active_search_eval|"
     r"reembed_script|shadow_runner|signal_filter|transcript_hygiene|qdrant_cluster_compose|container_config)\.py$")
 SERVER_MODULES = {p.stem for p in ROOT.glob("*.py")} - {"conftest", "setup"}
 
