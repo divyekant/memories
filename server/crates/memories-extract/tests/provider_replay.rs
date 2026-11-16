@@ -8,8 +8,10 @@ use memories_extract::provider::Provider;
 use memories_extract::replay::ReplayServer;
 use serde_json::{Value, json};
 
-// The same fake secrets as record_python.py.
-const SECRETS: [(&str, &str); 4] = [
+// The same fake secrets as record_python.py. OMLX_DEFAULT_KEY is the public
+// default key; it is named so that a wrong default shows as a difference.
+const SECRETS: [(&str, &str); 5] = [
+    ("OMLX_DEFAULT_KEY", "12345"),
     ("ANTHROPIC_API_KEY", "sk-ant-api03-test-secret"),
     ("ANTHROPIC_OAUTH_TOKEN", "sk-ant-oat01-test-secret"),
     ("OPENAI_API_KEY", "sk-proj-test-secret"),
@@ -27,7 +29,7 @@ fn replay_files() -> Vec<(String, Value)> {
             (p.file_name().unwrap().to_string_lossy().into_owned(), text)
         })
         .map(|(name, text)| {
-            for (_, secret) in SECRETS {
+            for (_, secret) in &SECRETS[1..] {
                 assert!(!text.contains(secret), "{name} holds a secret");
             }
             (name, serde_json::from_str(&text).unwrap())
@@ -46,7 +48,10 @@ async fn run_case(case: &Value) {
             reply["status"].as_u64().unwrap() as u16,
             reply["body"].clone(),
         )],
-        SECRETS.iter().map(|(_, s)| s.to_string()).collect(),
+        SECRETS
+            .iter()
+            .map(|(n, s)| (n.to_string(), s.to_string()))
+            .collect(),
     )
     .await;
 

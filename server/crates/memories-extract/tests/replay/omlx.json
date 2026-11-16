@@ -16,7 +16,7 @@
     "method": "POST",
     "path": "/v1/chat/completions",
     "headers": {
-      "authorization": "Bearer <redacted>",
+      "authorization": "Bearer <OMLX_API_KEY>",
       "content-type": "application/json"
     },
     "body": {

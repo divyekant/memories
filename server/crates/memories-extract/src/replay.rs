@@ -25,12 +25,15 @@ const IGNORED_HEADERS: [&str; 6] = [
 const SECRET_HEADERS: [&str; 2] = ["authorization", "x-api-key"];
 pub const REDACTED: &str = "<redacted>";
 
-/// Hide each known secret. Hide a whole auth header that holds an unknown value.
-pub fn redact(name: &str, value: &str, secrets: &[String]) -> String {
+/// Replace each known secret with `<NAME>`, so a test sees which secret was sent.
+/// Hide a whole auth header that holds an unknown value.
+pub fn redact(name: &str, value: &str, secrets: &[(String, String)]) -> String {
     let out = secrets
         .iter()
-        .filter(|s| !s.is_empty())
-        .fold(value.to_string(), |v, s| v.replace(s.as_str(), REDACTED));
+        .filter(|(_, s)| !s.is_empty())
+        .fold(value.to_string(), |v, (n, s)| {
+            v.replace(s.as_str(), &format!("<{n}>"))
+        });
     if SECRET_HEADERS.contains(&name) && out == value {
         REDACTED.to_string()
     } else {
@@ -39,7 +42,7 @@ pub fn redact(name: &str, value: &str, secrets: &[String]) -> String {
 }
 
 /// The contract headers of a request: lower-case names, sorted, secrets hidden.
-pub fn contract_headers(headers: &HeaderMap, secrets: &[String]) -> Value {
+pub fn contract_headers(headers: &HeaderMap, secrets: &[(String, String)]) -> Value {
     let map: BTreeMap<String, Value> = headers
         .iter()
         .filter(|(k, _)| {
@@ -72,8 +75,9 @@ pub struct ReplayServer {
 
 impl ReplayServer {
     /// Start on a free loopback port. `replies` are `(status, JSON body)` in order.
-    /// After the last reply, each request gets HTTP 599.
-    pub async fn start(replies: Vec<(u16, Value)>, secrets: Vec<String>) -> Self {
+    /// `secrets` are `(name, value)` pairs to hide. After the last reply, each
+    /// request gets HTTP 418, which a provider does not retry.
+    pub async fn start(replies: Vec<(u16, Value)>, secrets: Vec<(String, String)>) -> Self {
         let state = Arc::new(Mutex::new(State {
             replies,
             ..State::default()
@@ -102,7 +106,7 @@ impl ReplayServer {
                         .replies
                         .get(s.next)
                         .cloned()
-                        .unwrap_or((599, json!({"error": "no recorded reply"})));
+                        .unwrap_or((418, json!({"error": "no recorded reply"})));
                     s.next += 1;
                     (StatusCode::from_u16(status).unwrap(), axum::Json(reply)).into_response()
                 }
@@ -142,14 +146,14 @@ mod tests {
 
     #[test]
     fn redact_hides_known_and_unknown_secrets() {
-        let s = vec!["sk-secret".to_string()];
+        let s = vec![("KEY".to_string(), "sk-secret".to_string())];
         assert_eq!(
             redact("authorization", "Bearer sk-secret", &s),
-            "Bearer <redacted>"
+            "Bearer <KEY>"
         );
         assert_eq!(redact("authorization", "Bearer other", &s), REDACTED);
         assert_eq!(redact("x-api-key", "unknown", &[]), REDACTED);
         assert_eq!(redact("anthropic-beta", "a,b", &s), "a,b");
-        assert_eq!(redact("x-custom", "has sk-secret", &s), "has <redacted>");
+        assert_eq!(redact("x-custom", "has sk-secret", &s), "has <KEY>");
     }
 }

@@ -25,6 +25,8 @@ SECRETS = {
     "OPENAI_API_KEY": "sk-proj-test-secret",
     "OMLX_API_KEY": "omlx-test-secret",
 }
+# The public default key of oMLX. Named so that a wrong default shows as a difference.
+NAMED_VALUES = {"OMLX_DEFAULT_KEY": "12345"}
 SECRET_HEADERS = {"authorization", "x-api-key"}
 # Transport headers that the SDKs and urllib set. They are not part of the contract.
 IGNORED_HEADERS = {"host", "content-length", "user-agent", "accept", "accept-encoding", "connection"}
@@ -90,10 +92,10 @@ PROVIDER_ENV = ("EXTRACT_PROVIDER", "EXTRACT_MODEL", "ANTHROPIC_AUTH", "ANTHROPI
 
 
 def redact(name, value):
-    """Hide each known secret. Hide a whole auth header that holds an unknown value."""
+    """Replace each known secret with <NAME>. Hide a whole auth header that holds an unknown value."""
     out = value
-    for secret in SECRETS.values():
-        out = out.replace(secret, "<redacted>")
+    for var, secret in {**SECRETS, **NAMED_VALUES}.items():
+        out = out.replace(secret, f"<{var}>")
     if name in SECRET_HEADERS and out == value:
         return "<redacted>"
     return out

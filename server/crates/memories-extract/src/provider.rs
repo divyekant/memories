@@ -32,6 +32,8 @@ const ANTHROPIC_EFFORT: &str = "low";
 
 /// Time limit for one attempt of a completion call.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(120);
+/// Time limit to open a connection, as in the Python SDKs.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_RETRIES: u32 = 2;
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
@@ -87,16 +89,21 @@ fn trimmed(v: Option<String>) -> Option<String> {
     v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
-fn http_base(url: String, var: &str) -> Result<String, ProviderError> {
-    let scheme = url.split("://").next().unwrap_or("");
-    if url.contains("://") && (scheme == "http" || scheme == "https") {
+/// Check the scheme as `urlparse` does (case does not matter), and strip the trailing slashes.
+fn http_base(url: String, var: &str, hint: &str) -> Result<String, ProviderError> {
+    let scheme = url
+        .split_once(':')
+        .map_or(String::new(), |(s, _)| s.to_ascii_lowercase());
+    if (scheme == "http" || scheme == "https") && url[scheme.len()..].starts_with("://") {
         Ok(url.trim_end_matches('/').to_string())
     } else {
         Err(ProviderError::Config(format!(
-            "Invalid {var} scheme: '{scheme}' (must be http or https)"
+            "Invalid {var} scheme: '{scheme}'{hint}"
         )))
     }
 }
+
+const SCHEME_HINT: &str = " (must be http or https)";
 
 /// Pick the Anthropic credential from ANTHROPIC_AUTH, ANTHROPIC_API_KEY, ANTHROPIC_OAUTH_TOKEN.
 fn resolve_anthropic_credential(
@@ -132,16 +139,35 @@ fn sends_temperature(model: &str) -> bool {
     SAMPLING_MODEL_PREFIXES.iter().any(|p| model.starts_with(p))
 }
 
-fn retryable(status: reqwest::StatusCode) -> bool {
-    matches!(status.as_u16(), 408 | 409 | 429) || status.is_server_error()
+/// The SDK rule: `x-should-retry` first, then 408, 409, 429 and 5xx.
+fn retryable(resp: &reqwest::Response) -> bool {
+    match resp
+        .headers()
+        .get("x-should-retry")
+        .and_then(|v| v.to_str().ok())
+    {
+        Some("true") => true,
+        Some("false") => false,
+        _ => matches!(resp.status().as_u16(), 408 | 409 | 429) || resp.status().is_server_error(),
+    }
 }
 
+fn header_f64(resp: &reqwest::Response, name: &str) -> Option<f64> {
+    resp.headers().get(name)?.to_str().ok()?.trim().parse().ok()
+}
+
+/// The SDK rule: `retry-after-ms`, then `retry-after` in seconds, if the value is
+/// more than 0 and at most 60 s. Else 0.5 s, then 1 s.
+// shortcut: no jitter and no HTTP-date form of retry-after; add them if a provider sends dates.
 fn retry_delay(attempt: u32, resp: Option<&reqwest::Response>) -> Duration {
-    resp.and_then(|r| r.headers().get("retry-after"))
-        .and_then(|v| v.to_str().ok()?.trim().parse::<f64>().ok())
-        .filter(|s| s.is_finite() && *s >= 0.0)
-        .map(|s| Duration::from_secs_f64(s).min(MAX_RETRY_AFTER))
-        .unwrap_or(RETRY_BASE_DELAY * 2u32.pow(attempt))
+    resp.and_then(|r| {
+        header_f64(r, "retry-after-ms")
+            .map(|ms| ms / 1000.0)
+            .or_else(|| header_f64(r, "retry-after"))
+    })
+    .filter(|s| *s > 0.0 && Duration::from_secs_f64(*s) <= MAX_RETRY_AFTER)
+    .map(Duration::from_secs_f64)
+    .unwrap_or(RETRY_BASE_DELAY * 2u32.pow(attempt))
 }
 
 impl Provider {
@@ -173,6 +199,7 @@ impl Provider {
                     trimmed(env("ANTHROPIC_BASE_URL"))
                         .unwrap_or_else(|| "https://api.anthropic.com".into()),
                     "ANTHROPIC_BASE_URL",
+                    SCHEME_HINT,
                 )?;
                 let workspace_id = trimmed(env("ANTHROPIC_WORKSPACE_ID"));
                 let default = if oauth {
@@ -201,6 +228,7 @@ impl Provider {
                     trimmed(env("OPENAI_BASE_URL"))
                         .unwrap_or_else(|| "https://api.openai.com/v1".into()),
                     "OPENAI_BASE_URL",
+                    SCHEME_HINT,
                 )?;
                 (
                     "openai",
@@ -216,6 +244,7 @@ impl Provider {
                 let base_url = http_base(
                     trimmed(env("OMLX_URL")).unwrap_or_else(|| "http://localhost:11434/v1".into()),
                     "OMLX base_url",
+                    "",
                 )?;
                 let api_key = trimmed(env("OMLX_API_KEY")).unwrap_or_else(|| "12345".into());
                 (
@@ -233,6 +262,7 @@ impl Provider {
                     trimmed(env("OLLAMA_URL"))
                         .unwrap_or_else(|| "http://host.docker.internal:11434".into()),
                     "OLLAMA_URL",
+                    SCHEME_HINT,
                 )?;
                 ("ollama", Kind::Ollama { base_url }, DEFAULT_OLLAMA_MODEL)
             }
@@ -252,6 +282,7 @@ impl Provider {
         };
 
         let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .map_err(|e| ProviderError::Config(format!("HTTP client: {e}")))?;
         Ok(Some(Self {
@@ -299,7 +330,11 @@ impl Provider {
                 } else {
                     body["output_config"] = json!({"effort": ANTHROPIC_EFFORT});
                 }
-                let url = if *oauth {
+                // Python adds ?beta=true only when the request path is exactly /v1/messages.
+                let has_path = base_url
+                    .split_once("://")
+                    .is_some_and(|(_, r)| r.contains('/'));
+                let url = if *oauth && !has_path {
                     format!("{base_url}/v1/messages?beta=true")
                 } else {
                     format!("{base_url}/v1/messages")
@@ -432,26 +467,33 @@ impl Provider {
     ) -> Result<Value, ProviderError> {
         let mut attempt = 0;
         loop {
+            // A slow Ollama generation is not sent again: Python had no retry there,
+            // and a retry would use the local GPU 3 times.
+            let retry_transport = |e: &reqwest::Error| {
+                !e.is_builder() && !(e.is_timeout() && matches!(self.kind, Kind::Ollama { .. }))
+            };
             let resp = build().timeout(CALL_TIMEOUT).send().await;
             let (retry, delay, err) = match resp {
-                Ok(r) if r.status().is_success() => {
-                    return r
-                        .json::<Value>()
-                        .await
-                        .map_err(|e| ProviderError::Parse(e.to_string()));
-                }
+                Ok(r) if r.status().is_success() => match r.bytes().await {
+                    Ok(body) => {
+                        return serde_json::from_slice(&body)
+                            .map_err(|e| ProviderError::Parse(e.to_string()));
+                    }
+                    Err(e) => (
+                        retry_transport(&e),
+                        retry_delay(attempt, None),
+                        ProviderError::Transport(e.to_string()),
+                    ),
+                },
                 Ok(r) => {
                     let delay = retry_delay(attempt, Some(&r));
-                    let status = r.status();
+                    let retry = retryable(&r);
+                    let status = r.status().as_u16();
                     let body = r.text().await.unwrap_or_default();
-                    let err = ProviderError::Status {
-                        status: status.as_u16(),
-                        body,
-                    };
-                    (retryable(status), delay, err)
+                    (retry, delay, ProviderError::Status { status, body })
                 }
                 Err(e) => (
-                    e.is_connect() || e.is_timeout(),
+                    retry_transport(&e),
                     retry_delay(attempt, None),
                     ProviderError::Transport(e.to_string()),
                 ),
@@ -680,5 +722,70 @@ mod tests {
     fn retry_delay_doubles_without_a_header() {
         assert_eq!(retry_delay(0, None), Duration::from_millis(500));
         assert_eq!(retry_delay(1, None), Duration::from_secs(1));
+    }
+
+    fn response(status: u16, headers: &[(&str, &str)]) -> reqwest::Response {
+        let mut b = axum::http::Response::builder().status(status);
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        reqwest::Response::from(b.body(Vec::<u8>::new()).unwrap())
+    }
+
+    #[test]
+    fn retry_rules_follow_the_sdks() {
+        assert!(retryable(&response(529, &[])));
+        assert!(retryable(&response(409, &[])));
+        assert!(!retryable(&response(400, &[])));
+        assert!(!retryable(&response(503, &[("x-should-retry", "false")])));
+        assert!(retryable(&response(400, &[("x-should-retry", "true")])));
+
+        let d = |h: &[(&str, &str)]| retry_delay(0, Some(&response(429, h)));
+        assert_eq!(d(&[("retry-after", "2")]), Duration::from_secs(2));
+        assert_eq!(
+            d(&[("retry-after-ms", "250"), ("retry-after", "9")]),
+            Duration::from_millis(250)
+        );
+        assert_eq!(d(&[("retry-after", "3600")]), Duration::from_millis(500));
+        assert_eq!(d(&[("retry-after", "0")]), Duration::from_millis(500));
+        assert_eq!(
+            d(&[("retry-after", "Wed, 21 Oct 2026 07:28:00 GMT")]),
+            Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn scheme_check_is_case_insensitive_and_keeps_python_messages() {
+        assert!(
+            make(&[
+                ("EXTRACT_PROVIDER", "ollama"),
+                ("OLLAMA_URL", "HTTP://host:11434")
+            ])
+            .is_ok()
+        );
+        assert_eq!(
+            err(&[("EXTRACT_PROVIDER", "ollama"), ("OLLAMA_URL", "ftp://h")]),
+            "Invalid OLLAMA_URL scheme: 'ftp' (must be http or https)"
+        );
+        assert_eq!(
+            err(&[("EXTRACT_PROVIDER", "omlx"), ("OMLX_URL", "localhost:1")]),
+            "Invalid OMLX base_url scheme: 'localhost'"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_beta_query_only_without_a_base_path() {
+        let ok = json!({"content": [{"type": "text", "text": "x"}], "usage": {}});
+        let server = ReplayServer::start(vec![(200, ok)], vec![]).await;
+        let url = format!("{}/gateway", server.base_url());
+        let p = make(&[
+            ("EXTRACT_PROVIDER", "anthropic"),
+            ("ANTHROPIC_OAUTH_TOKEN", "sk-ant-oat01-x"),
+            ("ANTHROPIC_BASE_URL", &url),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(p.complete("s", "u").await.unwrap().text, "x");
+        assert_eq!(server.requests()[0]["path"], "/gateway/v1/messages");
     }
 }

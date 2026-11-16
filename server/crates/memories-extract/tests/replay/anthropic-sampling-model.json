@@ -18,7 +18,7 @@
     "headers": {
       "anthropic-version": "2023-06-01",
       "content-type": "application/json",
-      "x-api-key": "<redacted>"
+      "x-api-key": "<ANTHROPIC_API_KEY>"
     },
     "body": {
       "max_tokens": 4096,
