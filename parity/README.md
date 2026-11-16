@@ -146,6 +146,34 @@ that made it. Do not put it in the repository.
 To replay a capture file from the middleware against a server that holds
 records, add `--allow-nonempty` to `replay`.
 
+## Rank golden cases
+
+The rank core of the Rust server (task P2-1) has its own golden cases in
+`parity/golden/rank/`. `parity/rank_golden.py` calls the Python rank
+functions with fixed inputs and writes one JSON file for each rule:
+
+| File | Rule |
+|---|---|
+| `hybrid.json` | `hybrid_search`: the fusion, the weights, the threshold, the temporal filter and the graph step |
+| `intent.json` | `classify_query` and `detect_temporal_intent` |
+| `isoformat.json` | `datetime.fromisoformat` of Python 3.11 |
+| `recency.json`, `confidence.json` | The recency score and the confidence |
+| `temporal.json` | The temporal filter |
+| `relative.json` | `relative_score` |
+| `round.json` | Python `round()` to 4 and 6 decimals |
+| `tokens.json` | The keyword tokens of a query and of a stored text |
+| `pyset.json` | The iteration order of a Python set of ints |
+
+The Rust test `server/crates/memories-engine/tests/rank_golden.rs` reads
+these files. CI runs the script with `--check`, so a change to a Python rank
+function fails CI until the files are written again.
+
+To write the files again, run this command with Python 3.11:
+
+```bash
+.venv/bin/python -m parity.rank_golden
+```
+
 ## Known limits
 
 - The golden captures come from the embedded Qdrant mode (`QDRANT_URL`
