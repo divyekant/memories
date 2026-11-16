@@ -33,6 +33,45 @@ jobs:
             bash -n "$f"
           done
 
+  parity:
+    # Parity kit (Rust rewrite, task P0-1): replay the golden captures against a
+    # new Python server. Zero differences is the pass condition.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Self-test of the kit
+        run: uv run pytest -q tests/test_parity_kit.py
+
+      - name: Start the Python reference server
+        run: |
+          PYTHON=.venv/bin/python parity/run_python_server.sh "$RUNNER_TEMP/parity-data" 18000 > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 1 180); do
+            curl -sf http://127.0.0.1:18000/health > /dev/null && exit 0
+            sleep 1
+          done
+          echo "The server did not start" >&2
+          exit 1
+
+      - name: Replay the golden captures
+        run: .venv/bin/python -m parity replay --base-url http://127.0.0.1:18000 --out "$RUNNER_TEMP/replay.ndjson"
+
+      - name: Diff against the golden captures
+        run: .venv/bin/python -m parity diff parity/golden/golden.ndjson "$RUNNER_TEMP/replay.ndjson"
+
+      - name: Server log
+        if: failure()
+        run: tail -n 200 "$RUNNER_TEMP/server.log"
+
   docker-image:
     # The 5.5.0 release crash-looped because new modules were missing from the
     # Dockerfile COPY list — host pytest can never catch that. Build the image
