@@ -319,6 +319,9 @@ jobs:
           ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_promotions.sh server/target/debug/memories-server
 
+      - name: P5-7 sync routes and the embedder setting (production configuration)
+        run: server/scripts/parity_sync.sh server/target/debug/memories-server
+
       - name: P7-1 rollback drill (export-legacy, rollback entrypoint, migrate --merge)
         env:
           QDRANT_URL: http://127.0.0.1:6333

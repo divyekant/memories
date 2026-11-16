@@ -18,6 +18,7 @@ pub mod reads;
 pub mod rollback;
 pub mod search;
 pub mod shell;
+pub mod sync;
 pub mod usage;
 pub mod usage_routes;
 pub mod validate;
@@ -248,6 +249,11 @@ const SERVED: &[(&str, &str)] = &[
     ("GET", "/snapshots"),
     ("POST", "/snapshots"),
     ("POST", "/snapshots/{name}/restore"),
+    ("GET", "/sync/status"),
+    ("POST", "/sync/upload"),
+    ("POST", "/sync/download"),
+    ("GET", "/sync/snapshots"),
+    ("POST", "/sync/restore/{backup_name}"),
     ("GET", "/export"),
     ("POST", "/import"),
     ("GET", "/extraction/profiles"),
@@ -377,6 +383,11 @@ pub fn app(state: Arc<AppState>) -> Router {
             get(backup::list_snapshots).post(backup::create_snapshot),
         )
         .route("/snapshots/{name}/restore", post(backup::restore_snapshot))
+        .route("/sync/status", get(sync::status))
+        .route("/sync/upload", post(sync::no_query))
+        .route("/sync/download", post(sync::with_confirm))
+        .route("/sync/snapshots", get(sync::no_query))
+        .route("/sync/restore/{backup_name}", post(sync::with_confirm))
         .route("/export", get(backup::export))
         .route("/import", post(backup::import));
     let protected = usage_routes::routes(protected);

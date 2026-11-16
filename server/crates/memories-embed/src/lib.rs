@@ -26,7 +26,9 @@ pub const INTRA_THREADS: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EmbedError {
-    #[error("embedding provider {0:?} is not supported; use EMBED_PROVIDER=onnx")]
+    #[error(
+        "EMBED_PROVIDER={0} is not supported: this server has only the onnx embedder; set EMBED_PROVIDER=onnx"
+    )]
     UnsupportedProvider(String),
     #[error("cannot load ONNX Runtime: {0}")]
     Runtime(String),
@@ -96,7 +98,7 @@ impl EmbedConfig {
         let trimmed = |k: &str| get(k).map(|v| v.trim().to_string()).unwrap_or_default();
         let provider = trimmed("EMBED_PROVIDER").to_lowercase();
         if !provider.is_empty() && provider != "onnx" {
-            // shortcut: production uses onnx only (P0-3 baseline); port openai if a user needs it.
+            // shortcut: production uses onnx only (P0-3 baseline, P5-7); port openai_embedder.py if a host needs it.
             return Err(EmbedError::UnsupportedProvider(provider));
         }
         let mut model = trimmed("EMBED_MODEL");
@@ -427,6 +429,12 @@ mod tests {
             config(&[("EMBED_PROVIDER", "openai")]),
             Err(EmbedError::UnsupportedProvider(p)) if p == "openai"
         ));
+        assert_eq!(
+            config(&[("EMBED_PROVIDER", "openai")])
+                .unwrap_err()
+                .to_string(),
+            "EMBED_PROVIDER=openai is not supported: this server has only the onnx embedder; set EMBED_PROVIDER=onnx"
+        );
     }
 
     #[test]

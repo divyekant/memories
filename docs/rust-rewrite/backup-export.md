@@ -66,7 +66,7 @@ Python. The folder holds these files:
 | A snapshot restore in server mode passes only the name to Qdrant and fails. | The snapshot restore works, and makes a `pre_restore` backup first. |
 | A JSON line that is not an object, or a `text` or `source` that is not a string, gives HTTP 500 with the Python exception text. | The same lines give HTTP 500 with "Internal server error". |
 | No scheduled backup. | One scheduled backup each day. |
-| A backup also goes to cloud sync when it is on. | No cloud sync upload (task P5-7 decides on cloud sync). |
+| A backup also goes to cloud sync when it is on. | No cloud sync upload (task P5-7: `docs/decisions/2026-11-16-rust-sync-off.md`). |
 | A `MAX_BACKUPS` of -N keeps all folders but the N oldest (before the prefix rule). | A `MAX_BACKUPS` below 0 is 0. |
 | A `created_at` of null in a smart import gives HTTP 500. | The value is an empty string. |
 | The export writes `custom_fields` in the stored key order. | The export writes the keys in sorted order. The parsed data is the same. |
