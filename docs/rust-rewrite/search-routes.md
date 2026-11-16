@@ -67,7 +67,8 @@ after the search.
 |---|---|---|
 | Feedback scores in the fusion | Not used. `usage.db` is not ported. | P5-1 |
 | Usage rows (retrievals, graph and temporal counts) | Not written. | P5-1 |
-| Hybrid results with real keyword scores, and `bm25_candidates` of explain | Not checked here. The parity cases mask them. | P2-4 (gate G3) |
+| Hybrid results with real keyword scores | Not checked here. The parity cases mask them. Gate G3 measures them (`gates/G3.md`). | P2-4 (done) |
+| Keyword scores of `bm25_candidates` in explain | Not equal to Python: the Qdrant IDF formula is different (decision P0-2). The IDs and order are near the same. | None |
 | Confidence half-life of extraction profiles | The default of 90 days applies. | Later task |
 | Graph cache | The graph is made again for each search. | Later task |
 | No `QDRANT_URL` | The routes reply 503 `Memory engine not available: QDRANT_URL is not set`. The embedded Qdrant mode is not ported (production does not use it, see `baseline.md`). | None |

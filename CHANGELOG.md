@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### Added
+- **Gate G3 run for the Rust rewrite (task P2-4).** `server/scripts/gate_g3.sh`
+  writes the same records into the Python server and the Rust server, and
+  compares vector search, hybrid search, the graph eval and LongMemEval
+  recall at 5. G3 passes with the Qdrant sparse vector, so the tantivy
+  fallback is not necessary. CI job `rust-parity` runs the corpus and graph
+  parts. `parity/keyword_index/run.py --dataset grow` checks the avgdl rule on
+  a store that grows. No change to the Python server or to a client.
+  Details: `docs/rust-rewrite/gates/G3.md`.
 - **Rust project promotion routes, off mode (rewrite task P5-6).** The Rust
   server answers `GET /promotions`, `GET /promotions/{candidate_id}` and the
   approve and reject routes with the replies of the Python server in the
