@@ -4,7 +4,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use memories_server::{AppState, Config, audit::AuditLog, keys::KeyStore};
+use memories_extract::provider::Provider;
+use memories_server::{
+    AppState, Config,
+    audit::AuditLog,
+    extract::{Extract, ExtractConfig, Pipeline, ProviderOnly},
+    keys::KeyStore,
+};
 use memories_types::config;
 use tokio::net::TcpListener;
 
@@ -89,7 +95,37 @@ fn main() -> std::process::ExitCode {
     } else {
         None
     };
-    let state = AppState::new(&cfg, keys, audit);
+    // As Python: a provider that cannot start is a warning, and extraction is off.
+    let provider = match Provider::from_process_env() {
+        Ok(Some(p)) => {
+            tracing::info!(
+                "Extraction enabled: provider={}, model={}",
+                p.name(),
+                p.model()
+            );
+            Some(Arc::new(p))
+        }
+        Ok(None) => {
+            tracing::info!("Extraction disabled (EXTRACT_PROVIDER not set)");
+            None
+        }
+        Err(e) => {
+            tracing::warn!("Extraction setup failed: {e}");
+            None
+        }
+    };
+    let pipeline = provider
+        .clone()
+        .map(|p| Arc::new(ProviderOnly(p)) as Arc<dyn Pipeline>);
+    let extract = match Extract::open(&cfg.data_dir, ExtractConfig::from_env(), provider, pipeline)
+    {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::error!("cannot start: cannot open the extract queue: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let state = AppState::with_extract(&cfg, keys, audit, extract);
     tokio::runtime::Runtime::new()
         .expect("tokio runtime")
         .block_on(serve(port, state));
@@ -106,6 +142,8 @@ async fn serve(port: u16, state: Arc<AppState>) {
         "memories-server started"
     );
     let flusher = tokio::spawn(flush_key_usage_forever(state.clone()));
+    // A running job stays `running` in state.db at a stop; the next start puts it back.
+    let workers = memories_server::extract::spawn_workers(&state);
     axum::serve(
         listener,
         memories_server::app(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
@@ -114,6 +152,7 @@ async fn serve(port: u16, state: Arc<AppState>) {
     .await
     .expect("server error");
     flusher.abort();
+    workers.iter().for_each(|w| w.abort());
     flush_key_usage(&state).await;
 }
 

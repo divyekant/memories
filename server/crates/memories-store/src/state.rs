@@ -19,6 +19,8 @@ const COUNTER: &str = "memory_id";
 pub enum StateError {
     #[error("state.db: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("state.db task failed: {0}")]
+    Task(String),
     #[error("the ID counter cannot give {count} more IDs after {next}")]
     Exhausted { next: u64, count: u64 },
 }
