@@ -55,9 +55,18 @@ def cmd_seed(url):
         raise SystemExit(f"seed cases failed: {bad}")
 
 
+def all_memories(cl):
+    """Each record of GET /memories, in pages of 5,000 (the Python maximum)."""
+    out = []
+    while True:
+        page = ok(cl.get("/memories", params={"offset": len(out), "limit": 5000}))["memories"]
+        out.extend(page)
+        if len(page) < 5000:
+            return out
+
+
 def ids_of(cl):
-    # shortcut: one page of 5,000 records; the drill corpus is smaller.
-    return [m["id"] for m in ok(cl.get("/memories", params={"limit": 5000}))["memories"]]
+    return [m["id"] for m in all_memories(cl)]
 
 
 def qdrant_records(qdrant, name):
@@ -166,7 +175,7 @@ def cmd_diff(a, b):
 
 def python_records(url):
     with client(url) as cl:
-        mems = ok(cl.get("/memories", params={"limit": 5000}))["memories"]
+        mems = all_memories(cl)
     return {m["id"]: {k: v for k, v in m.items() if k != "confidence"} for m in mems}
 
 

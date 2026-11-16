@@ -139,12 +139,13 @@ jobs_file="$work/case1/rollback-extract-jobs.ndjson"
 MEMORIES_API_KEY="$key" .venv/bin/python server/scripts/resend_extract_jobs.py "$jobs_file" --base-url "$py"
 [ "$(wc -l < "$jobs_file.sent")" -eq 3 ]
 # A Python write, then a restart of the rollback image: the export must skip.
-curl -sf -H "X-API-Key: $key" -H 'Content-Type: application/json' \
-  -d '{"text":"Written by the Python server after the rollback.","source":"codex/drill"}' "$py/memory/add" > /dev/null
+added="$(curl -sf -H "X-API-Key: $key" -H 'Content-Type: application/json' \
+  -d '{"text":"Written by the Python server after the rollback.","source":"codex/drill"}' "$py/memory/add" \
+  | .venv/bin/python -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
 stop
 start_rollback_image case1
 grep -q '"status": "skipped"' "$work/rollback-case1.log"
-curl -sf -H "X-API-Key: $key" "$py/memories?limit=5000" | grep -q "Written by the Python server after the rollback."
+curl -sf -H "X-API-Key: $key" "$py/memory/$added" | grep -q "Written by the Python server after the rollback."
 stop
 
 echo "== Case 2: return through an old image tag, then migrate --merge"
