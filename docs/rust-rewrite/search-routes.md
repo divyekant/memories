@@ -16,7 +16,7 @@ server v5.19.0:
 
 1. A Python server runs the golden cases before `usage-headers-search`, and
    `usage-headers-add`. This writes the seed corpus.
-2. The test loader `memories-server/examples/load_metadata.rs` copies
+2. `memories-server migrate` (task P1-4) copies
    `metadata.json` into Qdrant. The dense vectors come from the Rust embedder.
 3. The Rust server replays the 25 cases of `parity/golden/search/routes.ndjson`.
 

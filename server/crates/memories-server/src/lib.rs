@@ -4,8 +4,10 @@ pub mod admin;
 pub mod audit;
 pub mod auth;
 pub mod error;
+pub mod extract;
 pub mod healthcheck;
 pub mod keys;
+pub mod migrate;
 pub mod model;
 pub mod search;
 pub mod shell;
@@ -13,11 +15,13 @@ pub mod validate;
 pub mod writes;
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use axum::{
     Extension, Json, Router,
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State},
+    http::HeaderMap,
     middleware::from_fn,
     middleware::from_fn_with_state,
     routing::{MethodFilter, get, on, patch, post},
@@ -31,6 +35,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 use crate::{
     audit::AuditLog,
     auth::{AuthContext, Failures},
+    extract::{Extract, ExtractConfig},
     keys::KeyStore,
     shell::{Metrics, ROUTES, TrustedProxies},
 };
@@ -83,22 +88,31 @@ pub struct AppState {
     pub failures: Failures,
     pub metrics: Metrics,
     pub trusted: TrustedProxies,
-    /// The store, embedder and catalog. `None` when `QDRANT_URL` is not set:
-    /// the routes that need them answer 503.
-    pub engine: Option<Arc<Engine>>,
-    /// The write flow of the engine. `None` when `engine` is `None`.
-    pub writer: Option<Arc<Writer>>,
+    /// The store, embedder and catalog. Not set when `QDRANT_URL` is not set
+    /// (the routes that need them answer 503), or until the first-start
+    /// migration ends.
+    pub engine: OnceLock<Arc<Engine>>,
+    /// True while the first-start migration runs: only `/health` answers.
+    pub migrating: AtomicBool,
+    pub extract: Extract,
+    /// The write flow of the engine. Set with `engine`.
+    pub writer: OnceLock<Arc<Writer>>,
 }
 
 impl AppState {
+    /// A state with the default queue settings in `DATA_DIR` and no extract
+    /// provider. Panics if `state.db` cannot open.
     pub fn new(cfg: &Config, keys: KeyStore, audit: Option<AuditLog>) -> Arc<Self> {
-        Self::with_engine(cfg, keys, audit, None)
+        let extract = Extract::open(&cfg.data_dir, ExtractConfig::default(), None, None)
+            .expect("cannot open state.db");
+        Self::with_extract(cfg, keys, audit, extract, None)
     }
 
-    pub fn with_engine(
+    pub fn with_extract(
         cfg: &Config,
         keys: KeyStore,
         audit: Option<AuditLog>,
+        extract: Extract,
         engine: Option<Arc<Engine>>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -109,23 +123,11 @@ impl AppState {
             failures: Failures::default(),
             metrics: Metrics::new(cfg.metrics_latency_samples),
             trusted: TrustedProxies::parse(&cfg.forwarded_allow_ips),
-            engine,
-            writer: None,
+            engine: engine.map(OnceLock::from).unwrap_or_default(),
+            migrating: AtomicBool::new(false),
+            extract,
+            writer: OnceLock::new(),
         })
-    }
-
-    /// The state with the engine of `writer`.
-    pub fn with_writer(
-        cfg: &Config,
-        keys: KeyStore,
-        audit: Option<AuditLog>,
-        writer: Option<Arc<Writer>>,
-    ) -> Arc<Self> {
-        let engine = writer.as_ref().map(|w| w.engine.clone());
-        let mut st = Arc::into_inner(Self::with_engine(cfg, keys, audit, engine))
-            .expect("a new state has one reference");
-        st.writer = writer;
-        Arc::new(st)
     }
 }
 
@@ -153,6 +155,9 @@ const SERVED: &[(&str, &str)] = &[
     ("POST", "/search/explain"),
     ("POST", "/search/evidence"),
     ("POST", "/memory/is-novel"),
+    ("POST", "/memory/extract"),
+    ("GET", "/memory/extract/{job_id}"),
+    ("GET", "/extract/status"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -188,7 +193,10 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/search/batch", post(search::search_batch))
         .route("/search/explain", post(search::search_explain))
         .route("/search/evidence", post(search::search_evidence))
-        .route("/memory/is-novel", post(search::is_novel));
+        .route("/memory/is-novel", post(search::is_novel))
+        .route("/memory/extract", post(extract::enqueue))
+        .route("/memory/extract/{job_id}", get(extract::get_job))
+        .route("/extract/status", get(extract::status));
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
     let public = stubs(
@@ -205,6 +213,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .layer(CatchPanicLayer::custom(shell::panic_reply))
         // Python reads bodies of any size (for example `/import`).
         .layer(DefaultBodyLimit::disable())
+        .layer(from_fn_with_state(state.clone(), refuse_while_migrating))
         .layer(from_fn(shell::refuse_head))
         .layer(from_fn(shell::cors))
         .layer(from_fn_with_state(state.clone(), shell::record_metrics))
@@ -215,10 +224,37 @@ pub fn app(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// The minimal body. The Python server adds index stats when the caller sends
-/// the `API_KEY` value (or when `API_KEY` is empty); the engine task adds them.
-async fn health() -> Json<Value> {
-    Json(json!({"status": "ok", "service": "memories", "version": VERSION}))
+async fn refuse_while_migrating(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if state.migrating.load(Ordering::Acquire) && request.uri().path() != "/health" {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"detail": "The server is migrating the data. Try again later."})),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+/// The minimal body. For a caller that sends the `API_KEY` value (or when
+/// `API_KEY` is empty), the body adds the extract queue depth and the age of
+/// the oldest queued job. The engine task adds the index stats of Python.
+async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<Value> {
+    let mut body = json!({"status": "ok", "service": "memories", "version": VERSION});
+    let sent = headers
+        .get("X-API-Key")
+        .map(|v| v.as_bytes())
+        .unwrap_or_default();
+    if state.api_key.is_empty() || auth::ct_eq(sent, state.api_key.as_bytes()) {
+        body.as_object_mut()
+            .unwrap()
+            .extend(extract::health_fields(&state).await);
+    }
+    Json(body)
 }
 
 /// shortcut: this server has no store yet, so the counts are 0. The store

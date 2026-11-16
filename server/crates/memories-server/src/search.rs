@@ -229,7 +229,7 @@ impl SearchBody {
 }
 
 fn engine(state: &AppState) -> Result<&Arc<Engine>, Response> {
-    state.engine.as_ref().ok_or_else(|| {
+    state.engine.get().ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "Memory engine not available: QDRANT_URL is not set",

@@ -1,5 +1,5 @@
-//! `state.db`: the SQLite file of the Rust server. It holds the ID counter and
-//! the BM25 document-length sums of decision P0-2 (table `meta`).
+//! `state.db`: the SQLite file of the Rust server. It holds the ID counter
+//! and named values (`meta`), for example the state of the migration.
 //!
 //! The counter only goes up. An ID that the counter gave out is not given out
 //! again: not after a restart, not after a delete of the highest ID, and not
@@ -15,11 +15,15 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 const COUNTER: &str = "memory_id";
+const DOC_LEN_SUM: &str = "doc_len_sum";
+const DOC_COUNT: &str = "doc_count";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
     #[error("state.db: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("state.db task failed: {0}")]
+    Task(String),
     #[error("the ID counter cannot give {count} more IDs after {next}")]
     Exhausted { next: u64, count: u64 },
 }
@@ -114,11 +118,22 @@ impl StateDb {
         Ok(next.unwrap_or(0) as u64)
     }
 
-    /// The sum of the token counts of all stored texts, and the record count.
-    /// The keyword vector of a write uses `sum / count` as `avgdl`.
-    pub fn doc_lengths(&self) -> Result<(u64, u64), StateError> {
+    pub fn get_meta(&self, name: &str) -> Result<Option<String>, StateError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        read_doc_lengths(&conn)
+        Ok(conn
+            .query_row("SELECT value FROM meta WHERE name = ?1", [name], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    /// The sum of the keyword document lengths and the record count (decision
+    /// P0-2). (0, 0) before the first write.
+    pub fn doc_lengths(&self) -> Result<(u64, u64), StateError> {
+        let get = |n| -> Result<u64, StateError> {
+            Ok(self.get_meta(n)?.and_then(|v| v.parse().ok()).unwrap_or(0))
+        };
+        Ok((get(DOC_LEN_SUM)?, get(DOC_COUNT)?))
     }
 
     /// Add the deltas in one transaction and return the new values. An add
@@ -131,48 +146,48 @@ impl StateDb {
     ) -> Result<(u64, u64), StateError> {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (sum, count) = read_doc_lengths(&tx)?;
-        let apply = |v: u64, d: i64| (v as i64).saturating_add(d).max(0) as u64;
-        let new = (apply(sum, sum_delta), apply(count, count_delta));
-        write_doc_lengths(&tx, new)?;
+        let get = |n: &str| -> Result<i64, StateError> {
+            let v: Option<String> = tx
+                .query_row("SELECT value FROM meta WHERE name = ?1", [n], |r| r.get(0))
+                .optional()?;
+            Ok(v.and_then(|v| v.parse().ok()).unwrap_or(0))
+        };
+        let new = (
+            get(DOC_LEN_SUM)?.saturating_add(sum_delta).max(0) as u64,
+            get(DOC_COUNT)?.saturating_add(count_delta).max(0) as u64,
+        );
+        for (name, v) in [(DOC_LEN_SUM, new.0), (DOC_COUNT, new.1)] {
+            tx.execute(
+                "INSERT INTO meta (name, value) VALUES (?1, ?2)
+                 ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+                rusqlite::params![name, v.to_string()],
+            )?;
+        }
         tx.commit()?;
         Ok(new)
     }
 
-    /// Set both values, for example after a migration.
     pub fn set_doc_lengths(&self, sum: u64, count: u64) -> Result<(), StateError> {
+        self.set_meta(&[
+            (DOC_LEN_SUM, &sum.to_string()),
+            (DOC_COUNT, &count.to_string()),
+        ])
+    }
+
+    /// Write all `values` in one transaction.
+    pub fn set_meta(&self, values: &[(&str, &str)]) -> Result<(), StateError> {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        write_doc_lengths(&tx, (sum, count))?;
+        for (name, value) in values {
+            tx.execute(
+                "INSERT INTO meta (name, value) VALUES (?1, ?2)
+                 ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+                [name, value],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
-}
-
-const DOC_LEN_SUM: &str = "doc_len_sum";
-const DOC_COUNT: &str = "doc_count";
-
-fn read_doc_lengths(conn: &Connection) -> Result<(u64, u64), StateError> {
-    let get = |name: &str| -> Result<u64, StateError> {
-        let v: Option<String> = conn
-            .query_row("SELECT value FROM meta WHERE name = ?1", [name], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        Ok(v.and_then(|v| v.parse().ok()).unwrap_or(0))
-    };
-    Ok((get(DOC_LEN_SUM)?, get(DOC_COUNT)?))
-}
-
-fn write_doc_lengths(conn: &Connection, (sum, count): (u64, u64)) -> Result<(), StateError> {
-    for (name, v) in [(DOC_LEN_SUM, sum), (DOC_COUNT, count)] {
-        conn.execute(
-            "INSERT INTO meta (name, value) VALUES (?1, ?2)
-             ON CONFLICT (name) DO UPDATE SET value = excluded.value",
-            rusqlite::params![name, v.to_string()],
-        )?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -202,24 +217,6 @@ mod tests {
     }
 
     #[test]
-    fn doc_lengths_add_subtract_and_persist() {
-        let dir = TempDir::new("doclen");
-        let db = StateDb::open(&dir.db()).unwrap();
-        assert_eq!(db.doc_lengths().unwrap(), (0, 0));
-        assert_eq!(db.add_doc_lengths(12, 2).unwrap(), (12, 2));
-        assert_eq!(db.add_doc_lengths(-5, -1).unwrap(), (7, 1));
-        // A replace: the new length minus the old length, no count change.
-        assert_eq!(db.add_doc_lengths(3, 0).unwrap(), (10, 1));
-        drop(db);
-        let db = StateDb::open(&dir.db()).unwrap();
-        assert_eq!(db.doc_lengths().unwrap(), (10, 1));
-        db.set_doc_lengths(900, 30).unwrap();
-        assert_eq!(db.doc_lengths().unwrap(), (900, 30));
-        // A sum never goes below 0, also after a lost update.
-        assert_eq!(db.add_doc_lengths(-1000, -40).unwrap(), (0, 0));
-    }
-
-    #[test]
     fn ids_are_not_given_again_after_a_restart() {
         let dir = TempDir::new("restart");
         let db = StateDb::open(&dir.db()).unwrap();
@@ -229,6 +226,28 @@ mod tests {
         let db = StateDb::open(&dir.db()).unwrap();
         assert_eq!(db.next_id().unwrap(), 4);
         assert_eq!(db.reserve_ids(2).unwrap(), 4..6);
+    }
+
+    #[test]
+    fn meta_values_stay_after_a_restart() {
+        let dir = TempDir::new("meta");
+        let db = StateDb::open(&dir.db()).unwrap();
+        assert_eq!(db.get_meta("a").unwrap(), None);
+        db.set_meta(&[("a", "1"), ("b", "2")]).unwrap();
+        db.set_meta(&[("a", "3")]).unwrap();
+        drop(db);
+        let db = StateDb::open(&dir.db()).unwrap();
+        assert_eq!(db.get_meta("a").unwrap().as_deref(), Some("3"));
+        assert_eq!(db.get_meta("b").unwrap().as_deref(), Some("2"));
+        assert_eq!(db.doc_lengths().unwrap(), (0, 0));
+        db.set_doc_lengths(30, 4).unwrap();
+        assert_eq!(db.doc_lengths().unwrap(), (30, 4));
+        assert_eq!(db.add_doc_lengths(5, 1).unwrap(), (35, 5));
+        assert_eq!(
+            db.add_doc_lengths(-50, -9).unwrap(),
+            (0, 0),
+            "no value below 0"
+        );
     }
 
     #[test]

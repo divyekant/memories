@@ -38,7 +38,7 @@ fn server_error() -> Response {
 }
 
 fn writer(state: &AppState) -> Result<Arc<Writer>, Response> {
-    state.writer.clone().ok_or_else(|| {
+    state.writer.get().cloned().ok_or_else(|| {
         err(
             StatusCode::SERVICE_UNAVAILABLE,
             "The memory store is not configured: set QDRANT_URL",
