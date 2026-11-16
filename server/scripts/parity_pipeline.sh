@@ -4,14 +4,19 @@
 # compares the prompts (byte for byte), the job results and the stored records
 # with parity/golden/extract/pipeline.ndjson, the capture of Python v5.19.0.
 #
+# Gate G4 part a (task P4-4) uses the same script with the driver
+# extract_corpus (parity/extract_corpus.py, golden file corpus.ndjson).
+#
 # Usage, from the repository root:
 #   server/scripts/parity_pipeline.sh <rust binary>   (needs QDRANT_URL and ORT_DYLIB_PATH)
 #   server/scripts/parity_pipeline.sh python          (the Python reference server)
 #   server/scripts/parity_pipeline.sh python --record (write the golden file again)
+#   server/scripts/parity_pipeline.sh <target> --check extract_corpus
 # Needs the Python environment in .venv (uv sync --frozen).
 set -euo pipefail
 target="$1"
 mode="${2:---check}"
+driver="${3:-extract_pipeline}"
 [ "$target" = python ] || target="$(realpath "$target")"
 cd "$(dirname "$0")/../.."
 work="$(mktemp -d)"
@@ -21,7 +26,8 @@ collection="parity_pipeline_$$"
 pid=""
 cleanup() {
   local rc=$?
-  [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  # Wait for the server to stop, so that the next run finds the port free.
+  [ -n "$pid" ] && { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; } || true
   if [ "$rc" -ne 0 ]; then
     for log in "$work"/*.log; do echo "== $log"; tail -n 80 "$log"; done >&2
   fi
@@ -52,10 +58,5 @@ for _ in $(seq 1 180); do
   sleep 1
 done
 
-if [ "$mode" = --record ]; then
-  .venv/bin/python -m parity.extract_pipeline --base-url "http://127.0.0.1:$port" \
-    --provider-port "$provider_port" --out parity/golden/extract/pipeline.ndjson
-else
-  .venv/bin/python -m parity.extract_pipeline --base-url "http://127.0.0.1:$port" \
-    --provider-port "$provider_port" --check
-fi
+.venv/bin/python -m "parity.$driver" --base-url "http://127.0.0.1:$port" \
+  --provider-port "$provider_port" "$mode" "${@:4}"
