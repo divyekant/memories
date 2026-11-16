@@ -102,7 +102,8 @@ pub fn py_int(raw: &str) -> Option<i64> {
                 && b[i - 1].is_ascii_digit()
                 && b[i + 1].is_ascii_digit())
     };
-    if b.is_empty() || !(0..b.len()).all(digit_ok) {
+    // pydantic-core takes leading zeros only without a minus sign: "-07" fails.
+    if b.is_empty() || !(0..b.len()).all(digit_ok) || (neg && b.len() > 1 && b[0] == b'0') {
         return None;
     }
     let mut v: i64 = 0;

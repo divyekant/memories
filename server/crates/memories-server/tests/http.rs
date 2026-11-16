@@ -210,12 +210,16 @@ async fn not_found_method_not_allowed_and_not_ported() {
         assert_eq!(r.headers[header::ALLOW], "POST");
     }
 
-    let r = send(&st, get("/stats", Some(ADMIN))).await;
+    let r = send(&st, get("/webhooks", Some(ADMIN))).await;
     assert_eq!(r.status, StatusCode::NOT_IMPLEMENTED);
     assert_eq!(
         r.json(),
         json!({"detail": "Not implemented in the Rust server yet"})
     );
+
+    // A store route of a server with no QDRANT_URL.
+    let r = send(&st, get("/stats", Some(ADMIN))).await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
