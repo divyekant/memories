@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, rust-rewrite]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, rust-rewrite]
 
 jobs:
   tests:
