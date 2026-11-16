@@ -194,10 +194,12 @@ To write the files again, run this command with Python 3.11:
 
 ## Intended differences
 
-`diff` reads `parity/intended.json`. For each case in the file, the diff
+`diff --intended` reads `parity/intended.json`. Use it only for a diff of a
+Python capture (left) with a Rust capture (right). For each case in the file, the diff
 compares the reply of the server under test with the `rust` reply of the
 entry, not with the Python reply. If the Python reply no longer has the
-status of the entry, the diff reports the entry as stale.
+status of the entry (or the `body`, if the entry gives one), the diff reports
+the entry as stale.
 
 To add an intended difference, do these steps:
 

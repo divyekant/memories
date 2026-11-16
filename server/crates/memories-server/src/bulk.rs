@@ -391,7 +391,7 @@ pub async fn remove_link(
     let r = w
         .remove_link(id, target, &kind)
         .await
-        .map_err(|_| internal_error())?;
+        .map_err(|e| failed(e, true))?;
     Ok(Json(r))
 }
 

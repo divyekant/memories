@@ -128,8 +128,9 @@ def _expected(name, ra, intended):
     d = intended.get(name)
     if d is None:
         return ra, []
-    if ra["status"] != d["python"]["status"]:
-        return ra, [f"intended difference is stale: Python status {ra['status']} != {d['python']['status']}"]
+    py = d["python"]
+    if ra["status"] != py["status"] or ("body" in py and ra.get("body") != py["body"]):
+        return ra, [f"intended difference is stale: Python reply status {ra['status']} no longer matches the entry"]
     rust = d["rust"]
     return {"status": rust["status"], "content_type": rust.get("content_type", "application/json"),
             "body_type": rust.get("body_type", "json"), "body": rust.get("body")}, []
@@ -137,8 +138,9 @@ def _expected(name, ra, intended):
 
 def diff_captures(left, right, intended=None):
     """Compare two capture lists case by case. The right side is the server under test.
-    `intended` maps a case name to an intended difference (see `load_intended`)."""
-    intended = load_intended() if intended is None else intended
+    `intended` maps a case name to an intended difference (see `load_intended`). Pass it
+    only for a Python-to-Rust diff."""
+    intended = intended or {}
     problems = []
     if len(left) != len(right):
         problems.append({"name": "<file>", "problems": [f"case count {len(left)} != {len(right)}"]})

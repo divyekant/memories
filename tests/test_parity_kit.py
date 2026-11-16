@@ -363,6 +363,7 @@ def test_intended_difference_replaces_the_python_reply():
     left[0]["response"]["status"] = 404
     stale = kit.diff_captures(left, left, intended=intended)
     assert stale and "stale" in stale[0]["problems"][0]
+    assert kit.diff_captures(left, left) == [], "no intended differences unless the caller passes them"
 
 
 def test_intended_differences_name_bulk_cases_only():

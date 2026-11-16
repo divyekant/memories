@@ -31,7 +31,10 @@
     "case": "merge-dup-400",
     "route": "POST /memory/merge",
     "python": {
-      "status": 400
+      "status": 400,
+      "body": {
+        "detail": "Link 245 --supersedes--> 83 already exists"
+      }
     },
     "rust": {
       "status": 400,
@@ -45,7 +48,11 @@
     "case": "merge-dup-cleanup",
     "route": "POST /memory/delete-by-source",
     "python": {
-      "status": 200
+      "status": 200,
+      "body": {
+        "deleted_count": 1,
+        "success": true
+      }
     },
     "rust": {
       "status": 200,
