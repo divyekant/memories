@@ -390,6 +390,11 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// Python `uuid.uuid4().hex`.
+pub fn uuid4_hex() -> String {
+    uuid4().replace('-', "")
+}
+
 /// Python `str(uuid.uuid4())`.
 fn uuid4() -> String {
     let mut b = random_bytes::<16>();
@@ -418,9 +423,26 @@ pub fn utc_now() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    format_utc(secs)
+    format!("{}Z", format_utc(secs))
 }
 
+/// Python `datetime.now(timezone.utc).isoformat()`.
+pub fn utc_now_iso() -> String {
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format_iso(d.as_secs(), d.subsec_micros())
+}
+
+fn format_iso(secs: u64, micros: u32) -> String {
+    if micros == 0 {
+        format!("{}+00:00", format_utc(secs))
+    } else {
+        format!("{}.{micros:06}+00:00", format_utc(secs))
+    }
+}
+
+/// `%Y-%m-%dT%H:%M:%S` in UTC.
 fn format_utc(secs: u64) -> String {
     let (days, rem) = (secs / 86_400, secs % 86_400);
     // Days to civil date (Howard Hinnant's algorithm).
@@ -434,7 +456,7 @@ fn format_utc(secs: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
     format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}",
         rem / 3600,
         rem % 3600 / 60,
         rem % 60
@@ -447,9 +469,16 @@ mod tests {
 
     #[test]
     fn utc_format() {
-        assert_eq!(format_utc(0), "1970-01-01T00:00:00Z");
-        assert_eq!(format_utc(951_782_400), "2000-02-29T00:00:00Z");
-        assert_eq!(format_utc(1_794_815_700), "2026-11-16T07:55:00Z");
+        assert_eq!(format_utc(0), "1970-01-01T00:00:00");
+        assert_eq!(format_utc(951_782_400), "2000-02-29T00:00:00");
+        assert_eq!(format_utc(1_794_815_700), "2026-11-16T07:55:00");
+        // Python: datetime.fromtimestamp(t, timezone.utc).isoformat()
+        assert_eq!(format_iso(1_794_815_700, 0), "2026-11-16T07:55:00+00:00");
+        assert_eq!(
+            format_iso(1_794_815_700, 42),
+            "2026-11-16T07:55:00.000042+00:00"
+        );
+        assert_eq!(uuid4_hex().len(), 32);
     }
 
     #[test]

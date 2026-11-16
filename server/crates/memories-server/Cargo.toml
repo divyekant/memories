@@ -12,6 +12,7 @@ clap.workspace = true
 getrandom.workspace = true
 memories-embed.workspace = true
 memories-engine.workspace = true
+memories-extract.workspace = true
 memories-store.workspace = true
 memories-types.workspace = true
 rustix = { workspace = true, features = ["fs"] }
@@ -25,6 +26,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 qdrant-client.workspace = true
+reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
