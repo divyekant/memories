@@ -397,7 +397,13 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
         listener,
         memories_server::app(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown({
+        let st = state.clone();
+        async move {
+            shutdown_signal().await;
+            st.stopping.send_replace(true);
+        }
+    })
     .await
     .expect("server error");
     flusher.abort();

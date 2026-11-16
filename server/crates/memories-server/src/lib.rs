@@ -128,6 +128,8 @@ pub struct AppState {
     /// The webhooks in `state.db`.
     pub webhooks: memories_store::Webhooks,
     pub ui_dir: PathBuf,
+    /// True when the shutdown starts: the event streams end.
+    pub stopping: tokio::sync::watch::Sender<bool>,
 }
 
 impl AppState {
@@ -173,6 +175,7 @@ impl AppState {
             events: Arc::default(),
             webhooks,
             ui_dir: cfg.ui_dir.clone(),
+            stopping: tokio::sync::watch::channel(false).0,
         })
     }
 }

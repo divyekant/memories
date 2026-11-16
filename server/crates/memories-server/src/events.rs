@@ -89,25 +89,31 @@ pub async fn stream(
         .filter(|t| !t.is_empty())
         .map(str::to_owned);
     let rx = state.events.subscribe();
-    let body = futures_util::stream::unfold((rx, true), move |(mut rx, first)| {
+    let stop = state.stopping.subscribe();
+    let body = futures_util::stream::unfold((rx, stop, true), move |(mut rx, mut stop, first)| {
         let (auth, event_type) = (auth.clone(), event_type.clone());
         async move {
             if first {
                 return Some((
                     Ok::<_, std::convert::Infallible>("retry: 5000\n\n".to_string()),
-                    (rx, false),
+                    (rx, stop, false),
                 ));
             }
             loop {
-                match tokio::time::timeout(KEEPALIVE, rx.recv()).await {
-                    Err(_) => return Some((Ok(": keepalive\n\n".to_string()), (rx, false))),
+                let next = tokio::select! {
+                    // A stream that stays open would hold the graceful shutdown.
+                    _ = stop.wait_for(|s| *s) => return None,
+                    r = tokio::time::timeout(KEEPALIVE, rx.recv()) => r,
+                };
+                match next {
+                    Err(_) => return Some((Ok(": keepalive\n\n".to_string()), (rx, stop, false))),
                     Ok(Ok(e)) => {
                         if event_type.as_deref().is_some_and(|t| t != e.event_type)
                             || !visible(&auth, &e.data)
                         {
                             continue;
                         }
-                        return Some((Ok(e.to_sse()), (rx, false)));
+                        return Some((Ok(e.to_sse()), (rx, stop, false)));
                     }
                     // A slow reader loses the oldest events, as a full Python queue.
                     Ok(Err(RecvError::Lagged(_))) => continue,
@@ -188,7 +194,12 @@ pub async fn delete_webhook(
 pub fn spawn_webhooks(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     let mut rx = state.events.subscribe();
     tokio::spawn(async move {
-        let client = match reqwest::Client::builder().timeout(WEBHOOK_TIMEOUT).build() {
+        // As httpx: no redirect.
+        let client = match reqwest::Client::builder()
+            .timeout(WEBHOOK_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+        {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(error = %e, "cannot make the webhook HTTP client; webhooks are off");
@@ -232,6 +243,11 @@ async fn deliver(client: &reqwest::Client, wh: &Webhook, payload: &Value) {
         let error = match client.post(&wh.url).json(payload).send().await {
             Ok(r) if !r.status().is_server_error() => return,
             Ok(r) => format!("HTTP {}", r.status().as_u16()),
+            // A bad URL fails each try the same way.
+            Err(e) if e.is_builder() => {
+                tracing::warn!("Webhook {} failed: {e}", wh.id);
+                return;
+            }
             Err(e) => e.to_string(),
         };
         tracing::warn!(

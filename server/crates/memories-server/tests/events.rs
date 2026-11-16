@@ -284,8 +284,11 @@ async fn webhook_routes_need_admin_and_keep_the_python_shapes() {
     assert_eq!(v["webhooks"].as_array().unwrap().len(), 2);
 }
 
-/// A receiver that answers 500 to the first `fail` calls, then 200.
-async fn receiver(fail: usize) -> (String, Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<Value>>>) {
+/// A receiver that answers `fail_status` to the first `fail` calls, then 200.
+async fn receiver(
+    fail: usize,
+    fail_status: StatusCode,
+) -> (String, Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<Value>>>) {
     let hits = Arc::new(AtomicUsize::new(0));
     let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (h, b) = (hits.clone(), bodies.clone());
@@ -294,7 +297,7 @@ async fn receiver(fail: usize) -> (String, Arc<AtomicUsize>, Arc<std::sync::Mute
         async move {
             b.lock().unwrap().push(v);
             if h.fetch_add(1, Ordering::SeqCst) < fail {
-                StatusCode::INTERNAL_SERVER_ERROR
+                fail_status
             } else {
                 StatusCode::OK
             }
@@ -321,8 +324,8 @@ async fn wait_for(hits: &AtomicUsize, n: usize) {
 async fn webhooks_get_the_events_of_their_types_with_limited_retries() {
     let (st, _) = state();
     let _dispatch = memories_server::events::spawn_webhooks(st.clone());
-    let (ok_url, ok_hits, ok_bodies) = receiver(1).await;
-    let (bad_url, bad_hits, _) = receiver(usize::MAX).await;
+    let (ok_url, ok_hits, ok_bodies) = receiver(1, StatusCode::INTERNAL_SERVER_ERROR).await;
+    let (bad_url, bad_hits, _) = receiver(usize::MAX, StatusCode::BAD_GATEWAY).await;
     call(
         &st,
         "POST",
@@ -421,4 +424,40 @@ async fn next(b: &mut axum::body::BodyDataStream) -> String {
         .unwrap()
         .unwrap();
     String::from_utf8(chunk.to_vec()).unwrap()
+}
+
+#[tokio::test]
+async fn a_4xx_reply_and_a_bad_url_get_one_try() {
+    let (st, _) = state();
+    let _dispatch = memories_server::events::spawn_webhooks(st.clone());
+    let (url, hits, _) = receiver(usize::MAX, StatusCode::NOT_FOUND).await;
+    call(&st, "POST", "/webhooks", ADMIN, Some(json!({"url": url}))).await;
+    call(
+        &st,
+        "POST",
+        "/webhooks",
+        ADMIN,
+        Some(json!({"url": "not a url"})),
+    )
+    .await;
+    st.events.emit("memory.added", json!({"id": 1}));
+    wait_for(&hits, 1).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn the_stream_ends_when_the_shutdown_starts() {
+    let (st, _) = state();
+    let res = app(st.clone())
+        .oneshot(request("GET", "/events/stream", ADMIN, None))
+        .await
+        .unwrap();
+    let mut body = res.into_body().into_data_stream();
+    assert_eq!(next(&mut body).await, "retry: 5000\n\n");
+    st.stopping.send_replace(true);
+    let end = tokio::time::timeout(Duration::from_secs(5), body.next())
+        .await
+        .unwrap();
+    assert!(end.is_none());
 }

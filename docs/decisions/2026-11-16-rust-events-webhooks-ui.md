@@ -30,10 +30,12 @@ does here.
 | Python v5.19.0 | Rust server | Reason |
 |---|---|---|
 | A webhook is in RAM. A restart loses it, and the IDs start at 1 again. | A webhook is a row of the table `webhooks` in `state.db` (`AUTOINCREMENT`). It stays after a restart, and an ID is not given out again. | Plan, section "Wire rules". |
-| One webhook call, with a time limit of 5 s. | Up to 3 tries for each call, with a time limit of 5 s each. A try is repeated after a connection error or an HTTP 5xx reply, after 1 s and then 2 s. A 4xx reply is not repeated. At most 32 calls run at one time. | Plan: "Limit the retries of a webhook call". |
+| One webhook call, with a time limit of 5 s. | Up to 3 tries for each call, with a time limit of 5 s each. A try is repeated after a connection error or an HTTP 5xx reply, after 1 s and then 2 s. A 4xx reply or a URL that is not valid is not repeated. At most 32 calls run at one time. As in Python, a call does not follow a redirect. | Plan: "Limit the retries of a webhook call". |
+| The calls of one event go out in sequence, and the events go out near the order of their emit. | Each call is a task of its own, so a receiver can get event N+1 before a retry of event N. | Retries for one receiver must not stop the calls to the other receivers. |
 | The default `events` list is `list(EVENT_TYPES)`, a set, so the order changes with `PYTHONHASHSEED`. | The order of `EVENT_TYPES`. | A fixed order. |
 | A stream reader that falls 256 events behind is removed, and then gets only keepalives. | The reader loses the oldest events and continues. | Same events for a reader that keeps up. |
 | `json.dumps` keeps the key order of the event data. | The keys of the event data come in alphabetical order (`serde_json` with no `preserve_order`). | A client reads the data as JSON; the order has no meaning. |
+| An open event stream stays open at shutdown. | Each event stream ends when the shutdown starts, so the server can write its pending rows and stop. | A stream must not hold the shutdown. |
 | Static files have `ETag`, `Last-Modified` and range support. | A static file has `Content-Type` and the bytes only. | The web UI does not use these headers. |
 | The synchronous extract fallback (`EXTRACT_FALLBACK_ADD`) also sends `extraction.completed`. | Not ported (see the P4-1 decision). | |
 
