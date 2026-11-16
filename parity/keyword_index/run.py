@@ -5,6 +5,8 @@ Usage:
       [--qdrant 1.20.1=http://127.0.0.1:6433] [--dataset seed|longmemeval|all] \
       [--questions N] [--cache DIR] [--out results.json]
   python -m parity.keyword_index.run --qdrant 1.15.4=http://127.0.0.1:6333 --dataset grow
+  python -m parity.keyword_index.run --qdrant local=http://127.0.0.1:6333 --dataset grow-server \
+      --server http://127.0.0.1:8900 --key KEY --data-dir DIR
 
 The script makes the collection "p0_2_keyword" on each Qdrant server (it
 deletes a collection of that name first) and deletes it after each corpus.
@@ -387,16 +389,111 @@ def run_grow(url, out, n_docs, step=2000, batch=100):
                    "passes": passes, "checkpoints": checkpoints}
 
 
+def run_grow_server(server, key, qdrant_url, collection, data_dir, out, n_docs, step=2000, batch=100):
+    """Exit check of task P3-4: the grow dataset through the Rust server.
+
+    The server must run with MEMORIES_KEYWORD_REFRESH_CHECK_SEC=1 and
+    MEMORIES_KEYWORD_REFRESH_MIN_GAP_SEC=0 (the 1 hour limit is not
+    simulated, as in run_grow), on an empty store. The script adds the records
+    in batches of 100 and compares the keyword vectors that the server wrote
+    with rank_bm25 at each checkpoint: once directly after the add ("now"),
+    and once after the pass that is due ("settled").
+    """
+    import sqlite3
+    from eval.generate_synthetic_memories import generate_all
+    from eval.longmemeval import LongMemEvalRunner
+
+    lme = LongMemEvalRunner(client=None)
+    texts = [m["text"] for m in generate_all(2000)]
+    questions = []
+    for q in lme.load_dataset():
+        questions.append(str(q.get("question", "")))
+        for session in q.get("haystack_sessions", []):
+            texts += [c for c in lme._chunk_session(session, max_chars=lme.DEFAULT_MAX_MEMORY_CHARS) if c.strip()]
+        if len(texts) >= n_docs:
+            break
+    texts = texts[:n_docs]
+    docs = [bs.doc_tokens(t) for t in texts]
+    rnd = random.Random(20261116)
+    short_queries = []
+    for _ in range(100):
+        words = [w for w in rnd.choice(docs[:2000]) if w.isalpha() and w not in bs.STOPWORDS]
+        short_queries.append(["what", "about"] + rnd.sample(words, min(len(words), rnd.randint(1, 4))) if words else ["config"])
+    queries = short_queries + [bs.query_tokens(q) for q in questions][:100]
+
+    client = QdrantClient(url=qdrant_url, timeout=120, check_compatibility=False)
+    state = Path(data_dir) / "state.db"
+
+    def meta(name):
+        with sqlite3.connect(state) as db:
+            row = db.execute("SELECT value FROM meta WHERE name = ?", (name,)).fetchone()
+        return row[0] if row and row[0] else None
+
+    def post(path, body):
+        req = urllib.request.Request(server.rstrip("/") + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "X-API-Key": key})
+        with urllib.request.urlopen(req, timeout=600) as r:
+            return json.loads(r.read())
+
+    pos = {}  # server ID -> document index
+
+    def quality(n):
+        bm25 = BM25Okapi(docs[:n])
+        ov, top1 = [], []
+        for tokens in queries:
+            py = python_rank(bm25, tokens, TOP)
+            q = bs.query_vector(tokens)
+            hits = client.query_points(collection, query=models.SparseVector(indices=list(q), values=list(q.values())),
+                                       using="keyword", limit=TOP).points
+            got = [pos[int(p.id)] for p in hits]
+            scores = bm25.get_scores(tokens)
+            ov.append(tie_overlap(scores, py, got))
+            top1.append(tie_top1(scores, py, got))
+        return {"tie_overlap_at_10": mean(ov), "tie_top1_same": mean(top1)}
+
+    def settle():
+        time.sleep(2.5)  # two checks of the server
+        while meta("keyword_pass_cursor") is not None:
+            time.sleep(0.2)
+
+    total, passes, checkpoints = 0, [], []
+    last_at = meta("keyword_pass_at")
+    for start in range(0, len(docs), batch):
+        chunk = list(range(start, min(start + batch, len(docs))))
+        ids = post("/memory/add-batch", {"memories": [{"text": texts[i], "source": "p3_4/grow"} for i in chunk]})["ids"]
+        pos.update(zip(map(int, ids), chunk))
+        total += sum(len(docs[i]) for i in chunk)
+        n = chunk[-1] + 1
+        at = meta("keyword_pass_at")
+        if at != last_at:
+            passes.append({"after_records": n, "avgdl": round(float(meta("keyword_pass_avgdl")), 2)})
+            last_at = at
+        if n % step == 0 or n == len(docs):
+            row = {"records": n, "avgdl": round(total / n, 2), "now": quality(n)}
+            settle()
+            row["pass_avgdl"] = round(float(meta("keyword_pass_avgdl") or 0), 2)
+            row["settled"] = quality(n)
+            checkpoints.append(row)
+            print(json.dumps(row), flush=True)
+    worst = min(c["settled"]["tie_overlap_at_10"] for c in checkpoints)
+    out["grow_server"] = {"docs": len(docs), "queries_per_checkpoint": len(queries), "passes": passes,
+                          "checkpoints": checkpoints, "worst_settled_overlap": worst, "pass": worst >= 0.94}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--qdrant", action="append", required=True, help="name=url")
-    ap.add_argument("--dataset", default="all", choices=["seed", "longmemeval", "all", "scale", "grow"])
+    ap.add_argument("--dataset", default="all", choices=["seed", "longmemeval", "all", "scale", "grow", "grow-server"])
     ap.add_argument("--scale-docs", type=int, default=66000)
     ap.add_argument("--grow-docs", type=int, default=20000)
     ap.add_argument("--questions", type=int, default=0, help="0 = all 500")
     ap.add_argument("--hybrid-every", type=int, default=5, help="hybrid R@5 on every Nth question")
     ap.add_argument("--cache", default=".cache/p0_2_embeddings")
     ap.add_argument("--out", default="")
+    ap.add_argument("--server", default="", help="grow-server: the Rust server URL")
+    ap.add_argument("--key", default="", help="grow-server: the API key")
+    ap.add_argument("--collection", default="memories_v2", help="grow-server: the server collection")
+    ap.add_argument("--data-dir", default="", help="grow-server: DATA_DIR of the server (state.db)")
     args = ap.parse_args()
     servers = {n: Sparse(u) for n, u in (x.split("=", 1) for x in args.qdrant)}
     out = {"k1": bs.K1, "b": bs.B, "variants": list(VARIANTS)}
@@ -408,6 +505,9 @@ def main():
         run_scale(servers, out, args.scale_docs)
     if args.dataset == "grow":
         run_grow(next(iter(servers.values())).url, out, args.grow_docs)
+    if args.dataset == "grow-server":
+        run_grow_server(args.server, args.key, next(iter(servers.values())).url, args.collection,
+                        args.data_dir, out, args.grow_docs)
     text = json.dumps(out, indent=2)
     print(text)
     if args.out:

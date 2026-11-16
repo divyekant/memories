@@ -39,6 +39,7 @@ use crate::search::SearchArgs;
 mod bulk;
 mod journal;
 pub mod maintenance;
+pub mod refresh;
 
 /// The duplicate threshold of `/memory/add` (dedupe and doctrine).
 pub const DEDUP_THRESHOLD: f64 = 0.90;
@@ -122,6 +123,8 @@ pub struct Writer {
     /// The server puts its own bus here, so that the routes see the events.
     pub events: Arc<EventBus>,
     lock: Mutex<()>,
+    /// At most one keyword vector pass at a time (`refresh`).
+    pass: Mutex<()>,
     identical_threshold: f64,
     /// `DATA_DIR`: the snapshot manifest is in `snapshots/manifest.json`.
     data_dir: PathBuf,
@@ -211,6 +214,7 @@ impl Writer {
             engine,
             events: Arc::default(),
             lock: Mutex::new(()),
+            pass: Mutex::new(()),
             identical_threshold,
             data_dir,
         };
@@ -236,6 +240,9 @@ impl Writer {
     /// write flow (a restore). Loads the catalog, counts the document lengths
     /// again and raises the ID floor. Returns the record count.
     pub async fn reload(&self) -> Result<usize> {
+        // The restored vectors have an unknown average: the next check starts
+        // a pass. Clear first, so that a failed reload does not skip it.
+        self.e().state.clear_keyword_pass()?;
         let n = self.e().load_catalog().await?;
         recount(self.e()).await?;
         Ok(n)
