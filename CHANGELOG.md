@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **Rust project promotion routes, off mode (rewrite task P5-6).** The Rust
+  server answers `GET /promotions`, `GET /promotions/{candidate_id}` and the
+  approve and reject routes with the replies of the Python server in the
+  `off` mode, the mode of production. `GET /metrics` has the `promotion`
+  part. `PROJECT_PROMOTION_MODE=shadow` or `auto` stops the start with a
+  clear message. `server/scripts/parity_promotions.sh` replays the four golden
+  cases (0 differ) and sends 36 requests to a Python and a Rust server (0
+  differ). No change to the Python server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-promotions-off.md`.
 - **Rollback tool, merge and rollback drill of the Rust server (rewrite task
   P7-1).** `memories-server export-legacy` writes the records of
   `memories_v2` back to `metadata.json` and to the old collection, and moves
