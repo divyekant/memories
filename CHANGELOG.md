@@ -18,6 +18,12 @@
   server answers `GET /health` only. CI adds format, lint, test, `cargo deny`
   and crate age checks, and starts the bundled compose file with the Rust
   image on each architecture. No change to the Python server or to a client.
+- **Keyword index test for the Rust rewrite (task P0-2).**
+  `parity/keyword_index/` compares the BM25 ranks of the Python server
+  (rank_bm25) with a Qdrant sparse vector on Qdrant 1.15.4 and 1.20.1. The
+  decision record `docs/decisions/2026-11-16-rust-keyword-index.md` gives the
+  numbers and selects the Qdrant sparse vector. No change to the Python server
+  or to a client.
 
 ### Changed
 - **Client and tool libraries are updated (Rust rewrite task P0-5).** The
