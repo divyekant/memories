@@ -53,3 +53,60 @@ jobs:
 
       - name: Import app inside image
         run: docker run --rm --entrypoint python memories-ci -c "import app; print('app imports OK')"
+
+  rust:
+    # Rust server (server/): format, lint, tests, supply-chain checks.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: server
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Lint check
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Script tests
+        run: python3 -m unittest discover -s scripts -v
+
+      - name: No crate release less than 2 days old
+        run: python3 scripts/check_crate_age.py Cargo.lock --days 2
+
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: server/Cargo.toml
+          arguments: --locked
+          command: check
+
+  rust-image:
+    # Build the Rust image on each architecture. Then start the bundled compose
+    # file with that image, with no change to the file, and wait for healthy.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build image
+        run: docker build -t ghcr.io/divyekant/memories:rust-ci server
+
+      - name: Bundled compose file reports healthy
+        run: server/scripts/compose_health_check.sh rust-ci

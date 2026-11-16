@@ -1,0 +1,1 @@
+//! ONNX embedding of text.
