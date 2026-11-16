@@ -237,6 +237,7 @@ jobs:
         run: |
           curl -s -X DELETE http://127.0.0.1:6333/collections/memories_v2 > /dev/null
           curl -s -X DELETE http://127.0.0.1:6333/collections/memories > /dev/null
+          G3_PARTS=corpus,graph G3_ALLOW_PARTIAL=1 \
           QDRANT_URL=http://127.0.0.1:6333 \
           ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
             server/scripts/gate_g3.sh server/target/debug/memories-server

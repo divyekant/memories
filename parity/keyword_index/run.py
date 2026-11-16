@@ -343,6 +343,18 @@ def run_grow(url, out, n_docs, step=2000, batch=100):
             client.update_vectors(GROW, [models.PointVectors(id=i, vector={name: sv(bs.doc_vector(docs[i], avgdl))})
                                          for i in ids[start:start + 256]], wait=True)
 
+    def quality(name, n):
+        bm25 = BM25Okapi(docs[:n])
+        ov, top1 = [], []
+        for tokens in short_queries + lme_queries[:100]:
+            py = python_rank(bm25, tokens, TOP)
+            q = bs.query_vector(tokens)
+            got = [int(p.id) for p in client.query_points(GROW, query=sv(q), using=name, limit=TOP).points]
+            scores = bm25.get_scores(tokens)
+            ov.append(tie_overlap(scores, py, got))
+            top1.append(tie_top1(scores, py, got))
+        return {"tie_overlap_at_10": mean(ov), "tie_top1_same": mean(top1)}
+
     total = 0
     last_pass = None
     passes, checkpoints = [], []
@@ -357,24 +369,17 @@ def run_grow(url, out, n_docs, step=2000, batch=100):
         n = start + len(points)
         avg = total / n
         if n >= 1000 and (last_pass is None or abs(avg - last_pass) / last_pass > 0.25):
+            # The worst point of the rule: just before a pass, with the most drift.
+            before = quality("rule", n) if last_pass is not None else None
             rewrite("rule", list(range(n)), avg)
+            passes.append({"records": n, "avgdl": round(avg, 2),
+                           "last_pass_avgdl": round(last_pass, 2) if last_pass else None, "rule_before_pass": before})
             last_pass = avg
-            passes.append({"records": n, "avgdl": round(avg, 2)})
         if n % step == 0 or n == len(docs):
             rewrite("exact", list(range(n)), avg)
-            bm25 = BM25Okapi(docs[:n])
-            qs = short_queries + lme_queries[:100]
             row = {"records": n, "avgdl": round(avg, 2), "rule_avgdl": round(last_pass or avg, 2)}
             for name in names:
-                ov, top1 = [], []
-                for tokens in qs:
-                    py = python_rank(bm25, tokens, TOP)
-                    q = bs.query_vector(tokens)
-                    got = [int(p.id) for p in client.query_points(GROW, query=sv(q), using=name, limit=TOP).points]
-                    scores = bm25.get_scores(tokens)
-                    ov.append(tie_overlap(scores, py, got))
-                    top1.append(tie_top1(scores, py, got))
-                row[name] = {"tie_overlap_at_10": mean(ov), "tie_top1_same": mean(top1)}
+                row[name] = quality(name, n)
             checkpoints.append(row)
             print(json.dumps(row), flush=True)
     client.delete_collection(GROW)

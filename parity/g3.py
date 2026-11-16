@@ -92,7 +92,8 @@ def corpus():
 
 
 def corpus_queries(texts):
-    """Half keyword queries ("what about w1 w2?"), half the start of a record."""
+    """Keyword queries ("what about w1 w2?") at even positions, starts of a
+    record at odd positions. The two kinds alternate, so `kind(i)` is exact."""
     rnd = random.Random(SEED)
     seen, out = set(), []
     while len(out) < QUERIES:
@@ -109,19 +110,31 @@ def corpus_queries(texts):
     return out
 
 
+def kind(i):
+    return "keyword" if i % 2 == 0 else "record_start"
+
+
 def verdict(results):
+    """`pass` is True only when every part ran and every check holds, False
+    when a check fails, and "partial" when all checks hold but a part did not run."""
     checks, not_run = {}, []
     c = results.get("corpus")
     if c:
         checks["vector_top10_same"] = c["vector_top10_same"] >= VECTOR_TOP10
-        checks["hybrid_top1_same"] = c["hybrid_top1_same"] >= HYBRID_TOP1
-        checks["hybrid_top5_overlap"] = c["hybrid_top5_overlap"] >= HYBRID_TOP5
+        # The hybrid conditions hold for each query kind, not only for the mean:
+        # a record-start query finds its record first on the two servers.
+        for k in ("keyword", "record_start"):
+            checks[f"hybrid_top1_same_{k}"] = c["by_kind"][k]["hybrid_top1_same"] >= HYBRID_TOP1
+            checks[f"hybrid_top5_overlap_{k}"] = c["by_kind"][k]["hybrid_top5_overlap"] >= HYBRID_TOP5
     else:
         not_run.append("corpus")
     g = results.get("graph")
     if g:
         for key in ("graph_off", "graph_on"):
-            checks[f"graph_{key.split('_')[1]}"] = g["rust"][key] >= g["python"][key] - MAX_DROP - 1e-9
+            checks[key] = g["rust"][key] >= g["python"][key] - MAX_DROP - 1e-9
+        # The scores are at the maximum, so the result lists must also agree.
+        checks["graph_on_top1_same"] = g["graph_on_top1_same"] >= HYBRID_TOP1
+        checks["graph_on_top5_overlap"] = g["graph_on_top5_overlap"] >= HYBRID_TOP5
     else:
         not_run.append("graph")
     lme = results.get("longmemeval")
@@ -129,7 +142,8 @@ def verdict(results):
         checks["longmemeval_r5"] = lme["rust"]["r5"] >= lme["python"]["r5"] - MAX_DROP - 1e-9
     else:
         not_run.append("longmemeval")
-    return {"pass": all(checks.values()), "checks": checks, "not_run": not_run}
+    ok = bool(checks) and all(checks.values())
+    return {"pass": ("partial" if not_run else True) if ok else False, "checks": checks, "not_run": not_run}
 
 
 def client(url, key):
@@ -220,7 +234,16 @@ def compare_corpus(servers, queries):
         {"query": q, "python": [(x["id"], x["similarity"]) for x in p], "rust": [(x["id"], x["similarity"]) for x in r]}
         for q, p, r in zip(queries, py["vector"], rs["vector"]) if not top_same(ids(p), ids(r), 10)
     ][:5]
+    by_kind = {}
+    for k in ("keyword", "record_start"):
+        sel = [i for i in range(len(queries)) if kind(i) == k]
+        by_kind[k] = {
+            "queries": len(sel),
+            "hybrid_top1_same": mean(top1_same(ids(py["hybrid"][i]), ids(rs["hybrid"][i])) for i in sel),
+            "hybrid_top5_overlap": mean(overlap(ids(py["hybrid"][i]), ids(rs["hybrid"][i]), 5) for i in sel),
+        }
     return {
+        "by_kind": by_kind,
         "vector_differences": diffs,
         "vector_top10_same_tie_aware": mean(tie_top(p, r, 10) for p, r in zip(py["vector"], rs["vector"])),
         "queries": len(queries),
@@ -236,15 +259,24 @@ def compare_corpus(servers, queries):
 def compare_graph(servers, searches):
     from eval.run_graph_eval import score_result
 
-    out = {}
+    out, on = {}, {}
     for name, http in servers.items():
         scores = {"graph_off": [], "graph_on": []}
+        on[name] = []
         for s in searches:
             for key, weight in (("graph_off", 0.0), ("graph_on", 0.1)):
                 body = {"query": s["query"], "k": 5, "hybrid": True, "graph_weight": weight, "source_prefix": s["source_prefix"]}
-                scores[key].append(score_result(search(http, body), s["expected"]))
+                results = search(http, body)
+                scores[key].append(score_result(results, s["expected"]))
+                if weight:
+                    on[name].append(results)
         out[name] = {k: mean(v) for k, v in scores.items()}
     out["scenarios"] = len(searches)
+    pairs = list(zip(on["python"], on["rust"]))
+    out["graph_on_top1_same"] = mean(top1_same(ids(p), ids(r)) for p, r in pairs)
+    out["graph_on_top5_overlap"] = mean(overlap(ids(p), ids(r), 5) for p, r in pairs)
+    out["graph_on_match_types_same"] = mean(
+        [x.get("match_type") for x in p] == [x.get("match_type") for x in r] for p, r in pairs)
     return out
 
 
@@ -287,7 +319,8 @@ def compare(args):
     print(text)
     if args.out:
         Path(args.out).write_text(text + "\n")
-    return 0 if results["verdict"]["pass"] else 1
+    v = results["verdict"]["pass"]
+    return 0 if v is True or (v == "partial" and args.allow_partial) else 1
 
 
 def main(argv=None):
@@ -303,6 +336,7 @@ def main(argv=None):
     c.add_argument("--rust", required=True)
     c.add_argument("--plan", required=True)
     c.add_argument("--out", default="")
+    c.add_argument("--allow-partial", action="store_true", help="exit 0 when a part did not run")
     for p in (s, c):
         p.add_argument("--key", default="parity-admin-key")
     args = ap.parse_args(argv)

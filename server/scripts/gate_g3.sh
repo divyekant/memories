@@ -9,11 +9,13 @@
 #
 # Usage, from the repository root:
 #   QDRANT_URL=http://127.0.0.1:6333 server/scripts/gate_g3.sh <rust binary> [results.json]
-# G3_PARTS selects the parts (default corpus,graph; add longmemeval for the
-# full gate). G3_LME_EVERY selects each Nth LongMemEval question (default 5).
+# G3_PARTS selects the parts (default corpus,graph,longmemeval). With fewer
+# parts, the result is "partial" and the script exits 1, unless
+# G3_ALLOW_PARTIAL=1 (CI runs corpus,graph). G3_LME_EVERY selects each Nth LongMemEval question (default 5).
 # G3_PORT sets the Python port (default 18131); the Rust port is the next one.
 # Needs .venv (uv sync --frozen), a Qdrant server with no collections
-# memories and memories_v2, and ORT_DYLIB_PATH.
+# memories and memories_v2, and ORT_DYLIB_PATH. The script stops if one of the
+# two collections exists, and deletes the two collections at the end.
 set -euo pipefail
 rust_bin="$(realpath "$1")"
 out="${2:-}"
@@ -25,9 +27,13 @@ key="parity-admin-key"
 py_port="${G3_PORT:-18131}"
 rs_port=$((py_port + 1))
 pids=()
+own_collections=""
 cleanup() {
   local rc=$?
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
+  if [ -n "$own_collections" ]; then
+    for c in memories memories_v2; do curl -s -X DELETE "$QDRANT_URL/collections/$c" > /dev/null || true; done
+  fi
   if [ "$rc" -ne 0 ]; then
     for log in "$work"/*.log; do echo "== $log"; tail -n 50 "$log"; done >&2
   fi
@@ -52,10 +58,18 @@ start_python() {
   wait_up "$py_port"
 }
 
+for c in memories memories_v2; do
+  if curl -sf "$QDRANT_URL/collections/$c" > /dev/null; then
+    echo "Qdrant has the collection $c. Use an empty Qdrant server." >&2
+    exit 1
+  fi
+done
+own_collections=1
+
 # 1. The G3 data on the Python server.
 start_python
 .venv/bin/python -m parity.g3 seed --base-url "http://127.0.0.1:$py_port" \
-  --parts "${G3_PARTS:-corpus,graph}" --lme-every "${G3_LME_EVERY:-5}" --plan "$work/plan.json"
+  --parts "${G3_PARTS:-corpus,graph,longmemeval}" --lme-every "${G3_LME_EVERY:-5}" --plan "$work/plan.json"
 kill "${pids[0]}"
 wait "${pids[0]}" || true
 pids=()
@@ -70,4 +84,5 @@ API_KEY="$key" DATA_DIR="$work/rust" "$rust_bin" serve --port "$rs_port" >> "$wo
 pids+=($!)
 wait_up "$rs_port"
 .venv/bin/python -m parity.g3 compare --python "http://127.0.0.1:$py_port" \
-  --rust "http://127.0.0.1:$rs_port" --plan "$work/plan.json" ${out:+--out "$out"}
+  --rust "http://127.0.0.1:$rs_port" --plan "$work/plan.json" ${out:+--out "$out"} \
+  ${G3_ALLOW_PARTIAL:+--allow-partial}

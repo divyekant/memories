@@ -32,21 +32,55 @@ def test_queries_are_fixed_and_enough():
     assert len(set(q1)) == len(q1)
 
 
+GOOD = {
+    "corpus": {
+        "vector_top10_same": 0.995,
+        "by_kind": {
+            "keyword": {"hybrid_top1_same": 0.91, "hybrid_top5_overlap": 0.92},
+            "record_start": {"hybrid_top1_same": 0.99, "hybrid_top5_overlap": 0.97},
+        },
+    },
+    "graph": {
+        "python": {"graph_on": 0.80, "graph_off": 0.70},
+        "rust": {"graph_on": 0.795, "graph_off": 0.70},
+        "graph_on_top1_same": 1.0,
+        "graph_on_top5_overlap": 0.96,
+    },
+    "longmemeval": {"python": {"r5": 0.95}, "rust": {"r5": 0.941}},
+}
+
+
 def test_verdict_applies_the_gate_conditions():
-    good = {
-        "corpus": {"vector_top10_same": 0.995, "hybrid_top1_same": 0.92, "hybrid_top5_overlap": 0.95},
-        "graph": {"python": {"graph_on": 0.80, "graph_off": 0.70}, "rust": {"graph_on": 0.795, "graph_off": 0.70}},
-        "longmemeval": {"python": {"r5": 0.95}, "rust": {"r5": 0.941}},
-    }
-    v = g3.verdict(good)
-    assert v["pass"], v
-    bad = {**good, "longmemeval": {"python": {"r5": 0.95}, "rust": {"r5": 0.939}}}
-    assert not g3.verdict(bad)["pass"]
-    bad = {**good, "corpus": {**good["corpus"], "vector_top10_same": 0.98}}
-    assert not g3.verdict(bad)["pass"]
-    # A part that did not run does not fail the gate, but the verdict names it.
-    v = g3.verdict({"corpus": good["corpus"]})
-    assert v["pass"] and v["not_run"] == ["graph", "longmemeval"]
+    v = g3.verdict(GOOD)
+    assert v["pass"] is True, v
+    bad = {**GOOD, "longmemeval": {"python": {"r5": 0.95}, "rust": {"r5": 0.939}}}
+    assert g3.verdict(bad)["pass"] is False
+    bad = {**GOOD, "corpus": {**GOOD["corpus"], "vector_top10_same": 0.98}}
+    assert g3.verdict(bad)["pass"] is False
+
+
+def test_each_query_kind_must_pass():
+    by_kind = {**GOOD["corpus"]["by_kind"], "keyword": {"hybrid_top1_same": 0.85, "hybrid_top5_overlap": 0.92}}
+    bad = {**GOOD, "corpus": {**GOOD["corpus"], "by_kind": by_kind}}
+    assert g3.verdict(bad)["pass"] is False
+
+
+def test_graph_lists_must_agree_when_scores_are_at_the_maximum():
+    bad = {**GOOD, "graph": {**GOOD["graph"], "graph_on_top5_overlap": 0.6}}
+    assert g3.verdict(bad)["pass"] is False
+
+
+def test_a_part_that_did_not_run_gives_partial():
+    v = g3.verdict({"corpus": GOOD["corpus"]})
+    assert v["pass"] == "partial" and v["not_run"] == ["graph", "longmemeval"]
+    assert g3.verdict({})["pass"] is False
+
+
+def test_query_kinds_alternate():
+    texts = [m["text"] for m in g3.corpus()]
+    qs = g3.corpus_queries(texts)
+    assert all(qs[i].startswith("what about ") for i in range(0, len(qs), 2))
+    assert [g3.kind(i) for i in range(3)] == ["keyword", "record_start", "keyword"]
 
 
 def test_tie_top_allows_swaps_at_the_cut():

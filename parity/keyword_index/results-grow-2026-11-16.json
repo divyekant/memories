@@ -13,43 +13,90 @@
     "passes": [
       {
         "records": 1000,
-        "avgdl": 14.12
+        "avgdl": 14.12,
+        "last_pass_avgdl": null,
+        "rule_before_pass": null
       },
       {
         "records": 2100,
-        "avgdl": 31.13
+        "avgdl": 31.13,
+        "last_pass_avgdl": 14.12,
+        "rule_before_pass": {
+          "tie_overlap_at_10": 0.9489,
+          "tie_top1_same": 0.9101
+        }
       },
       {
         "records": 2200,
-        "avgdl": 45.06
+        "avgdl": 45.06,
+        "last_pass_avgdl": 31.13,
+        "rule_before_pass": {
+          "tie_overlap_at_10": 0.9607,
+          "tie_top1_same": 0.8876
+        }
       },
       {
         "records": 2300,
-        "avgdl": 58.15
+        "avgdl": 58.15,
+        "last_pass_avgdl": 45.06,
+        "rule_before_pass": {
+          "tie_overlap_at_10": 0.9659,
+          "tie_top1_same": 0.905
+        }
       },
       {
         "records": 2500,
-        "avgdl": 80.13
+        "avgdl": 80.13,
+        "last_pass_avgdl": 58.15,
+        "rule_before_pass": {
+          "tie_overlap_at_10": 0.9413,
+          "tie_top1_same": 0.8771
+        }
       },
       {
         "records": 2800,
-        "avgdl": 108.6
+        "avgdl": 108.6,
+        "last_pass_avgdl": 80.13,
+        "rule_before_pass": {
+          "tie_overlap_at_10": 0.9453,
+          "tie_top1_same": 0.8883
+        }
       },
       {
         "records": 3200,
-        "avgdl": 137.98
+        "avgdl": 137.98,
+        "last_pass_avgdl": 108.6,
+        "rule_before_pass": {
+          "tie_overlap_at_10": 0.952,
+          "tie_top1_same": 0.9274
+        }
       },
       {
         "records": 3900,
-        "avgdl": 175.07
+        "avgdl": 175.07,
+        "last_pass_avgdl": 137.98,
+        "rule_before_pass": {
+          "tie_overlap_at_10": 0.9542,
+          "tie_top1_same": 0.9274
+        }
       },
       {
         "records": 5400,
-        "avgdl": 220.73
+        "avgdl": 220.73,
+        "last_pass_avgdl": 175.07,
+        "rule_before_pass": {
+          "tie_overlap_at_10": 0.957,
+          "tie_top1_same": 0.9385
+        }
       },
       {
         "records": 10000,
-        "avgdl": 276.33
+        "avgdl": 276.33,
+        "last_pass_avgdl": 220.73,
+        "rule_before_pass": {
+          "tie_overlap_at_10": 0.9453,
+          "tie_top1_same": 0.9218
+        }
       }
     ],
     "checkpoints": [
@@ -143,12 +190,12 @@
         "avgdl": 286.6,
         "rule_avgdl": 276.33,
         "stale": {
-          "tie_overlap_at_10": 0.7721,
-          "tie_top1_same": 0.7207
+          "tie_overlap_at_10": 0.7737,
+          "tie_top1_same": 0.7318
         },
         "rule": {
-          "tie_overlap_at_10": 0.9626,
-          "tie_top1_same": 0.9274
+          "tie_overlap_at_10": 0.9615,
+          "tie_top1_same": 0.9385
         },
         "exact": {
           "tie_overlap_at_10": 0.9609,
@@ -160,15 +207,15 @@
         "avgdl": 295.65,
         "rule_avgdl": 276.33,
         "stale": {
-          "tie_overlap_at_10": 0.776,
-          "tie_top1_same": 0.7654
+          "tie_overlap_at_10": 0.7749,
+          "tie_top1_same": 0.7542
         },
         "rule": {
-          "tie_overlap_at_10": 0.9536,
-          "tie_top1_same": 0.9441
+          "tie_overlap_at_10": 0.9542,
+          "tie_top1_same": 0.9385
         },
         "exact": {
-          "tie_overlap_at_10": 0.9587,
+          "tie_overlap_at_10": 0.9592,
           "tie_top1_same": 0.9497
         }
       },
@@ -177,15 +224,15 @@
         "avgdl": 302.06,
         "rule_avgdl": 276.33,
         "stale": {
-          "tie_overlap_at_10": 0.7726,
+          "tie_overlap_at_10": 0.7721,
           "tie_top1_same": 0.7709
         },
         "rule": {
-          "tie_overlap_at_10": 0.952,
+          "tie_overlap_at_10": 0.9514,
           "tie_top1_same": 0.9609
         },
         "exact": {
-          "tie_overlap_at_10": 0.9536,
+          "tie_overlap_at_10": 0.9525,
           "tie_top1_same": 0.9665
         }
       },
@@ -194,7 +241,7 @@
         "avgdl": 306.77,
         "rule_avgdl": 276.33,
         "stale": {
-          "tie_overlap_at_10": 0.7693,
+          "tie_overlap_at_10": 0.7698,
           "tie_top1_same": 0.7542
         },
         "rule": {
@@ -212,11 +259,11 @@
         "rule_avgdl": 276.33,
         "stale": {
           "tie_overlap_at_10": 0.7676,
-          "tie_top1_same": 0.7374
+          "tie_top1_same": 0.743
         },
         "rule": {
-          "tie_overlap_at_10": 0.9469,
-          "tie_top1_same": 0.9441
+          "tie_overlap_at_10": 0.9475,
+          "tie_top1_same": 0.9497
         },
         "exact": {
           "tie_overlap_at_10": 0.9531,
