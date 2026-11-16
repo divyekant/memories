@@ -15,6 +15,10 @@
 #   must hold the records of the two sides.
 #
 # Usage, from the repository root: server/scripts/rollback_drill.sh <rust binary>
+# With DRILL_DATA set, the two cases start from a copy of production data in
+# place of the seed corpus. DRILL_DATA is a folder with metadata.json,
+# config.json and points.ndjson.gz (see the load command of rollback_drill.py).
+# Set DRILL_WAIT_SEC (default 240) for the time a server can take to start.
 # Needs: the Python environment in .venv (uv sync --frozen), QDRANT_URL (a
 # Qdrant server) and ORT_DYLIB_PATH (ONNX Runtime).
 set -euo pipefail
@@ -29,6 +33,9 @@ rs_port=18121
 pid=""
 blackhole=""
 collections=()
+# A migration or an export of a production copy re-embeds each record: it can
+# take much longer than the seed corpus.
+wait_sec="${DRILL_WAIT_SEC:-240}"
 drill() { .venv/bin/python server/scripts/rollback_drill.py "$@"; }
 cleanup() {
   local rc=$?
@@ -55,7 +62,7 @@ env_of() {
 python_cmd=(.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port "$py_port")
 
 wait_up() {
-  for _ in $(seq 1 240); do
+  for _ in $(seq 1 "$wait_sec"); do
     curl -sf "http://127.0.0.1:$1/health" > /dev/null && return 0
     kill -0 "$pid" 2>/dev/null || { echo "The server on port $1 stopped" >&2; return 1; }
     sleep 1
@@ -66,7 +73,7 @@ wait_up() {
 # The Rust server answers 503 until the first-start migration ends. A search
 # here would write last_reinforced_at of a record, so the probe is a read.
 wait_ready() {
-  for _ in $(seq 1 240); do
+  for _ in $(seq 1 "$wait_sec"); do
     code="$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: $key" "http://127.0.0.1:$rs_port/health/ready")"
     [ "$code" = 200 ] && return 0
     kill -0 "$pid" 2>/dev/null || { echo "The Rust server stopped" >&2; return 1; }
@@ -101,6 +108,16 @@ start_rust() {
   wait_up "$rs_port"
   wait_ready
 }
+# The start data of a case: $1 is the case name.
+fill() {
+  if [ -n "${DRILL_DATA:-}" ]; then
+    drill load "$QDRANT_URL" "drill_$1_$$" "$DRILL_DATA" "$work/$1"
+  else
+    start_python "$1"
+    drill seed "http://127.0.0.1:$py_port"
+    stop
+  fi
+}
 run_rust() {
   # shellcheck disable=SC2046
   env $(env_of "$1") "$rust_bin" "${@:2}"
@@ -110,9 +127,7 @@ echo "== Case 1: return through the rollback image"
 collections+=("drill_case1_$$")
 py="http://127.0.0.1:$py_port"
 rs="http://127.0.0.1:$rs_port"
-start_python case1
-drill seed "$py"
-stop
+fill case1
 # The provider of the Rust server accepts connections and never answers, so the
 # extract jobs still wait (running or queued) at the stop.
 .venv/bin/python -c "import socket, time; s = socket.socket(); s.bind(('127.0.0.1', 18122)); s.listen(64); time.sleep(3600)" &
@@ -133,25 +148,24 @@ start_rollback_image case1
 grep -q '"status": "exported"' "$work/rollback-case1.log"
 drill check-python "$py" "$work/expected1.json"
 drill search "$py" "$work/search-python.ndjson"
-drill diff "$work/search-rust.ndjson" "$work/search-python.ndjson"
+drill diff "$work/search-rust.ndjson" "$work/search-python.ndjson" ${DRILL_DATA:+ann}
 jobs_file="$work/case1/rollback-extract-jobs.ndjson"
 [ "$(wc -l < "$jobs_file")" -eq 3 ] || { echo "want 3 extract jobs in $jobs_file" >&2; exit 1; }
 MEMORIES_API_KEY="$key" .venv/bin/python server/scripts/resend_extract_jobs.py "$jobs_file" --base-url "$py"
 [ "$(wc -l < "$jobs_file.sent")" -eq 3 ]
 # A Python write, then a restart of the rollback image: the export must skip.
-curl -sf -H "X-API-Key: $key" -H 'Content-Type: application/json' \
-  -d '{"text":"Written by the Python server after the rollback.","source":"codex/drill"}' "$py/memory/add" > /dev/null
+added="$(curl -sf -H "X-API-Key: $key" -H 'Content-Type: application/json' \
+  -d '{"text":"Written by the Python server after the rollback.","source":"codex/drill"}' "$py/memory/add" \
+  | .venv/bin/python -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
 stop
 start_rollback_image case1
 grep -q '"status": "skipped"' "$work/rollback-case1.log"
-curl -sf -H "X-API-Key: $key" "$py/memories?limit=5000" | grep -q "Written by the Python server after the rollback."
+curl -sf -H "X-API-Key: $key" "$py/memory/$added" | grep -q "Written by the Python server after the rollback."
 stop
 
 echo "== Case 2: return through an old image tag, then migrate --merge"
 collections+=("drill_case2_$$")
-start_python case2
-drill seed "$py"
-stop
+fill case2
 start_rust case2
 drill changes "$rs" 200 2 "$work/touched2.json" "$QDRANT_URL" "drill_case2_$$_v2"
 # Searches on the two sides write last_reinforced_at; the merge must not count

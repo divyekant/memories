@@ -2,20 +2,26 @@
 
 Commands (URL is a server, QDRANT is the Qdrant REST address):
   seed URL                         Add the seed corpus of the parity kit.
+  load QDRANT NAME SRC DATA        Load a copy of production data in place of the seed:
+                                   SRC holds metadata.json, config.json and
+                                   points.ndjson.gz (Qdrant points with vectors).
   changes URL N SEED OUT           Make N changes; write the changed IDs to OUT.
   jobs URL N OUT                   Queue N extract jobs; write their bodies to OUT.
   collection QDRANT NAME OUT       Write each record of a Qdrant collection to OUT.
   search URL OUT                   Run the vector search cases; write the replies to OUT.
   check-python URL EXPECTED        Each record of EXPECTED is in the Python server, and
                                    no other record. Each read case answers 2xx.
-  diff A B                         The two search capture files are equal.
+  diff A B [ann]                   The two search capture files are equal. With ann,
+                                   a reply can have one other ID (production size).
   python-writes URL TOUCHED RUST OUT
                                    Case 2: writes on the Python server; write them to OUT.
   check-merge QDRANT NAME RUST PY  Case 2: each record of the two sides is in NAME.
 """
 
+import gzip
 import json
 import random
+import shutil
 import sys
 from pathlib import Path
 
@@ -55,9 +61,43 @@ def cmd_seed(url):
         raise SystemExit(f"seed cases failed: {bad}")
 
 
+def cmd_load(qdrant, name, src, data_dir):
+    src, data = Path(src), Path(data_dir)
+    meta = json.loads((src / "metadata.json").read_text())
+    ids = {m["id"] for m in meta}
+    with gzip.open(src / "points.ndjson.gz", "rt") as f:
+        points = [p for p in map(json.loads, f) if p["id"] in ids]
+    # The copy reads metadata.json, then Qdrant, from a live server: a point of a
+    # newer add is left out, and a record with no point makes the copy unusable.
+    if len(points) != len(ids):
+        raise SystemExit(f"{len(ids) - len(points)} records of metadata.json have no point: copy again")
+    data.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src / "metadata.json", data / "metadata.json")
+    # The Python server writes its QDRANT_COLLECTION here; export-legacy reads it.
+    config = json.loads((src / "config.json").read_text())
+    config["qdrant_collection"] = name
+    (data / "config.json").write_text(json.dumps(config, indent=2))
+    dim = len(points[0]["vector"])
+    with httpx.Client(base_url=qdrant, timeout=120) as q:
+        q.put(f"/collections/{name}", json={"vectors": {"size": dim, "distance": "Cosine"}}).raise_for_status()
+        for i in range(0, len(points), 1000):
+            batch = [{k: p[k] for k in ("id", "vector", "payload")} for p in points[i:i + 1000]]
+            q.put(f"/collections/{name}/points?wait=true", json={"points": batch}).raise_for_status()
+    print(f"loaded {len(points)} records into {name}")
+
+
+def all_memories(cl):
+    """Each record of GET /memories, in pages of 5,000 (the Python maximum)."""
+    out = []
+    while True:
+        page = ok(cl.get("/memories", params={"offset": len(out), "limit": 5000}))["memories"]
+        out.extend(page)
+        if len(page) < 5000:
+            return out
+
+
 def ids_of(cl):
-    # shortcut: one page of 5,000 records; the drill corpus is smaller.
-    return [m["id"] for m in ok(cl.get("/memories", params={"limit": 5000}))["memories"]]
+    return [m["id"] for m in all_memories(cl)]
 
 
 def qdrant_records(qdrant, name):
@@ -155,8 +195,36 @@ def cmd_search(url, out_path):
     kit.dump(kit.run(search_cases(), url, admin_key=KEY, allow_nonempty=True), out_path)
 
 
-def cmd_diff(a, b):
-    diffs = kit.diff_captures(kit.load(a), kit.load(b))
+def cmd_diff(a, b, mode="exact"):
+    left, right = kit.load(a), kit.load(b)
+    diffs = kit.diff_captures(left, right)
+    if mode == "ann":
+        # At production size Qdrant searches the HNSW graph, which is approximate,
+        # and the two collections have different graphs. Accept one other ID in
+        # a reply (the G3 tolerance); check-python checks each record exactly.
+        def results(case):
+            return (case["response"].get("body") or {}).get("results", [])
+
+        def ids(case):
+            return [r.get("id") for r in results(case)]
+
+        def same_shared(x, y):
+            # relative_score depends on the other results of the reply.
+            def strip(r):
+                return {k: v for k, v in r.items() if k != "relative_score"}
+            by_id = {r.get("id"): strip(r) for r in results(y)}
+            return all(by_id[r.get("id")] == strip(r) for r in results(x) if r.get("id") in by_id)
+        cases = {c["name"]: (c, d) for c, d in zip(left, right)}
+        kept = []
+        for d in diffs:
+            pair = cases.get(d["name"])
+            other = len(set(ids(pair[0])) ^ set(ids(pair[1]))) // 2 if pair else None
+            if pair and ids(pair[0]) and len(ids(pair[0])) == len(ids(pair[1])) and other <= 1 \
+                    and same_shared(*pair):
+                print(f"{d['name']}: {other} other ID (HNSW tolerance): {ids(pair[0])} / {ids(pair[1])}")
+            else:
+                kept.append(d)
+        diffs = kept
     for d in diffs:
         print(d)
     if diffs:
@@ -166,7 +234,7 @@ def cmd_diff(a, b):
 
 def python_records(url):
     with client(url) as cl:
-        mems = ok(cl.get("/memories", params={"limit": 5000}))["memories"]
+        mems = all_memories(cl)
     return {m["id"]: {k: v for k, v in m.items() if k != "confidence"} for m in mems}
 
 
@@ -274,7 +342,7 @@ def cmd_check_merge(qdrant, name, rust_path, py_path):
 
 def main(argv):
     cmd, args = argv[0], argv[1:]
-    fn = {"seed": cmd_seed, "changes": cmd_changes, "jobs": cmd_jobs, "collection": cmd_collection,
+    fn = {"seed": cmd_seed, "load": cmd_load, "changes": cmd_changes, "jobs": cmd_jobs, "collection": cmd_collection,
           "search": cmd_search, "diff": cmd_diff, "check-python": cmd_check_python,
           "python-writes": cmd_python_writes, "check-merge": cmd_check_merge}[cmd]
     fn(*args)
