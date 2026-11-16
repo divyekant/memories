@@ -93,6 +93,15 @@ impl Catalog {
         self.entries.get(&u64::try_from(id).ok()?)
     }
 
+    /// The records with a link to `id`, in ID order.
+    pub fn ids_linking_to(&self, id: i64) -> Vec<u64> {
+        self.entries
+            .iter()
+            .filter(|(_, e)| e.links.iter().any(|(to, _)| *to == id))
+            .map(|(&from, _)| from)
+            .collect()
+    }
+
     /// The distinct sources, sorted, with their record counts.
     pub fn sources(&self) -> &BTreeMap<String, u64> {
         &self.sources

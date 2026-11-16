@@ -82,6 +82,16 @@
   increase after 1,000 list requests. `python -m parity replay` gets
   `--save-vars` and `--vars-file`. No change to the Python server or to a
   client. Details: `docs/decisions/2026-11-16-rust-read-routes.md`.
+- **Core writes of the Rust server (rewrite task P3-1).** The Rust server
+  has `POST /memory/add` (with `deduplicate` and `on_duplicate`),
+  `/memory/add-batch`, `/memory/upsert`, `/memory/upsert-batch`, PATCH and
+  DELETE `/memory/{memory_id}` and `/memory/delete-batch`, with the project
+  namespace policy, the events and the audit actions of the Python server.
+  A write changes only the Qdrant points of its records. A PATCH embeds again
+  only when the text changes. CI replays the 49 golden cases of these routes
+  and counts the Qdrant calls at two corpus sizes. No change to the Python
+  server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-core-writes.md`.
 
 ### Changed
 - **Client and tool libraries are updated (Rust rewrite task P0-5).** The

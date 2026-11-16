@@ -19,7 +19,7 @@ use crate::{
     AppState,
     audit::Filter,
     auth::AuthContext,
-    error::{ApiError, JsonBody, int_parsing, item, missing, string_too_short},
+    error::{ApiError, JsonBody, int_parsing, item, missing, py_int, string_too_short},
     keys::{KeyError, KeyUpdate, is_valid_slug},
     shell::internal_error,
 };
@@ -180,40 +180,6 @@ pub(crate) fn last<'a>(q: &'a [(String, String)], name: &str) -> Option<&'a str>
         .rev()
         .find(|(k, _)| k == name)
         .map(|(_, v)| v.as_str())
-}
-
-/// pydantic 2 `int` from a string: spaces around, an optional sign, digits
-/// with single `_` between them, and an optional `.` with only zeros after it.
-/// A value out of the `i64` range saturates, so the bound check still fails.
-pub(crate) fn py_int(raw: &str) -> Option<i64> {
-    let s = raw.trim();
-    let (neg, s) = match s.as_bytes().first() {
-        Some(b'-') => (true, &s[1..]),
-        Some(b'+') => (false, &s[1..]),
-        _ => (false, s),
-    };
-    let (int, frac) = s.split_once('.').unwrap_or((s, ""));
-    if s.contains('.') && (frac.is_empty() || !frac.bytes().all(|b| b == b'0')) {
-        return None;
-    }
-    let b = int.as_bytes();
-    let digit_ok = |i: usize| {
-        b[i].is_ascii_digit()
-            || (b[i] == b'_'
-                && i > 0
-                && i + 1 < b.len()
-                && b[i - 1].is_ascii_digit()
-                && b[i + 1].is_ascii_digit())
-    };
-    // pydantic-core takes leading zeros only without a minus sign: "-07" fails.
-    if b.is_empty() || !(0..b.len()).all(digit_ok) || (neg && b.len() > 1 && b[0] == b'0') {
-        return None;
-    }
-    let mut v: i64 = 0;
-    for d in b.iter().filter(|c| c.is_ascii_digit()) {
-        v = v.saturating_mul(10).saturating_add(i64::from(d - b'0'));
-    }
-    Some(if neg { -v } else { v })
 }
 
 /// `name: int = Query(default, ge=min, le=max)`.

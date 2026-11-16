@@ -29,9 +29,9 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     AppState,
-    admin::{last, py_int, query_int},
+    admin::{last, query_int},
     auth::AuthContext,
-    error::{ApiError, JsonBody, int_parsing, item, list_too_short, missing, path_int},
+    error::{ApiError, JsonBody, int_parsing, item, list_too_short, missing, path_int, py_int},
     shell::internal_error,
 };
 
@@ -789,7 +789,7 @@ mod tests {
             ("+3", "3"),
             ("99999999999999999999999", "99999999999999999999999"),
         ] {
-            assert!(crate::admin::py_int(raw).is_some(), "{raw}");
+            assert!(crate::error::py_int(raw).is_some(), "{raw}");
             assert_eq!(int_text(raw), text, "{raw}");
         }
     }
