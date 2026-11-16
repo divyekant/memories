@@ -12,6 +12,30 @@
 - **Capture middleware.** If `PARITY_CAPTURE_DIR` is set, the server writes
   each request and its reply to an NDJSON file in that directory. The default
   is off. The file holds memory text. Key headers are redacted.
+- **Rust server workspace (rewrite task P0-4).** `server/` holds the cargo
+  workspace of the Rust server, with six crates, a pinned toolchain, a
+  committed `Cargo.lock` and `server/Dockerfile` for amd64 and arm64. The
+  server answers `GET /health` only. CI adds format, lint, test, `cargo deny`
+  and crate age checks, and starts the bundled compose file with the Rust
+  image on each architecture. No change to the Python server or to a client.
+
+### Changed
+- **Client and tool libraries are updated (Rust rewrite task P0-5).** The
+  check and each decision are in `docs/rust-rewrite/library-review.md`.
+  - MCP server: `@modelcontextprotocol/sdk` 1.32.2, `express` 5.3.0 and
+    `js-yaml` 4.3.2, with exact versions. `zod` 4.6.7 is now a direct
+    dependency. `npm audit` finds 0 issues (11
+    before, 1 of them critical in `proxy-addr`).
+  - Remote MCP server image: `node:26.13.1-alpine`.
+  - CLI and tests: `click` 8.5.1 and `pytest` 9.2.0.
+  - GitHub Actions: `actions/checkout` v7.0.1, `actions/setup-node` v7.1.0
+    and `astral-sh/setup-uv` v10.3.3, pinned to a commit SHA. CI now runs
+    the MCP server tests on Node 26.
+  - The Python server libraries do not change.
+  - The text of an MCP tool input error (-32602) is now a short sentence.
+- **The remote MCP server exits with code 1 when its port is in use.** Express
+  5 gives the listen error to a callback. Without the fix, the server logged
+  "listening" and exited with code 0.
 
 ## [5.19.0] - 2026-11-16
 

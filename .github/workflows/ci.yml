@@ -11,18 +11,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26 }
 
       - name: MCP server install (pytest's stdio smoke needs node_modules)
         run: |
           cd mcp-server
-          npm ci
+          npm ci --ignore-scripts
           node --check index.js
+
+      - name: MCP server tests
+        run: cd mcp-server && npm test
 
       - name: Run pytest
         run: uv run pytest -q
@@ -39,21 +45,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
 
       - name: Install dependencies
         run: uv sync --frozen
-
-      - name: Cache the embedding model
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-all-MiniLM-L6-v2
 
       - name: Self-test of the kit
         run: uv run pytest -q tests/test_parity_kit.py
@@ -85,10 +85,67 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build image
         run: docker build -t memories-ci --target core .
 
       - name: Import app inside image
         run: docker run --rm --entrypoint python memories-ci -c "import app; print('app imports OK')"
+
+  rust:
+    # Rust server (server/): format, lint, tests, supply-chain checks.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: server
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Lint check
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Script tests
+        run: python3 -m unittest discover -s scripts -v
+
+      - name: No crate release less than 2 days old
+        run: python3 scripts/check_crate_age.py Cargo.lock --days 2
+
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: server/Cargo.toml
+          arguments: --locked
+          command: check
+
+  rust-image:
+    # Build the Rust image on each architecture. Then start the bundled compose
+    # file with that image, with no change to the file, and wait for healthy.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build image
+        run: docker build -t ghcr.io/divyekant/memories:rust-ci server
+
+      - name: Bundled compose file reports healthy
+        run: server/scripts/compose_health_check.sh rust-ci

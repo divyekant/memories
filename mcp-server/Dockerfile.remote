@@ -3,12 +3,12 @@
 # Minimal image: OAuth 2.1 + Streamable HTTP front door (remote/) fronting the
 # existing Memories backend over MEMORIES_URL. Does not run the backend itself
 # — pair with the `memories` service (see docker-compose.yml).
-FROM node:24-alpine
+FROM node:26.13.1-alpine
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --ignore-scripts
 
 # index.js lazily imports cli/ (see index.js's dynamic `await import('./cli/index.mjs')`
 # for the `memories` bin) — not exercised by remote/server.mjs, but copied
