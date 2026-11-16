@@ -15,6 +15,9 @@
 #   must hold the records of the two sides.
 #
 # Usage, from the repository root: server/scripts/rollback_drill.sh <rust binary>
+# With DRILL_DATA set, the two cases start from a copy of production data in
+# place of the seed corpus. DRILL_DATA is a folder with metadata.json,
+# config.json and points.ndjson.gz (see the load command of rollback_drill.py).
 # Needs: the Python environment in .venv (uv sync --frozen), QDRANT_URL (a
 # Qdrant server) and ORT_DYLIB_PATH (ONNX Runtime).
 set -euo pipefail
@@ -101,6 +104,16 @@ start_rust() {
   wait_up "$rs_port"
   wait_ready
 }
+# The start data of a case: $1 is the case name.
+fill() {
+  if [ -n "${DRILL_DATA:-}" ]; then
+    drill load "$QDRANT_URL" "drill_$1_$$" "$DRILL_DATA" "$work/$1"
+  else
+    start_python "$1"
+    drill seed "http://127.0.0.1:$py_port"
+    stop
+  fi
+}
 run_rust() {
   # shellcheck disable=SC2046
   env $(env_of "$1") "$rust_bin" "${@:2}"
@@ -110,9 +123,7 @@ echo "== Case 1: return through the rollback image"
 collections+=("drill_case1_$$")
 py="http://127.0.0.1:$py_port"
 rs="http://127.0.0.1:$rs_port"
-start_python case1
-drill seed "$py"
-stop
+fill case1
 # The provider of the Rust server accepts connections and never answers, so the
 # extract jobs still wait (running or queued) at the stop.
 .venv/bin/python -c "import socket, time; s = socket.socket(); s.bind(('127.0.0.1', 18122)); s.listen(64); time.sleep(3600)" &
@@ -150,9 +161,7 @@ stop
 
 echo "== Case 2: return through an old image tag, then migrate --merge"
 collections+=("drill_case2_$$")
-start_python case2
-drill seed "$py"
-stop
+fill case2
 start_rust case2
 drill changes "$rs" 200 2 "$work/touched2.json" "$QDRANT_URL" "drill_case2_$$_v2"
 # Searches on the two sides write last_reinforced_at; the merge must not count

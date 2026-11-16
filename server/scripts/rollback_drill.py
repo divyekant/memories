@@ -2,6 +2,9 @@
 
 Commands (URL is a server, QDRANT is the Qdrant REST address):
   seed URL                         Add the seed corpus of the parity kit.
+  load QDRANT NAME SRC DATA        Load a copy of production data in place of the seed:
+                                   SRC holds metadata.json, config.json and
+                                   points.ndjson.gz (Qdrant points with vectors).
   changes URL N SEED OUT           Make N changes; write the changed IDs to OUT.
   jobs URL N OUT                   Queue N extract jobs; write their bodies to OUT.
   collection QDRANT NAME OUT       Write each record of a Qdrant collection to OUT.
@@ -14,8 +17,10 @@ Commands (URL is a server, QDRANT is the Qdrant REST address):
   check-merge QDRANT NAME RUST PY  Case 2: each record of the two sides is in NAME.
 """
 
+import gzip
 import json
 import random
+import shutil
 import sys
 from pathlib import Path
 
@@ -53,6 +58,28 @@ def cmd_seed(url):
     bad = [r["name"] for r in out if r["response"]["status"] >= 300]
     if bad:
         raise SystemExit(f"seed cases failed: {bad}")
+
+
+def cmd_load(qdrant, name, src, data_dir):
+    src, data = Path(src), Path(data_dir)
+    meta = json.loads((src / "metadata.json").read_text())
+    ids = {m["id"] for m in meta}
+    with gzip.open(src / "points.ndjson.gz", "rt") as f:
+        points = [p for p in map(json.loads, f) if p["id"] in ids]
+    # The copy reads metadata.json, then Qdrant, from a live server: a point of a
+    # newer add is left out, and a record with no point makes the copy unusable.
+    if len(points) != len(ids):
+        raise SystemExit(f"{len(ids) - len(points)} records of metadata.json have no point: copy again")
+    data.mkdir(parents=True, exist_ok=True)
+    for f in ("metadata.json", "config.json"):
+        shutil.copyfile(src / f, data / f)
+    dim = len(points[0]["vector"])
+    with httpx.Client(base_url=qdrant, timeout=120) as q:
+        q.put(f"/collections/{name}", json={"vectors": {"size": dim, "distance": "Cosine"}}).raise_for_status()
+        for i in range(0, len(points), 1000):
+            batch = [{k: p[k] for k in ("id", "vector", "payload")} for p in points[i:i + 1000]]
+            q.put(f"/collections/{name}/points?wait=true", json={"points": batch}).raise_for_status()
+    print(f"loaded {len(points)} records into {name}")
 
 
 def all_memories(cl):
@@ -283,7 +310,7 @@ def cmd_check_merge(qdrant, name, rust_path, py_path):
 
 def main(argv):
     cmd, args = argv[0], argv[1:]
-    fn = {"seed": cmd_seed, "changes": cmd_changes, "jobs": cmd_jobs, "collection": cmd_collection,
+    fn = {"seed": cmd_seed, "load": cmd_load, "changes": cmd_changes, "jobs": cmd_jobs, "collection": cmd_collection,
           "search": cmd_search, "diff": cmd_diff, "check-python": cmd_check_python,
           "python-writes": cmd_python_writes, "check-merge": cmd_check_merge}[cmd]
     fn(*args)
