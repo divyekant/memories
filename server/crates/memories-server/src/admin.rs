@@ -69,6 +69,17 @@ impl<'a> Body<'a> {
     /// A `str` field with `min_length=1`, `max_length=200` and an optional pattern.
     /// `required` is a field with no default; else `null` and a missing field give `None`.
     fn string(&mut self, name: &str, required: bool, pattern: Option<Pattern>) -> Option<String> {
+        self.string_checked(name, required, true, pattern)
+    }
+
+    /// `bounded` adds `min_length=1, max_length=200`; `role` has only a pattern.
+    fn string_checked(
+        &mut self,
+        name: &str,
+        required: bool,
+        bounded: bool,
+        pattern: Option<Pattern>,
+    ) -> Option<String> {
         let loc = json!(["body", name]);
         let v = match self.map.get(name) {
             None if required => {
@@ -90,9 +101,9 @@ impl<'a> Body<'a> {
             return None;
         };
         let len = s.chars().count();
-        if len < 1 {
+        if bounded && len < 1 {
             self.errors.push(string_too_short(loc, v.clone(), 1));
-        } else if len > 200 {
+        } else if bounded && len > 200 {
             let mut e = item(
                 "string_too_long",
                 loc,
@@ -267,7 +278,7 @@ pub async fn create_key(
     let mut b = Body::new(&map);
     let name = b.string("name", true, None);
     let principal_id = b.string("principal_id", false, Some((SLUG_PATTERN, is_valid_slug)));
-    let role = b.string("role", true, Some((ROLE_PATTERN, is_role)));
+    let role = b.string_checked("role", true, false, Some((ROLE_PATTERN, is_role)));
     let prefixes = b.string_list("prefixes", false);
     b.finish().map_err(IntoResponse::into_response)?;
     let (name, role) = (name.unwrap(), role.unwrap());
@@ -315,7 +326,7 @@ pub async fn update_key(
     let u = KeyUpdate {
         name: b.string("name", false, None),
         principal_id: b.string("principal_id", false, Some((SLUG_PATTERN, is_valid_slug))),
-        role: b.string("role", false, Some((ROLE_PATTERN, is_role))),
+        role: b.string_checked("role", false, false, Some((ROLE_PATTERN, is_role))),
         prefixes: b.string_list("prefixes", true),
     };
     b.finish().map_err(IntoResponse::into_response)?;

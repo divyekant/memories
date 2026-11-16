@@ -266,6 +266,12 @@ async fn body_errors_match_pydantic() {
             json!([
             {"type": "string_pattern_mismatch", "loc": ["body", "role"], "msg": "String should match pattern '^(read-only|read-write|admin)$'", "input": "admin\n", "ctx": {"pattern": "^(read-only|read-write|admin)$"}}]),
         ),
+        // `role` has a pattern and no length limit.
+        (
+            json!({"name": "n", "role": ""}),
+            json!([
+            {"type": "string_pattern_mismatch", "loc": ["body", "role"], "msg": "String should match pattern '^(read-only|read-write|admin)$'", "input": "", "ctx": {"pattern": "^(read-only|read-write|admin)$"}}]),
+        ),
         (
             json!({"name": "n", "role": "read-only", "principal_id": "-bad"}),
             json!([
