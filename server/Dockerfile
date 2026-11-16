@@ -3,6 +3,7 @@
 # Build from the server/ folder: docker build -t memories-rust server
 
 # ONNX Runtime 1.31.0 (the version that ort 2.0.0-rc.15 targets), pinned by hash.
+# The G2 step of .github/workflows/ci.yml uses the same amd64 archive and hash.
 FROM scratch AS ort-amd64
 ADD --checksum=sha256:cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57 \
     https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-linux-x64-1.31.0.tgz /ort.tgz

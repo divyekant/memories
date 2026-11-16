@@ -17,6 +17,7 @@ axum = "0.8.9"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "ndarray"] }
 qdrant-client = "1.20.0"
+regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
 rusqlite = { version = "0.42.0", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
