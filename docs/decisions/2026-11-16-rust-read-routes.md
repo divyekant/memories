@@ -56,7 +56,6 @@ reinforcement, as the Python server shows its in-memory value.
 |---|---|---|
 | `index_size_bytes` of `/stats` | Size of the embedded Qdrant files (0 with a Qdrant server) | Always 0 (a Qdrant server keeps no files in `DATA_DIR`) |
 | `confidence` of a record whose source has an extraction profile with `confidence_half_life_days` | Half-life of the profile | Half-life 90 days until the profile routes are ported |
-| `/usage` events `get` and `get_batch` | Written when `USAGE_TRACKING` is on | Not written until the usage task |
 | A get-batch ID above 2^63-1 in `missing_ids` | The ID as sent | 9223372036854775807 |
 | A record with `conflicts_with: []` in `/memory/conflicts` | In the list, with `conflicting_memory` null | Not in the list (the Qdrant `is_empty` filter removes it) |
 | `conflicts_with` of `true` or `5.0`, with a target that the key cannot read | `{"id": true}` or `{"id": 5.0}` in the redacted entry | `{"id": 1}` or `{"id": 5}` |

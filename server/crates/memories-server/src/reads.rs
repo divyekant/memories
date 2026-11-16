@@ -14,7 +14,7 @@ use std::sync::Arc;
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use memories_engine::{
@@ -32,6 +32,7 @@ use crate::{
     admin::{last, query_int},
     auth::AuthContext,
     error::{ApiError, JsonBody, int_parsing, item, list_too_short, missing, path_int, py_int},
+    search::{Caller, log},
     shell::internal_error,
 };
 
@@ -372,6 +373,7 @@ fn reader(state: &AppState) -> Result<Reader<'_>, Response> {
 pub async fn get_memory(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
     Path(raw): Path<String>,
 ) -> Result<Json<Value>, Response> {
     let id = path_int("memory_id", &raw).map_err(IntoResponse::into_response)?;
@@ -386,12 +388,14 @@ pub async fn get_memory(
         )
         .into_response());
     }
+    log(&state, Caller::of(&headers).row("get", "", 1));
     Ok(Json(with_confidence(&r, &PyDateTime::now_utc())))
 }
 
 pub async fn get_batch(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
     JsonBody(body): JsonBody,
 ) -> Result<Json<Value>, Response> {
     let ids = batch_ids(&body).map_err(|e| ApiError::validation(e).into_response())?;
@@ -409,6 +413,10 @@ pub async fn get_batch(
             None => missing_ids.push(id),
         }
     }
+    log(
+        &state,
+        Caller::of(&headers).row("get_batch", "", memories.len() as i64),
+    );
     Ok(Json(json!({
         "memories": memories,
         "missing_ids": missing_ids,
