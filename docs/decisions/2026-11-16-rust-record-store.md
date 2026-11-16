@@ -37,6 +37,10 @@ The server calculates `confidence` at each read
 | Payload | The full record except `id` |
 | Payload indexes | `source`, `document_at`, `entity_key` (keyword); `archived`, `pinned`, `is_latest` (bool); `conflicts_with`, `links[].to_id` (integer) |
 
+An existing collection must have the same vectors, or `ensure_collection`
+fails. The store refuses an `id` key in a payload, because the point ID is the
+record ID.
+
 The store operations are `get`, `get_many`, `upsert`, `set_payload`,
 `replace_payload`, `delete`, `scroll`, `count`, `facet` and `max_id`.
 
@@ -63,7 +67,9 @@ The Python server took `max(id) + 1` at each load. Thus a delete of the
 highest ID gave that ID again. The cause of the duplicate ID in production
 (108742 two times in `metadata.json`, 2 November) is not known yet. The Rust
 counter does not depend on the stored IDs, so a stale in-memory value cannot
-give an ID two times.
+give an ID two times. This guarantee needs `state.db` to stay: keep it on the
+data volume and in the backups. If `state.db` is lost, the counter starts
+again above the highest stored ID, so a deleted highest ID can come again.
 
 ## Contract differences
 

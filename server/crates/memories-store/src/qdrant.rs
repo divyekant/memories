@@ -10,7 +10,7 @@ use qdrant_client::qdrant::{
     Modifier, PointId, PointStruct, PointsIdsList, ReadConsistency, RetrievedPoint,
     ScrollPointsBuilder, SetPayloadPointsBuilder, SparseVectorParamsBuilder,
     SparseVectorsConfigBuilder, UpsertPointsBuilder, Value, Vector, VectorParamsBuilder,
-    VectorsConfigBuilder, WriteOrdering, facet_value, point_id,
+    VectorsConfigBuilder, WriteOrdering, facet_value, point_id, vectors_config,
 };
 use qdrant_client::{Payload, Qdrant};
 use serde_json::{Map, Value as Json};
@@ -48,6 +48,11 @@ pub enum StoreError {
     BadDimension { id: u64, got: usize, want: u64 },
     #[error("qdrant returned a point with a UUID id")]
     UuidPoint,
+    /// The point ID is the record ID. A payload `id` would hide it.
+    #[error("record {id}: the payload must not have an \"id\" field")]
+    IdInPayload { id: u64 },
+    #[error("collection {collection} exists with another vector config: {detail}")]
+    BadCollection { collection: String, detail: String },
 }
 
 /// A point to write.
@@ -78,14 +83,22 @@ fn too_large(value: &Json) -> bool {
     }
 }
 
-fn checked_payload(record: &Record) -> Result<Map<String, Json>, StoreError> {
-    let payload = record.to_payload();
-    if let Some((field, _)) = payload.iter().find(|(_, v)| too_large(v)) {
+fn check_fields(id: u64, fields: &Map<String, Json>) -> Result<(), StoreError> {
+    if fields.contains_key("id") {
+        return Err(StoreError::IdInPayload { id });
+    }
+    if let Some((field, _)) = fields.iter().find(|(_, v)| too_large(v)) {
         return Err(StoreError::IntegerTooLarge {
-            id: record.id,
+            id,
             field: field.clone(),
         });
     }
+    Ok(())
+}
+
+fn checked_payload(record: &Record) -> Result<Map<String, Json>, StoreError> {
+    let payload = record.to_payload();
+    check_fields(record.id, &payload)?;
     Ok(payload)
 }
 
@@ -140,11 +153,11 @@ impl QdrantStore {
     }
 
     /// Make the collection and its payload indexes if they do not exist.
-    /// Returns true if the call made the collection.
+    /// Returns true if the call made the collection. An existing collection
+    /// must have the same vectors, or the call fails.
     pub async fn ensure_collection(&self, dim: u64) -> Result<bool, StoreError> {
-        let created = if self.client.collection_exists(&self.collection).await? {
-            false
-        } else {
+        let mut created = false;
+        if !self.client.collection_exists(&self.collection).await? {
             let mut sparse = SparseVectorsConfigBuilder::default();
             sparse.add_named_vector_params(
                 KEYWORD_VECTOR,
@@ -155,7 +168,8 @@ impl QdrantStore {
                 DENSE_VECTOR,
                 VectorParamsBuilder::new(dim, Distance::Cosine),
             );
-            self.client
+            let made = self
+                .client
                 .create_collection(
                     CreateCollectionBuilder::new(&self.collection)
                         .vectors_config(dense)
@@ -163,9 +177,19 @@ impl QdrantStore {
                         .replication_factor(self.replication_factor)
                         .write_consistency_factor(self.write_consistency_factor),
                 )
-                .await?;
-            true
-        };
+                .await;
+            match made {
+                Ok(_) => created = true,
+                // A second process made it between the check and the create.
+                Err(e) if !self.client.collection_exists(&self.collection).await? => {
+                    return Err(e.into());
+                }
+                Err(_) => {}
+            }
+        }
+        if !created {
+            self.check_vectors(dim).await?;
+        }
         for (field, kind) in PAYLOAD_INDEXES {
             self.client
                 .create_field_index(
@@ -175,6 +199,41 @@ impl QdrantStore {
                 .await?;
         }
         Ok(created)
+    }
+
+    async fn check_vectors(&self, dim: u64) -> Result<(), StoreError> {
+        let bad = |detail: String| StoreError::BadCollection {
+            collection: self.collection.clone(),
+            detail,
+        };
+        let info = self.client.collection_info(&self.collection).await?;
+        let params = info
+            .result
+            .and_then(|r| r.config)
+            .and_then(|c| c.params)
+            .ok_or_else(|| bad("no config".into()))?;
+        let dense = params
+            .vectors_config
+            .and_then(|v| v.config)
+            .and_then(|c| match c {
+                vectors_config::Config::ParamsMap(m) => m.map.get(DENSE_VECTOR).cloned(),
+                vectors_config::Config::Params(_) => None,
+            })
+            .ok_or_else(|| bad(format!("no dense vector {DENSE_VECTOR:?}")))?;
+        if dense.size != dim || dense.distance != Distance::Cosine as i32 {
+            return Err(bad(format!(
+                "dense vector size {} distance {}, want {dim} cosine",
+                dense.size, dense.distance
+            )));
+        }
+        let sparse = params
+            .sparse_vectors_config
+            .and_then(|s| s.map.get(KEYWORD_VECTOR).cloned())
+            .ok_or_else(|| bad(format!("no sparse vector {KEYWORD_VECTOR:?}")))?;
+        if sparse.modifier != Some(Modifier::Idf as i32) {
+            return Err(bad("the keyword vector has no idf modifier".into()));
+        }
+        Ok(())
     }
 
     pub async fn delete_collection(&self) -> Result<(), StoreError> {
@@ -211,7 +270,7 @@ impl QdrantStore {
             .upsert_points(
                 UpsertPointsBuilder::new(&self.collection, structs)
                     .wait(self.wait)
-                    .ordering(self.ordering.clone()),
+                    .ordering(self.ordering),
             )
             .await?;
         Ok(())
@@ -240,7 +299,11 @@ impl QdrantStore {
             let r = retrieved(point)?;
             found.insert(r.id, r);
         }
-        Ok(wanted.iter().filter_map(|id| found.remove(id)).collect())
+        // A repeated ID gives the record again, as `get_memories` does.
+        Ok(wanted
+            .iter()
+            .filter_map(|id| found.get(id).cloned())
+            .collect())
     }
 
     /// Merge `fields` into the payload of each point of `ids`. The vectors do
@@ -250,18 +313,13 @@ impl QdrantStore {
         id_list: &[u64],
         fields: Map<String, Json>,
     ) -> Result<(), StoreError> {
-        if let Some((field, _)) = fields.iter().find(|(_, v)| too_large(v)) {
-            return Err(StoreError::IntegerTooLarge {
-                id: id_list.first().copied().unwrap_or_default(),
-                field: field.clone(),
-            });
-        }
+        check_fields(id_list.first().copied().unwrap_or_default(), &fields)?;
         self.client
             .set_payload(
                 SetPayloadPointsBuilder::new(&self.collection, Payload::from(fields))
                     .points_selector(PointsIdsList { ids: ids(id_list) })
                     .wait(self.wait)
-                    .ordering(self.ordering.clone()),
+                    .ordering(self.ordering),
             )
             .await?;
         Ok(())
@@ -278,7 +336,7 @@ impl QdrantStore {
                         ids: ids(&[record.id]),
                     })
                     .wait(self.wait)
-                    .ordering(self.ordering.clone()),
+                    .ordering(self.ordering),
             )
             .await?;
         Ok(())
@@ -293,7 +351,7 @@ impl QdrantStore {
                 DeletePointsBuilder::new(&self.collection)
                     .points(PointsIdsList { ids: ids(id_list) })
                     .wait(self.wait)
-                    .ordering(self.ordering.clone()),
+                    .ordering(self.ordering),
             )
             .await?;
         Ok(())
@@ -333,7 +391,9 @@ impl QdrantStore {
 
     /// The exact count of the points that match `filter`.
     pub async fn count(&self, filter: Option<Filter>) -> Result<u64, StoreError> {
-        let mut request = CountPointsBuilder::new(&self.collection).exact(true);
+        let mut request = CountPointsBuilder::new(&self.collection)
+            .exact(true)
+            .read_consistency(self.consistency.value.expect("set in new"));
         if let Some(f) = filter {
             request = request.filter(f);
         }
@@ -356,7 +416,7 @@ impl QdrantStore {
         let mut request = FacetCountsBuilder::new(&self.collection, key)
             .limit(limit)
             .exact(true)
-            .read_consistency(self.consistency.clone());
+            .read_consistency(self.consistency);
         if let Some(f) = filter {
             request = request.filter(f);
         }
@@ -386,7 +446,8 @@ impl QdrantStore {
             let mut request = ScrollPointsBuilder::new(&self.collection)
                 .limit(ID_PAGE)
                 .with_payload(false)
-                .with_vectors(false);
+                .with_vectors(false)
+                .read_consistency(self.consistency.value.expect("set in new"));
             if let Some(o) = offset.take() {
                 request = request.offset(o);
             }

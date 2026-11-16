@@ -27,6 +27,8 @@ pub struct Record {
     pub timestamp: Option<String>,
     pub last_reinforced_at: Option<String>,
     pub document_at: Option<String>,
+    /// A typed bool holds only a JSON bool. A truthy value of another type
+    /// (Python `if meta.get("archived")`) stays in `extra`; read it with `field`.
     pub archived: Option<bool>,
     pub pinned: Option<bool>,
     pub is_latest: Option<bool>,
@@ -137,9 +139,9 @@ impl Record {
 
     /// The record as JSON, with `id`.
     pub fn to_json(&self) -> Value {
-        let mut map = Map::new();
+        let mut map = self.to_payload();
+        // The point ID wins over an `id` key in the payload.
         map.insert("id".to_owned(), self.id.into());
-        map.extend(self.to_payload());
         Value::Object(map)
     }
 
@@ -221,5 +223,12 @@ mod tests {
             Err(RecordError::BadId)
         );
         assert_eq!(Record::from_json(json!([1])), Err(RecordError::NotAnObject));
+    }
+
+    #[test]
+    fn the_record_id_wins_over_a_payload_id() {
+        let mut map = Map::new();
+        map.insert("id".into(), json!(9));
+        assert_eq!(Record::from_payload(4, map).to_json()["id"], json!(4));
     }
 }

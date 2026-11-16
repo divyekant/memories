@@ -67,11 +67,11 @@ async fn each_field_of_each_seed_record_is_equal_after_a_write_and_a_read() {
         assert_eq!(&got, r, "typed fields of record {}", r.id);
     }
 
-    let wanted = [records[3].id, 999_999, records[0].id];
+    let wanted = [records[3].id, 999_999, records[0].id, records[3].id];
     let many = store.get_many(&wanted).await.unwrap();
     assert_eq!(
         many.iter().map(|r| r.id).collect::<Vec<_>>(),
-        [records[3].id, records[0].id]
+        [records[3].id, records[0].id, records[3].id]
     );
     assert!(store.get(999_999).await.unwrap().is_none());
 
@@ -155,6 +155,10 @@ async fn the_collection_has_the_vectors_and_payload_indexes() {
             "source"
         ]
     );
+    assert!(matches!(
+        store.ensure_collection(DIM + 1).await,
+        Err(StoreError::BadCollection { .. })
+    ));
     let params = info.config.unwrap().params.unwrap();
     let sparse = params.sparse_vectors_config.unwrap().map;
     assert_eq!(sparse["keyword"].modifier, Some(1), "IDF modifier");
@@ -199,6 +203,18 @@ async fn payload_writes() {
     assert!(matches!(
         store.replace_payload(&big).await,
         Err(StoreError::IntegerTooLarge { .. })
+    ));
+    assert!(matches!(
+        store
+            .set_payload(&[record.id], json!({"id": 5}).as_object().unwrap().clone())
+            .await,
+        Err(StoreError::IdInPayload { .. })
+    ));
+    let mut with_id = record.clone();
+    with_id.extra.insert("id".into(), json!(5));
+    assert!(matches!(
+        store.upsert(vec![point(with_id)], DIM).await,
+        Err(StoreError::IdInPayload { .. })
     ));
     let mut short = point(record.clone());
     short.dense.pop();
