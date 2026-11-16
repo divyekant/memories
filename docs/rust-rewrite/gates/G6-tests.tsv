@@ -808,6 +808,7 @@ test_g6_clients.py::test_sort_matches_path_routes	tool			tests a tool that stays
 test_g6_clients.py::test_each_probe_name_holds_its_status	tool			tests a tool that stays after the cutover
 test_g6_clients.py::test_known_difference_accepts_only_its_own_keys	tool			tests a tool that stays after the cutover
 test_g6_clients.py::test_sort_keeps_methods_of_two_classes_apart	tool			tests a tool that stays after the cutover
+test_g6_clients.py::test_fixed_defect_is_known_only_with_the_expected_replies	tool			tests a tool that stays after the cutover
 test_graph_search.py::TestGraphExpand::test_no_links_returns_empty	internals			calls Python code with no HTTP request: memory_engine.py
 test_graph_search.py::TestGraphExpand::test_1hop_neighbor_discovered	internals			calls Python code with no HTTP request: memory_engine.py
 test_graph_search.py::TestGraphExpand::test_2hop_neighbor_discovered	internals			calls Python code with no HTTP request: memory_engine.py
@@ -1274,7 +1275,7 @@ test_merge_api.py::TestMergeAPI::test_merge_two_memories	http	POST /memory/merge
 test_merge_api.py::TestMergeAPI::test_merge_calls_engine_with_correct_args	http	POST /memory/merge		route only (no status assertion); golden cases and probes: 4
 test_merge_api.py::TestMergeAPI::test_merge_creates_supersedes_links_via_engine	http	POST /memory/merge	200	golden cases and probes: 1
 test_merge_api.py::TestMergeAPI::test_merge_requires_at_least_two_ids	http	POST /memory/merge	422	golden cases and probes: 2
-test_merge_api.py::TestMergeAPI::test_merge_engine_value_error_returns_400	http	POST /memory/merge	400	golden cases and probes: 0; POST /memory/merge 400: The Python test gets 400 only with a mocked engine. The real Python server gives 500 for a missing ID; the Rust server gives 400 (fixed defect): probe merge-missing-400, docs/decisions/2026-11-16-rust-fixed-python-defects.md
+test_merge_api.py::TestMergeAPI::test_merge_engine_value_error_returns_400	http	POST /memory/merge	400	golden cases and probes: 1
 test_merge_api.py::TestMergeAPI::test_merge_empty_ids_returns_422	http	POST /memory/merge	422	golden cases and probes: 2
 test_merge_api.py::TestMergeAPI::test_merge_with_pinned_original	http	POST /memory/merge	200	golden cases and probes: 1
 test_merge_api.py::TestMergeAPI::test_managed_merge_passes_trusted_authorship	http	POST /memory/merge	200	golden cases and probes: 1
@@ -1398,6 +1399,8 @@ test_parity_kit.py::test_corpus_cases_come_from_the_evals	tool			tests a tool th
 test_parity_kit.py::test_corpus_decision_uses_the_tie_rule_and_spares_the_highest_id	tool			tests a tool that stays after the cutover
 test_parity_kit.py::test_corpus_check_tolerates_search_order_but_not_other_changes	tool			tests a tool that stays after the cutover
 test_parity_kit.py::test_corpus_check_compares_similar_text_and_candidate_sources	tool			tests a tool that stays after the cutover
+test_parity_kit.py::test_intended_difference_replaces_the_python_reply	tool			tests a tool that stays after the cutover
+test_parity_kit.py::test_intended_differences_name_bulk_cases_only	tool			tests a tool that stays after the cutover
 test_parity_kit.py::test_live_probes_and_agreement	tool			tests a tool that stays after the cutover
 test_periodic_trim.py::test_periodic_memory_trim_calls_trimmer	internals			calls Python code with no HTTP request: app.py
 test_phase0_trust_fixes.py::TestEventSourceOnUpdate::test_update_event_includes_source	internals			calls Python code with no HTTP request: app.py, audit_log.py, event_bus.py, key_store.py, llm_extract.py, memory_engine.py, usage_tracker.py
