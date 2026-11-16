@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **Rust usage, metrics and feedback routes (rewrite task P5-1).** The Rust
+  server keeps `usage.db` with the seven tables of the Python tracker and
+  writes the rows through one writer thread, in batches. It answers
+  `GET /usage`, `GET /metrics`, the eight `/metrics/*` routes and the three
+  feedback routes with the replies of the Python server. The new route
+  `GET /metrics/prometheus` (admin only) gives the Prometheus text format.
+  Hybrid search reads the feedback scores. `server/scripts/parity_usage.sh`
+  runs the two servers on one `usage.db` (0 cases differ). No change to the
+  Python server or to a client. Details: `docs/rust-rewrite/usage-metrics.md`.
 - **Rust search routes (rewrite task P2-2).** The Rust server answers
   `POST /search`, `/search/batch`, `/search/explain`, `/search/evidence` and
   `/memory/is-novel` with the replies of the Python server (hybrid false). The

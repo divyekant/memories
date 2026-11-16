@@ -86,7 +86,7 @@ pub const VARS: &[(&str, Use)] = &[
     ("MEMORY_TRIM_ENABLED", NotUsed),
     ("MEMORY_TRIM_PERIODIC_SEC", NotUsed),
     ("METRICS_LATENCY_SAMPLES", Supported),
-    ("METRICS_TREND_SAMPLES", NotUsed),
+    ("METRICS_TREND_SAMPLES", Supported),
     ("MODEL_CACHE_DIR", Supported),
     ("MODEL_NAME", Supported),
     ("OLLAMA_URL", Supported),
@@ -133,7 +133,7 @@ pub const VARS: &[(&str, Use)] = &[
     ("SHADOW_OMLX_URL", NotUsed),
     ("SHADOW_PROVIDERS", NotUsed),
     ("STORAGE_BACKEND", NotUsed),
-    ("USAGE_TRACKING", NotUsed),
+    ("USAGE_TRACKING", Supported),
     ("WORKSPACE_DIR", NotUsed),
 ];
 

@@ -160,10 +160,21 @@ impl<'a> Model<'a> {
 
     /// An `int` field with `ge` and `le`.
     pub fn int(&mut self, name: &str, default: i64, ge: i64, le: i64) -> Option<i64> {
-        let v = match self.value(name, false) {
-            Err(()) | Ok(None) => return Some(default),
-            Ok(Some(v)) => v,
-        };
+        match self.value(name, false) {
+            Err(()) | Ok(None) => Some(default),
+            Ok(Some(v)) => self.int_value(name, v, ge, le),
+        }
+    }
+
+    /// A required `int` field with `ge` and `le`.
+    pub fn int_required(&mut self, name: &str, ge: i64, le: i64) -> Option<i64> {
+        match self.value(name, true) {
+            Err(()) | Ok(None) => None,
+            Ok(Some(v)) => self.int_value(name, v, ge, le),
+        }
+    }
+
+    fn int_value(&mut self, name: &str, v: &Value, ge: i64, le: i64) -> Option<i64> {
         let parsed = match v {
             Value::Bool(b) => Some(i64::from(*b)),
             Value::Number(n) => match (n.as_i64(), n.as_f64()) {

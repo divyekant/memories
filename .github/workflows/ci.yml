@@ -246,6 +246,13 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
           server/scripts/parity_writes.sh server/target/debug/memories-server
 
+      - name: P5-1 usage, metrics and feedback routes, and usage.db across the two servers
+        # Uses the ONNX Runtime that the P2-2 step unpacked.
+        run: |
+          QDRANT_URL=http://127.0.0.1:6333 \
+          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
+            server/scripts/parity_usage.sh server/target/debug/memories-server
+
   rust-image:
     # Build the Rust image on each architecture. Then start the bundled compose
     # file with that image, with no change to the file, and wait for healthy.

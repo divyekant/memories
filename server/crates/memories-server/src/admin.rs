@@ -175,7 +175,7 @@ impl<'a> Body<'a> {
 // ---- Query checks ------------------------------------------------------------
 
 /// The last value of each name, as Starlette gives a scalar query parameter.
-fn last<'a>(q: &'a [(String, String)], name: &str) -> Option<&'a str> {
+pub(crate) fn last<'a>(q: &'a [(String, String)], name: &str) -> Option<&'a str> {
     q.iter()
         .rev()
         .find(|(k, _)| k == name)
@@ -183,7 +183,7 @@ fn last<'a>(q: &'a [(String, String)], name: &str) -> Option<&'a str> {
 }
 
 /// `name: int = Query(default, ge=min, le=max)`.
-fn query_int(
+pub(crate) fn query_int(
     q: &[(String, String)],
     name: &str,
     default: i64,
