@@ -2,6 +2,65 @@
 
 ## [Unreleased]
 
+### Added
+- **Parity kit for the Rust rewrite (`parity/`).** The kit sends a fixed set
+  of requests to a server, records the replies, and compares the replies of
+  two servers. It has 225 cases: a seed corpus, each of the 93 routes, and
+  each wire rule of the clients. The golden captures come from the Python
+  server. A new CI job replays them against a second Python server and
+  fails on a difference.
+- **Capture middleware.** If `PARITY_CAPTURE_DIR` is set, the server writes
+  each request and its reply to an NDJSON file in that directory. The default
+  is off. The file holds memory text. Key headers are redacted.
+- **Rust server workspace (rewrite task P0-4).** `server/` holds the cargo
+  workspace of the Rust server, with six crates, a pinned toolchain, a
+  committed `Cargo.lock` and `server/Dockerfile` for amd64 and arm64. The
+  server answers `GET /health` only. CI adds format, lint, test, `cargo deny`
+  and crate age checks, and starts the bundled compose file with the Rust
+  image on each architecture. No change to the Python server or to a client.
+- **Keyword index test for the Rust rewrite (task P0-2).**
+  `parity/keyword_index/` compares the BM25 ranks of the Python server
+  (rank_bm25) with a Qdrant sparse vector on Qdrant 1.15.4 and 1.20.1. The
+  decision record `docs/decisions/2026-11-16-rust-keyword-index.md` gives the
+  numbers and selects the Qdrant sparse vector. No change to the Python server
+  or to a client.
+- **Rust embedder (rewrite task P1-2, gate G2).** The crate `memories-embed`
+  runs `all-MiniLM-L6-v2` with ONNX Runtime 1.31.0 and gives the vectors of
+  the Python embedder (lowest cosine 0.9999997 on 1,000 fixed texts). It reads
+  and fills the same Hugging Face model cache. The ONNX Runtime CPU arena is
+  off, so memory after bulk embedding is 225 MB, not 1.27 GB. CI runs the
+  parity test. Details: `docs/decisions/2026-11-16-rust-embedder.md`.
+- **Rust LLM providers (rewrite task P4-2).** Crate `memories-extract` has
+  the providers `anthropic` (API key and OAuth token modes), `openai`, `omlx`
+  and `ollama`, with a time limit of 120 s for each attempt and at most 2
+  retries. Replay tests check that each Rust request is equal to the Python
+  request. `chatgpt-subscription` is not ported. Details:
+  `docs/decisions/2026-11-16-rust-llm-providers.md`.
+- **Rank core of the Rust server (rewrite task P2-1).** The crate
+  `memories-engine` has the rank rules of the search as pure functions: the
+  fusion of the vector and keyword ranks, the weights, the threshold, the
+  temporal filter, the graph step and the query intent rules. Golden cases
+  from the Python functions are in `parity/golden/rank/`. CI checks that the
+  golden cases are current. No change to the Python server or to a client.
+
+### Changed
+- **Client and tool libraries are updated (Rust rewrite task P0-5).** The
+  check and each decision are in `docs/rust-rewrite/library-review.md`.
+  - MCP server: `@modelcontextprotocol/sdk` 1.32.2, `express` 5.3.0 and
+    `js-yaml` 4.3.2, with exact versions. `zod` 4.6.7 is now a direct
+    dependency. `npm audit` finds 0 issues (11
+    before, 1 of them critical in `proxy-addr`).
+  - Remote MCP server image: `node:26.13.1-alpine`.
+  - CLI and tests: `click` 8.5.1 and `pytest` 9.2.0.
+  - GitHub Actions: `actions/checkout` v7.0.1, `actions/setup-node` v7.1.0
+    and `astral-sh/setup-uv` v10.3.3, pinned to a commit SHA. CI now runs
+    the MCP server tests on Node 26.
+  - The Python server libraries do not change.
+  - The text of an MCP tool input error (-32602) is now a short sentence.
+- **The remote MCP server exits with code 1 when its port is in use.** Express
+  5 gives the listen error to a callback. Without the fix, the server logged
+  "listening" and exited with code 0.
+
 ## [5.19.0] - 2026-11-16
 
 ### Fixed

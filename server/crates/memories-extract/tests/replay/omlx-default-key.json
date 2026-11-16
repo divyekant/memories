@@ -1,0 +1,69 @@
+{
+  "case": "omlx-default-key",
+  "provider": "omlx",
+  "model": "qwen3-8b",
+  "env": {},
+  "base_url_env": "OMLX_URL",
+  "base_url_suffix": "/v1",
+  "call": {
+    "kind": "complete",
+    "system": "You extract facts.\nReturn a JSON array.",
+    "user": "Conversation:\nuser: I moved to Lisbon in 2024. ünïcode ✓"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "headers": {
+      "authorization": "Bearer <OMLX_DEFAULT_KEY>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "messages": [
+        {
+          "role": "system",
+          "content": "You extract facts.\nReturn a JSON array."
+        },
+        {
+          "role": "user",
+          "content": "Conversation:\nuser: I moved to Lisbon in 2024. ünïcode ✓"
+        }
+      ],
+      "model": "qwen3-8b",
+      "max_tokens": 1024,
+      "temperature": 0.0,
+      "chat_template_kwargs": {
+        "enable_thinking": false
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "chatcmpl-1",
+      "object": "chat.completion",
+      "created": 0,
+      "model": "m",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "[]"
+          },
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 33,
+        "completion_tokens": 6,
+        "total_tokens": 39
+      }
+    }
+  },
+  "result": {
+    "text": "[]",
+    "input_tokens": 33,
+    "output_tokens": 6,
+    "model": "qwen3-8b"
+  }
+}

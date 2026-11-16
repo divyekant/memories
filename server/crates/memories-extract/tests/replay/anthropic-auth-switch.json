@@ -1,0 +1,75 @@
+{
+  "case": "anthropic-auth-switch",
+  "provider": "anthropic",
+  "model": null,
+  "env": {
+    "ANTHROPIC_API_KEY": null,
+    "ANTHROPIC_OAUTH_TOKEN": null,
+    "ANTHROPIC_AUTH": "oauth"
+  },
+  "base_url_env": "ANTHROPIC_BASE_URL",
+  "base_url_suffix": "",
+  "call": {
+    "kind": "complete",
+    "system": "You extract facts.\nReturn a JSON array.",
+    "user": "Conversation:\nuser: I moved to Lisbon in 2024. ünïcode ✓"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/messages?beta=true",
+    "headers": {
+      "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14",
+      "anthropic-version": "2023-06-01",
+      "authorization": "Bearer <ANTHROPIC_OAUTH_TOKEN>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "max_tokens": 4096,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Conversation:\nuser: I moved to Lisbon in 2024. ünïcode ✓"
+        }
+      ],
+      "model": "claude-haiku-4-5-20251001",
+      "system": "You extract facts.\nReturn a JSON array.",
+      "temperature": 0.0
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "msg_01",
+      "type": "message",
+      "role": "assistant",
+      "model": "m",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "hidden",
+          "signature": "sig"
+        },
+        {
+          "type": "text",
+          "text": "[\"Lives in Lisbon\""
+        },
+        {
+          "type": "text",
+          "text": ", \"since 2024\"]"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "usage": {
+        "input_tokens": 41,
+        "output_tokens": 9
+      }
+    }
+  },
+  "result": {
+    "text": "[\"Lives in Lisbon\", \"since 2024\"]",
+    "input_tokens": 41,
+    "output_tokens": 9,
+    "model": "claude-haiku-4-5-20251001"
+  }
+}

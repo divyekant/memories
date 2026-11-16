@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "6.0.0"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT"
+repository = "https://github.com/divyekant/memories"
+publish = false
+
+# Versions and reasons: docs/decisions/2026-11-16-rust-workspace-crates.md
+[workspace.dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "ndarray"] }
+qdrant-client = "1.20.0"
+regex = "1.13.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+rusqlite = { version = "0.42.0", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tower = "0.5.3"
+tower-http = "0.7.1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+
+memories-types = { path = "crates/memories-types" }
+memories-embed = { path = "crates/memories-embed" }
+memories-store = { path = "crates/memories-store" }
+memories-engine = { path = "crates/memories-engine" }
+memories-extract = { path = "crates/memories-extract" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

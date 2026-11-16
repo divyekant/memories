@@ -1378,6 +1378,12 @@ async def metrics_middleware(request: Request, call_next):
         _record_request_metric(route_key, latency_ms, status_code)
 
 
+if os.getenv("PARITY_CAPTURE_DIR", "").strip():
+    from parity_capture import ParityCaptureMiddleware
+
+    app.add_middleware(ParityCaptureMiddleware, capture_dir=os.getenv("PARITY_CAPTURE_DIR").strip())
+
+
 # -- Event system -------------------------------------------------------------
 
 from event_bus import event_bus, EVENT_TYPES

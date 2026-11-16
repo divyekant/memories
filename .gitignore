@@ -76,3 +76,9 @@ data-eval.bak*/
 !.claude/
 .claude/*
 !.claude/settings.json
+
+# Rust server build output
+server/target/
+
+# Embedding cache of parity/keyword_index/run.py
+.cache/
