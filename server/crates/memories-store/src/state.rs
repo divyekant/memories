@@ -136,6 +136,37 @@ impl StateDb {
         Ok((get(DOC_LEN_SUM)?, get(DOC_COUNT)?))
     }
 
+    /// Add the deltas in one transaction and return the new values. An add
+    /// gives (+len, +1), a delete (-len, -1), a text change (new - old, 0).
+    /// A value does not go below 0.
+    pub fn add_doc_lengths(
+        &self,
+        sum_delta: i64,
+        count_delta: i64,
+    ) -> Result<(u64, u64), StateError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let get = |n: &str| -> Result<i64, StateError> {
+            let v: Option<String> = tx
+                .query_row("SELECT value FROM meta WHERE name = ?1", [n], |r| r.get(0))
+                .optional()?;
+            Ok(v.and_then(|v| v.parse().ok()).unwrap_or(0))
+        };
+        let new = (
+            get(DOC_LEN_SUM)?.saturating_add(sum_delta).max(0) as u64,
+            get(DOC_COUNT)?.saturating_add(count_delta).max(0) as u64,
+        );
+        for (name, v) in [(DOC_LEN_SUM, new.0), (DOC_COUNT, new.1)] {
+            tx.execute(
+                "INSERT INTO meta (name, value) VALUES (?1, ?2)
+                 ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+                rusqlite::params![name, v.to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(new)
+    }
+
     pub fn set_doc_lengths(&self, sum: u64, count: u64) -> Result<(), StateError> {
         self.set_meta(&[
             (DOC_LEN_SUM, &sum.to_string()),
@@ -211,6 +242,12 @@ mod tests {
         assert_eq!(db.doc_lengths().unwrap(), (0, 0));
         db.set_doc_lengths(30, 4).unwrap();
         assert_eq!(db.doc_lengths().unwrap(), (30, 4));
+        assert_eq!(db.add_doc_lengths(5, 1).unwrap(), (35, 5));
+        assert_eq!(
+            db.add_doc_lengths(-50, -9).unwrap(),
+            (0, 0),
+            "no value below 0"
+        );
     }
 
     #[test]

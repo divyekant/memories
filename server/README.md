@@ -120,6 +120,11 @@ each variable with one of these states:
   `POST /audit/purge` deletes the old rows. If `AUDIT_LOG` is off, the two
   routes give no rows.
 
+The core write routes (add, add-batch, upsert, upsert-batch, PATCH and
+DELETE `/memory/{memory_id}`, delete-batch) need `QDRANT_URL`. Without it,
+they give HTTP 503. The rules and the differences from the Python server are
+in `docs/decisions/2026-11-16-rust-core-writes.md`.
+
 A Python route that this server does not have yet gives HTTP 501. The route
 table is `ROUTES` in `crates/memories-server/src/shell.rs`.
 
@@ -132,11 +137,21 @@ it. Run them from the repository root after `uv sync --frozen`:
 ```bash
 server/scripts/parity_auth.sh server/target/debug/memories-server
 server/scripts/parity_keys_audit.sh server/target/debug/memories-server
+QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+  server/scripts/parity_writes.sh server/target/debug/memories-server
 ```
 
 `parity_auth.sh` is the check of task P1-1. `parity_keys_audit.sh` is the
 check of task P5-2. It also makes a key on each server and uses the key on
-the other server.
+the other server. `parity_writes.sh` is the check of task P3-1 (the core write
+routes). It uses a new Qdrant collection and deletes it at the end.
+
+The Qdrant call test of the writes needs Qdrant and ONNX Runtime:
+
+```bash
+QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+  cargo test --locked -p memories-engine --test writes -- --ignored
+```
 
 ## Build the image
 

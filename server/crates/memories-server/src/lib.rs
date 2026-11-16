@@ -11,6 +11,8 @@ pub mod migrate;
 pub mod model;
 pub mod search;
 pub mod shell;
+pub mod validate;
+pub mod writes;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +27,7 @@ use axum::{
     routing::{MethodFilter, get, on, patch, post},
 };
 use memories_engine::Engine;
+use memories_engine::writes::Writer;
 use memories_types::config;
 use serde_json::{Value, json};
 use tower_http::catch_panic::CatchPanicLayer;
@@ -92,6 +95,8 @@ pub struct AppState {
     /// True while the first-start migration runs: only `/health` answers.
     pub migrating: AtomicBool,
     pub extract: Extract,
+    /// The write flow of the engine. Set with `engine`.
+    pub writer: OnceLock<Arc<Writer>>,
 }
 
 impl AppState {
@@ -121,6 +126,7 @@ impl AppState {
             engine: engine.map(OnceLock::from).unwrap_or_default(),
             migrating: AtomicBool::new(false),
             extract,
+            writer: OnceLock::new(),
         })
     }
 }
@@ -137,6 +143,13 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/api/keys/{key_id}"),
     ("GET", "/audit"),
     ("POST", "/audit/purge"),
+    ("POST", "/memory/add"),
+    ("POST", "/memory/add-batch"),
+    ("POST", "/memory/upsert"),
+    ("POST", "/memory/upsert-batch"),
+    ("PATCH", "/memory/{memory_id}"),
+    ("DELETE", "/memory/{memory_id}"),
+    ("POST", "/memory/delete-batch"),
     ("POST", "/search"),
     ("POST", "/search/batch"),
     ("POST", "/search/explain"),
@@ -167,6 +180,15 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/audit", get(admin::get_audit))
         .route("/audit/purge", post(admin::purge_audit))
+        .route("/memory/add", post(writes::add))
+        .route("/memory/add-batch", post(writes::add_batch))
+        .route("/memory/upsert", post(writes::upsert))
+        .route("/memory/upsert-batch", post(writes::upsert_batch))
+        .route(
+            "/memory/{memory_id}",
+            patch(writes::patch).delete(writes::delete),
+        )
+        .route("/memory/delete-batch", post(writes::delete_batch))
         .route("/search", post(search::search))
         .route("/search/batch", post(search::search_batch))
         .route("/search/explain", post(search::search_explain))
