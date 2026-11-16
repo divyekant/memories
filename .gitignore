@@ -79,3 +79,6 @@ data-eval.bak*/
 
 # Rust server build output
 server/target/
+
+# Embedding cache of parity/keyword_index/run.py
+.cache/
