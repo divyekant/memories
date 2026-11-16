@@ -100,6 +100,13 @@ jobs:
     # Rust server (server/): format, lint, tests, supply-chain checks.
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    services:
+      qdrant:
+        # The minimum Qdrant version of the Rust server.
+        image: qdrant/qdrant:v1.15.4
+        ports:
+          - 6333:6333
+          - 6334:6334
     defaults:
       run:
         working-directory: server
@@ -121,6 +128,13 @@ jobs:
 
       - name: Tests
         run: cargo test --locked
+
+      - name: Record store against Qdrant 1.15.4 (task P1-3)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+        run: |
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
+          cargo test --locked -p memories-store --test qdrant_store -- --ignored --nocapture
 
       - name: Cache the embedding model
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0

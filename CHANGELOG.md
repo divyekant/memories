@@ -36,6 +36,14 @@
   retries. Replay tests check that each Rust request is equal to the Python
   request. `chatgpt-subscription` is not ported. Details:
   `docs/decisions/2026-11-16-rust-llm-providers.md`.
+- **Rust record store (rewrite task P1-3).** Crate `memories-types` has the
+  record model: typed known fields and a map for the other fields, so that a
+  write and a read keep each field. Crate `memories-store` writes the
+  collection `memories_v2` (dense vector, keyword sparse vector, full record
+  as payload, 8 payload indexes) and keeps the ID counter in `state.db`. The
+  counter does not give an ID again, also after the delete of the highest ID.
+  CI runs the tests against Qdrant 1.15.4. No change to the Python server or
+  to a client. Details: `docs/decisions/2026-11-16-rust-record-store.md`.
 - **Rank core of the Rust server (rewrite task P2-1).** The crate
   `memories-engine` has the rank rules of the search as pure functions: the
   fusion of the vector and keyword ranks, the weights, the threshold, the
