@@ -133,6 +133,11 @@ fn main() -> std::process::ExitCode {
         tracing::error!("cannot start: {msg}");
         return std::process::ExitCode::FAILURE;
     }
+    // P5-7: refuse an embedder that this server does not have, also with no QDRANT_URL.
+    if let Err(e) = memories_embed::EmbedConfig::from_env(None) {
+        tracing::error!("cannot start: {e}");
+        return std::process::ExitCode::FAILURE;
+    }
     for name in config::set_but_not_used(|n| std::env::var(n).ok()) {
         tracing::info!("{name} is set, but this server version does not use it");
     }
