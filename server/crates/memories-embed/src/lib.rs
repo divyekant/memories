@@ -19,9 +19,11 @@ use tokio::sync::oneshot;
 pub use model_files::{ModelFiles, repo_id, resolve_model_files};
 
 pub const DEFAULT_MODEL: &str = "all-MiniLM-L6-v2";
-/// Same values as `onnx_embedder.py`.
+/// Same value as `onnx_embedder.py`.
 pub const MAX_TOKENS: usize = 256;
-pub const BATCH_SIZE: usize = 64;
+/// Python uses 64. 16 keeps the bulk peak under 400 MB and is faster on
+/// 4 vCPU; the vectors are the same (gate G5, dk decision 2026-11-16).
+pub const BATCH_SIZE: usize = 16;
 pub const INTRA_THREADS: usize = 4;
 
 #[derive(Debug, thiserror::Error)]

@@ -12,7 +12,7 @@ crates `ort` (ONNX Runtime 1.31.0, loaded from `ORT_DYLIB_PATH`) and
 - Cut at 256 tokens. Pad each batch to its longest text.
 - Mean pool with the attention mask, then L2 normalization. Both divisors
   are clamped to 1e-9.
-- Batches of 64 texts. 4 intra-op threads. Graph optimization level "all".
+- Batches of 16 texts (Python: 64, see "Batch size"). 4 intra-op threads. Graph optimization level "all".
 - `token_type_ids` is all zeros when the model has that input.
 - `EMBED_QUERY_PREFIX` and `EMBED_DOC_PREFIX` go before the text.
 - `MODEL_NAME`, `EMBED_MODEL`, `EMBED_DIMENSION`, `MODEL_CACHE_DIR` and
@@ -77,6 +77,19 @@ crate `tract` would need the same tensors, so it is not a fix. A smaller
 batch for long texts lowers the peak and gives the same vectors, because
 padding does not change a vector. dk decided on 2026-11-16: keep batches of 64
 now, and decide on this change after the G5 load test.
+
+## Batch size
+
+Gate G5 (`docs/rust-rewrite/gates/G5.md`) measured the bulk peak with the
+embedder example, on 4 vCPU:
+
+| Batch size | Peak (VmHWM) | Time for 1,000 texts |
+|---|---|---|
+| 64 | 832 MB | 28 to 30 s |
+| 32 | 549 MB | 23 to 26 s |
+| 16 | 394 MB | 21 to 22 s |
+
+dk decided on 2026-11-16: use batches of 16. The vectors do not change.
 
 ## Differences from Python
 
