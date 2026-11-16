@@ -98,7 +98,8 @@ tracker and records the Python reads in `expected.json`.
   Rust queries add a second sort key that gives the order of SQLite 3.45 (the
   Python version). The key is `id` for failures and feedback history, `query`
   for problem queries and `memory_id` for stale memories.
-- `GET /metrics` has no `promotion` part. Task P5-6 adds it.
+- `GET /metrics` has the `promotion` part since task P5-6 (off mode only, see
+  `docs/decisions/2026-11-16-rust-promotions-off.md`).
 - `embedder_reload` in `GET /metrics` always shows `enabled: false` and zero
   counters. The Rust embedder has no reload. Task P5-3 decides on the reload
   routes.

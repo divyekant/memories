@@ -143,6 +143,8 @@ QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
   server/scripts/parity_writes.sh server/target/debug/memories-server
 QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
   server/scripts/parity_bulk.sh server/target/debug/memories-server
+QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+  server/scripts/parity_promotions.sh server/target/debug/memories-server
 ```
 
 `parity_auth.sh` is the check of task P1-1. `parity_keys_audit.sh` is the
@@ -152,6 +154,9 @@ routes). It uses a new Qdrant collection and deletes it at the end.
 `parity_bulk.sh` is the check of task P3-2. It replays the golden cases, then
 sends the bulk scenario to a new Python server and to a new Rust server and
 compares the replies.
+`parity_promotions.sh` is the check of task P5-6 (the promotion routes in
+the `off` mode). It also makes sure that `PROJECT_PROMOTION_MODE=shadow`
+stops the start.
 
 The Qdrant call test of the writes needs Qdrant and ONNX Runtime:
 
