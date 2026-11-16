@@ -25,6 +25,8 @@ pub fn config(api_key: &str, rate_limit: i64) -> Config {
         forwarded_allow_ips: "127.0.0.1".into(),
         audit_log: false,
         max_backups: 10,
+        usage_tracking: false,
+        metrics_trend_samples: 120,
     }
 }
 

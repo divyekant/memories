@@ -16,14 +16,24 @@ use crate::records::truthy;
 pub struct Entry {
     /// `str(meta.get("source", ""))`.
     pub source: String,
+    /// The stored source is a string or absent (Python string methods work on it).
+    pub source_is_str: bool,
     /// `meta.get("archived")` is truthy.
     pub archived: bool,
     /// `(to_id, type)` of each link, in stored order.
     pub links: Vec<(i64, String)>,
+    /// `source_memory_ids` is a list with more than one item (the exact reuse
+    /// count of the `promotion` part of `GET /metrics`).
+    pub multi_source: bool,
 }
 
 impl Entry {
     pub fn of(record: &Record) -> Self {
+        let source_is_str = record.source.is_some()
+            || matches!(
+                record.extra.get("source"),
+                None | Some(serde_json::Value::String(_))
+            );
         let source = match &record.source {
             Some(s) => s.clone(),
             None => match record.extra.get("source") {
@@ -42,10 +52,17 @@ impl Entry {
             .flatten()
             .map(|l| (l.to_id, l.link_type.clone()))
             .collect();
+        let multi_source = record
+            .extra
+            .get("source_memory_ids")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|ids| ids.len() > 1);
         Self {
             source,
+            source_is_str,
             archived,
             links,
+            multi_source,
         }
     }
 }
@@ -91,6 +108,11 @@ impl Catalog {
 
     pub fn get(&self, id: i64) -> Option<&Entry> {
         self.entries.get(&u64::try_from(id).ok()?)
+    }
+
+    /// The records in ID order.
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &Entry)> {
+        self.entries.iter().map(|(id, e)| (*id, e))
     }
 
     /// The records with a link to `id`, in ID order.

@@ -94,7 +94,8 @@ def diff_values(a, b, path="$"):
     if isinstance(a, bool) or isinstance(b, bool):
         return [] if a == b and type(a) is type(b) else [f"{path}: {a!r} != {b!r}"]
     if isinstance(a, float) and isinstance(b, float):
-        return [] if abs(a - b) <= TOLERANCE else [f"{path}: {a!r} != {b!r}"]
+        # 1e-12: 0.8493 - 0.8492 is 1.0000000000000009e-04 in floating point.
+        return [] if abs(a - b) <= TOLERANCE + 1e-12 else [f"{path}: {a!r} != {b!r}"]
     if type(a) is not type(b):
         return [f"{path}: type {_type_name(a)} != {_type_name(b)}"]
     if isinstance(a, dict):
@@ -172,6 +173,16 @@ def substitute(obj, vars_):
 
 
 def _send(client, req):
+    try:
+        return _send_once(client, req)
+    except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError):
+        # Uvicorn closes the connection after an error that no handler catches. The next
+        # request on that kept-alive connection was not read (the server answers it with a
+        # close or a reset), so send it again once on a new connection.
+        return _send_once(client, req)
+
+
+def _send_once(client, req):
     kwargs = {"headers": req.get("headers") or {}}
     if "json" in req:
         kwargs["json"] = req["json"]
@@ -225,11 +236,12 @@ def select(cases, names):
 
 
 def run(cases, base_url, admin_key=ADMIN_KEY_DEFAULT, timeout=120.0, log=None, allow_nonempty=False,
-        extra_vars=None):
+        extra_vars=None, vars_out=None):
     """Send each case in order. Return capture records with normalized replies.
 
     The scenario deletes records, so a server that holds records is refused unless allow_nonempty is set.
     `extra_vars` sets variables that a case before the selected cases would save.
+    `vars_out` (a dict) gets the variables at the end, so a later run can use them.
     """
     vars_ = {"key:admin": admin_key, **(extra_vars or {})}
     out = []
@@ -260,4 +272,6 @@ def run(cases, base_url, admin_key=ADMIN_KEY_DEFAULT, timeout=120.0, log=None, a
             out.append(rec)
             if log:
                 log(f"{resp['status']} {case.get('name', case['request']['path'])}")
+    if vars_out is not None:
+        vars_out.update(vars_)
     return out

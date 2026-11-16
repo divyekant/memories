@@ -175,7 +175,7 @@ impl<'a> Body<'a> {
 // ---- Query checks ------------------------------------------------------------
 
 /// The last value of each name, as Starlette gives a scalar query parameter.
-fn last<'a>(q: &'a [(String, String)], name: &str) -> Option<&'a str> {
+pub(crate) fn last<'a>(q: &'a [(String, String)], name: &str) -> Option<&'a str> {
     q.iter()
         .rev()
         .find(|(k, _)| k == name)
@@ -183,7 +183,7 @@ fn last<'a>(q: &'a [(String, String)], name: &str) -> Option<&'a str> {
 }
 
 /// `name: int = Query(default, ge=min, le=max)`.
-fn query_int(
+pub(crate) fn query_int(
     q: &[(String, String)],
     name: &str,
     default: i64,
@@ -408,6 +408,9 @@ mod tests {
             (" -5 ", -5),
             ("+0", 0),
             ("-0", 0),
+            ("-0.0", 0),
+            ("007", 7),
+            ("0_7", 7),
             ("\u{a0}5", 5),
             ("\t5\u{b}", 5),
             ("5\n", 5),
@@ -416,7 +419,8 @@ mod tests {
         }
         for s in [
             "", "abc", "5.5", "5.", ".0", "_1", "1__0", "5_", "+-5", "--5", "5.0_0", "5e0",
-            "5.0e0", "1 0", "0005.", "5.10", "0x10", "\u{661}", "\u{2460}",
+            "5.0e0", "1 0", "0005.", "5.10", "0x10", "\u{661}", "\u{2460}", "-007", "-00", "-0_7",
+            "-05.0",
         ] {
             assert_eq!(py_int(s), None, "{s:?}");
         }

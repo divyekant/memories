@@ -184,7 +184,7 @@ async fn key_checks_and_the_empty_patch() {
     let (s, _) = call(&st, "GET", "/memory/1", ADMIN, None).await;
     assert_eq!(
         s,
-        StatusCode::NOT_IMPLEMENTED,
-        "GET stays a stub on the same path"
+        StatusCode::SERVICE_UNAVAILABLE,
+        "GET on the same path is the read route of P2-3"
     );
 }

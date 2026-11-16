@@ -33,6 +33,9 @@ use crate::records::truthy;
 use crate::scope::Scope;
 use crate::search::SearchArgs;
 
+mod bulk;
+pub mod maintenance;
+
 /// The duplicate threshold of `/memory/add` (dedupe and doctrine).
 pub const DEDUP_THRESHOLD: f64 = 0.90;
 /// `DOCTRINE_IDENTICAL_THRESHOLD` when it is not set.
@@ -47,6 +50,10 @@ pub enum WriteError {
     /// Python `ValueError` "not found": HTTP 404.
     #[error("{0}")]
     NotFound(String),
+    /// A Python `ValueError` of a link or merge check: HTTP 400 on the link
+    /// and merge routes.
+    #[error("{0}")]
+    Invalid(String),
     /// A pinned record without `force`: HTTP 409.
     #[error("{0}")]
     Pinned(String),
@@ -835,6 +842,11 @@ impl Writer {
     /// `delete_memories`: pinned records stay. More than 10 IDs make a Qdrant
     /// snapshot first.
     pub async fn delete_memories(&self, ids: &[i64]) -> Result<Value> {
+        self.delete_memories_with(ids, false).await
+    }
+
+    /// `delete_memories` with `skip_snapshot`.
+    pub async fn delete_memories_with(&self, ids: &[i64], skip_snapshot: bool) -> Result<Value> {
         let unique: Vec<i64> = ids
             .iter()
             .copied()
@@ -873,7 +885,7 @@ impl Writer {
                 "delete_memories: skipping pinned ids"
             );
         }
-        if unique.len() > SNAPSHOT_OVER {
+        if unique.len() > SNAPSHOT_OVER && !skip_snapshot {
             self.snapshot("pre_delete_batch").await?;
         }
         self.remove(&delete).await?;

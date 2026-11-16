@@ -25,19 +25,20 @@ use crate::{
     audit::Entry,
     auth::AuthContext,
     error::{ApiError, BodyResult, JsonBody, int_parsing, py_int},
+    search::{Caller, log},
     shell::Client,
     validate::{Fields, finish, int, model},
 };
 
-fn err(status: StatusCode, detail: impl Into<Value>) -> Response {
+pub(crate) fn err(status: StatusCode, detail: impl Into<Value>) -> Response {
     ApiError::new(status, detail).into_response()
 }
 
-fn server_error() -> Response {
+pub(crate) fn server_error() -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
 }
 
-fn writer(state: &AppState) -> Result<Arc<Writer>, Response> {
+pub(crate) fn writer(state: &AppState) -> Result<Arc<Writer>, Response> {
     state.writer.get().cloned().ok_or_else(|| {
         err(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -47,7 +48,7 @@ fn writer(state: &AppState) -> Result<Arc<Writer>, Response> {
 }
 
 /// `_require_write`.
-fn require_write(auth: &AuthContext, source: &str) -> Result<(), Response> {
+pub(crate) fn require_write(auth: &AuthContext, source: &str) -> Result<(), Response> {
     if auth.can_write(source) {
         Ok(())
     } else {
@@ -74,7 +75,7 @@ pub(crate) fn trusted(auth: &AuthContext, headers: &HeaderMap) -> Option<Trusted
 /// The reply of a failed write. `value_errors` is a route that answers a
 /// Python `ValueError` with 404 (409 for a pinned record); the other routes
 /// answer 500.
-fn failed(e: WriteError, value_errors: bool) -> Response {
+pub(crate) fn failed(e: WriteError, value_errors: bool) -> Response {
     match e {
         WriteError::Policy(p) => err(StatusCode::UNPROCESSABLE_ENTITY, p.0),
         WriteError::NotFound(m) if value_errors => err(StatusCode::NOT_FOUND, m),
@@ -86,7 +87,7 @@ fn failed(e: WriteError, value_errors: bool) -> Response {
     }
 }
 
-async fn audit(
+pub(crate) async fn audit(
     state: &Arc<AppState>,
     auth: &AuthContext,
     client: &Option<Extension<Client>>,
@@ -161,12 +162,12 @@ fn upsert_body(
     })
 }
 
-fn body_loc() -> Vec<Value> {
+pub(crate) fn body_loc() -> Vec<Value> {
     vec![json!("body")]
 }
 
 /// A model body: the items of the model, or the 422 reply.
-fn parse<T>(
+pub(crate) fn parse<T>(
     map: Map<String, Value>,
     check: impl FnOnce(&Map<String, Value>, Vec<Value>, &mut Vec<Value>) -> Option<T>,
 ) -> Result<T, Response> {
@@ -224,6 +225,7 @@ pub async fn add(
         let resource = id_or_empty(&r["id"])
             .or_else(|| id_or_empty(&r["blocked_by"]))
             .unwrap_or_default();
+        log(&state, Caller::of(&headers).row("add", &b.source, 1));
         audit(&state, &auth, &client, action, resource, &b.source).await;
         r["success"] = json!(true);
         return Ok(Json(r));
@@ -232,6 +234,7 @@ pub async fn add(
         .add_memories(vec![item], b.deduplicate, trusted.as_ref())
         .await
         .map_err(|e| failed(e, false))?;
+    log(&state, Caller::of(&headers).row("add", &b.source, 1));
     let id = ids.first().copied();
     let mut out = json!({
         "success": true,
@@ -286,6 +289,7 @@ pub async fn add_batch(
     }
     let trusted = trusted(&auth, &headers);
     let w = writer(&state)?;
+    let count = items.len() as i64;
     // Python v5.19.0 fails with 500 on a batch that mixes items with and
     // without metadata. This server keeps the metadata of each item.
     let items = items
@@ -300,6 +304,7 @@ pub async fn add_batch(
         .add_memories(items, deduplicate, trusted.as_ref())
         .await
         .map_err(|e| failed(e, false))?;
+    log(&state, Caller::of(&headers).row("add", "", count));
     Ok(Json(json!({
         "success": true, "ids": ids, "count": ids.len(),
         "message": format!("Added {} memories", ids.len()),
@@ -347,7 +352,7 @@ pub async fn upsert_batch(
 }
 
 /// The `memory_id` path parameter: an error item goes into `errors`.
-fn path_id(raw: &str, errors: &mut Vec<Value>) -> Option<i64> {
+pub(crate) fn path_id(raw: &str, errors: &mut Vec<Value>) -> Option<i64> {
     let id = py_int(raw);
     if id.is_none() {
         errors.push(int_parsing(json!(["path", "memory_id"]), json!(raw)));
@@ -457,6 +462,7 @@ pub async fn delete(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
     client: Option<Extension<Client>>,
+    headers: HeaderMap,
     Path(raw): Path<String>,
     Query(q): Query<Vec<(String, String)>>,
 ) -> Result<Json<Value>, Response> {
@@ -486,6 +492,7 @@ pub async fn delete(
         .delete_memory(id, force)
         .await
         .map_err(|e| failed(e, true))?;
+    log(&state, Caller::of(&headers).row("delete", &source, 1));
     audit(
         &state,
         &auth,
@@ -502,6 +509,7 @@ pub async fn delete(
 pub async fn delete_batch(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
     JsonBody(map): JsonBody,
 ) -> Result<Json<Value>, Response> {
     let ids = parse(map, |m, loc, errors| {
@@ -522,6 +530,10 @@ pub async fn delete_batch(
         .delete_memories(&ids)
         .await
         .map_err(|e| failed(e, false))?;
+    log(
+        &state,
+        Caller::of(&headers).row("delete", "", ids.len() as i64),
+    );
     r["success"] = json!(true);
     Ok(Json(r))
 }

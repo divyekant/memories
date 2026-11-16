@@ -325,3 +325,40 @@ async fn a_snapshot_file_gives_back_the_points_after_an_upload() {
     let _ = std::fs::remove_file(&file);
     store.delete_collection().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Qdrant server: set QDRANT_TEST_URL"]
+async fn a_page_skips_offset_records_in_id_order() {
+    let store = store("page").await;
+    store.ensure_collection(DIM).await.unwrap();
+    // Write in reverse order: the page order must still be the ID order.
+    let points: Vec<NewPoint> = (0..30u64)
+        .rev()
+        .map(|id| {
+            point(Record {
+                id: id * 2,
+                source: Some(if id % 3 == 0 { "a/x" } else { "b" }.into()),
+                ..Record::default()
+            })
+        })
+        .collect();
+    store.upsert(points, DIM).await.unwrap();
+
+    let ids = |rs: Vec<Record>| rs.into_iter().map(|r| r.id).collect::<Vec<_>>();
+    assert_eq!(ids(store.page(None, 5, 4).await.unwrap()), [10, 12, 14, 16]);
+    assert_eq!(ids(store.page(None, 28, 10).await.unwrap()), [56, 58]);
+    assert!(store.page(None, 30, 10).await.unwrap().is_empty());
+    let only_a = Filter::must([Condition::matches("source", vec!["a/x".to_string()])]);
+    assert_eq!(
+        ids(store.page(Some(only_a), 2, 3).await.unwrap()),
+        [12, 18, 24]
+    );
+    let first = store.page(None, 0, 1).await.unwrap();
+    assert_eq!(
+        first[0].source.as_deref(),
+        Some("a/x"),
+        "the payload comes back"
+    );
+
+    store.delete_collection().await.unwrap();
+}
