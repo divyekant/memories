@@ -1,0 +1,46 @@
+{
+  "case": "ollama",
+  "provider": "ollama",
+  "model": null,
+  "env": {},
+  "base_url_env": "OLLAMA_URL",
+  "base_url_suffix": "",
+  "call": {
+    "kind": "complete",
+    "system": "You extract facts.\nReturn a JSON array.",
+    "user": "Conversation:\nuser: I moved to Lisbon in 2024. ünïcode ✓"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/generate",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "model": "gemma3:4b",
+      "system": "You extract facts.\nReturn a JSON array.",
+      "prompt": "Conversation:\nuser: I moved to Lisbon in 2024. ünïcode ✓",
+      "stream": false,
+      "think": false,
+      "options": {
+        "temperature": 0.0
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "model": "m",
+      "response": "[\"Lives in Lisbon\"]",
+      "done": true,
+      "prompt_eval_count": 27,
+      "eval_count": 5
+    }
+  },
+  "result": {
+    "text": "[\"Lives in Lisbon\"]",
+    "input_tokens": 27,
+    "output_tokens": 5,
+    "model": "gemma3:4b"
+  }
+}

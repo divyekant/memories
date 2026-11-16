@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **Parity kit for the Rust rewrite (`parity/`).** The kit sends a fixed set
+  of requests to a server, records the replies, and compares the replies of
+  two servers. It has 225 cases: a seed corpus, each of the 93 routes, and
+  each wire rule of the clients. The golden captures come from the Python
+  server. A new CI job replays them against a second Python server and
+  fails on a difference.
+- **Capture middleware.** If `PARITY_CAPTURE_DIR` is set, the server writes
+  each request and its reply to an NDJSON file in that directory. The default
+  is off. The file holds memory text. Key headers are redacted.
 - **Rust server workspace (rewrite task P0-4).** `server/` holds the cargo
   workspace of the Rust server, with six crates, a pinned toolchain, a
   committed `Cargo.lock` and `server/Dockerfile` for amd64 and arm64. The
@@ -15,6 +24,12 @@
   and fills the same Hugging Face model cache. The ONNX Runtime CPU arena is
   off, so memory after bulk embedding is 225 MB, not 1.27 GB. CI runs the
   parity test. Details: `docs/decisions/2026-11-16-rust-embedder.md`.
+- **Rust LLM providers (rewrite task P4-2).** Crate `memories-extract` has
+  the providers `anthropic` (API key and OAuth token modes), `openai`, `omlx`
+  and `ollama`, with a time limit of 120 s for each attempt and at most 2
+  retries. Replay tests check that each Rust request is equal to the Python
+  request. `chatgpt-subscription` is not ported. Details:
+  `docs/decisions/2026-11-16-rust-llm-providers.md`.
 
 ### Changed
 - **Client and tool libraries are updated (Rust rewrite task P0-5).** The

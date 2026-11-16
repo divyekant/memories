@@ -1009,6 +1009,14 @@ version = "6.0.0"
 [[package]]
 name = "memories-extract"
 version = "6.0.0"
+dependencies = [
+ "axum",
+ "reqwest",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "memories-server"
