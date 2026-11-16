@@ -67,9 +67,9 @@ repair runs before the server accepts requests.
 
 | Write | First step | Second step | Repair at start |
 |---|---|---|---|
-| Supersede | Store the new record with `supersedes` and its link. | Set `archived` and `superseded_by` on the old record. | If the new record is stored and the old record is stored, do the second step. Else nothing. |
+| Supersede | Store the new record with `supersedes` and its link. | Set `archived` and `superseded_by` on the old record. | If the new record is stored and the old record is stored, do the second step. Else nothing. If the old record has a `superseded_by` with a higher ID, a later supersede wins, and the repair does nothing. |
 | Merge | Store the new record with a `supersedes` link to each record. | Set `archived` on the merged records. | If the new record is stored, do the second step on the merged records that are stored. Else nothing. |
-| Delete of one record | Remove the links to the record from the records that link to it. | Delete the record. | Do the two steps again. |
+| Delete of one record | Remove the links to the record from the records that link to it. | Delete the record. | Do the two steps again, unless the record has a pin now. |
 
 Rules:
 
@@ -77,9 +77,10 @@ Rules:
   entry names the new record.
 - Each repair step is safe to do two times. A stop during the repair leaves the
   entry, and the next start does the repair again.
-- Only a write that completes removes its entry. After an error (for example,
-  Qdrant is not available), the entry stays, and the next start completes or
-  drops the write.
+- If a step fails (for example, Qdrant is not available), the write completes
+  or drops its entry at once with the repair rules, then replies with the
+  error. Only if that also fails does the entry stay for the next start. Thus
+  an entry does not stay for days while users change the records.
 - A merge with a repeated ID has no second step (Python archives nothing), so
   it has no journal entry.
 - The repair reads the catalog, which loads from Qdrant at start. Thus "the
@@ -112,8 +113,17 @@ completes only the writes that the Rust server started.
 The writer sets `last_updated` in the `meta` table of `state.db` where Python
 v5.19.0 sets `config["last_updated"]`: after an add (also the add of a
 supersede, a merge and an upsert that creates), after each delete, and after
-a PATCH that changes only the source. A PATCH of other fields does not set it,
-as in Python. `/stats` reads the value (decision of task P2-3).
+each PATCH (also an upsert that updates). `/stats` reads the value (decision
+of task P2-3).
+
+## Known gap
+
+`POST /memory/conflicts/resolve` writes each changed record with its own
+Qdrant call (task P3-2). A stop between two calls can leave the loser archived
+with no link from the winner, or the reverse. Python has the same order of
+calls. The task row of P3-3 names add, batch add, supersede and merge, so this
+change does not add a journal entry for it. The upgrade is one journal entry
+for each resolved pair.
 
 ## Checks
 
@@ -130,6 +140,8 @@ SIGKILL at a random time from 200 to 1,500 ms, then starts it again. After
 each start, it checks:
 
 - `pending_ops` is empty.
+- Each kind of write succeeded at least once, and at least one start completed
+  a journal entry (else no stop fell between two steps, and the test fails).
 - Each point has the dense vector and the keyword vector, and a `text`,
   `source`, `created_at` and `updated_at`.
 - For each record with `supersedes` X: X has `superseded_by` equal to the

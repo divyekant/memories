@@ -509,14 +509,18 @@ impl Writer {
         };
         let ids = self.e().state.reserve_ids(1)?;
         let new_id = ids.start;
-        let op = self.begin(json!({"op": "supersede", "old": old_id, "new": new_id}))?;
-        self.put_new(vec![item], trusted, vec![extra], ids).await?;
-        self.events.emit(
-            "memory.linked",
-            json!({"from_id": new_id, "to_id": old_id, "type": "supersedes", "source": use_source}),
-        );
-        self.archive(vec![old], Some(new_id)).await?;
-        self.end(op)?;
+        let op = json!({"op": "supersede", "old": old_id, "new": new_id});
+        let entry = self.begin(&op)?;
+        let steps = async {
+            self.put_new(vec![item], trusted, vec![extra], ids).await?;
+            self.events.emit(
+                "memory.linked",
+                json!({"from_id": new_id, "to_id": old_id, "type": "supersedes", "source": use_source}),
+            );
+            self.archive(vec![old], Some(new_id)).await
+        };
+        let done = steps.await;
+        self.close(entry, &op, done).await?;
         Ok(json!({"old_id": old_id, "new_id": new_id,
                   "previous_text": previous_text, "archived_old": true}))
     }
@@ -672,6 +676,7 @@ impl Writer {
                 self.e().catalog_mut().put(&r);
             }
         }
+        self.touch()?;
         let source = source_of(&r);
         self.events.emit(
             "memory.updated",
@@ -780,9 +785,10 @@ impl Writer {
                 "Memory ID {id} is pinned; pass force=true to delete it"
             )));
         }
-        let op = self.begin(json!({"op": "delete", "id": id}))?;
-        self.delete_steps(id, Some(&rec)).await?;
-        self.end(op)?;
+        let op = json!({"op": "delete", "id": id});
+        let entry = self.begin(&op)?;
+        let done = self.delete_steps(id, Some(&rec)).await;
+        self.close(entry, &op, done).await?;
         let text = text_of(&rec).unwrap_or_default();
         self.events.emit(
             "memory.deleted",
@@ -860,8 +866,8 @@ impl Writer {
         self.touch()
     }
 
-    /// `config["last_updated"]` of Python: set by an add, a delete and a PATCH
-    /// that changes only the source, as in v5.19.0. `/stats` reads it.
+    /// `config["last_updated"]` of Python: set by each add, delete and update,
+    /// as in v5.19.0. `/stats` reads it.
     fn touch(&self) -> Result<()> {
         Ok(self.e().state.set_meta(&[("last_updated", &now())])?)
     }

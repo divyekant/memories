@@ -11,7 +11,7 @@ use std::sync::Arc;
 use memories_embed::EmbedConfig;
 use memories_engine::Engine;
 use memories_engine::rank::GraphParams;
-use memories_engine::writes::{NewMemory, UpsertEntry, Writer};
+use memories_engine::writes::{NewMemory, Patch, UpsertEntry, Writer};
 use memories_store::{Condition, Filter, QdrantSettings};
 use serde_json::{Map, Value, json};
 
@@ -89,12 +89,20 @@ async fn a_start_completes_a_supersede_after_its_first_step() {
     let w = s.start().await;
     let old = add(&w, "The deploy runs on Fridays.", None).await;
     // The first step: the new record with its `supersedes` link. Then a stop.
-    let new = add(&w, "The deploy runs on Mondays.", Some(json!({"supersedes": old}))).await;
+    let new = add(
+        &w,
+        "The deploy runs on Mondays.",
+        Some(json!({"supersedes": old})),
+    )
+    .await;
     let op = json!({"op": "supersede", "old": old, "new": new}).to_string();
     w.engine.state.begin_op(&op).unwrap();
     // A supersede whose first step did not happen changes nothing.
     let lost = json!({"op": "supersede", "old": old, "new": new + 100}).to_string();
     w.engine.state.begin_op(&lost).unwrap();
+    // An entry older than the last supersede of the record does not win.
+    let stale = json!({"op": "supersede", "old": old, "new": old}).to_string();
+    w.engine.state.begin_op(&stale).unwrap();
     drop(w);
 
     let w = s.start().await;
@@ -153,22 +161,49 @@ async fn completed_writes_leave_no_journal_entry_and_set_last_updated() {
     assert_eq!(w.engine.state.get_meta("last_updated").unwrap(), None);
     let a = add(&w, "Tests run with pytest.", None).await;
     let first = w.engine.state.get_meta("last_updated").unwrap();
-    assert!(first.as_deref().is_some_and(|t| t.ends_with("+00:00")), "{first:?}");
+    assert!(
+        first.as_deref().is_some_and(|t| t.ends_with("+00:00")),
+        "{first:?}"
+    );
+    let mut last = first.unwrap();
+    let mut changed = |w: &Writer, step: &str| {
+        let now = w.engine.state.get_meta("last_updated").unwrap().unwrap();
+        assert!(now > last, "{step} did not set last_updated");
+        last = now;
+    };
     let b = add(&w, "Lint runs with ruff.", None).await;
+    changed(&w, "add");
     let r = w
         .supersede(a as i64, "Tests run with pytest -q.".into(), "", None, None)
         .await
         .unwrap();
+    changed(&w, "supersede");
     let new = r["new_id"].as_i64().unwrap();
-    w.merge_memories(&[new, b as i64], "Checks: pytest -q and ruff.".into(), "test/safety", None)
+    let patch = Patch {
+        pinned: Some(false),
+        ..Patch::default()
+    };
+    w.update_memory(b as i64, patch, None, false).await.unwrap();
+    changed(&w, "PATCH");
+    let m = w
+        .merge_memories(
+            &[new, b as i64],
+            "Checks: pytest -q and ruff.".into(),
+            "test/safety",
+            None,
+        )
         .await
         .unwrap();
-    w.delete_memory(new, false).await.unwrap();
+    changed(&w, "merge");
+    w.delete_memory(m["id"].as_i64().unwrap(), false)
+        .await
+        .unwrap();
+    changed(&w, "delete");
     assert!(w.engine.state.pending_ops().unwrap().is_empty());
     s.cleanup(w).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs QDRANT_TEST_URL and the embedding model"]
 async fn writes_to_the_same_key_run_one_after_the_other() {
     let s = Setup::new("samekey");

@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::TcpListener;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -37,14 +37,18 @@ fn jitter(max: u64) -> u64 {
 }
 
 fn start(data: &Path, port: u16, qdrant: &str, collection: &str, log: &Path) -> Child {
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(log).unwrap();
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .unwrap();
     Command::new(env!("CARGO_BIN_EXE_memories-server"))
         .args(["serve", "--port", &port.to_string()])
         .env("API_KEY", KEY)
         .env("DATA_DIR", data)
         .env("QDRANT_URL", qdrant)
         .env("QDRANT_COLLECTION", collection)
-        .stdout(Stdio::null())
+        .stdout(log.try_clone().unwrap())
         .stderr(log)
         .spawn()
         .unwrap()
@@ -53,14 +57,23 @@ fn start(data: &Path, port: u16, qdrant: &str, collection: &str, log: &Path) -> 
 async fn wait_up(http: &reqwest::Client, base: &str, child: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(120);
     while http.get(format!("{base}/health")).send().await.is_err() {
-        assert!(child.try_wait().unwrap().is_none(), "the server stopped at start");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the server stopped at start"
+        );
         assert!(Instant::now() < deadline, "the server did not start");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
 async fn post(http: &reqwest::Client, url: String, body: Value) -> Option<Value> {
-    let r = http.post(url).header("X-API-Key", KEY).json(&body).send().await.ok()?;
+    let r = http
+        .post(url)
+        .header("X-API-Key", KEY)
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
     if !r.status().is_success() {
         return None;
     }
@@ -70,11 +83,12 @@ async fn post(http: &reqwest::Client, url: String, body: Value) -> Option<Value>
 /// A client with no record to use waits for the add clients.
 async fn idle() -> Option<()> {
     tokio::time::sleep(Duration::from_millis(20)).await;
-    Some(())
+    None
 }
 
 /// One client: the same write again and again until the server stops.
-async fn load(http: reqwest::Client, base: String, kind: usize, ids: Arc<Mutex<Vec<u64>>>) {
+async fn load(http: reqwest::Client, base: String, kind: usize, ids: Arc<Mutex<Vec<u64>>>) -> u64 {
+    let mut done = 0;
     for n in 0u64.. {
         let pick = |k: usize| {
             let ids = ids.lock().unwrap();
@@ -83,10 +97,18 @@ async fn load(http: reqwest::Client, base: String, kind: usize, ids: Arc<Mutex<V
                 ids[at..at + k].to_vec()
             })
         };
-        let text = format!("note {kind}-{n}-{} about the deploy plan", jitter(1_000_000));
+        let text = format!(
+            "note {kind}-{n}-{} about the deploy plan",
+            jitter(1_000_000)
+        );
         let ok = match kind {
             0 => {
-                let r = post(&http, format!("{base}/memory/add"), json!({"text": text, "source": SOURCE})).await;
+                let r = post(
+                    &http,
+                    format!("{base}/memory/add"),
+                    json!({"text": text, "source": SOURCE}),
+                )
+                .await;
                 r.map(|r| ids.lock().unwrap().push(r["id"].as_u64().unwrap()))
             }
             1 => {
@@ -94,7 +116,13 @@ async fn load(http: reqwest::Client, base: String, kind: usize, ids: Arc<Mutex<V
                 let items: Vec<Value> = (0..150)
                     .map(|i| json!({"text": format!("{text} item {i}"), "source": SOURCE}))
                     .collect();
-                post(&http, format!("{base}/memory/add-batch"), json!({"memories": items})).await.map(|_| ())
+                post(
+                    &http,
+                    format!("{base}/memory/add-batch"),
+                    json!({"memories": items}),
+                )
+                .await
+                .map(|_| ())
             }
             2 => match pick(1) {
                 Some(old) => {
@@ -113,10 +141,13 @@ async fn load(http: reqwest::Client, base: String, kind: usize, ids: Arc<Mutex<V
                 None => idle().await,
             },
         };
-        if ok.is_none() && http.get(format!("{base}/health")).send().await.is_err() {
-            return;
+        if ok.is_some() {
+            done += 1;
+        } else if http.get(format!("{base}/health")).send().await.is_err() {
+            return done;
         }
     }
+    done
 }
 
 /// Every point of the collection: ID to payload.
@@ -124,7 +155,8 @@ async fn points(http: &reqwest::Client, qdrant: &str, collection: &str) -> BTree
     let mut out = BTreeMap::new();
     let mut offset = Value::Null;
     loop {
-        let body = json!({"limit": 1000, "with_payload": true, "with_vector": false, "offset": offset});
+        let body =
+            json!({"limit": 1000, "with_payload": true, "with_vector": false, "offset": offset});
         let r: Value = http
             .post(format!("{qdrant}/collections/{collection}/points/scroll"))
             .json(&body)
@@ -144,7 +176,12 @@ async fn points(http: &reqwest::Client, qdrant: &str, collection: &str) -> BTree
     }
 }
 
-async fn count_without(http: &reqwest::Client, qdrant: &str, collection: &str, vector: &str) -> u64 {
+async fn count_without(
+    http: &reqwest::Client,
+    qdrant: &str,
+    collection: &str,
+    vector: &str,
+) -> u64 {
     let body = json!({"exact": true, "filter": {"must_not": [{"has_vector": vector}]}});
     let r: Value = http
         .post(format!("{qdrant}/collections/{collection}/points/count"))
@@ -155,15 +192,24 @@ async fn count_without(http: &reqwest::Client, qdrant: &str, collection: &str, v
         .json()
         .await
         .unwrap();
-    r["result"]["count"].as_u64().unwrap_or_else(|| panic!("{r}"))
+    r["result"]["count"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{r}"))
 }
 
 /// The rules of a store with no write between two steps.
 async fn check(http: &reqwest::Client, qdrant: &str, collection: &str, data: &Path, stop: usize) {
     let state = memories_store::StateDb::open(&data.join("state.db")).unwrap();
-    assert!(state.pending_ops().unwrap().is_empty(), "stop {stop}: a journal entry stays");
+    assert!(
+        state.pending_ops().unwrap().is_empty(),
+        "stop {stop}: a journal entry stays"
+    );
     for v in ["dense", "keyword"] {
-        assert_eq!(count_without(http, qdrant, collection, v).await, 0, "stop {stop}: a point has no {v} vector");
+        assert_eq!(
+            count_without(http, qdrant, collection, v).await,
+            0,
+            "stop {stop}: a point has no {v} vector"
+        );
     }
     let all = points(http, qdrant, collection).await;
     let mut newest: HashMap<u64, u64> = HashMap::new();
@@ -179,14 +225,22 @@ async fn check(http: &reqwest::Client, qdrant: &str, collection: &str, data: &Pa
             if l["type"] == "supersedes" {
                 let to = l["to_id"].as_u64().unwrap();
                 if let Some(target) = all.get(&to) {
-                    assert_eq!(target["archived"], json!(true), "stop {stop}: {id} supersedes {to}, which is not archived");
+                    assert_eq!(
+                        target["archived"],
+                        json!(true),
+                        "stop {stop}: {id} supersedes {to}, which is not archived"
+                    );
                 }
             }
         }
     }
     for (old, new) in newest {
         if let Some(p) = all.get(&old) {
-            assert_eq!(p["superseded_by"], json!(new), "stop {stop}: {old} is not superseded by {new}");
+            assert_eq!(
+                p["superseded_by"],
+                json!(new),
+                "stop {stop}: {old} is not superseded by {new}"
+            );
         }
     }
 }
@@ -201,6 +255,7 @@ async fn forced_stops_leave_no_record_between_two_steps() {
     let _ = std::fs::remove_dir_all(&data);
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
     let ids = Arc::new(Mutex::new(Vec::new()));
+    let mut writes = [0u64; 4];
     let started = Instant::now();
     let log = std::env::temp_dir().join(format!("{name}.log"));
     let _ = std::fs::remove_file(&log);
@@ -233,14 +288,17 @@ async fn forced_stops_leave_no_record_between_two_steps() {
         tokio::time::sleep(Duration::from_millis(200 + jitter(1_300))).await;
         child.kill().unwrap(); // SIGKILL: no shutdown code runs.
         child.wait().unwrap();
-        for c in clients {
-            c.await.unwrap();
+        for (k, c) in clients.into_iter().enumerate() {
+            writes[k] += c.await.unwrap();
         }
     }
     let n = points(&http, &qdrant, &collection).await.len();
     let logs = std::fs::read_to_string(&log).unwrap_or_default();
     let mut repaired: BTreeMap<String, usize> = BTreeMap::new();
-    for line in logs.lines().filter(|l| l.contains("completed a write that a stop interrupted")) {
+    for line in logs
+        .lines()
+        .filter(|l| l.contains("completed a write that a stop interrupted"))
+    {
         for op in ["supersede", "merge", "delete"] {
             if line.contains(op) {
                 *repaired.entry(op.into()).or_default() += 1;
@@ -248,10 +306,21 @@ async fn forced_stops_leave_no_record_between_two_steps() {
         }
     }
     println!(
-        "{STOPS} forced stops, {n} records, {:.0} s, writes completed at start: {repaired:?}",
+        "{STOPS} forced stops, {n} records, {:.0} s, writes (add, batch, supersede, merge): {writes:?}, writes completed at start: {repaired:?}",
         started.elapsed().as_secs_f64()
     );
+    assert!(
+        writes.iter().all(|&w| w > 0),
+        "a kind of write never succeeded: {writes:?}"
+    );
+    assert!(
+        !repaired.is_empty(),
+        "no stop fell between two steps of a write"
+    );
     let _ = std::fs::remove_file(&log);
-    let _ = http.delete(format!("{qdrant}/collections/{collection}")).send().await;
+    let _ = http
+        .delete(format!("{qdrant}/collections/{collection}"))
+        .send()
+        .await;
     let _ = std::fs::remove_dir_all(&data);
 }

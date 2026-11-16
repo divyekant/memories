@@ -48,7 +48,7 @@ reinforcement, as the Python server shows its in-memory value.
   `state.db`. If the table has no value, they come from the `config.json` of
   the Python install in `DATA_DIR`, else null. Since task P3-3, the writer
   sets `last_updated` where Python v5.19.0 sets it: after an add, after a
-  delete, and after a PATCH that changes only the source.
+  delete, and after a PATCH.
 
 ## Contract differences
 

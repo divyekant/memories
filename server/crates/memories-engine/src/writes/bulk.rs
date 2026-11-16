@@ -346,24 +346,28 @@ impl Writer {
         let reserved = self.e().state.reserve_ids(1)?;
         let new_id = reserved.start as i64;
         // A repeated ID has no second step, so it needs no journal entry.
-        let op = match duplicate {
-            None => Some(self.begin(json!({"op": "merge", "ids": unique, "new": new_id}))?),
-            Some(_) => None,
-        };
-        self.put_new(vec![item], trusted, vec![extra], reserved)
-            .await?;
-        for l in &links {
-            self.linked(new_id, l.to_id, "supersedes", source);
-        }
         if let Some(WriteError::Invalid(m)) = duplicate {
+            self.put_new(vec![item], trusted, vec![extra], reserved)
+                .await?;
+            for l in &links {
+                self.linked(new_id, l.to_id, "supersedes", source);
+            }
             let to = m.split("--> ").nth(1).unwrap_or_default().to_owned();
             return Err(invalid(format!("Link {new_id} --supersedes--> {to}")));
         }
-        let records = self.records(&unique).await?;
-        self.archive(records, None).await?;
-        if let Some(op) = op {
-            self.end(op)?;
-        }
+        let op = json!({"op": "merge", "ids": unique, "new": new_id});
+        let entry = self.begin(&op)?;
+        let steps = async {
+            self.put_new(vec![item], trusted, vec![extra], reserved)
+                .await?;
+            for l in &links {
+                self.linked(new_id, l.to_id, "supersedes", source);
+            }
+            let records = self.records(&unique).await?;
+            self.archive(records, None).await
+        };
+        let done = steps.await;
+        self.close(entry, &op, done).await?;
         Ok(json!({"id": new_id, "archived": ids}))
     }
 

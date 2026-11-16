@@ -268,7 +268,10 @@ mod tests {
         assert_eq!(db.pending_ops().unwrap(), vec![(b, "b".to_owned())]);
         db.end_op(b).unwrap();
         assert!(db.pending_ops().unwrap().is_empty());
-        assert!(db.begin_op("c").unwrap() > b, "an entry ID is not given again");
+        assert!(
+            db.begin_op("c").unwrap() > b,
+            "an entry ID is not given again"
+        );
     }
 
     #[test]

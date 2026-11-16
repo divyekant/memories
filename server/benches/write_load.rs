@@ -9,7 +9,7 @@
 //! `BENCH_SAMPLES` (default 200) the samples of each measure. The run fails if
 //! the add p95 is more than 250 ms at a size (exit check of P3-3).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -28,10 +28,43 @@ use serde_json::{Map, json};
 const ADD_P95_LIMIT_MS: f64 = 250.0;
 const POOL: usize = 2_000;
 const WORDS: &[&str] = &[
-    "deploy", "server", "cache", "token", "release", "branch", "review", "test", "client", "query",
-    "index", "vector", "backup", "schema", "worker", "queue", "config", "metric", "alert", "build",
-    "docker", "python", "rust", "memory", "search", "project", "owner", "decision", "rollback",
-    "latency", "budget", "contract", "sprint", "incident", "migration", "storage", "network",
+    "deploy",
+    "server",
+    "cache",
+    "token",
+    "release",
+    "branch",
+    "review",
+    "test",
+    "client",
+    "query",
+    "index",
+    "vector",
+    "backup",
+    "schema",
+    "worker",
+    "queue",
+    "config",
+    "metric",
+    "alert",
+    "build",
+    "docker",
+    "python",
+    "rust",
+    "memory",
+    "search",
+    "project",
+    "owner",
+    "decision",
+    "rollback",
+    "latency",
+    "budget",
+    "contract",
+    "sprint",
+    "incident",
+    "migration",
+    "storage",
+    "network",
 ];
 
 /// A small xorshift generator: the benchmark needs no random crate.
@@ -51,7 +84,10 @@ impl Rng {
     }
     fn text(&mut self) -> String {
         let n = 8 + self.below(30);
-        (0..n).map(|_| WORDS[self.below(WORDS.len())]).collect::<Vec<_>>().join(" ")
+        (0..n)
+            .map(|_| WORDS[self.below(WORDS.len())])
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -73,20 +109,31 @@ fn row(name: &str, v: &mut [f64]) -> f64 {
     p95
 }
 
-async fn open(settings: &QdrantSettings, dir: &PathBuf) -> Writer {
+async fn open(settings: &QdrantSettings, dir: &Path) -> Writer {
     let embed = EmbedConfig {
-        cache_dir: std::env::var("MEMORIES_TEST_MODEL_CACHE").ok().map(PathBuf::from),
+        cache_dir: std::env::var("MEMORIES_TEST_MODEL_CACHE")
+            .ok()
+            .map(PathBuf::from),
         ..EmbedConfig::default()
     };
-    let engine = Engine::open(settings, dir, embed, GraphParams::default()).await.unwrap();
-    Writer::open(Arc::new(engine), dir.clone(), 0.97).await.unwrap()
+    let engine = Engine::open(settings, dir, embed, GraphParams::default())
+        .await
+        .unwrap();
+    Writer::open(Arc::new(engine), dir.to_path_buf(), 0.97)
+        .await
+        .unwrap()
 }
 
 /// Seeds `size` records: each one is a real embedding of a pool text with a
 /// small change, so the vectors spread as real records do.
 async fn seed(w: &Writer, size: usize, rng: &mut Rng) {
     let pool_texts: Vec<String> = (0..POOL).map(|_| rng.text()).collect();
-    let pool = w.engine.embedder.embed(pool_texts.clone(), TextKind::Document).await.unwrap();
+    let pool = w
+        .engine
+        .embedder
+        .embed(pool_texts.clone(), TextKind::Document)
+        .await
+        .unwrap();
     let ids = w.engine.state.reserve_ids(size as u64).unwrap();
     let avg = 23.0;
     let mut batch = Vec::with_capacity(1_000);
@@ -103,9 +150,17 @@ async fn seed(w: &Writer, size: usize, rng: &mut Rng) {
             p.insert(f.into(), json!("2026-11-16T00:00:00+00:00"));
         }
         let keyword = doc_vector(&text, avg);
-        batch.push(NewPoint { record: Record::from_payload(id, p), dense, keyword });
+        batch.push(NewPoint {
+            record: Record::from_payload(id, p),
+            dense,
+            keyword,
+        });
         if batch.len() == 1_000 {
-            w.engine.store.upsert(std::mem::take(&mut batch), w.engine.dim).await.unwrap();
+            w.engine
+                .store
+                .upsert(std::mem::take(&mut batch), w.engine.dim)
+                .await
+                .unwrap();
         }
     }
     w.engine.store.upsert(batch, w.engine.dim).await.unwrap();
@@ -124,14 +179,22 @@ async fn wait_green(client: &Qdrant, name: &str) {
 }
 
 async fn timed_search(w: &Writer, rng: &mut Rng) -> f64 {
-    let args = SearchArgs { query: rng.text(), k: 5, ..SearchArgs::default() };
+    let args = SearchArgs {
+        query: rng.text(),
+        k: 5,
+        ..SearchArgs::default()
+    };
     let t = Instant::now();
     w.engine.search(&args, true).await.unwrap();
     t.elapsed().as_secs_f64() * 1e3
 }
 
 async fn timed_add(w: &Writer, rng: &mut Rng, dedupe: bool) -> f64 {
-    let item = NewMemory { text: rng.text(), source: "bench/add".into(), metadata: None };
+    let item = NewMemory {
+        text: rng.text(),
+        source: "bench/add".into(),
+        metadata: None,
+    };
     let t = Instant::now();
     w.add_memories(vec![item], dedupe, None).await.unwrap();
     t.elapsed().as_secs_f64() * 1e3
@@ -155,7 +218,10 @@ async fn main() {
             _ => None,
         };
         let settings = QdrantSettings::from_lookup(lookup).unwrap();
-        let client = Qdrant::from_url(&settings.grpc_url).skip_compatibility_check().build().unwrap();
+        let client = Qdrant::from_url(&settings.grpc_url)
+            .skip_compatibility_check()
+            .build()
+            .unwrap();
         let name = settings.v2_collection();
         let _ = client.delete_collection(&name).await;
         let dir = std::env::temp_dir().join(&base);
@@ -223,7 +289,9 @@ async fn main() {
 
         for (name, p) in [("Add", p95), ("Add with deduplicate", p95_dedupe)] {
             if p > ADD_P95_LIMIT_MS {
-                println!("FAIL: {name} p95 {p:.1} ms at {size} records is more than {ADD_P95_LIMIT_MS} ms");
+                println!(
+                    "FAIL: {name} p95 {p:.1} ms at {size} records is more than {ADD_P95_LIMIT_MS} ms"
+                );
                 failed = true;
             }
         }
