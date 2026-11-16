@@ -200,7 +200,7 @@ jobs:
   rust-parity:
     # Exit checks of the Rust tasks: replay their golden cases against the Rust server.
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     services:
       qdrant:
         # The minimum Qdrant version of the Rust server.
@@ -298,11 +298,28 @@ jobs:
           ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_maintenance.sh server/target/debug/memories-server
 
+      - name: P5-6 promotion routes and the promotion part of metrics (off mode)
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_promotions.sh server/target/debug/memories-server
+
       - name: P7-1 rollback drill (export-legacy, rollback entrypoint, migrate --merge)
         env:
           QDRANT_URL: http://127.0.0.1:6333
           ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/rollback_drill.sh server/target/debug/memories-server
+
+
+      - name: P2-4 gate G3, corpus and graph parts (synthetic data)
+        # The steps before leave memories_v2 in the throwaway Qdrant service.
+        run: |
+          curl -s -X DELETE http://127.0.0.1:6333/collections/memories_v2 > /dev/null
+          curl -s -X DELETE http://127.0.0.1:6333/collections/memories > /dev/null
+          G3_PARTS=corpus,graph G3_ALLOW_PARTIAL=1 \
+          QDRANT_URL=http://127.0.0.1:6333 \
+          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
+            server/scripts/gate_g3.sh server/target/debug/memories-server
 
   rollback-image:
     # The rollback image of task P7-1: the Python image plus memories-server.

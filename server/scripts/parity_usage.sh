@@ -170,8 +170,10 @@ import json, sys
 golden = next(json.loads(l) for l in open("parity/golden/golden.ndjson") if json.loads(l)["name"] == "metrics")
 want = golden["response"]["body"]
 got = json.load(open(sys.argv[1]))
-# The promotion part comes with task P5-6.
-want.pop("promotion")
+# The promotion part (task P5-6) has no volatile field: it must be equal.
+if got.get("promotion") != want["promotion"]:
+    print(f"FAIL: GET /metrics promotion\n  python {want['promotion']}\n  rust   {got.get('promotion')}", file=sys.stderr)
+    sys.exit(1)
 
 def shape(v, path, skip_keys):
     if isinstance(v, dict):

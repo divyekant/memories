@@ -12,6 +12,7 @@ pub mod maintenance;
 pub mod migrate;
 pub mod model;
 pub mod pipeline;
+pub mod promotions;
 pub mod reads;
 pub mod rollback;
 pub mod search;
@@ -193,6 +194,10 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/api/keys/{key_id}"),
     ("GET", "/audit"),
     ("POST", "/audit/purge"),
+    ("GET", "/promotions"),
+    ("GET", "/promotions/{candidate_id}"),
+    ("POST", "/promotions/{candidate_id}/approve"),
+    ("POST", "/promotions/{candidate_id}/reject"),
     ("GET", "/memory/{memory_id}"),
     ("POST", "/memory/get-batch"),
     ("GET", "/memories"),
@@ -276,6 +281,16 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/audit", get(admin::get_audit))
         .route("/audit/purge", post(admin::purge_audit))
+        .route("/promotions", get(promotions::list))
+        .route("/promotions/{candidate_id}", get(promotions::get))
+        .route(
+            "/promotions/{candidate_id}/approve",
+            post(promotions::approve),
+        )
+        .route(
+            "/promotions/{candidate_id}/reject",
+            post(promotions::reject),
+        )
         .route("/memory/conflicts", get(reads::conflicts))
         .route("/memory/get-batch", post(reads::get_batch))
         .route("/memory/{memory_id}/links", get(reads::links))

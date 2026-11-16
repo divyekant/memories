@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start the Python reference server for a parity run.
 # Usage: parity/run_python_server.sh <data dir> <port>
+# PARITY_PYTHON_QDRANT_URL selects a Qdrant server. The default is the local (embedded) mode.
 set -euo pipefail
 data_dir="$1"
 port="$2"
@@ -12,7 +13,7 @@ exec env \
   API_KEY="${PARITY_ADMIN_KEY:-parity-admin-key}" \
   DATA_DIR="$data_dir" \
   WORKSPACE_DIR="$PWD/parity/workspace" \
-  QDRANT_URL="" \
+  QDRANT_URL="${PARITY_PYTHON_QDRANT_URL:-}" \
   MEMORIES_PERSIST_DELAY_SEC=0 \
   USAGE_TRACKING=true \
   AUDIT_LOG=true \

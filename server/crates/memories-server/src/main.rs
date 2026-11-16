@@ -127,6 +127,12 @@ fn main() -> std::process::ExitCode {
             return run_command(&cfg, Default::default(), Job::ExportLegacy(force));
         }
     };
+    if let Err(msg) = memories_server::promotions::check_mode(
+        std::env::var("PROJECT_PROMOTION_MODE").ok().as_deref(),
+    ) {
+        tracing::error!("cannot start: {msg}");
+        return std::process::ExitCode::FAILURE;
+    }
     for name in config::set_but_not_used(|n| std::env::var(n).ok()) {
         tracing::info!("{name} is set, but this server version does not use it");
     }

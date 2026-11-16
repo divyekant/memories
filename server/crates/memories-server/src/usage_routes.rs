@@ -487,7 +487,6 @@ async fn snapshot(state: &Arc<AppState>, sample: bool) -> Result<Value, Response
         json!({"window_size": state.trend_max, "delta": delta, "samples": Vec::from(t.clone())})
     };
     let requests = state.metrics.snapshot();
-    // shortcut: no `promotion` part until the promotion service is ported (task P5-6).
     Ok(json!({
         "uptime_sec": state.started.elapsed().as_secs(),
         "extract": crate::extract::queue_fields(state).await?,
@@ -495,6 +494,7 @@ async fn snapshot(state: &Arc<AppState>, sample: bool) -> Result<Value, Response
         "embedder_reload": embedder_reload(state.reload.lock().unwrap_or_else(|e| e.into_inner()).clone()),
         "requests": requests["requests"],
         "routes": requests["routes"],
+        "promotion": crate::promotions::metrics_part(state).await?,
     }))
 }
 
