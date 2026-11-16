@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **Bulk writes and relation writes of the Rust server (rewrite task P3-2).**
+  The Rust server answers the 13 routes for bulk deletes, supersede, merge,
+  archive batch, links, folder rename, conflict resolution, deduplicate and
+  missed captures, with the replies of the Python server. The delete routes
+  keep the Python match rules: `delete-by-source` matches a substring and
+  `delete-by-prefix` a plain prefix. `server/scripts/parity_bulk.sh` replays
+  95 golden cases (0 differ) and runs 122 cases on a Python and a Rust server
+  (0 differ, the same deleted IDs). No change to the Python server or to a
+  client. Details: `docs/decisions/2026-11-16-rust-bulk-writes.md`.
 - **Rust usage, metrics and feedback routes (rewrite task P5-1).** The Rust
   server keeps `usage.db` with the seven tables of the Python tracker and
   writes the rows through one writer thread, in batches. It answers

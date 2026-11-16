@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod audit;
 pub mod auth;
+pub mod bulk;
 pub mod error;
 pub mod extract;
 pub mod healthcheck;
@@ -16,7 +17,7 @@ pub mod usage_routes;
 pub mod validate;
 pub mod writes;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
@@ -28,7 +29,7 @@ use axum::{
     http::HeaderMap,
     middleware::from_fn,
     middleware::from_fn_with_state,
-    routing::{MethodFilter, get, on, patch, post},
+    routing::{MethodFilter, delete, get, on, patch, post},
 };
 use memories_engine::Engine;
 use memories_engine::writes::Writer;
@@ -118,6 +119,8 @@ pub struct AppState {
     pub trend_max: usize,
     /// The write flow of the engine. Set with `engine`.
     pub writer: OnceLock<Arc<Writer>>,
+    /// `_missed_counts`: `POST /memory/missed` calls of each source since the start.
+    pub missed: Mutex<HashMap<String, u64>>,
 }
 
 impl AppState {
@@ -158,6 +161,7 @@ impl AppState {
             trend: Mutex::default(),
             trend_max: cfg.metrics_trend_samples,
             writer: OnceLock::new(),
+            missed: Mutex::default(),
         })
     }
 }
@@ -181,6 +185,19 @@ const SERVED: &[(&str, &str)] = &[
     ("PATCH", "/memory/{memory_id}"),
     ("DELETE", "/memory/{memory_id}"),
     ("POST", "/memory/delete-batch"),
+    ("POST", "/memory/delete-by-source"),
+    ("POST", "/memory/delete-by-prefix"),
+    ("DELETE", "/memories"),
+    ("POST", "/memory/supersede"),
+    ("POST", "/memory/{memory_id}/supersede"),
+    ("POST", "/memory/merge"),
+    ("POST", "/memory/archive-batch"),
+    ("POST", "/memory/{memory_id}/link"),
+    ("DELETE", "/memory/{memory_id}/link/{target_id}"),
+    ("POST", "/folders/rename"),
+    ("POST", "/memory/conflicts/resolve"),
+    ("POST", "/memory/deduplicate"),
+    ("POST", "/memory/missed"),
     ("POST", "/search"),
     ("POST", "/search/batch"),
     ("POST", "/search/explain"),
@@ -233,6 +250,22 @@ pub fn app(state: Arc<AppState>) -> Router {
             patch(writes::patch).delete(writes::delete),
         )
         .route("/memory/delete-batch", post(writes::delete_batch))
+        .route("/memory/delete-by-source", post(bulk::delete_by_source))
+        .route("/memory/delete-by-prefix", post(bulk::delete_by_prefix))
+        .route("/memories", delete(bulk::delete_memories))
+        .route("/memory/supersede", post(bulk::supersede))
+        .route("/memory/{memory_id}/supersede", post(bulk::supersede_by_id))
+        .route("/memory/merge", post(bulk::merge))
+        .route("/memory/archive-batch", post(bulk::archive_batch))
+        .route("/memory/{memory_id}/link", post(bulk::add_link))
+        .route(
+            "/memory/{memory_id}/link/{target_id}",
+            delete(bulk::remove_link),
+        )
+        .route("/folders/rename", post(bulk::rename_folder))
+        .route("/memory/conflicts/resolve", post(bulk::resolve_conflicts))
+        .route("/memory/deduplicate", post(bulk::deduplicate))
+        .route("/memory/missed", post(bulk::missed))
         .route("/search", post(search::search))
         .route("/search/batch", post(search::search_batch))
         .route("/search/explain", post(search::search_explain))
