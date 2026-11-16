@@ -198,9 +198,14 @@ impl PySet {
         out
     }
 
-    /// `bool(self & other)`.
+    /// `bool(self & other)`: walks the smaller set.
     pub fn intersects(&self, other: &PySet) -> bool {
-        self.iter().any(|k| other.contains(k))
+        let (big, small) = if other.len() > self.len() {
+            (other, self)
+        } else {
+            (self, other)
+        };
+        small.iter().any(|k| big.contains(k))
     }
 }
 

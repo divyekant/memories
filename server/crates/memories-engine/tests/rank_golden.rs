@@ -4,8 +4,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use memories_engine::rank::fusion::{HybridInput, RecordFields, hybrid_rank};
-use memories_engine::rank::graph::build_adjacency;
+use memories_engine::rank::fusion::{HybridInput, RecordFields, candidate_counts, hybrid_rank};
+use memories_engine::rank::graph::{GraphParams, build_adjacency};
 use memories_engine::rank::intent::classify_query;
 use memories_engine::rank::pydt::PyDateTime;
 use memories_engine::rank::pyorder::PySet;
@@ -54,6 +54,11 @@ fn pairs(v: &Value) -> Vec<(i64, f64)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Bit for bit, so -0.0 and 0.0 differ.
+fn same(got: f64, want: &Value) -> bool {
+    got.to_bits() == f(want).to_bits()
 }
 
 fn now(v: &Value) -> PyDateTime {
@@ -237,6 +242,20 @@ fn python_set_order() {
     let cases = cases("pyset");
     let mut bad = Vec::new();
     for c in &cases {
+        if let Some(g) = c["gen"].as_array() {
+            let [count, step, modulus, start] =
+                [0, 1, 2, 3].map(|i| u128::from(g[i].as_u64().unwrap()));
+            let a: PySet = (0..count)
+                .map(|i| ((start + i * step) % modulus) as i64)
+                .collect();
+            let hash = a.iter().enumerate().fold(0_u128, |acc, (i, v)| {
+                (acc + (i as u128 + 1) * v as u128) % ((1 << 61) - 1)
+            });
+            if Some(hash as u64) != c["order_hash"].as_u64() {
+                bad.push(format!("gen {g:?}"));
+            }
+            continue;
+        }
         let a: PySet = ids(&c["adds"]).into_iter().collect();
         let b: PySet = ids(&c["other"]).into_iter().collect();
         let order: Vec<i64> = a.iter().collect();
@@ -255,7 +274,11 @@ struct Record {
 
 fn hybrid_case(c: &Value) -> Result<(), String> {
     let metas = c["metas"].as_array().unwrap();
-    let vector = pairs(&c["vector_hits"]);
+    let p = &c["params"];
+    let k = p["k"].as_u64().unwrap() as usize;
+    // The caller asks Qdrant for this many vector hits.
+    let mut vector = pairs(&c["vector_hits"]);
+    vector.truncate(candidate_counts(k, metas.len()).vector);
     let keyword = pairs(&c["keyword_hits"]);
     let feedback = c["feedback"].as_array().map(|_| pairs(&c["feedback"]));
     let now_text = c["now"].as_str().unwrap();
@@ -324,9 +347,19 @@ fn hybrid_case(c: &Value) -> Result<(), String> {
     });
     let visible_set: HashSet<i64> = ids(&c["visible"]).into_iter().collect();
     let visible = |id: i64| visible_set.contains(&id);
-    let p = &c["params"];
+    let gp = &c["graph_params"];
+    let graph_params = if gp.is_object() {
+        GraphParams {
+            alpha: f(&gp["alpha"]),
+            max_iters: gp["max_iters"].as_u64().unwrap() as usize,
+            min_relative: f(&gp["min_relative"]),
+            reserved_slots: gp["reserved_slots"].as_u64().unwrap() as usize,
+        }
+    } else {
+        GraphParams::default()
+    };
     let input = HybridInput {
-        k: p["k"].as_u64().unwrap() as usize,
+        k,
         record_count: metas.len(),
         threshold: opt_f(&p["threshold"]),
         weights: Weights::new(WeightInput {
@@ -349,6 +382,7 @@ fn hybrid_case(c: &Value) -> Result<(), String> {
             None
         },
         adjacency: &adjacency,
+        graph_params,
         now: PyDateTime::fromisoformat(now_text).unwrap(),
     };
     let got = hybrid_rank(&input);
@@ -364,13 +398,13 @@ fn hybrid_case(c: &Value) -> Result<(), String> {
         return Err(format!("ids {got_ids:?}, want {want_ids:?}"));
     }
     for (g, w) in got.results.iter().zip(want_results) {
-        let mut diff = g.rrf_score != f(&w["rrf_score"]) || g.confidence != f(&w["confidence"]);
+        let mut diff = !same(g.rrf_score, &w["rrf_score"]) || !same(g.confidence, &w["confidence"]);
         match (&g.graph, w.get("match_type")) {
             (None, None) => {}
             (Some(gf), Some(mt)) => {
                 diff |= gf.match_type.as_str() != mt.as_str().unwrap()
-                    || gf.base_rrf_score != f(&w["base_rrf_score"])
-                    || gf.graph_support != f(&w["graph_support"])
+                    || !same(gf.base_rrf_score, &w["base_rrf_score"])
+                    || !same(gf.graph_support, &w["graph_support"])
                     || gf.graph_via != ids(&w["graph_via"]);
             }
             _ => diff = true,

@@ -18,9 +18,11 @@ or output. Task P2-2 (search routes) calls them.
 ## Parity check
 
 `parity/rank_golden.py` calls the Python functions with fixed inputs and
-writes `parity/golden/rank/*.json`: 316 hybrid search cases (16 by hand, 300
-random), 910 intent cases, 4,339 `fromisoformat` strings and the cases of
-each score rule. The Rust test `tests/rank_golden.rs` passes each case with
+writes `parity/golden/rank/*.json`: 319 hybrid search cases (16 by hand, 3
+with 160 records and k above 100, 300 random, 101 of them with other graph
+settings), 910 intent cases, 4,339 `fromisoformat` strings and the cases of
+each score rule. The set order cases include sets of up to 70,000 keys. The
+Rust test `tests/rank_golden.rs` passes each case with
 equal IDs in equal order and equal scores (bit for bit, which is stronger
 than 6 decimals). CI runs the script with `--check`.
 
@@ -44,8 +46,10 @@ order of tied graph results.
    time before `hybrid_rank`. The Python vector search reinforces its hits
    before the fusion, so the confidence signal sees them as new. For
    `/search/explain`, do not.
-2. Give the vector hits after the scope filter, the temporal filter and the
-   threshold, in rank order, with the similarity to 6 decimals.
+2. Ask Qdrant for `candidate_counts(k, count).vector` vector hits, which is
+   at most 100, with the scope filter and the threshold in the query. Then
+   apply the temporal filter to these hits, as Python does after the limit.
+   Give the hits in rank order, with the similarity to 6 decimals.
 3. Give the keyword hits in index order. Python sorts them by score with a
    stable sort, so a tie keeps the index order (the order of the stored
    records).
@@ -55,7 +59,11 @@ order of tied graph results.
    records left out). It must match the scope test of `_visible`.
 6. Call `relative_scores` after the key scope filter, on `similarity`, else
    `rrf_score`.
-7. Call `classify_query` only when `auto_intent` is true. Map `IntentError`
+7. Read the graph settings into `GraphParams` from `SEARCH_PPR_ALPHA`,
+   `SEARCH_PPR_MAX_ITERS`, `SEARCH_PPR_MIN_RELATIVE` and
+   `SEARCH_GRAPH_RESERVED_SLOTS` (else `SEARCH_GRAPH_MAX_NEIGHBORS`), with the
+   Python defaults.
+8. Call `classify_query` only when `auto_intent` is true. Map `IntentError`
    to HTTP 500, as Python does (for example "1000000000 days ago").
 
 ## Contract differences
@@ -64,12 +72,25 @@ order of tied graph results.
   the microsecond of their reinforcement, which changes from run to run. The
   Rust server uses one time for each request, so a tie keeps the vector
   order. The golden cases use a fixed clock, where the two agree.
+- Python reads the clock again for each recency and confidence score. Two
+  records with the same time stamp can thus get scores that differ by about
+  1 microsecond of age, and the tie order changes from run to run. The Rust
+  server uses one time for each request.
+- `/search/explain` (`hybrid_search_explain`) ranks the keyword side over the
+  index positions and does not check that a keyword hit still exists. A
+  record that is deleted while the index is stale thus keeps its rank place
+  in Python. In Rust, it drops out. This is only possible during a race.
 
 ## Limits
 
 - The date fields of a record must be strings. Python gives HTTP 500 for a
   number in `document_at`, `created_at` or `timestamp` when a temporal filter
   applies.
+- Python 3.11 uses Unicode 14.0. Rust and the `regex` crate use a newer
+  version. For a character that is new after Unicode 14.0, the lower case,
+  the word boundary and `\d` can differ (for example `"yesterday\U00011F04"`
+  gives the yesterday intent in Python only). The golden cases use no such
+  character.
 - `pow` comes from the C library on both sides. The golden cases pass on the
   glibc of the CI runner. A different C library can change the last bit of a
   recency score and thus the order of a tie.

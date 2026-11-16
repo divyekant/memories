@@ -9,6 +9,9 @@ pub mod pydt;
 pub mod pyorder;
 pub mod scores;
 
-pub use fusion::{HybridInput, MatchType, Ranked, Ranking, RecordFields, hybrid_rank};
+pub use fusion::{
+    CandidateCounts, HybridInput, MatchType, Ranked, Ranking, RecordFields, hybrid_rank,
+};
+pub use graph::GraphParams;
 pub use pydt::PyDateTime;
 pub use scores::{WeightInput, Weights};

@@ -8,9 +8,30 @@ use std::collections::HashSet;
 use super::pyorder::{OrderedMap, PySet};
 use super::scores::py_round;
 
-pub const PPR_ALPHA: f64 = 0.85;
-pub const PPR_MAX_ITERS: usize = 3;
-pub const PPR_MIN_RELATIVE: f64 = 0.05;
+/// The graph settings. Python reads them from `SEARCH_PPR_ALPHA`,
+/// `SEARCH_PPR_MAX_ITERS`, `SEARCH_PPR_MIN_RELATIVE` and
+/// `SEARCH_GRAPH_RESERVED_SLOTS` (else `SEARCH_GRAPH_MAX_NEIGHBORS`). The
+/// default is the Python default.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GraphParams {
+    pub alpha: f64,
+    pub max_iters: usize,
+    pub min_relative: f64,
+    /// Places kept for records that only the graph found.
+    pub reserved_slots: usize,
+}
+
+impl Default for GraphParams {
+    fn default() -> Self {
+        Self {
+            alpha: 0.85,
+            max_iters: 3,
+            min_relative: 0.05,
+            reserved_slots: 2,
+        }
+    }
+}
+
 /// Upper limit of a graph score, as a part of the top direct score.
 pub const GRAPH_CAP: f64 = 0.33;
 
@@ -133,14 +154,15 @@ pub fn graph_expand(
     graph_weight: f64,
     full_adj: &Adjacency,
     visible: Option<&dyn Fn(i64) -> bool>,
+    params: &GraphParams,
 ) -> (OrderedMap<GraphCandidate>, GraphInfo) {
     let mut info = GraphInfo {
         seeds: Vec::new(),
         neighbors_found: 0,
         neighbors_filtered: 0,
         neighbors_added: 0,
-        ppr_iterations: PPR_MAX_ITERS,
-        ppr_alpha: PPR_ALPHA,
+        ppr_iterations: params.max_iters,
+        ppr_alpha: params.alpha,
     };
     let mut candidates = OrderedMap::new();
     if direct.is_empty() {
@@ -150,7 +172,7 @@ pub fn graph_expand(
     let edges = |a: &Adjacency| a.iter().map(|(_, n)| n.len()).sum::<usize>() / 2;
     let unfiltered = edges(full_adj);
     info.neighbors_found = unfiltered;
-    info.neighbors_filtered = unfiltered - edges(&adj);
+    info.neighbors_filtered = unfiltered.saturating_sub(edges(&adj));
 
     let top = direct[0].1;
     if top <= 0.0 {
@@ -169,16 +191,16 @@ pub fn graph_expand(
 
     let p_total = py_sum(personalization.iter().map(|(_, &p)| p));
     let p_total = if p_total == 0.0 { 1.0 } else { p_total };
-    let restart = 1.0 - PPR_ALPHA;
+    let restart = 1.0 - params.alpha;
     let mut ppr = personalization.clone();
-    for _ in 0..PPR_MAX_ITERS {
+    for _ in 0..params.max_iters {
         let mut next: OrderedMap<f64> = OrderedMap::new();
         let dangling = py_sum(
             ppr.iter()
                 .filter(|&(node, _)| adj.get(node).is_none_or(PySet::is_empty))
                 .map(|(_, &s)| s),
         );
-        let dangling_share = PPR_ALPHA * dangling;
+        let dangling_share = params.alpha * dangling;
         for (node, &p) in personalization.iter() {
             let v = next.entry(node, || 0.0);
             *v += restart * p;
@@ -188,7 +210,7 @@ pub fn graph_expand(
             let Some(neighbors) = adj.get(node).filter(|n| !n.is_empty()) else {
                 continue;
             };
-            let share = PPR_ALPHA * score / neighbors.len() as f64;
+            let share = params.alpha * score / neighbors.len() as f64;
             for nb in neighbors.iter() {
                 *next.entry(nb, || 0.0) += share;
             }
@@ -209,7 +231,7 @@ pub fn graph_expand(
             continue;
         }
         let relative = if max_ppr > 0.0 { score / max_ppr } else { 0.0 };
-        if !is_direct && relative < PPR_MIN_RELATIVE {
+        if !is_direct && relative < params.min_relative {
             continue;
         }
         let support = (gain / max_ppr) * top * graph_weight;

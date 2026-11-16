@@ -256,7 +256,19 @@ def gen_pyset(rng):
         for x in other:
             b.add(x)
         out.append({"adds": adds, "other": other, "order": list(a), "and_order": list(a & b)})
+    # Large sets: resizes up to the rule for more than 50,000 keys. The keys
+    # are (start + i * step) % mod; the order is given as a position hash.
+    for count, step, mod, start in [(600, 7, 5000, 3), (9000, 104729, 2 ** 40, 11),
+                                    (60000, 2654435761, 2 ** 61, 5), (70000, 3, 150000, 0)]:
+        a = set()
+        for i in range(count):
+            a.add((start + i * step) % mod)
+        out.append({"gen": [count, step, mod, start], "order_hash": order_hash(list(a))})
     return out
+
+
+def order_hash(values):
+    return sum((i + 1) * v for i, v in enumerate(values)) % (2 ** 61 - 1)
 
 
 # ---------------------------------------------------------------- hybrid
@@ -289,7 +301,9 @@ def make_engine(metas, keyword_hits, vector_hits, profiles):
 
     def fake_search(**kw):
         out = []
-        for doc_id, sim in vector_hits:
+        # search() applies k = min(k, len(metadata), 100) to the Qdrant limit.
+        limit = min(kw["k"], len(eng.metadata), 100)
+        for doc_id, sim in vector_hits[:limit]:
             if doc_id not in by_id:
                 # A record deleted while the search runs.
                 out.append({"id": doc_id, "similarity": sim})
@@ -302,7 +316,25 @@ def make_engine(metas, keyword_hits, vector_hits, profiles):
     return eng
 
 
+GRAPH_DEFAULTS = {"alpha": 0.85, "max_iters": 3, "min_relative": 0.05, "reserved_slots": 2}
+
+
+def set_graph_params(params):
+    memory_engine.PPR_ALPHA = params["alpha"]
+    memory_engine.PPR_MAX_ITERS = params["max_iters"]
+    memory_engine.PPR_MIN_RELATIVE = params["min_relative"]
+    memory_engine.GRAPH_RESERVED_SLOTS = params["reserved_slots"]
+
+
 def run_hybrid(case):
+    set_graph_params(case.get("graph_params") or GRAPH_DEFAULTS)
+    try:
+        return run_hybrid_once(case)
+    finally:
+        set_graph_params(GRAPH_DEFAULTS)
+
+
+def run_hybrid_once(case):
     metas = [json.loads(json.dumps(m)) for m in case["metas"]]
     eng = make_engine(metas, case["keyword_hits"], case["vector_hits"], case["profiles"])
     info_box = {}
@@ -407,7 +439,11 @@ def random_hybrid(rng):
     }
     profiles = rng.choice([None, [["proj/a", 1.0], ["user", 0.0]], [["proj", 7.0]]])
     return {"metas": metas, "scope": scope, "vector_hits": vector, "keyword_hits": keyword,
-            "feedback": feedback, "params": params, "profiles": profiles}
+            "feedback": feedback, "params": params, "profiles": profiles,
+            "graph_params": rng.choice([None] * 4 + [{"alpha": 0.5, "max_iters": 5, "min_relative": 0.2,
+                                                       "reserved_slots": 3},
+                                                      {"alpha": 0.85, "max_iters": 0, "min_relative": 0.0,
+                                                       "reserved_slots": 0}])}
 
 
 def fixed_hybrid():
@@ -453,8 +489,31 @@ def fixed_hybrid():
     ]
 
 
+def large_hybrid(rng):
+    """160 records, k above 100, and a hub with 150 links (large set tables)."""
+    ids = rng.sample(range(10 ** 6), 160)
+    metas = [{"id": i, "source": rng.choice(SOURCES), "created_at": rng.choice(DATE_STRINGS[:12])} for i in ids]
+    metas[0]["links"] = [{"to_id": t, "type": "related_to"} for t in ids[1:151]]
+    for m in metas[1:40]:
+        m["links"] = [{"to_id": rng.choice(ids), "type": "related_to"} for _ in range(3)]
+    sims = sorted((round(rng.random(), 6) for _ in range(150)), reverse=True)
+    out = []
+    for k, graph, scope_prefix in [(150, 0.5, None), (100, 0.3, "proj/a"), (40, 0.0, None)]:
+        scope = {"source_prefix": scope_prefix, "source_exact": None, "source_boundary": False,
+                 "allowed_prefixes": None, "include_archived": True}
+        params = {"k": k, "threshold": None, "vector_weight": 0.6, "recency_weight": 0.2,
+                  "recency_half_life_days": 30.0, "feedback_weight": 0.0, "confidence_weight": 0.1,
+                  "graph_weight": graph, "since": None, "until": None}
+        vis = visible_ids(metas, scope)
+        vector = list(zip(rng.sample(vis, min(len(vis), 150)), sims))
+        keyword = [(d, round(rng.uniform(0.1, 5), 3)) for d in rng.sample(vis, min(len(vis), 140))]
+        out.append({"metas": metas, "scope": scope, "vector_hits": vector, "keyword_hits": keyword,
+                    "feedback": None, "params": params, "profiles": None, "graph_params": None})
+    return out
+
+
 def gen_hybrid(rng):
-    cases = fixed_hybrid() + [random_hybrid(rng) for _ in range(300)]
+    cases = fixed_hybrid() + large_hybrid(rng) + [random_hybrid(rng) for _ in range(300)]
     out = []
     for c in cases:
         expected = run_hybrid(c)

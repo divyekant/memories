@@ -2,7 +2,7 @@
 //! `_merge_graph_results`. The functions do no input or output: the caller
 //! gives the hits and a lookup for the stored fields of a record.
 
-use super::graph::{Adjacency, GraphCandidate, GraphInfo, graph_expand, sort_desc};
+use super::graph::{Adjacency, GraphCandidate, GraphInfo, GraphParams, graph_expand, sort_desc};
 use super::pydt::PyDateTime;
 use super::pyorder::OrderedMap;
 use super::scores::{
@@ -10,7 +10,6 @@ use super::scores::{
 };
 
 pub const RRF_K: usize = 60;
-pub const GRAPH_RESERVED_SLOTS: usize = 2;
 pub const MAX_K: usize = 100;
 const DEFAULT_CONFIDENCE_HALF_LIFE: f64 = 90.0;
 
@@ -55,10 +54,25 @@ impl RecordFields<'_> {
     }
 }
 
-/// `k = min(k, count, 100)` and the hit count of each side, `min(3 * k, count)`.
-pub fn candidate_counts(k: usize, record_count: usize) -> (usize, usize) {
+/// The hit counts of a hybrid search: `k = min(k, count, 100)`, then the
+/// keyword side `min(3 * k, count)`. The vector side calls `search` with
+/// that count, which applies `min(_, count, 100)` again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CandidateCounts {
+    pub k: usize,
+    /// The Qdrant limit. Python applies its temporal filter after the limit.
+    pub vector: usize,
+    pub keyword: usize,
+}
+
+pub fn candidate_counts(k: usize, record_count: usize) -> CandidateCounts {
     let k = k.min(record_count).min(MAX_K);
-    (k, (3 * k).min(record_count))
+    let keyword = (3 * k).min(record_count);
+    CandidateCounts {
+        k,
+        vector: keyword.min(MAX_K),
+        keyword,
+    }
 }
 
 fn rrf(weight: f64, rank: usize) -> f64 {
@@ -130,6 +144,7 @@ pub struct HybridInput<'a, 'r> {
     /// The scope test; `None` when no scope applies.
     pub visible: Option<&'a dyn Fn(i64) -> bool>,
     pub adjacency: &'a Adjacency,
+    pub graph_params: GraphParams,
     pub now: PyDateTime,
 }
 
@@ -155,7 +170,8 @@ pub fn hybrid_rank(input: &HybridInput) -> Ranking {
             graph: None,
         };
     }
-    let (k, oversample) = candidate_counts(input.k, input.record_count);
+    let counts = candidate_counts(input.k, input.record_count);
+    let (k, oversample) = (counts.k, counts.keyword);
     let w = input.weights;
     let record = input.record;
 
@@ -240,7 +256,13 @@ pub fn hybrid_rank(input: &HybridInput) -> Ranking {
         };
     }
 
-    let (candidates, info) = graph_expand(&direct, w.graph, input.adjacency, input.visible);
+    let (candidates, info) = graph_expand(
+        &direct,
+        w.graph,
+        input.adjacency,
+        input.visible,
+        &input.graph_params,
+    );
     Ranking {
         results: merge_graph_results(&direct, &candidates, k, input),
         graph: Some(info),
@@ -302,7 +324,11 @@ fn merge_graph_results(
     let (graph_only, other): (Vec<_>, Vec<_>) = all
         .into_iter()
         .partition(|e| e.1.1.match_type == MatchType::Graph);
-    let reserved = GRAPH_RESERVED_SLOTS.min(graph_only.len()).min(k);
+    let reserved = input
+        .graph_params
+        .reserved_slots
+        .min(graph_only.len())
+        .min(k);
     let mut chosen: Vec<_> = other.into_iter().take(k - reserved).collect();
     chosen.extend(graph_only.into_iter().take(reserved));
     sort_desc(&mut chosen, |e| e.1.0);
