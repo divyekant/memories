@@ -354,6 +354,12 @@ def build():
     return [_fill(x, pinned, first_text) for x in cases]
 
 
+def fill(cases):
+    """Fill `{{seed_pinned}}` and `{{seed_text}}` in other cases (for example parity/search_scenario.py)."""
+    pinned = next(x for x in build() if x["name"] == "seed-pin-0")["request"]["path"].split("/")[-1]
+    return [_fill(x, pinned, seed.memories()[0]["text"]) for x in cases]
+
+
 def _fill(case, pinned, text):
     if isinstance(case, dict):
         return {k: _fill(v, pinned, text) for k, v in case.items()}

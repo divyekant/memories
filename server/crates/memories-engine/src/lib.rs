@@ -3,6 +3,7 @@
 pub mod catalog;
 pub mod engine;
 pub mod events;
+pub mod evidence;
 pub mod keyword;
 pub mod policy;
 pub mod rank;

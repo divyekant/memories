@@ -6,6 +6,8 @@ pub mod auth;
 pub mod error;
 pub mod healthcheck;
 pub mod keys;
+pub mod model;
+pub mod search;
 pub mod shell;
 pub mod validate;
 pub mod writes;
@@ -146,6 +148,11 @@ const SERVED: &[(&str, &str)] = &[
     ("PATCH", "/memory/{memory_id}"),
     ("DELETE", "/memory/{memory_id}"),
     ("POST", "/memory/delete-batch"),
+    ("POST", "/search"),
+    ("POST", "/search/batch"),
+    ("POST", "/search/explain"),
+    ("POST", "/search/evidence"),
+    ("POST", "/memory/is-novel"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -176,7 +183,12 @@ pub fn app(state: Arc<AppState>) -> Router {
             "/memory/{memory_id}",
             patch(writes::patch).delete(writes::delete),
         )
-        .route("/memory/delete-batch", post(writes::delete_batch));
+        .route("/memory/delete-batch", post(writes::delete_batch))
+        .route("/search", post(search::search))
+        .route("/search/batch", post(search::search_batch))
+        .route("/search/explain", post(search::search_explain))
+        .route("/search/evidence", post(search::search_evidence))
+        .route("/memory/is-novel", post(search::is_novel));
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
     let public = stubs(
