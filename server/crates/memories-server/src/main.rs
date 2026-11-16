@@ -1,6 +1,11 @@
+use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use memories_server::{AppState, Config, audit::AuditLog, keys::KeyStore};
+use memories_types::config;
 use tokio::net::TcpListener;
 
 #[derive(Parser)]
@@ -18,6 +23,9 @@ enum Command {
         port: u16,
     },
 }
+
+/// The interval for writing `last_used_at` and `usage_count` of the API keys.
+const KEY_USAGE_FLUSH: Duration = Duration::from_secs(5);
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -40,13 +48,55 @@ fn main() -> std::process::ExitCode {
         Cli::parse()
     };
     let Command::Serve { port } = cli.command;
+
+    let cfg = match Config::from_env() {
+        Ok(c) => c,
+        Err(msg) => {
+            tracing::error!("cannot start: {msg}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    for name in config::set_but_not_used(|n| std::env::var(n).ok()) {
+        tracing::info!("{name} is set, but this server version does not use it");
+    }
+    if let Err(e) = std::fs::create_dir_all(&cfg.data_dir) {
+        tracing::error!(
+            "cannot start: cannot make DATA_DIR {}: {e}",
+            cfg.data_dir.display()
+        );
+        return std::process::ExitCode::FAILURE;
+    }
+    let keys_path = cfg.data_dir.join("keys.db");
+    let keys = match KeyStore::open(&keys_path) {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::error!("cannot start: cannot open {}: {e}", keys_path.display());
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let audit = if cfg.audit_log {
+        let path = cfg.data_dir.join("audit.db");
+        match AuditLog::open(&path) {
+            Ok(a) => {
+                tracing::info!("Audit logging enabled");
+                Some(a)
+            }
+            Err(e) => {
+                tracing::error!("cannot start: cannot open {}: {e}", path.display());
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+    let state = AppState::new(&cfg, keys, audit);
     tokio::runtime::Runtime::new()
         .expect("tokio runtime")
-        .block_on(serve(port));
+        .block_on(serve(port, state));
     std::process::ExitCode::SUCCESS
 }
 
-async fn serve(port: u16) {
+async fn serve(port: u16, state: Arc<AppState>) {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .await
         .unwrap_or_else(|e| panic!("cannot bind port {port}: {e}"));
@@ -55,10 +105,33 @@ async fn serve(port: u16) {
         version = memories_server::VERSION,
         "memories-server started"
     );
-    axum::serve(listener, memories_server::app())
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("server error");
+    let flusher = tokio::spawn(flush_key_usage_forever(state.clone()));
+    axum::serve(
+        listener,
+        memories_server::app(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .expect("server error");
+    flusher.abort();
+    flush_key_usage(&state).await;
+}
+
+async fn flush_key_usage_forever(state: Arc<AppState>) {
+    let mut tick = tokio::time::interval(KEY_USAGE_FLUSH);
+    loop {
+        tick.tick().await;
+        flush_key_usage(&state).await;
+    }
+}
+
+async fn flush_key_usage(state: &Arc<AppState>) {
+    let st = state.clone();
+    match tokio::task::spawn_blocking(move || st.keys.flush_usage()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => tracing::warn!(error = %e, "keys.db: usage write failed; will try again"),
+        Err(e) => tracing::warn!(error = %e, "keys.db: usage write task failed"),
+    }
 }
 
 async fn shutdown_signal() {

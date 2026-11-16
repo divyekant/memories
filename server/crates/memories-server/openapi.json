@@ -1,0 +1,4858 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "Memories API",
+  "version": "5.19.0"
+ },
+ "paths": {
+  "/events/stream": {
+   "get": {
+    "summary": "Events Stream",
+    "description": "Server-Sent Events stream for real-time memory lifecycle events.",
+    "operationId": "events_stream_events_stream_get",
+    "parameters": [
+     {
+      "name": "event_type",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Event Type"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/events/recent": {
+   "get": {
+    "summary": "Events Recent",
+    "description": "Return recent event history.",
+    "operationId": "events_recent_events_recent_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 50,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/webhooks": {
+   "get": {
+    "summary": "List Webhooks",
+    "description": "List registered webhooks.",
+    "operationId": "list_webhooks_webhooks_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "summary": "Create Webhook",
+    "description": "Register a webhook callback URL for memory events.",
+    "operationId": "create_webhook_webhooks_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/WebhookRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/webhooks/{webhook_id}": {
+   "delete": {
+    "summary": "Delete Webhook",
+    "description": "Delete a registered webhook.",
+    "operationId": "delete_webhook_webhooks__webhook_id__delete",
+    "parameters": [
+     {
+      "name": "webhook_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Webhook Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/health": {
+   "get": {
+    "summary": "Health",
+    "description": "Lightweight health check (no filesystem I/O).\n\nUnauthenticated callers get minimal response; authenticated callers get full stats.",
+    "operationId": "health_health_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/health/ready": {
+   "get": {
+    "summary": "Health Ready",
+    "description": "Readiness check for orchestrators/cutover automation.",
+    "operationId": "health_ready_health_ready_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/keys/me": {
+   "get": {
+    "summary": "Get My Key",
+    "description": "Returns the caller's role, type, and allowed prefixes.",
+    "operationId": "get_my_key_api_keys_me_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/keys": {
+   "get": {
+    "summary": "List Keys",
+    "description": "List all API keys (masked). Admin only.",
+    "operationId": "list_keys_api_keys_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "summary": "Create Key",
+    "description": "Create a new API key. Admin only. Returns raw key once.",
+    "operationId": "create_key_api_keys_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CreateKeyRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/keys/{key_id}": {
+   "patch": {
+    "summary": "Update Key",
+    "description": "Update key name, role, or prefixes. Admin only.",
+    "operationId": "update_key_api_keys__key_id__patch",
+    "parameters": [
+     {
+      "name": "key_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Key Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/UpdateKeyRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "summary": "Revoke Key",
+    "description": "Revoke an API key (soft-delete). Admin only.",
+    "operationId": "revoke_key_api_keys__key_id__delete",
+    "parameters": [
+     {
+      "name": "key_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Key Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/stats": {
+   "get": {
+    "summary": "Stats",
+    "description": "Full index statistics",
+    "operationId": "stats_stats_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/metrics": {
+   "get": {
+    "summary": "Metrics",
+    "description": "Service-level metrics (latency, errors, queue depth, memory trend, process RSS).",
+    "operationId": "metrics_metrics_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/usage": {
+   "get": {
+    "summary": "Usage",
+    "description": "Persistent usage analytics (opt-in via USAGE_TRACKING=true).",
+    "operationId": "usage_usage_get",
+    "parameters": [
+     {
+      "name": "period",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "pattern": "^(today|7d|30d|all)$",
+       "default": "7d",
+       "title": "Period"
+      }
+     },
+     {
+      "name": "session_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "maxLength": 200,
+       "default": "",
+       "title": "Session Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/search/feedback": {
+   "post": {
+    "summary": "Search Feedback",
+    "description": "Record explicit relevance feedback for a search result.",
+    "operationId": "search_feedback_search_feedback_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SearchFeedbackRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/search/feedback/history": {
+   "get": {
+    "summary": "Feedback History",
+    "operationId": "feedback_history_search_feedback_history_get",
+    "parameters": [
+     {
+      "name": "memory_id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "description": "Memory ID",
+       "title": "Memory Id"
+      },
+      "description": "Memory ID"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 200,
+       "minimum": 1,
+       "default": 50,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/search/feedback/{feedback_id}": {
+   "delete": {
+    "summary": "Retract Feedback",
+    "operationId": "retract_feedback_search_feedback__feedback_id__delete",
+    "parameters": [
+     {
+      "name": "feedback_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Feedback Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/metrics/search-quality": {
+   "get": {
+    "summary": "Search Quality Metrics",
+    "description": "Aggregated search quality metrics \u2014 rank distribution, feedback ratios, volume.",
+    "operationId": "search_quality_metrics_metrics_search_quality_get",
+    "parameters": [
+     {
+      "name": "period",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "pattern": "^(today|7d|30d|all)$",
+       "default": "7d",
+       "title": "Period"
+      }
+     },
+     {
+      "name": "source_prefix",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "maxLength": 500
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Filter metrics to memories matching this source prefix",
+       "title": "Source Prefix"
+      },
+      "description": "Filter metrics to memories matching this source prefix"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/metrics/extraction-quality": {
+   "get": {
+    "summary": "Extraction Quality Metrics",
+    "description": "Extraction outcome metrics \u2014 ADD/UPDATE/DELETE/NOOP ratios, per-source breakdown.",
+    "operationId": "extraction_quality_metrics_metrics_extraction_quality_get",
+    "parameters": [
+     {
+      "name": "period",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "pattern": "^(today|7d|30d|all)$",
+       "default": "7d",
+       "title": "Period"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/metrics/quality-summary": {
+   "get": {
+    "summary": "Quality Summary Metrics",
+    "description": "Top-level efficacy metrics \u2014 retrieval precision and extraction accuracy.",
+    "operationId": "quality_summary_metrics_metrics_quality_summary_get",
+    "parameters": [
+     {
+      "name": "period",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "pattern": "^(today|7d|30d|all)$",
+       "default": "7d",
+       "title": "Period"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/metrics/failures": {
+   "get": {
+    "summary": "Quality Failures",
+    "description": "Recent low-quality results for debugging \u2014 negative feedback or high-noop extractions.",
+    "operationId": "quality_failures_metrics_failures_get",
+    "parameters": [
+     {
+      "name": "type",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "pattern": "^(retrieval|extraction)$",
+       "default": "retrieval",
+       "title": "Type"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 100,
+       "minimum": 1,
+       "default": 10,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/metrics/problem-queries": {
+   "get": {
+    "summary": "Problem Queries",
+    "description": "Queries with consistently negative feedback. Admin only.",
+    "operationId": "problem_queries_metrics_problem_queries_get",
+    "parameters": [
+     {
+      "name": "min_feedback",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 1,
+       "default": 2,
+       "title": "Min Feedback"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 100,
+       "minimum": 1,
+       "default": 20,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/metrics/stale-memories": {
+   "get": {
+    "summary": "Stale Memories Endpoint",
+    "description": "Frequently retrieved but never useful memories. Admin only.",
+    "operationId": "stale_memories_endpoint_metrics_stale_memories_get",
+    "parameters": [
+     {
+      "name": "min_retrievals",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 1,
+       "default": 3,
+       "title": "Min Retrievals"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 100,
+       "minimum": 1,
+       "default": 20,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/metrics/graph-search": {
+   "get": {
+    "summary": "Graph Search Metrics",
+    "description": "Graph search activation stats. Admin only.",
+    "operationId": "graph_search_metrics_metrics_graph_search_get",
+    "parameters": [
+     {
+      "name": "period",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "pattern": "^(today|7d|30d|all)$",
+       "default": "7d",
+       "title": "Period"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/metrics/temporal-search": {
+   "get": {
+    "summary": "Temporal Search Metrics",
+    "description": "Temporal filter usage stats. Admin only.",
+    "operationId": "temporal_search_metrics_metrics_temporal_search_get",
+    "parameters": [
+     {
+      "name": "period",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "pattern": "^(today|7d|30d|all)$",
+       "default": "7d",
+       "title": "Period"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/audit": {
+   "get": {
+    "summary": "Get Audit Log",
+    "description": "Query the audit trail. Admin only.",
+    "operationId": "get_audit_log_audit_get",
+    "parameters": [
+     {
+      "name": "action",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Action"
+      }
+     },
+     {
+      "name": "key_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Key Id"
+      }
+     },
+     {
+      "name": "resource_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Resource Id"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 500,
+       "minimum": 1,
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/promotions": {
+   "get": {
+    "summary": "List Promotions",
+    "description": "List promotion workflow records visible to the owner or an admin.",
+    "operationId": "list_promotions_promotions_get",
+    "parameters": [
+     {
+      "name": "project_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Project Id"
+      }
+     },
+     {
+      "name": "owner",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Owner"
+      }
+     },
+     {
+      "name": "state",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "State"
+      }
+     },
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "format": "date-time"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Since"
+      }
+     },
+     {
+      "name": "until",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "format": "date-time"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Until"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 500,
+       "minimum": 1,
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/promotions/{candidate_id}": {
+   "get": {
+    "summary": "Get Promotion",
+    "description": "Fetch one private promotion candidate without leaking other owners.",
+    "operationId": "get_promotion_promotions__candidate_id__get",
+    "parameters": [
+     {
+      "name": "candidate_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Candidate Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/promotions/{candidate_id}/approve": {
+   "post": {
+    "summary": "Approve Promotion",
+    "description": "Approve one owned candidate through the same locked promotion path.",
+    "operationId": "approve_promotion_promotions__candidate_id__approve_post",
+    "parameters": [
+     {
+      "name": "candidate_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Candidate Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PromotionApproveRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/promotions/{candidate_id}/reject": {
+   "post": {
+    "summary": "Reject Promotion",
+    "description": "Reject or explicitly dismiss one owned private candidate.",
+    "operationId": "reject_promotion_promotions__candidate_id__reject_post",
+    "parameters": [
+     {
+      "name": "candidate_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Candidate Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PromotionRejectRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/audit/purge": {
+   "post": {
+    "summary": "Purge Audit Log",
+    "description": "Purge audit entries older than retention period. Admin only.",
+    "operationId": "purge_audit_log_audit_purge_post",
+    "parameters": [
+     {
+      "name": "retention_days",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 365,
+       "minimum": 1,
+       "default": 90,
+       "title": "Retention Days"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/maintenance/embedder/reload": {
+   "post": {
+    "summary": "Reload Embedder",
+    "description": "Reload in-process embedder runtime and release old inference objects.",
+    "operationId": "reload_embedder_maintenance_embedder_reload_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/maintenance/reembed": {
+   "post": {
+    "summary": "Reembed",
+    "description": "Re-embed all memories, optionally with a different embedding model.\n\nCreates a backup before re-embedding. Admin only.",
+    "operationId": "reembed_maintenance_reembed_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ReembedRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/maintenance/compact": {
+   "post": {
+    "summary": "Compact Memories",
+    "description": "Discover clusters of similar memories (read-only / dry-run).\n\nThis endpoint ONLY identifies clusters \u2014 it never modifies data.\nUse ``/maintenance/consolidate`` to merge clusters via LLM.\n\nReturns a list of clusters with their member memories.\nAdmin only.",
+    "operationId": "compact_memories_maintenance_compact_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CompactRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/maintenance/consolidate": {
+   "post": {
+    "summary": "Consolidate",
+    "description": "Merge redundant memory clusters using an LLM.\n\nUnlike ``/maintenance/compact`` (which only discovers clusters),\nthis endpoint uses the configured LLM provider to merge each\ncluster into 1-2 concise consolidated memories.\n\nWhen ``dry_run=true`` (default), returns what would be merged\nwithout mutating any data. Set ``dry_run=false`` to execute.\n\nRequires an active LLM provider. Admin only.",
+    "operationId": "consolidate_maintenance_consolidate_post",
+    "parameters": [
+     {
+      "name": "dry_run",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": true,
+       "title": "Dry Run"
+      }
+     },
+     {
+      "name": "source_prefix",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Source Prefix"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/maintenance/prune": {
+   "post": {
+    "summary": "Prune",
+    "description": "Prune stale unretrieved memories.",
+    "operationId": "prune_maintenance_prune_post",
+    "parameters": [
+     {
+      "name": "dry_run",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": true,
+       "title": "Dry Run"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/maintenance/enforce-policies": {
+   "post": {
+    "summary": "Enforce Policies",
+    "description": "Enforce lifecycle policies (TTL + confidence archival). Dry-run by default.",
+    "operationId": "enforce_policies_maintenance_enforce_policies_post",
+    "parameters": [
+     {
+      "name": "dry_run",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": true,
+       "title": "Dry Run"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/search": {
+   "post": {
+    "summary": "Search",
+    "description": "Search for similar memories (vector-only or hybrid)",
+    "operationId": "search_search_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SearchRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/search/explain": {
+   "post": {
+    "summary": "Search Explain",
+    "description": "Search with detailed scoring breakdown (admin-only).",
+    "operationId": "search_explain_search_explain_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SearchRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/search/evidence": {
+   "post": {
+    "summary": "Search Evidence",
+    "description": "Search and return an agent-facing evidence packet.",
+    "operationId": "search_evidence_search_evidence_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SearchRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/search/batch": {
+   "post": {
+    "summary": "Search Batch",
+    "description": "Run multiple searches in one request.\n\nEach item runs through the same code as POST /search, so a batch returns\nwhat the same searches would return one at a time. Items run at the same\ntime on the thread pool, and results keep the request order.",
+    "operationId": "search_batch_search_batch_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SearchBatchRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/add": {
+   "post": {
+    "summary": "Add Memory",
+    "description": "Add a new memory",
+    "operationId": "add_memory_memory_add_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AddMemoryRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/add-batch": {
+   "post": {
+    "summary": "Add Batch",
+    "description": "Add multiple memories at once",
+    "operationId": "add_batch_memory_add_batch_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AddBatchRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/{memory_id}/supersede": {
+   "post": {
+    "summary": "Supersede Memory By Id",
+    "description": "Replace a memory with an updated version. The original is archived with a supersedes link.",
+    "operationId": "supersede_memory_by_id_memory__memory_id__supersede_post",
+    "parameters": [
+     {
+      "name": "memory_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Memory Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SupersedeByIdRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/conflicts": {
+   "get": {
+    "summary": "List Conflicts",
+    "description": "List memories flagged as conflicting with existing memories (paginated).",
+    "operationId": "list_conflicts_memory_conflicts_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/conflicts/resolve": {
+   "post": {
+    "summary": "Resolve Conflicts",
+    "description": "Drain the conflict queue (newest wins; loser archived with a supersedes link).",
+    "operationId": "resolve_conflicts_memory_conflicts_resolve_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ResolveConflictsRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/{memory_id}": {
+   "delete": {
+    "summary": "Delete Memory",
+    "description": "Delete a single memory by ID. Pinned memories require force=true.",
+    "operationId": "delete_memory_memory__memory_id__delete",
+    "parameters": [
+     {
+      "name": "memory_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Memory Id"
+      }
+     },
+     {
+      "name": "force",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false,
+       "title": "Force"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "summary": "Get Memory",
+    "description": "Fetch a single memory by ID.",
+    "operationId": "get_memory_memory__memory_id__get",
+    "parameters": [
+     {
+      "name": "memory_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Memory Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "patch": {
+    "summary": "Patch Memory",
+    "description": "Patch selected fields on an existing memory.",
+    "operationId": "patch_memory_memory__memory_id__patch",
+    "parameters": [
+     {
+      "name": "memory_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Memory Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PatchMemoryRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/get-batch": {
+   "post": {
+    "summary": "Get Memory Batch",
+    "description": "Fetch multiple memories by IDs.",
+    "operationId": "get_memory_batch_memory_get_batch_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MemoryGetBatchRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/delete-by-source": {
+   "post": {
+    "summary": "Delete By Source",
+    "description": "Delete all memories matching a source pattern",
+    "operationId": "delete_by_source_memory_delete_by_source_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DeleteBySourceRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memories": {
+   "delete": {
+    "summary": "Delete Memories By Prefix",
+    "description": "Bulk-delete all memories whose source starts with the given prefix.",
+    "operationId": "delete_memories_by_prefix_memories_delete",
+    "parameters": [
+     {
+      "name": "source",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 500,
+       "title": "Source"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "summary": "List Memories",
+    "description": "List memories with pagination and optional source/pinned filter",
+    "operationId": "list_memories_memories_get",
+    "parameters": [
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "default": 0,
+       "title": "Offset"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 5000,
+       "minimum": 1,
+       "default": 20,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "source",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "maxLength": 500
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Source"
+      }
+     },
+     {
+      "name": "source_boundary",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false,
+       "title": "Source Boundary"
+      }
+     },
+     {
+      "name": "pinned",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Pinned"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/delete-batch": {
+   "post": {
+    "summary": "Delete Batch",
+    "description": "Delete multiple memories in one operation.",
+    "operationId": "delete_batch_memory_delete_batch_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DeleteBatchRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/delete-by-prefix": {
+   "post": {
+    "summary": "Delete By Prefix",
+    "description": "Delete all memories whose source starts with a prefix.",
+    "operationId": "delete_by_prefix_memory_delete_by_prefix_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DeleteByPrefixRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/snapshots": {
+   "get": {
+    "summary": "List Snapshots",
+    "description": "List all snapshots recorded in the manifest.",
+    "operationId": "list_snapshots_snapshots_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "summary": "Create Snapshot",
+    "description": "Manually create a snapshot.",
+    "operationId": "create_snapshot_snapshots_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/snapshots/{name}/restore": {
+   "post": {
+    "summary": "Restore Snapshot",
+    "description": "Restore a snapshot by name (admin only).",
+    "operationId": "restore_snapshot_snapshots__name__restore_post",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/archive-batch": {
+   "post": {
+    "summary": "Archive Batch",
+    "description": "Archive multiple memories in a single call.",
+    "operationId": "archive_batch_memory_archive_batch_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ArchiveBatchRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/upsert": {
+   "post": {
+    "summary": "Upsert Memory",
+    "description": "Upsert a memory by stable key + source.",
+    "operationId": "upsert_memory_memory_upsert_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/UpsertMemoryRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/upsert-batch": {
+   "post": {
+    "summary": "Upsert Memory Batch",
+    "description": "Bulk upsert memories by stable keys.",
+    "operationId": "upsert_memory_batch_memory_upsert_batch_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/UpsertBatchRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/is-novel": {
+   "post": {
+    "summary": "Is Novel",
+    "description": "Check if text is novel (not too similar to existing)",
+    "operationId": "is_novel_memory_is_novel_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/IsNovelRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memories/count": {
+   "get": {
+    "summary": "Count Memories",
+    "description": "Count memories, optionally filtered by source prefix.",
+    "operationId": "count_memories_memories_count_get",
+    "parameters": [
+     {
+      "name": "source",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "maxLength": 500
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Source"
+      }
+     },
+     {
+      "name": "source_boundary",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false,
+       "title": "Source Boundary"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/folders": {
+   "get": {
+    "summary": "List Folders",
+    "description": "List unique source-based folders with memory counts.",
+    "operationId": "list_folders_folders_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/folders/rename": {
+   "post": {
+    "summary": "Rename Folder",
+    "description": "Batch-rename a folder by updating the source prefix on all matching memories.",
+    "operationId": "rename_folder_folders_rename_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RenameFolderRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/index/build": {
+   "post": {
+    "summary": "Build Index",
+    "description": "Rebuild index from workspace files using markdown-aware chunking",
+    "operationId": "build_index_index_build_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BuildIndexRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/deduplicate": {
+   "post": {
+    "summary": "Deduplicate",
+    "description": "Find and optionally remove near-duplicate memories",
+    "operationId": "deduplicate_memory_deduplicate_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DeduplicateRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/backups": {
+   "get": {
+    "summary": "List Backups",
+    "description": "List available backups",
+    "operationId": "list_backups_backups_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/backup": {
+   "post": {
+    "summary": "Create Backup",
+    "description": "Create manual backup",
+    "operationId": "create_backup_backup_post",
+    "parameters": [
+     {
+      "name": "prefix",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "maxLength": 50,
+       "default": "manual",
+       "title": "Prefix"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/restore": {
+   "post": {
+    "summary": "Restore Backup",
+    "description": "Restore index and metadata from a named backup",
+    "operationId": "restore_backup_restore_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RestoreRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/sync/status": {
+   "get": {
+    "summary": "Sync Status",
+    "description": "Get cloud sync status",
+    "operationId": "sync_status_sync_status_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/sync/upload": {
+   "post": {
+    "summary": "Sync Upload",
+    "description": "Manually trigger backup upload to cloud",
+    "operationId": "sync_upload_sync_upload_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/sync/download": {
+   "post": {
+    "summary": "Sync Download",
+    "description": "Download a backup from cloud (requires confirmation)",
+    "operationId": "sync_download_sync_download_post",
+    "parameters": [
+     {
+      "name": "backup_name",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Backup Name"
+      }
+     },
+     {
+      "name": "confirm",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false,
+       "title": "Confirm"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/sync/snapshots": {
+   "get": {
+    "summary": "Sync Snapshots",
+    "description": "List remote snapshots in cloud storage",
+    "operationId": "sync_snapshots_sync_snapshots_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/sync/restore/{backup_name}": {
+   "post": {
+    "summary": "Sync Restore",
+    "description": "Download and restore a backup from cloud in one step",
+    "operationId": "sync_restore_sync_restore__backup_name__post",
+    "parameters": [
+     {
+      "name": "backup_name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Backup Name"
+      }
+     },
+     {
+      "name": "confirm",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false,
+       "title": "Confirm"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/export": {
+   "get": {
+    "summary": "Export Memories Endpoint",
+    "description": "Export memories as streaming NDJSON.",
+    "operationId": "export_memories_endpoint_export_get",
+    "parameters": [
+     {
+      "name": "source",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "maxLength": 500
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Source"
+      }
+     },
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Since"
+      }
+     },
+     {
+      "name": "until",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Until"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/import": {
+   "post": {
+    "summary": "Import Memories Endpoint",
+    "description": "Import memories from NDJSON body.",
+    "operationId": "import_memories_endpoint_import_post",
+    "parameters": [
+     {
+      "name": "strategy",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "add",
+       "title": "Strategy"
+      }
+     },
+     {
+      "name": "source_remap",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "maxLength": 200
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Source Remap"
+      }
+     },
+     {
+      "name": "no_backup",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false,
+       "title": "No Backup"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/extract": {
+   "post": {
+    "summary": "Memory Extract",
+    "description": "Queue extraction and return immediately.",
+    "operationId": "memory_extract_memory_extract_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ExtractRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/extract/{job_id}": {
+   "get": {
+    "summary": "Memory Extract Job",
+    "description": "Get queued extraction job status/result.",
+    "operationId": "memory_extract_job_memory_extract__job_id__get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/extract/commit": {
+   "post": {
+    "summary": "Extract Commit",
+    "description": "Execute a subset of pre-extracted AUDN actions (from dry-run).",
+    "operationId": "extract_commit_memory_extract_commit_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ExtractCommitRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/supersede": {
+   "post": {
+    "summary": "Memory Supersede",
+    "description": "Replace a memory with an updated version (audit trail preserved).",
+    "operationId": "memory_supersede_memory_supersede_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SupersedeRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/merge": {
+   "post": {
+    "summary": "Merge Memories",
+    "description": "Merge multiple memories into one combined memory, archiving originals.",
+    "operationId": "merge_memories_memory_merge_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MergeRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/{memory_id}/link": {
+   "post": {
+    "summary": "Add Memory Link",
+    "description": "Add a typed link from one memory to another.",
+    "operationId": "add_memory_link_memory__memory_id__link_post",
+    "parameters": [
+     {
+      "name": "memory_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Memory Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AddLinkRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/{memory_id}/links": {
+   "get": {
+    "summary": "Get Memory Links",
+    "description": "Get links for a memory (outgoing by default).",
+    "operationId": "get_memory_links_memory__memory_id__links_get",
+    "parameters": [
+     {
+      "name": "memory_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Memory Id"
+      }
+     },
+     {
+      "name": "type",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Type"
+      }
+     },
+     {
+      "name": "include_incoming",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false,
+       "title": "Include Incoming"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/{memory_id}/link/{target_id}": {
+   "delete": {
+    "summary": "Remove Memory Link",
+    "description": "Remove a specific link between two memories.",
+    "operationId": "remove_memory_link_memory__memory_id__link__target_id__delete",
+    "parameters": [
+     {
+      "name": "memory_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Memory Id"
+      }
+     },
+     {
+      "name": "target_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Target Id"
+      }
+     },
+     {
+      "name": "type",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "related_to",
+       "title": "Type"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/extract/status": {
+   "get": {
+    "summary": "Extract Status",
+    "description": "Check extraction provider health and configuration.",
+    "operationId": "extract_status_extract_status_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/extraction/profiles": {
+   "get": {
+    "summary": "List Extraction Profiles",
+    "description": "List all extraction profiles (admin only).",
+    "operationId": "list_extraction_profiles_extraction_profiles_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/extraction/profiles/{prefix}": {
+   "get": {
+    "summary": "Get Extraction Profile",
+    "description": "Get a specific extraction profile by source prefix (admin only).",
+    "operationId": "get_extraction_profile_extraction_profiles__prefix__get",
+    "parameters": [
+     {
+      "name": "prefix",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Prefix"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "summary": "Put Extraction Profile",
+    "description": "Create or update an extraction profile (admin only).",
+    "operationId": "put_extraction_profile_extraction_profiles__prefix__put",
+    "parameters": [
+     {
+      "name": "prefix",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Prefix"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "summary": "Delete Extraction Profile",
+    "description": "Delete an extraction profile (admin only).",
+    "operationId": "delete_extraction_profile_extraction_profiles__prefix__delete",
+    "parameters": [
+     {
+      "name": "prefix",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Prefix"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/memory/missed": {
+   "post": {
+    "summary": "Missed Memory",
+    "description": "Flag a memory that should have been captured by extraction.",
+    "operationId": "missed_memory_memory_missed_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MissedMemoryRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "AddBatchRequest": {
+    "properties": {
+     "memories": {
+      "items": {
+       "$ref": "#/components/schemas/AddMemoryRequest"
+      },
+      "type": "array",
+      "maxItems": 500,
+      "minItems": 1,
+      "title": "Memories"
+     },
+     "deduplicate": {
+      "type": "boolean",
+      "title": "Deduplicate",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "memories"
+    ],
+    "title": "AddBatchRequest"
+   },
+   "AddLinkRequest": {
+    "properties": {
+     "to_id": {
+      "type": "integer",
+      "title": "To Id",
+      "description": "Target memory ID"
+     },
+     "type": {
+      "type": "string",
+      "title": "Type",
+      "description": "Link type: supersedes, related_to, blocked_by, caused_by, reinforces"
+     }
+    },
+    "type": "object",
+    "required": [
+     "to_id",
+     "type"
+    ],
+    "title": "AddLinkRequest"
+   },
+   "AddMemoryRequest": {
+    "properties": {
+     "text": {
+      "type": "string",
+      "maxLength": 50000,
+      "minLength": 1,
+      "title": "Text"
+     },
+     "source": {
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Source"
+     },
+     "metadata": {
+      "anyOf": [
+       {
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Metadata"
+     },
+     "deduplicate": {
+      "type": "boolean",
+      "title": "Deduplicate",
+      "default": false
+     },
+     "on_duplicate": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^(add|skip|supersede)$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "On Duplicate",
+      "description": "Write doctrine: supersede replaces a colliding memory (keeping it archived with a supersedes link), skip surfaces the blocking id, add bypasses the collision check. Omit for legacy deduplicate behavior."
+     }
+    },
+    "type": "object",
+    "required": [
+     "text",
+     "source"
+    ],
+    "title": "AddMemoryRequest"
+   },
+   "ArchiveBatchRequest": {
+    "properties": {
+     "ids": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array",
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Ids"
+     }
+    },
+    "type": "object",
+    "required": [
+     "ids"
+    ],
+    "title": "ArchiveBatchRequest"
+   },
+   "BuildIndexRequest": {
+    "properties": {
+     "sources": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Sources"
+     }
+    },
+    "type": "object",
+    "title": "BuildIndexRequest"
+   },
+   "CompactRequest": {
+    "properties": {
+     "threshold": {
+      "type": "number",
+      "maximum": 1.0,
+      "minimum": 0.5,
+      "title": "Threshold",
+      "description": "Similarity threshold for clustering",
+      "default": 0.85
+     }
+    },
+    "type": "object",
+    "title": "CompactRequest"
+   },
+   "CreateKeyRequest": {
+    "properties": {
+     "name": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Name"
+     },
+     "principal_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Principal Id"
+     },
+     "role": {
+      "type": "string",
+      "pattern": "^(read-only|read-write|admin)$",
+      "title": "Role"
+     },
+     "prefixes": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Prefixes"
+     }
+    },
+    "type": "object",
+    "required": [
+     "name",
+     "role"
+    ],
+    "title": "CreateKeyRequest"
+   },
+   "DeduplicateRequest": {
+    "properties": {
+     "threshold": {
+      "type": "number",
+      "maximum": 1.0,
+      "minimum": 0.5,
+      "title": "Threshold",
+      "default": 0.9
+     },
+     "dry_run": {
+      "type": "boolean",
+      "title": "Dry Run",
+      "default": true
+     }
+    },
+    "type": "object",
+    "title": "DeduplicateRequest"
+   },
+   "DeleteBatchRequest": {
+    "properties": {
+     "ids": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array",
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Ids"
+     }
+    },
+    "type": "object",
+    "required": [
+     "ids"
+    ],
+    "title": "DeleteBatchRequest"
+   },
+   "DeleteByPrefixRequest": {
+    "properties": {
+     "source_prefix": {
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Source Prefix"
+     },
+     "dry_run": {
+      "type": "boolean",
+      "title": "Dry Run",
+      "default": false
+     },
+     "skip_snapshot": {
+      "type": "boolean",
+      "title": "Skip Snapshot",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "source_prefix"
+    ],
+    "title": "DeleteByPrefixRequest"
+   },
+   "DeleteBySourceRequest": {
+    "properties": {
+     "source_pattern": {
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Source Pattern"
+     },
+     "dry_run": {
+      "type": "boolean",
+      "title": "Dry Run",
+      "default": false
+     },
+     "skip_snapshot": {
+      "type": "boolean",
+      "title": "Skip Snapshot",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "source_pattern"
+    ],
+    "title": "DeleteBySourceRequest"
+   },
+   "ExtractCommitRequest": {
+    "properties": {
+     "actions": {
+      "items": {
+       "type": "object"
+      },
+      "type": "array",
+      "title": "Actions"
+     },
+     "source": {
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Source"
+     }
+    },
+    "type": "object",
+    "required": [
+     "actions",
+     "source"
+    ],
+    "title": "ExtractCommitRequest"
+   },
+   "ExtractRequest": {
+    "properties": {
+     "messages": {
+      "type": "string",
+      "maxLength": 120000,
+      "minLength": 1,
+      "title": "Messages",
+      "description": "Conversation text to extract facts from"
+     },
+     "source": {
+      "type": "string",
+      "title": "Source",
+      "description": "Source identifier (e.g., 'claude-code/my-project')",
+      "default": ""
+     },
+     "context": {
+      "type": "string",
+      "title": "Context",
+      "description": "Extraction context: stop, pre_compact, session_end",
+      "default": "stop"
+     },
+     "debug": {
+      "type": "boolean",
+      "title": "Debug",
+      "description": "When True, return detailed extraction trace",
+      "default": false
+     },
+     "dry_run": {
+      "type": "boolean",
+      "title": "Dry Run",
+      "description": "Return actions without executing",
+      "default": false
+     },
+     "document_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Document At",
+      "description": "ISO 8601 date for when the source content was created. Propagated to all extracted memories."
+     },
+     "promotion_context": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/PromotionRequestContext"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Untrusted repository promotion declaration; server authorization remains authoritative."
+     }
+    },
+    "type": "object",
+    "required": [
+     "messages"
+    ],
+    "title": "ExtractRequest"
+   },
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "type": "array",
+      "title": "Detail"
+     }
+    },
+    "type": "object",
+    "title": "HTTPValidationError"
+   },
+   "IsNovelRequest": {
+    "properties": {
+     "text": {
+      "type": "string",
+      "maxLength": 50000,
+      "minLength": 1,
+      "title": "Text"
+     },
+     "threshold": {
+      "type": "number",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Threshold",
+      "default": 0.88
+     }
+    },
+    "type": "object",
+    "required": [
+     "text"
+    ],
+    "title": "IsNovelRequest"
+   },
+   "MemoryGetBatchRequest": {
+    "properties": {
+     "ids": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array",
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Ids"
+     }
+    },
+    "type": "object",
+    "required": [
+     "ids"
+    ],
+    "title": "MemoryGetBatchRequest"
+   },
+   "MergeRequest": {
+    "properties": {
+     "ids": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array",
+      "minItems": 2,
+      "title": "Ids"
+     },
+     "merged_text": {
+      "type": "string",
+      "maxLength": 50000,
+      "minLength": 1,
+      "title": "Merged Text"
+     },
+     "source": {
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Source"
+     }
+    },
+    "type": "object",
+    "required": [
+     "ids",
+     "merged_text",
+     "source"
+    ],
+    "title": "MergeRequest"
+   },
+   "MissedMemoryRequest": {
+    "properties": {
+     "text": {
+      "type": "string",
+      "maxLength": 50000,
+      "minLength": 1,
+      "title": "Text"
+     },
+     "source": {
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Source"
+     },
+     "context": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 10000
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Context"
+     }
+    },
+    "type": "object",
+    "required": [
+     "text",
+     "source"
+    ],
+    "title": "MissedMemoryRequest"
+   },
+   "PatchMemoryRequest": {
+    "properties": {
+     "text": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 50000,
+        "minLength": 1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Text"
+     },
+     "source": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 500,
+        "minLength": 1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Source"
+     },
+     "metadata_patch": {
+      "anyOf": [
+       {
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Metadata Patch"
+     },
+     "pinned": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pinned"
+     },
+     "archived": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Archived"
+     }
+    },
+    "type": "object",
+    "title": "PatchMemoryRequest"
+   },
+   "PromotionApproveRequest": {
+    "properties": {
+     "reason": {
+      "type": "string",
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Reason"
+     },
+     "shared_text": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 12000,
+        "minLength": 1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Shared Text"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "reason"
+    ],
+    "title": "PromotionApproveRequest"
+   },
+   "PromotionRejectRequest": {
+    "properties": {
+     "reason": {
+      "type": "string",
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Reason"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "reason"
+    ],
+    "title": "PromotionRejectRequest"
+   },
+   "PromotionRequestContext": {
+    "properties": {
+     "project_id": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+      "title": "Project Id"
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "off",
+       "shadow",
+       "auto"
+      ],
+      "title": "Mode"
+     },
+     "declaration_fingerprint": {
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Declaration Fingerprint"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "project_id",
+     "mode",
+     "declaration_fingerprint"
+    ],
+    "title": "PromotionRequestContext",
+    "description": "Untrusted client declaration carried alongside extraction input."
+   },
+   "ReembedRequest": {
+    "properties": {
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model",
+      "description": "New embedding model name (omit to re-embed with current model)"
+     }
+    },
+    "type": "object",
+    "title": "ReembedRequest"
+   },
+   "RenameFolderRequest": {
+    "properties": {
+     "old_name": {
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Old Name"
+     },
+     "new_name": {
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "New Name"
+     }
+    },
+    "type": "object",
+    "required": [
+     "old_name",
+     "new_name"
+    ],
+    "title": "RenameFolderRequest"
+   },
+   "ResolveConflictsRequest": {
+    "properties": {
+     "dry_run": {
+      "type": "boolean",
+      "title": "Dry Run",
+      "default": true
+     },
+     "max": {
+      "type": "integer",
+      "maximum": 10000.0,
+      "minimum": 0.0,
+      "title": "Max",
+      "description": "Max resolutions this run (0 = unlimited)",
+      "default": 0
+     }
+    },
+    "type": "object",
+    "title": "ResolveConflictsRequest"
+   },
+   "RestoreRequest": {
+    "properties": {
+     "backup_name": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Backup Name"
+     }
+    },
+    "type": "object",
+    "required": [
+     "backup_name"
+    ],
+    "title": "RestoreRequest"
+   },
+   "SearchBatchRequest": {
+    "properties": {
+     "queries": {
+      "items": {
+       "$ref": "#/components/schemas/SearchRequest"
+      },
+      "type": "array",
+      "maxItems": 200,
+      "minItems": 1,
+      "title": "Queries"
+     }
+    },
+    "type": "object",
+    "required": [
+     "queries"
+    ],
+    "title": "SearchBatchRequest"
+   },
+   "SearchFeedbackRequest": {
+    "properties": {
+     "memory_id": {
+      "type": "integer",
+      "title": "Memory Id",
+      "description": "Memory ID the feedback applies to"
+     },
+     "query": {
+      "type": "string",
+      "title": "Query",
+      "description": "The search query that produced this result",
+      "default": ""
+     },
+     "signal": {
+      "type": "string",
+      "pattern": "^(useful|not_useful)$",
+      "title": "Signal",
+      "description": "Relevance signal"
+     },
+     "search_id": {
+      "type": "string",
+      "title": "Search Id",
+      "description": "Optional ID grouping results from the same search",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "memory_id",
+     "signal"
+    ],
+    "title": "SearchFeedbackRequest"
+   },
+   "SearchRequest": {
+    "properties": {
+     "query": {
+      "type": "string",
+      "maxLength": 10000,
+      "minLength": 1,
+      "title": "Query"
+     },
+     "k": {
+      "type": "integer",
+      "maximum": 100.0,
+      "minimum": 1.0,
+      "title": "K",
+      "default": 5
+     },
+     "threshold": {
+      "anyOf": [
+       {
+        "type": "number",
+        "maximum": 1.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Threshold"
+     },
+     "hybrid": {
+      "type": "boolean",
+      "title": "Hybrid",
+      "description": "Use hybrid BM25+vector search",
+      "default": true
+     },
+     "vector_weight": {
+      "type": "number",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Vector Weight",
+      "default": 0.7
+     },
+     "source_prefix": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 500
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Source Prefix",
+      "description": "Optional source path prefix filter"
+     },
+     "source_prefixes": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Source Prefixes",
+      "description": "Optional union of boundary-safe source path prefixes"
+     },
+     "source_boundary": {
+      "type": "boolean",
+      "title": "Source Boundary",
+      "description": "Match source_prefix only at an exact path boundary",
+      "default": false
+     },
+     "recency_weight": {
+      "type": "number",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Recency Weight",
+      "description": "Recency boost weight (0.0=off, 1.0=heavily favor recent). Only applies to hybrid search.",
+      "default": 0.0
+     },
+     "recency_half_life_days": {
+      "type": "number",
+      "maximum": 365.0,
+      "exclusiveMinimum": 0.0,
+      "title": "Recency Half Life Days",
+      "description": "Half-life in days for recency decay (default 30).",
+      "default": 30.0
+     },
+     "feedback_weight": {
+      "type": "number",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Feedback Weight",
+      "description": "Weight for feedback-based ranking signal (0=disabled, default 0.1)",
+      "default": 0.1
+     },
+     "confidence_weight": {
+      "type": "number",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Confidence Weight",
+      "description": "Weight for confidence-based ranking (0=disabled)",
+      "default": 0.0
+     },
+     "graph_weight": {
+      "type": "number",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Graph Weight",
+      "description": "Weight for graph-based link expansion (0=disabled, default 0.1). When enabled, linked memories get a bonus score.",
+      "default": 0.1
+     },
+     "since": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 50
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Since",
+      "description": "Filter memories created/documented at or after this ISO 8601 date"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 50
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Until",
+      "description": "Filter memories created/documented at or before this ISO 8601 date"
+     },
+     "source": {
+      "type": "string",
+      "maxLength": 500,
+      "title": "Source",
+      "description": "Caller source for usage tracking",
+      "default": ""
+     },
+     "include_archived": {
+      "type": "boolean",
+      "title": "Include Archived",
+      "description": "Include archived memories in search results",
+      "default": false
+     },
+     "auto_intent": {
+      "type": "boolean",
+      "title": "Auto Intent",
+      "description": "Auto-detect temporal intent from query text. Set to False to disable.",
+      "default": true
+     },
+     "reference_date": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 50
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reference Date",
+      "description": "Reference date for temporal intent detection (ISO 8601). Defaults to now."
+     }
+    },
+    "type": "object",
+    "required": [
+     "query"
+    ],
+    "title": "SearchRequest"
+   },
+   "SupersedeByIdRequest": {
+    "properties": {
+     "text": {
+      "type": "string",
+      "maxLength": 50000,
+      "minLength": 1,
+      "title": "Text"
+     },
+     "source": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 500
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Source",
+      "description": "Source for the replacement; defaults to the original memory's source"
+     },
+     "metadata": {
+      "anyOf": [
+       {
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Metadata"
+     }
+    },
+    "type": "object",
+    "required": [
+     "text"
+    ],
+    "title": "SupersedeByIdRequest"
+   },
+   "SupersedeRequest": {
+    "properties": {
+     "old_id": {
+      "type": "integer",
+      "title": "Old Id",
+      "description": "ID of memory to supersede"
+     },
+     "new_text": {
+      "type": "string",
+      "title": "New Text",
+      "description": "Updated memory text"
+     },
+     "source": {
+      "type": "string",
+      "title": "Source",
+      "description": "Source identifier",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "old_id",
+     "new_text"
+    ],
+    "title": "SupersedeRequest"
+   },
+   "UpdateKeyRequest": {
+    "properties": {
+     "name": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200,
+        "minLength": 1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Name"
+     },
+     "principal_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Principal Id"
+     },
+     "role": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^(read-only|read-write|admin)$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Role"
+     },
+     "prefixes": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Prefixes"
+     }
+    },
+    "type": "object",
+    "title": "UpdateKeyRequest"
+   },
+   "UpsertBatchRequest": {
+    "properties": {
+     "memories": {
+      "items": {
+       "$ref": "#/components/schemas/UpsertMemoryRequest"
+      },
+      "type": "array",
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Memories"
+     }
+    },
+    "type": "object",
+    "required": [
+     "memories"
+    ],
+    "title": "UpsertBatchRequest"
+   },
+   "UpsertMemoryRequest": {
+    "properties": {
+     "text": {
+      "type": "string",
+      "maxLength": 50000,
+      "minLength": 1,
+      "title": "Text"
+     },
+     "source": {
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Source"
+     },
+     "key": {
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Key"
+     },
+     "metadata": {
+      "anyOf": [
+       {
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Metadata"
+     }
+    },
+    "type": "object",
+    "required": [
+     "text",
+     "source",
+     "key"
+    ],
+    "title": "UpsertMemoryRequest"
+   },
+   "ValidationError": {
+    "properties": {
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "type": "array",
+      "title": "Location"
+     },
+     "msg": {
+      "type": "string",
+      "title": "Message"
+     },
+     "type": {
+      "type": "string",
+      "title": "Error Type"
+     }
+    },
+    "type": "object",
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError"
+   },
+   "WebhookRequest": {
+    "properties": {
+     "url": {
+      "type": "string",
+      "title": "Url",
+      "description": "Callback URL"
+     },
+     "events": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Events",
+      "description": "Event types to subscribe to (default: all)"
+     }
+    },
+    "type": "object",
+    "required": [
+     "url"
+    ],
+    "title": "WebhookRequest"
+   }
+  }
+ }
+}

@@ -51,6 +51,60 @@ curl http://localhost:8000/health
 The server reads the port from `--port` or from the environment variable
 `PORT`. The default is 8000.
 
+## Configuration
+
+The server reads the environment variables of the Python server, with the
+same names and the same defaults. `crates/memories-types/src/config.rs` lists
+each variable with one of these states:
+
+| State | Effect at start |
+|---|---|
+| Supported | The server uses the value. |
+| Not used | The server starts. If the variable is set, the server logs one line. |
+| Refused | The server stops with a message. This applies to a value that the Python server also cannot start with, for example `AUTH_RATE_LIMIT=abc`. |
+
+## Auth
+
+- Send the key in the header `X-API-Key`. An empty header is the same as no
+  header.
+- `API_KEY` is the admin key. If `API_KEY` is empty, a request with no key
+  has admin access.
+- Managed keys are in `$DATA_DIR/keys.db`, the same file and schema as the
+  Python server. The server stores the SHA-256 hash of each key.
+- The roles are `admin`, `read-write` and `read-only`. A prefix such as
+  `codex/` matches `codex` and `codex/...`, but not `codex-other`.
+- After `AUTH_RATE_LIMIT` (default 50) failed attempts in 60 s, a client gets
+  HTTP 429. The client address follows uvicorn: a request from an address in
+  `FORWARDED_ALLOW_IPS` (default `127.0.0.1`) uses `X-Forwarded-For`.
+- The server writes `last_used_at` and `usage_count` of the managed keys
+  every 5 s and at shutdown, not at each request. `GET /api/keys` writes the
+  pending values first, so the list shows each use.
+- An admin key manages the keys with `POST /api/keys`, `GET /api/keys`,
+  `PATCH /api/keys/{key_id}` and `DELETE /api/keys/{key_id}`. A key that one
+  server makes works on the other server.
+- If `AUDIT_LOG=true`, the server opens `$DATA_DIR/audit.db`, the same file
+  and schema as the Python server. `GET /audit` reads the rows and
+  `POST /audit/purge` deletes the old rows. If `AUDIT_LOG` is off, the two
+  routes give no rows.
+
+A Python route that this server does not have yet gives HTTP 501. The route
+table is `ROUTES` in `crates/memories-server/src/shell.rs`.
+
+## Parity check
+
+The scripts below replay the golden cases of a task against the Rust
+server. The Python server first writes the data, then the Rust server reads
+it. Run them from the repository root after `uv sync --frozen`:
+
+```bash
+server/scripts/parity_auth.sh server/target/debug/memories-server
+server/scripts/parity_keys_audit.sh server/target/debug/memories-server
+```
+
+`parity_auth.sh` is the check of task P1-1. `parity_keys_audit.sh` is the
+check of task P5-2. It also makes a key on each server and uses the key on
+the other server.
+
 ## Build the image
 
 ```bash

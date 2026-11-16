@@ -35,6 +35,17 @@ def test_normalize_masks_timestamps_and_ids_inside_strings():
     assert "20261116" not in out and "2026-11-16" not in out and "6f1c2d3e" not in out
 
 
+def test_normalize_masks_each_hex_id_whole():
+    # A hex ID with 14 digits in a row looked like a compact timestamp, and the diff failed at random.
+    import random
+    rng = random.Random(7)
+    ids = ["ab12345678901234cdef0123456789ab", "mem_0f2026111607094500aabbccddeeff00"]
+    ids += ["%032x" % rng.getrandbits(128) for _ in range(5000)]
+    for value in ids:
+        assert kit.normalize("key " + value + " made") == "key <hex> made", value
+    assert kit.normalize("6f1c2d3e-0a1b-4c2d-9e8f-202611160709") == "<uuid>"
+
+
 def test_diff_float_tolerance():
     a = {"score": 0.50001}
     b = {"score": 0.50005}
@@ -190,3 +201,38 @@ def test_middleware_redacts_a_new_raw_key_and_keeps_the_daily_cap(tmp_path):
     big = json.dumps({"text": "x" * 2000}).encode()
     mw._write("POST", "/search", b"", [], b"", False, 200, "application/json", big, False, 1.0, now)
     assert mw.dropped == 1
+
+
+# -- subset replay (Rust task exit checks) --------------------------------------
+
+def test_select_keeps_file_order_and_refuses_unknown_names():
+    cases = [{"name": "a"}, {"name": "b"}, {"name": "c"}]
+    assert kit.select(cases, None) is cases
+    assert [c["name"] for c in kit.select(cases, ["c", "a"])] == ["a", "c"]
+    with pytest.raises(ValueError):
+        kit.select(cases, ["a", "x"])
+
+
+def test_replay_var_sets_a_saved_variable():
+    seen = {}
+
+    def fake_run(cases, base_url, **kw):
+        seen.update(kw["extra_vars"])
+        return []
+
+    with patch.object(kit, "run", fake_run), patch.object(kit, "dump"):
+        from parity.__main__ import main
+        assert main(["replay", "--base-url", "http://x", "--out", "/dev/null",
+                     "--only", "keys-me-ro", "--var", "key:ro=mem_1"]) == 0
+    assert seen == {"key:ro": "mem_1"}
+
+
+def test_rust_route_table_matches_python_routes():
+    """server/crates/memories-server/src/shell.rs ROUTES lists each route of app.py."""
+    src = open(os.path.join(os.path.dirname(__file__), "..", "server", "crates", "memories-server",
+                            "src", "shell.rs"), encoding="utf-8").read()
+    table = src.split("pub const ROUTES")[1].split("];")[0]
+    pairs = re.findall(r'\("([A-Z]+)", "([^"]+)"\)', table)
+    rust = {m + " " + re.sub(r"{[*](\w+)}", r"{\1:path}", p) for m, p in pairs}
+    python = _app_routes() | {"GET /openapi.json", "GET /ui/static/{path:path}"}
+    assert rust == python
