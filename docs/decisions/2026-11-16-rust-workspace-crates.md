@@ -83,8 +83,8 @@ Other pins:
   old. If the age check fails, pin the crate with
   `cargo update -p <crate> --precise <older version>`.
 - Dependabot updates only the crates. The base image digests, the ONNX
-  Runtime hash, `rust-toolchain.toml` and the GitHub Actions tags have no
-  automatic update. Update them by hand, with the same 2-day rule.
+  Runtime hash and `rust-toolchain.toml` have no automatic update. The
+  GitHub Actions are pinned by commit SHA, as task P0-5 set up. Update them by hand, with the same 2-day rule.
 - `docker-compose.eval.yml` checks `/health/ready`. The Rust image is not
   healthy with that file until task P1-1 adds the route.
 

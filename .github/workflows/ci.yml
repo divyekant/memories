@@ -11,18 +11,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26 }
 
       - name: MCP server install (pytest's stdio smoke needs node_modules)
         run: |
           cd mcp-server
-          npm ci
+          npm ci --ignore-scripts
           node --check index.js
+
+      - name: MCP server tests
+        run: cd mcp-server && npm test
 
       - name: Run pytest
         run: uv run pytest -q
@@ -40,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build image
         run: docker build -t memories-ci --target core .
@@ -56,12 +62,12 @@ jobs:
       run:
         working-directory: server
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: server
 
@@ -81,7 +87,7 @@ jobs:
         run: python3 scripts/check_crate_age.py Cargo.lock --days 2
 
       - name: cargo deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           manifest-path: server/Cargo.toml
           arguments: --locked
@@ -97,7 +103,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build image
         run: docker build -t ghcr.io/divyekant/memories:rust-ci server
