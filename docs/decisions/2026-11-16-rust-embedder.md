@@ -31,7 +31,11 @@ The crate reads the Hugging Face cache layout that `hf_hub_download` writes:
 download. If the files are not in the cache, the crate gets the current commit
 of `main` from the Hub, downloads the two files of that commit, and writes
 them in the same layout. Each file goes to a temporary name first, then a
-rename. The Python server reads a cache that the Rust server filled (checked
+rename, after a sync. Each download has a limit of 10 seconds to connect
+and 10 seconds for each read, the same as `huggingface_hub`. A streamed file
+must have the length that the Hub gave. The variables `HF_ENDPOINT`,
+`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `HF_TOKEN_PATH`, `HF_HUB_OFFLINE`,
+`HF_HUB_CACHE` and `HF_HOME` have the same effect as in Python. The Python server reads a cache that the Rust server filled (checked
 with `HF_HUB_OFFLINE=1`).
 
 ## Gate G2
@@ -80,5 +84,10 @@ padding does not change a vector. That change waits for a decision from dk.
   online. A new commit of the model needs a new fixture and a G2 run anyway.
 - `EMBED_PROVIDER=openai` is refused at start with a clear error. Production
   uses `onnx` (P0-3 baseline). The OpenAI embedder is not ported.
+- The old variable `HUGGINGFACE_HUB_CACHE` is not read.
+- A model name is not checked as Python `validate_repo_id` does. A bad name
+  gives a download error, not a name error.
+- An embed call with no text returns no vector. Python raises `ValueError`.
+- The worker skips a job when its caller has gone.
 - The embedding-space registry (`embedding_spaces.json`) and the collection
   names are not in this crate. The store tasks own them.

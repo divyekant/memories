@@ -190,7 +190,10 @@ impl Embedder {
                     return;
                 }
                 while let Ok((texts, reply)) = rx.recv() {
-                    let _ = reply.send(model.encode(&texts));
+                    // The caller has gone (timeout or disconnect): skip the work.
+                    if !reply.is_closed() {
+                        let _ = reply.send(model.encode(&texts));
+                    }
                 }
             })?;
         let dim = ready_rx.await.map_err(|_| EmbedError::Closed)??;
@@ -244,7 +247,13 @@ fn environment() -> Result<&'static Environment> {
         let path = std::env::var("ORT_DYLIB_PATH")
             .ok()
             .filter(|p| !p.is_empty())
-            .unwrap_or_else(|| "libonnxruntime.so".to_string());
+            .unwrap_or_else(|| {
+                format!(
+                    "{}onnxruntime{}",
+                    std::env::consts::DLL_PREFIX,
+                    std::env::consts::DLL_SUFFIX
+                )
+            });
         ort::init_from(&path)
             .map_err(|e| e.to_string())?
             .with_name("memories")
@@ -322,7 +331,7 @@ impl Model {
         let shape = [rows, seq];
         let mut inputs = ort::inputs![
             "input_ids" => Tensor::from_array((shape, ids))?,
-            "attention_mask" => Tensor::from_array((shape, mask.clone()))?,
+            "attention_mask" => Tensor::from_array((shape, mask.clone()))?, // mask is read again for the pool
         ];
         if self.token_type_ids {
             inputs.push((

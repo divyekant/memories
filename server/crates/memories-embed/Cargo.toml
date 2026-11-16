@@ -12,7 +12,7 @@ reqwest.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokenizers.workspace = true
-tokio = { workspace = true, features = ["sync", "fs"] }
+tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
