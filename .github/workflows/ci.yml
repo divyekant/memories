@@ -166,6 +166,12 @@ jobs:
           ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: cargo test --locked -p memories-engine --test writes -- --ignored --nocapture
 
+      - name: Bulk writes and relation writes against Qdrant 1.15.4 and the embedder (task P3-2)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: cargo test --locked -p memories-engine --test bulk -- --ignored --nocapture
+
       - name: Script tests
         run: python3 -m unittest discover -s scripts -v
 
@@ -245,6 +251,12 @@ jobs:
         run: |
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
           server/scripts/parity_writes.sh server/target/debug/memories-server
+
+      - name: P3-2 bulk writes and relation writes (golden replay and a live Python run)
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_bulk.sh server/target/debug/memories-server
 
   rust-image:
     # Build the Rust image on each architecture. Then start the bundled compose

@@ -172,6 +172,15 @@ def substitute(obj, vars_):
 
 
 def _send(client, req):
+    try:
+        return _send_once(client, req)
+    except httpx.RemoteProtocolError:
+        # Uvicorn closes the connection after an error that no handler catches. The next
+        # request on that kept-alive connection was not read, so send it again once.
+        return _send_once(client, req)
+
+
+def _send_once(client, req):
     kwargs = {"headers": req.get("headers") or {}}
     if "json" in req:
         kwargs["json"] = req["json"]

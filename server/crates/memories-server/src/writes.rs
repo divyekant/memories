@@ -29,15 +29,15 @@ use crate::{
     validate::{Fields, finish, int, model},
 };
 
-fn err(status: StatusCode, detail: impl Into<Value>) -> Response {
+pub(crate) fn err(status: StatusCode, detail: impl Into<Value>) -> Response {
     ApiError::new(status, detail).into_response()
 }
 
-fn server_error() -> Response {
+pub(crate) fn server_error() -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
 }
 
-fn writer(state: &AppState) -> Result<Arc<Writer>, Response> {
+pub(crate) fn writer(state: &AppState) -> Result<Arc<Writer>, Response> {
     state.writer.get().cloned().ok_or_else(|| {
         err(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -47,7 +47,7 @@ fn writer(state: &AppState) -> Result<Arc<Writer>, Response> {
 }
 
 /// `_require_write`.
-fn require_write(auth: &AuthContext, source: &str) -> Result<(), Response> {
+pub(crate) fn require_write(auth: &AuthContext, source: &str) -> Result<(), Response> {
     if auth.can_write(source) {
         Ok(())
     } else {
@@ -59,7 +59,7 @@ fn require_write(auth: &AuthContext, source: &str) -> Result<(), Response> {
 }
 
 /// `_trusted_authorship`: only a managed key with a valid principal.
-fn trusted(auth: &AuthContext, headers: &HeaderMap) -> Option<TrustedAuthorship> {
+pub(crate) fn trusted(auth: &AuthContext, headers: &HeaderMap) -> Option<TrustedAuthorship> {
     if auth.key_type != "managed" {
         return None;
     }
@@ -74,7 +74,7 @@ fn trusted(auth: &AuthContext, headers: &HeaderMap) -> Option<TrustedAuthorship>
 /// The reply of a failed write. `value_errors` is a route that answers a
 /// Python `ValueError` with 404 (409 for a pinned record); the other routes
 /// answer 500.
-fn failed(e: WriteError, value_errors: bool) -> Response {
+pub(crate) fn failed(e: WriteError, value_errors: bool) -> Response {
     match e {
         WriteError::Policy(p) => err(StatusCode::UNPROCESSABLE_ENTITY, p.0),
         WriteError::NotFound(m) if value_errors => err(StatusCode::NOT_FOUND, m),
@@ -86,7 +86,7 @@ fn failed(e: WriteError, value_errors: bool) -> Response {
     }
 }
 
-async fn audit(
+pub(crate) async fn audit(
     state: &Arc<AppState>,
     auth: &AuthContext,
     client: &Option<Extension<Client>>,
@@ -161,12 +161,12 @@ fn upsert_body(
     })
 }
 
-fn body_loc() -> Vec<Value> {
+pub(crate) fn body_loc() -> Vec<Value> {
     vec![json!("body")]
 }
 
 /// A model body: the items of the model, or the 422 reply.
-fn parse<T>(
+pub(crate) fn parse<T>(
     map: Map<String, Value>,
     check: impl FnOnce(&Map<String, Value>, Vec<Value>, &mut Vec<Value>) -> Option<T>,
 ) -> Result<T, Response> {
@@ -347,7 +347,7 @@ pub async fn upsert_batch(
 }
 
 /// The `memory_id` path parameter: an error item goes into `errors`.
-fn path_id(raw: &str, errors: &mut Vec<Value>) -> Option<i64> {
+pub(crate) fn path_id(raw: &str, errors: &mut Vec<Value>) -> Option<i64> {
     let id = py_int(raw);
     if id.is_none() {
         errors.push(int_parsing(json!(["path", "memory_id"]), json!(raw)));
