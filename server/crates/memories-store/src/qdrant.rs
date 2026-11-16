@@ -64,6 +64,14 @@ pub struct NewPoint {
     pub keyword: Vec<(u32, f32)>,
 }
 
+/// The vectors of one stored point. `dense` comes from the vector `dense`, or
+/// from the unnamed vector of a Python (v5) collection.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StoredVectors {
+    pub dense: Option<Vec<f32>>,
+    pub keyword: Option<Vec<(u32, f32)>>,
+}
+
 pub struct QdrantStore {
     client: Qdrant,
     collection: String,
@@ -150,6 +158,69 @@ impl QdrantStore {
 
     pub fn collection(&self) -> &str {
         &self.collection
+    }
+
+    pub async fn exists(&self) -> Result<bool, StoreError> {
+        Ok(self.client.collection_exists(&self.collection).await?)
+    }
+
+    /// The vectors of the points of `wanted` that exist.
+    pub async fn vectors(&self, wanted: &[u64]) -> Result<HashMap<u64, StoredVectors>, StoreError> {
+        use qdrant_client::qdrant::vector_output::Vector as Out;
+        if wanted.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let response = self
+            .client
+            .get_points(
+                GetPointsBuilder::new(&self.collection, ids(wanted))
+                    .with_payload(false)
+                    .with_vectors(true)
+                    .read_consistency(self.consistency.value.expect("set in new")),
+            )
+            .await?;
+        let mut out = HashMap::new();
+        for p in response.result {
+            let id = numeric_id(p.id)?;
+            let mut v = StoredVectors::default();
+            if let Some(vs) = p.vectors {
+                let dense = vs
+                    .get_vector_by_name(DENSE_VECTOR)
+                    .or_else(|| vs.get_vector());
+                if let Some(Out::Dense(d)) = dense {
+                    v.dense = Some(d.data);
+                }
+                if let Some(Out::Sparse(sp)) = vs.get_vector_by_name(KEYWORD_VECTOR) {
+                    v.keyword = Some(sp.indices.into_iter().zip(sp.values).collect());
+                }
+            }
+            out.insert(id, v);
+        }
+        Ok(out)
+    }
+
+    /// All point IDs, in ID order.
+    pub async fn ids(&self) -> Result<Vec<u64>, StoreError> {
+        let mut out = Vec::new();
+        let mut offset: Option<PointId> = None;
+        loop {
+            let mut request = ScrollPointsBuilder::new(&self.collection)
+                .limit(ID_PAGE)
+                .with_payload(false)
+                .with_vectors(false)
+                .read_consistency(self.consistency.value.expect("set in new"));
+            if let Some(o) = offset.take() {
+                request = request.offset(o);
+            }
+            let response = self.client.scroll(request).await?;
+            for p in response.result {
+                out.push(numeric_id(p.id)?);
+            }
+            match response.next_page_offset {
+                Some(o) => offset = Some(o),
+                None => return Ok(out),
+            }
+        }
     }
 
     /// Make the collection and its payload indexes if they do not exist.
@@ -440,26 +511,6 @@ impl QdrantStore {
     pub async fn max_id(&self) -> Result<Option<u64>, StoreError> {
         // shortcut: reads every ID (about 1 s per 1M points); use an order_by
         // on an indexed id payload field if start time becomes a problem.
-        let mut max = None;
-        let mut offset: Option<PointId> = None;
-        loop {
-            let mut request = ScrollPointsBuilder::new(&self.collection)
-                .limit(ID_PAGE)
-                .with_payload(false)
-                .with_vectors(false)
-                .read_consistency(self.consistency.value.expect("set in new"));
-            if let Some(o) = offset.take() {
-                request = request.offset(o);
-            }
-            let response = self.client.scroll(request).await?;
-            for p in response.result {
-                let id = numeric_id(p.id)?;
-                max = max.max(Some(id));
-            }
-            match response.next_page_offset {
-                Some(o) => offset = Some(o),
-                None => return Ok(max),
-            }
-        }
+        Ok(self.ids().await?.last().copied())
     }
 }

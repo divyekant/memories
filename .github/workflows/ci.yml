@@ -136,6 +136,11 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
           cargo test --locked -p memories-store --test qdrant_store -- --ignored --nocapture
 
+      - name: Migrate and verify against Qdrant 1.15.4 (task P1-4)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+        run: cargo test --locked -p memories-server --test migrate -- --ignored --nocapture
+
       - name: Cache the embedding model
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
