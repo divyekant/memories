@@ -74,3 +74,31 @@ for (const [init, status, code] of noneCases) {
     }
   });
 }
+
+test('remote server exits non-zero and logs no "listening" line when the port is in use', async () => {
+  const { spawn } = await import('node:child_process');
+  const { createServer } = await import('node:net');
+  const blocker = createServer().listen(0, '0.0.0.0');
+  await new Promise((resolve) => blocker.once('listening', resolve));
+  const port = blocker.address().port;
+  try {
+    const child = spawn(process.execPath, [new URL('../remote/server.mjs', import.meta.url).pathname], {
+      env: {
+        ...process.env,
+        REMOTE_MCP_AUTH: 'none',
+        REMOTE_MCP_PORT: String(port),
+        REMOTE_MCP_STORE_DIR: await mkdtemp(join(tmpdir(), 'mem-compat-')),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    const code = await new Promise((resolve) => child.once('exit', resolve));
+    assert.notEqual(code, 0);
+    assert.doesNotMatch(out, /listening on/);
+    assert.match(out, /EADDRINUSE/);
+  } finally {
+    await new Promise((resolve) => blocker.close(resolve));
+  }
+});

@@ -22,9 +22,10 @@ Rust server replaces it.
 
 | Rule | How this change obeys the rule |
 |---|---|
-| Exact versions | `mcp-server/package.json` has exact versions, with no `^` range. The GitHub Actions are pinned to a full commit SHA, with the version in a comment. The base image of the remote MCP server has an exact version. `uv.lock` holds the exact Python versions. |
+| Exact versions | `mcp-server/package.json` has exact versions, with no `^` range. `zod`, which `lib-tools.mjs` imports, is now a direct dependency. The publish workflow installs `npm@12.2.2`, not `npm@latest`. The GitHub Actions are pinned to a full commit SHA, with the version in a comment. The base image of the remote MCP server has an exact version. `uv.lock` holds the exact Python versions. |
+| No install scripts | `npm ci` runs with `--ignore-scripts` in CI, in the publish workflow and in `Dockerfile.remote`. No package in the lock file has an install script. |
 | A committed lock file | `mcp-server/package-lock.json` and `uv.lock` are in the commit. |
-| No release that is less than 2 days old | A script read the publish time of each of the 94 packages in `package-lock.json` from the npm registry on 2026-11-16. No package was less than 2 days old. `uv lock` ran with `--exclude-newer 2026-11-14`. The newest Action tag is from 2026-10-28. The image tag is from 2026-11-11. |
+| No release that is less than 2 days old | A script read the publish time of each of the 94 packages in `package-lock.json` from the npm registry on 2026-11-16. No package was less than 2 days old. The two Python updates are `click` 8.5.1 (2026-11-06) and `pytest` 9.2.0 (2026-10-27). The newest Action tag is from 2026-10-28. The image tag is from 2026-11-11. |
 
 `npm audit` found 11 vulnerabilities (1 critical, 7 high, 3 moderate) before
 the change, and 0 after the change. The critical one was in `proxy-addr`,
@@ -36,8 +37,9 @@ which the remote MCP server uses for `REMOTE_MCP_TRUST_PROXY`.
 |---|---|---|---|---|
 | `@modelcontextprotocol/sdk` | 1.29.0 | 1.32.2 | See "MCP SDK changes" below. No API that Memories uses was removed. | Security fixes in the transitive libraries (`hono`, `@hono/node-server`, `zod`, `fast-uri`, `ip-address`). A size limit on HTTP request bodies. SSE keep-alive frames. |
 | `express` | 4.22.2 | 5.3.0 | See "Express 5 changes" below. | The fix for `proxy-addr` (critical) and `qs`. Async handlers send a rejected promise to the error handler. The SDK already needs `express ^5.2.1`, so the project now has one copy of Express, not two. |
+| `zod` | 4.3.6 (from the SDK, not declared) | 4.6.7 | None found. The 322 tests pass. | A fix for memory use with large constrained collections. |
 | `js-yaml` | 4.1.1 | 4.3.2 | `1_000` is now a string, not a number. Memories reads no number from YAML. | Security limits `maxDepth` and `maxTotalMergeKeys`. |
-| Node base image of `Dockerfile.remote` | `node:24-alpine` | `node:26.13.1-alpine` | Node 26 is the active LTS (long-term support) line since 2026-10. The 321 tests pass on Node 22 here, and CI runs them on Node 26. | Support for a longer time. |
+| Node base image of `Dockerfile.remote` | `node:24-alpine` | `node:26.13.1-alpine` | Node 26 is the active LTS (long-term support) line since 2026-10. The 322 tests pass on Node 22 here, and CI runs them on Node 26. | Support for a longer time. |
 
 ### Why js-yaml stays on the 4.x line
 
@@ -63,6 +65,7 @@ is on the list of later ideas.
 | `res.redirect(url, status)` was removed. | No effect. The code uses `res.redirect(302, url)`. |
 | 5.3.0: the body of a redirect is a full HTML page when the client accepts HTML. | The `Location` header does not change. A browser follows the header. |
 | Path syntax (`path-to-regexp` 8). | No effect. All paths are literal. |
+| `app.listen()` gives a listen error, for example `EADDRINUSE`, to its callback. Express 4 threw the error. | Without a fix, the server logs "listening" and exits with code 0 when the port is in use. `remote/server.mjs` now throws the error again, so the server exits with code 1, as before. A test covers this. |
 
 The new test file `mcp-server/test/remote-http-compat.test.mjs` records the
 replies of Express 4 for an empty body, a wrong content type and odd query
@@ -74,6 +77,8 @@ Express 5 after the update.
 | Release | Change | Effect on Memories |
 |---|---|---|
 | 1.30.0 | The stdio transport refuses one message that is larger than 10 MiB. | A request to the stdio server that is larger than 10 MiB fails. A Memories tool request is much smaller. |
+| 1.30.0 | The transport reads the media type of `Content-Type`. It no longer looks for `application/json` as a substring. | A `/mcp` request with `text/plain; x=application/json` or `application/jsonl` got 400 (-32700) before and gets 415 now. A real client sends `application/json`. |
+| 1.30.0 | The text of a tool input error (-32602) is a short sentence, not a JSON list of zod issues. For example: `Invalid input: expected string, received undefined at query`. | A model that reads the error sees new words. The error code does not change. The `tools/list` output does not change. |
 | 1.30.0 | The Streamable HTTP transport sends a keep-alive comment (`: keepalive`) every 15 seconds on an SSE stream. | A comment line is ignored by SSE clients. |
 | 1.30.1 | The Streamable HTTP transport refuses a body that is larger than 4 MiB with 413. | No effect. Express reads the body first (limit 1 MB) and gives it to the transport, and the SDK does not apply its limit to a body that it gets. |
 | 1.32.0 | `tools/call` without `arguments` is accepted. | A request that failed before can now succeed. |
@@ -146,5 +151,6 @@ v6.0.0.
    the search results, and each install must embed its memories again.
 6. Test a reranker after the hybrid search.
 7. Review the extraction prompts with the eval suite.
-8. Remove the old `node >=20` floor from `mcp-server/package.json`. Node 20 is
+8. Add `lockfile-lint` as a `preinstall` check of `mcp-server/`.
+9. Remove the old `node >=20` floor from `mcp-server/package.json`. Node 20 is
    at end of life.

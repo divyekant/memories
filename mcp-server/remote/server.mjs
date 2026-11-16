@@ -460,7 +460,9 @@ function main() {
   }
 
   const app = createApp(cfg);
-  app.listen(cfg.port, () => {
+  // Express 5 passes a listen error to this callback; rethrow to exit 1 as Express 4 did.
+  app.listen(cfg.port, (err) => {
+    if (err) throw err;
     console.log(`memories-remote-mcp listening on :${cfg.port} (auth=${authMode})`);
   });
 }

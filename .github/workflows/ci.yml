@@ -24,7 +24,7 @@ jobs:
       - name: MCP server install (pytest's stdio smoke needs node_modules)
         run: |
           cd mcp-server
-          npm ci
+          npm ci --ignore-scripts
           node --check index.js
 
       - name: MCP server tests
