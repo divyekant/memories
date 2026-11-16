@@ -10,7 +10,8 @@ use crate::rank::{PyDateTime, RecordFields};
 /// which fails. A string that does not parse gives the same result.
 const NOT_A_DATE: &str = "not a date";
 
-fn truthy(v: &Value) -> bool {
+/// Python `bool(v)` of a JSON value.
+pub fn truthy(v: &Value) -> bool {
     match v {
         Value::Null => false,
         Value::Bool(b) => *b,
@@ -18,6 +19,19 @@ fn truthy(v: &Value) -> bool {
         Value::String(s) => !s.is_empty(),
         Value::Array(a) => !a.is_empty(),
         Value::Object(o) => !o.is_empty(),
+    }
+}
+
+/// Python `str(v)` of a JSON value that is not a string.
+// shortcut: lists and maps use the JSON text, not the Python repr; a source of
+// that type is not known in the field.
+pub fn py_str(v: &Value) -> String {
+    match v {
+        Value::Null => "None".into(),
+        Value::Bool(true) => "True".into(),
+        Value::Bool(false) => "False".into(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
     }
 }
 

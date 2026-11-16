@@ -1232,6 +1232,8 @@ dependencies = [
 name = "memories-engine"
 version = "6.0.0"
 dependencies = [
+ "memories-embed",
+ "memories-store",
  "memories-types",
  "regex",
  "serde_json",
@@ -1259,6 +1261,9 @@ dependencies = [
  "axum",
  "clap",
  "getrandom 0.3.4",
+ "memories-embed",
+ "memories-engine",
+ "memories-store",
  "memories-types",
  "rusqlite",
  "serde_json",
