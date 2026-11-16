@@ -51,6 +51,9 @@ def test_diff_float_tolerance():
     b = {"score": 0.50005}
     assert kit.diff_values(a, b) == []
     assert kit.diff_values({"score": 0.5}, {"score": 0.6})
+    # One step in the 4th decimal is inside the tolerance, also at a float edge.
+    assert kit.diff_values({"s": 0.8493}, {"s": 0.8492}) == []
+    assert kit.diff_values({"s": 0.8494}, {"s": 0.8492})
 
 
 def test_diff_reports_type_and_key_differences():
