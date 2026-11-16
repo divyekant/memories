@@ -139,6 +139,8 @@ pub fn normalize_origin_client(value: &Value) -> String {
 pub struct TrustedAuthorship {
     pub author: String,
     pub origin_client: String,
+    /// `source_memory_ids` of `TrustedAuthorship.system` (consolidation).
+    pub source_memory_ids: Vec<i64>,
 }
 
 impl TrustedAuthorship {
@@ -147,13 +149,28 @@ impl TrustedAuthorship {
         is_valid_slug(principal_id).then(|| Self {
             author: principal_id.into(),
             origin_client: normalize_origin_client(&json!(origin_client)),
+            source_memory_ids: Vec::new(),
         })
+    }
+
+    /// `TrustedAuthorship.system(source_memory_ids=ids)`: IDs in first-seen order.
+    pub fn system(ids: Vec<i64>) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        Self {
+            author: "system".into(),
+            origin_client: "other".into(),
+            source_memory_ids: ids.into_iter().filter(|i| seen.insert(*i)).collect(),
+        }
     }
 
     pub fn as_metadata(&self) -> Map<String, Value> {
         let mut m = Map::new();
         m.insert("author".into(), json!(self.author));
         m.insert("origin_client".into(), json!(self.origin_client));
+        if !self.source_memory_ids.is_empty() {
+            m.insert("contributors".into(), json!([]));
+            m.insert("source_memory_ids".into(), json!(self.source_memory_ids));
+        }
         m
     }
 }

@@ -34,6 +34,7 @@ use crate::scope::Scope;
 use crate::search::SearchArgs;
 
 mod bulk;
+pub mod maintenance;
 
 /// The duplicate threshold of `/memory/add` (dedupe and doctrine).
 pub const DEDUP_THRESHOLD: f64 = 0.90;

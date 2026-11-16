@@ -429,8 +429,9 @@ fn process_memory_kb() -> Value {
 }
 
 /// The `embedder_reload` part of the Python body. This server has no
-/// embedder reload, so the counters stay 0 and `enabled` is false.
-fn embedder_reload() -> Value {
+/// automatic reload, so `enabled` is false and the `auto` counters stay 0.
+/// `manual` counts the calls of `POST /maintenance/embedder/reload`.
+fn embedder_reload(manual: Value) -> Value {
     use memories_types::config::parse_int;
     let var = |n: &str| std::env::var(n).ok();
     let int = |n: &str, d: i64, min: i64| parse_int(var(n).as_deref(), d, min).0;
@@ -460,12 +461,7 @@ fn embedder_reload() -> Value {
             "last_gc_collected": null, "last_trim_reason": null, "last_error": null,
             "last_error_at": null,
         },
-        "manual": {
-            "requests_total": 0, "succeeded_total": 0, "failed_total": 0,
-            "last_requested_at": null, "last_completed_at": null,
-            "last_reload_duration_ms": 0.0, "last_gc_collected": null,
-            "last_trim_reason": null, "last_error": null, "last_error_at": null,
-        },
+        "manual": manual,
     })
 }
 
@@ -495,7 +491,7 @@ async fn snapshot(state: &Arc<AppState>, sample: bool) -> Result<Value, Response
         "uptime_sec": state.started.elapsed().as_secs(),
         "extract": crate::extract::queue_fields(state).await?,
         "memory": {"current_total": total, "trend": trend, "process": process_memory_kb()},
-        "embedder_reload": embedder_reload(),
+        "embedder_reload": embedder_reload(state.reload.lock().unwrap_or_else(|e| e.into_inner()).clone()),
         "requests": requests["requests"],
         "routes": requests["routes"],
         "promotion": crate::promotions::metrics_part(state).await?,

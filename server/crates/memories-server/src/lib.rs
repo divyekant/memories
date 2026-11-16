@@ -8,6 +8,7 @@ pub mod error;
 pub mod extract;
 pub mod healthcheck;
 pub mod keys;
+pub mod maintenance;
 pub mod migrate;
 pub mod model;
 pub mod pipeline;
@@ -126,6 +127,12 @@ pub struct AppState {
     pub writer: OnceLock<Arc<Writer>>,
     /// `_missed_counts`: `POST /memory/missed` calls of each source since the start.
     pub missed: Mutex<HashMap<String, u64>>,
+    /// Set at shutdown: the scheduled job stops between clusters and deletes.
+    pub stopping: AtomicBool,
+    /// One maintenance job at a time (routes and the scheduler).
+    pub jobs: tokio::sync::Mutex<()>,
+    /// The `manual` counters of `embedder_reload` in `GET /metrics`.
+    pub reload: Mutex<Value>,
 }
 
 impl AppState {
@@ -168,6 +175,9 @@ impl AppState {
             trend_max: cfg.metrics_trend_samples,
             writer: OnceLock::new(),
             missed: Mutex::default(),
+            stopping: AtomicBool::new(false),
+            jobs: tokio::sync::Mutex::new(()),
+            reload: Mutex::new(maintenance::reload_counters()),
         })
     }
 }
@@ -242,6 +252,13 @@ const SERVED: &[(&str, &str)] = &[
     ("POST", "/search/feedback"),
     ("GET", "/search/feedback/history"),
     ("DELETE", "/search/feedback/{feedback_id}"),
+    ("POST", "/maintenance/consolidate"),
+    ("POST", "/maintenance/prune"),
+    ("POST", "/maintenance/enforce-policies"),
+    ("POST", "/maintenance/compact"),
+    ("POST", "/maintenance/reembed"),
+    ("POST", "/maintenance/embedder/reload"),
+    ("POST", "/index/build"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -323,7 +340,20 @@ pub fn app(state: Arc<AppState>) -> Router {
             get(extract::get_profile)
                 .put(extract::put_profile)
                 .delete(extract::delete_profile),
-        );
+        )
+        .route("/maintenance/consolidate", post(maintenance::consolidate))
+        .route("/maintenance/prune", post(maintenance::prune))
+        .route(
+            "/maintenance/enforce-policies",
+            post(maintenance::enforce_policies),
+        )
+        .route("/maintenance/compact", post(maintenance::compact))
+        .route("/maintenance/reembed", post(maintenance::reembed))
+        .route(
+            "/maintenance/embedder/reload",
+            post(maintenance::embedder_reload),
+        )
+        .route("/index/build", post(maintenance::index_build));
     let protected = usage_routes::routes(protected);
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));

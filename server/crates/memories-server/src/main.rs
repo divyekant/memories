@@ -462,6 +462,22 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     let reinforcer = tokio::spawn(flush_reinforcements_forever(state.clone()));
     // A running job stays `running` in state.db at a stop; the next start puts it back.
     let workers = memories_server::extract::spawn_workers(&state);
+    // As Python: the scheduler needs MAINTENANCE_ENABLED and an extract provider.
+    let maint = match memories_server::maintenance::SchedulerConfig::from_env() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("{e}");
+            std::process::exit(1);
+        }
+    };
+    let scheduler = match (&state.extract.provider, maint.enabled) {
+        (Some(p), true) => Some(tokio::spawn(memories_server::maintenance::scheduler(
+            state.clone(),
+            maint,
+            p.clone(),
+        ))),
+        _ => None,
+    };
     axum::serve(
         listener,
         memories_server::app(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
@@ -472,6 +488,18 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     flusher.abort();
     reinforcer.abort();
     workers.iter().for_each(|w| w.abort());
+    if let Some(s) = scheduler {
+        // Let a running job stop at a safe point (between clusters), so that a
+        // merge does not stop between its add and its delete.
+        state
+            .stopping
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let held = tokio::time::timeout(std::time::Duration::from_secs(120), state.jobs.lock())
+            .await
+            .ok();
+        s.abort();
+        drop(held);
+    }
     flush_key_usage(&state).await;
     flush_reinforcements(&state).await;
     // Python writes each usage row before it replies; write the queued rows before the exit.

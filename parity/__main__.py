@@ -1,6 +1,6 @@
 """Command line of the parity kit.
 
-  python -m parity capture --base-url URL [--out FILE] [--scenario main|search|bulk]
+  python -m parity capture --base-url URL [--out FILE] [--scenario main|search|bulk|maintenance-seed|maintenance]
                                                          run the scenario, record the replies
   python -m parity replay  --base-url URL --input FILE --out FILE
   python -m parity diff    LEFT RIGHT                     exit 1 if a reply differs
@@ -16,12 +16,14 @@ import json
 import os
 import sys
 
-from parity import bulk_scenario, kit, scenario, search_scenario
+from parity import bulk_scenario, kit, maintenance_scenario, scenario, search_scenario
 
 SCENARIOS = {
     "main": scenario.build,
     "search": lambda: scenario.fill(search_scenario.build()),
     "bulk": bulk_scenario.build,
+    "maintenance-seed": maintenance_scenario.build_seed,
+    "maintenance": maintenance_scenario.build,
 }
 
 
