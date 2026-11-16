@@ -26,7 +26,10 @@ that holds a secret, the document gives only the name and "set" or "empty".
 Effects on the task list:
 
 - P2-4 (promotions): port the four `/promotions` routes with the replies of the
-  `off` mode only. The full port is a task after the cutover.
+  `off` mode only. The full port is a task after the cutover. In `off` mode,
+  the list and get routes still read candidate rows from `metadata.json`.
+  Production has no such row: no row has a `promotion` field. So these routes
+  return empty results in production.
 - P1-2 (providers): do not port `chatgpt-subscription`, unless dk asks for it.
 - The Rust server does not need cloud sync, the OpenAI embedder or the
   embedded Qdrant mode for the cutover of this host.
@@ -59,8 +62,13 @@ and `MEMORIES_MEM_LIMIT`. The container memory limit is 4 GiB.
 
 Notes for the Rust server:
 
-- Both Anthropic credentials are set and `ANTHROPIC_AUTH` is empty. The Rust
-  server must select the same credential as v5.19.0 in this state.
+- Both Anthropic credentials are set and `ANTHROPIC_AUTH` is empty. In this
+  state, v5.19.0 uses `ANTHROPIC_API_KEY` (`llm_provider.py`). The Rust server
+  must do the same.
+- The default extraction model depends on the key type. A key that starts with
+  `sk-ant-oat01-` gets `claude-haiku-4-5-20251001`. Other keys get
+  `claude-haiku-5-5`. The production `ANTHROPIC_API_KEY` is not of the
+  `sk-ant-oat01-` type, so production uses `claude-haiku-5-5`.
 - `TYPESAFE_API_KEY` is set, but no Python code in v5.19.0 reads it.
 - `USAGE_TRACKING=true` and `MAINTENANCE_ENABLED=true` are on. The Rust server
   must write `usage.db` and run the maintenance jobs.
@@ -120,13 +128,16 @@ extraction jobs in the queue. The steady value from 2026-09-25 is about 0.9 GB.
 ## Request counts
 
 The server keeps no request count for each route, and the reverse proxy
-(`cloud-caddy`) keeps no access log. The Cloudflare token of the cloud session
+(`cloud-caddy`) keeps no access log. The uvicorn log of the container
+starts again at each container start. The Cloudflare token of the cloud session
 cannot read zone analytics. This document gives two sources instead.
 
 ### Operations in `usage.db` (`api_events`)
 
 These are operations, not routes. One operation can come from more than one
-route. The table holds 382,522 rows from 2026-02-20.
+route. A row can count more than one event (column `count`). The table holds
+382,578 rows from 2026-02-20. The sum of `count` is 385,827. The all-time
+column below is from 07:19 UTC, so it is a little lower.
 
 | Operation | Last 30 days | Per day | All time |
 |---|---|---|---|
@@ -152,7 +163,7 @@ Extraction tokens in the last 30 days, all `anthropic` and `claude-haiku-5-5`:
 All time, `ollama` has 18 rows (2026-03-27 only). All other rows are
 `anthropic`.
 
-### Routes in the access log since the start (07:07:55 to 07:20:41 UTC)
+### Routes in the uvicorn log of the container since the start (07:07:55 to 07:20:41 UTC)
 
 | Route | Status | Count |
 |---|---|---|
