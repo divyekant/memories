@@ -48,8 +48,15 @@ pub fn parse_int_text(raw: &str) -> Option<i64> {
         return None;
     }
     let digits: String = int.chars().filter(char::is_ascii_digit).collect();
-    let v: i64 = digits.parse().ok()?;
-    Some(if neg { -v } else { v })
+    // Python ints have no size limit: a value past i64 saturates, so that
+    // the `ge` or `le` check reports it as pydantic does.
+    // shortcut: pydantic gives int_parsing_size past 4300 digits; this gives the bound error.
+    Some(match digits.parse::<i64>() {
+        Ok(v) if neg => -v,
+        Ok(v) => v,
+        Err(_) if neg => i64::MIN,
+        Err(_) => i64::MAX,
+    })
 }
 
 pub use memories_engine::records::py_float as parse_float_text;
@@ -161,6 +168,8 @@ impl<'a> Model<'a> {
             Value::Bool(b) => Some(i64::from(*b)),
             Value::Number(n) => match (n.as_i64(), n.as_f64()) {
                 (Some(i), _) => Some(i),
+                // An integer past i64::MAX (serde keeps it as u64): the `le` check reports it.
+                (None, _) if n.is_u64() => Some(i64::MAX),
                 (None, Some(f)) if f.fract() != 0.0 => {
                     let msg =
                         "Input should be a valid integer, got a number with a fractional part";
@@ -356,5 +365,27 @@ mod tests {
         assert_eq!(parse_float_text("0x1"), None);
         assert_eq!(bound_text(365.0), "365");
         assert_eq!(bound_text(0.5), "0.5");
+    }
+
+    #[test]
+    fn integers_past_i64_fail_the_bound_check() {
+        let types = |body: Value| {
+            let map = body.as_object().unwrap().clone();
+            let mut m = Model::new(&map, vec![json!("body")]);
+            assert_eq!(m.int("k", 5, 1, 100), None);
+            m.errors[0]["type"].as_str().unwrap().to_owned()
+        };
+        assert_eq!(
+            types(json!({"k": 9223372036854775808u64})),
+            "less_than_equal"
+        );
+        assert_eq!(
+            types(json!({"k": "100000000000000000000"})),
+            "less_than_equal"
+        );
+        assert_eq!(
+            types(json!({"k": "-100000000000000000000"})),
+            "greater_than_equal"
+        );
     }
 }

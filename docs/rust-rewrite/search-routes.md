@@ -23,7 +23,7 @@ server v5.19.0:
 Result on 2026-11-16: 0 of 25 cases differ.
 
 Search p95 on the seed corpus (246 records, 200 searches, `k` = 10, hybrid
-false, debug build, local Qdrant 1.15.4): p50 5.9 ms, p95 8.9 ms.
+false, debug build, local Qdrant 1.15.4): p50 5.9 ms, p95 8.9 ms and 10.6 ms in two runs.
 
 Two more golden files check parts of the routes in `cargo test`:
 

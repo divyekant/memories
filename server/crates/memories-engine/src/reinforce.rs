@@ -53,28 +53,27 @@ impl Reinforcements {
         self.len() == 0
     }
 
-    /// Writes the pending values, one Qdrant call for each time value. On an
-    /// error, the values not written go back, unless a newer value came in.
+    /// Writes the pending values, one Qdrant call for each time value. A
+    /// value stays in the buffer until its write succeeds, so that reads see
+    /// it during the write and an aborted or failed write loses nothing.
     pub async fn flush(&self, store: &QdrantStore) -> Result<usize, StoreError> {
-        let taken: HashMap<u64, String> = std::mem::take(&mut *self.lock());
+        let snapshot: HashMap<u64, String> = self.lock().clone();
         let mut by_time: BTreeMap<String, Vec<u64>> = BTreeMap::new();
-        for (id, at) in taken {
+        for (id, at) in snapshot {
             by_time.entry(at).or_default().push(id);
         }
         let mut written = 0;
-        let mut groups = by_time.into_iter();
-        while let Some((at, mut ids)) = groups.next() {
+        for (at, mut ids) in by_time {
             ids.sort_unstable();
             let mut fields = Map::new();
             fields.insert("last_reinforced_at".into(), Value::String(at.clone()));
-            if let Err(e) = store.set_payload_existing(&ids, fields).await {
-                let mut p = self.lock();
-                for (at, ids) in std::iter::once((at, ids)).chain(groups) {
-                    for id in ids {
-                        p.entry(id).or_insert_with(|| at.clone());
-                    }
+            store.set_payload_existing(&ids, fields).await?;
+            let mut p = self.lock();
+            for id in &ids {
+                // A newer value that came in during the write stays pending.
+                if p.get(id) == Some(&at) {
+                    p.remove(id);
                 }
-                return Err(e);
             }
             written += ids.len();
         }
