@@ -61,8 +61,11 @@ wait "$pid" || true
 pid=""
 
 # 3. The Rust server refuses an embedder that it does not have.
-if EMBED_PROVIDER=openai API_KEY="$key" DATA_DIR="$work/data" QDRANT_URL= \
-  timeout 20 "$rust_bin" serve --port 18143 > "$work/refuse.log" 2>&1; then
+rc=0
+EMBED_PROVIDER=openai API_KEY="$key" DATA_DIR="$work/data" QDRANT_URL= \
+  timeout 20 "$rust_bin" serve --port 18143 > "$work/refuse.log" 2>&1 || rc=$?
+# 0 or 124 (stopped by timeout): the server started.
+if [ "$rc" -eq 0 ] || [ "$rc" -eq 124 ]; then
   echo "FAIL: the Rust server started with EMBED_PROVIDER=openai" >&2
   status=1
 elif ! grep -q "EMBED_PROVIDER=openai is not supported" "$work/refuse.log"; then
