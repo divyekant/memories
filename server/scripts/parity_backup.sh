@@ -29,6 +29,8 @@ pids=()
 cleanup() {
   local rc=$?
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
+  # Wait, so that the next script cannot get /health from a server that stops.
+  for p in "${pids[@]}"; do wait "$p" 2>/dev/null || true; done
   if [ "$rc" -ne 0 ]; then
     for log in "$work"/*.log; do echo "== $log"; tail -n 40 "$log"; done >&2
   fi
