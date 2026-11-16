@@ -18,6 +18,12 @@
   server answers `GET /health` only. CI adds format, lint, test, `cargo deny`
   and crate age checks, and starts the bundled compose file with the Rust
   image on each architecture. No change to the Python server or to a client.
+- **Rank core of the Rust server (rewrite task P2-1).** The crate
+  `memories-engine` has the rank rules of the search as pure functions: the
+  fusion of the vector and keyword ranks, the weights, the threshold, the
+  temporal filter, the graph step and the query intent rules. Golden cases
+  from the Python functions are in `parity/golden/rank/`. CI checks that the
+  golden cases are current. No change to the Python server or to a client.
 
 ### Changed
 - **Client and tool libraries are updated (Rust rewrite task P0-5).** The

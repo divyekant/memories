@@ -58,6 +58,9 @@ jobs:
       - name: Self-test of the kit
         run: uv run pytest -q tests/test_parity_kit.py
 
+      - name: Rank golden cases match the Python functions
+        run: .venv/bin/python -m parity.rank_golden --check
+
       - name: Start the Python reference server
         run: |
           PYTHON=.venv/bin/python parity/run_python_server.sh "$RUNNER_TEMP/parity-data" 18000 > "$RUNNER_TEMP/server.log" 2>&1 &
