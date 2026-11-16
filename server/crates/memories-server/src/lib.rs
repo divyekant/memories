@@ -3,13 +3,19 @@
 pub mod admin;
 pub mod audit;
 pub mod auth;
+pub mod bulk;
 pub mod error;
 pub mod events;
 pub mod extract;
 pub mod healthcheck;
 pub mod keys;
+pub mod maintenance;
 pub mod migrate;
 pub mod model;
+pub mod pipeline;
+pub mod promotions;
+pub mod reads;
+pub mod rollback;
 pub mod search;
 pub mod shell;
 pub mod usage;
@@ -17,7 +23,7 @@ pub mod usage_routes;
 pub mod validate;
 pub mod writes;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
@@ -101,6 +107,7 @@ impl Config {
 
 pub struct AppState {
     pub api_key: String,
+    pub data_dir: PathBuf,
     pub auth_rate_limit: i64,
     pub keys: KeyStore,
     /// `None` when `AUDIT_LOG` is off (the Python `NullAuditLog`).
@@ -129,7 +136,15 @@ pub struct AppState {
     pub webhooks: memories_store::Webhooks,
     pub ui_dir: PathBuf,
     /// True when the shutdown starts: the event streams end.
-    pub stopping: tokio::sync::watch::Sender<bool>,
+    pub shutdown: tokio::sync::watch::Sender<bool>,
+    /// `_missed_counts`: `POST /memory/missed` calls of each source since the start.
+    pub missed: Mutex<HashMap<String, u64>>,
+    /// Set at shutdown: the scheduled job stops between clusters and deletes.
+    pub stopping: AtomicBool,
+    /// One maintenance job at a time (routes and the scheduler).
+    pub jobs: tokio::sync::Mutex<()>,
+    /// The `manual` counters of `embedder_reload` in `GET /metrics`.
+    pub reload: Mutex<Value>,
 }
 
 impl AppState {
@@ -158,6 +173,7 @@ impl AppState {
             .expect("cannot open state.db");
         Arc::new(Self {
             api_key: cfg.api_key.clone(),
+            data_dir: cfg.data_dir.clone(),
             auth_rate_limit: cfg.auth_rate_limit,
             keys,
             audit,
@@ -175,7 +191,11 @@ impl AppState {
             events: Arc::default(),
             webhooks,
             ui_dir: cfg.ui_dir.clone(),
-            stopping: tokio::sync::watch::channel(false).0,
+            shutdown: tokio::sync::watch::channel(false).0,
+            missed: Mutex::default(),
+            stopping: AtomicBool::new(false),
+            jobs: tokio::sync::Mutex::new(()),
+            reload: Mutex::new(maintenance::reload_counters()),
         })
     }
 }
@@ -192,6 +212,18 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/api/keys/{key_id}"),
     ("GET", "/audit"),
     ("POST", "/audit/purge"),
+    ("GET", "/promotions"),
+    ("GET", "/promotions/{candidate_id}"),
+    ("POST", "/promotions/{candidate_id}/approve"),
+    ("POST", "/promotions/{candidate_id}/reject"),
+    ("GET", "/memory/{memory_id}"),
+    ("POST", "/memory/get-batch"),
+    ("GET", "/memories"),
+    ("GET", "/memories/count"),
+    ("GET", "/folders"),
+    ("GET", "/stats"),
+    ("GET", "/memory/{memory_id}/links"),
+    ("GET", "/memory/conflicts"),
     ("POST", "/memory/add"),
     ("POST", "/memory/add-batch"),
     ("POST", "/memory/upsert"),
@@ -199,14 +231,32 @@ const SERVED: &[(&str, &str)] = &[
     ("PATCH", "/memory/{memory_id}"),
     ("DELETE", "/memory/{memory_id}"),
     ("POST", "/memory/delete-batch"),
+    ("POST", "/memory/delete-by-source"),
+    ("POST", "/memory/delete-by-prefix"),
+    ("DELETE", "/memories"),
+    ("POST", "/memory/supersede"),
+    ("POST", "/memory/{memory_id}/supersede"),
+    ("POST", "/memory/merge"),
+    ("POST", "/memory/archive-batch"),
+    ("POST", "/memory/{memory_id}/link"),
+    ("DELETE", "/memory/{memory_id}/link/{target_id}"),
+    ("POST", "/folders/rename"),
+    ("POST", "/memory/conflicts/resolve"),
+    ("POST", "/memory/deduplicate"),
+    ("POST", "/memory/missed"),
     ("POST", "/search"),
     ("POST", "/search/batch"),
     ("POST", "/search/explain"),
     ("POST", "/search/evidence"),
     ("POST", "/memory/is-novel"),
     ("POST", "/memory/extract"),
+    ("POST", "/memory/extract/commit"),
     ("GET", "/memory/extract/{job_id}"),
     ("GET", "/extract/status"),
+    ("GET", "/extraction/profiles"),
+    ("GET", "/extraction/profiles/{*prefix}"),
+    ("PUT", "/extraction/profiles/{*prefix}"),
+    ("DELETE", "/extraction/profiles/{*prefix}"),
     ("GET", "/usage"),
     ("GET", "/metrics"),
     ("GET", "/metrics/search-quality"),
@@ -227,6 +277,13 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/webhooks/{webhook_id}"),
     ("GET", "/ui"),
     ("GET", "/ui/static/{*path}"),
+    ("POST", "/maintenance/consolidate"),
+    ("POST", "/maintenance/prune"),
+    ("POST", "/maintenance/enforce-policies"),
+    ("POST", "/maintenance/compact"),
+    ("POST", "/maintenance/reembed"),
+    ("POST", "/maintenance/embedder/reload"),
+    ("POST", "/index/build"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -249,15 +306,50 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/audit", get(admin::get_audit))
         .route("/audit/purge", post(admin::purge_audit))
+        .route("/promotions", get(promotions::list))
+        .route("/promotions/{candidate_id}", get(promotions::get))
+        .route(
+            "/promotions/{candidate_id}/approve",
+            post(promotions::approve),
+        )
+        .route(
+            "/promotions/{candidate_id}/reject",
+            post(promotions::reject),
+        )
+        .route("/memory/conflicts", get(reads::conflicts))
+        .route("/memory/get-batch", post(reads::get_batch))
+        .route("/memory/{memory_id}/links", get(reads::links))
+        .route("/memories", get(reads::list))
+        .route("/memories/count", get(reads::count))
+        .route("/folders", get(reads::list_folders))
+        .route("/stats", get(reads::stats))
         .route("/memory/add", post(writes::add))
         .route("/memory/add-batch", post(writes::add_batch))
         .route("/memory/upsert", post(writes::upsert))
         .route("/memory/upsert-batch", post(writes::upsert_batch))
         .route(
             "/memory/{memory_id}",
-            patch(writes::patch).delete(writes::delete),
+            get(reads::get_memory)
+                .patch(writes::patch)
+                .delete(writes::delete),
         )
         .route("/memory/delete-batch", post(writes::delete_batch))
+        .route("/memory/delete-by-source", post(bulk::delete_by_source))
+        .route("/memory/delete-by-prefix", post(bulk::delete_by_prefix))
+        .route("/memories", delete(bulk::delete_memories))
+        .route("/memory/supersede", post(bulk::supersede))
+        .route("/memory/{memory_id}/supersede", post(bulk::supersede_by_id))
+        .route("/memory/merge", post(bulk::merge))
+        .route("/memory/archive-batch", post(bulk::archive_batch))
+        .route("/memory/{memory_id}/link", post(bulk::add_link))
+        .route(
+            "/memory/{memory_id}/link/{target_id}",
+            delete(bulk::remove_link),
+        )
+        .route("/folders/rename", post(bulk::rename_folder))
+        .route("/memory/conflicts/resolve", post(bulk::resolve_conflicts))
+        .route("/memory/deduplicate", post(bulk::deduplicate))
+        .route("/memory/missed", post(bulk::missed))
         .route("/search", post(search::search))
         .route("/search/batch", post(search::search_batch))
         .route("/search/explain", post(search::search_explain))
@@ -265,7 +357,28 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/memory/is-novel", post(search::is_novel))
         .route("/memory/extract", post(extract::enqueue))
         .route("/memory/extract/{job_id}", get(extract::get_job))
+        .route("/memory/extract/commit", post(extract::commit))
         .route("/extract/status", get(extract::status))
+        .route("/extraction/profiles", get(extract::list_profiles))
+        .route(
+            "/extraction/profiles/{*prefix}",
+            get(extract::get_profile)
+                .put(extract::put_profile)
+                .delete(extract::delete_profile),
+        )
+        .route("/maintenance/consolidate", post(maintenance::consolidate))
+        .route("/maintenance/prune", post(maintenance::prune))
+        .route(
+            "/maintenance/enforce-policies",
+            post(maintenance::enforce_policies),
+        )
+        .route("/maintenance/compact", post(maintenance::compact))
+        .route("/maintenance/reembed", post(maintenance::reembed))
+        .route(
+            "/maintenance/embedder/reload",
+            post(maintenance::embedder_reload),
+        )
+        .route("/index/build", post(maintenance::index_build))
         .route("/events/stream", get(events::stream))
         .route("/events/recent", get(events::recent))
         .route(
@@ -320,8 +433,9 @@ async fn refuse_while_migrating(
 }
 
 /// The minimal body. For a caller that sends the `API_KEY` value (or when
-/// `API_KEY` is empty), the body adds the extract queue depth and the age of
-/// the oldest queued job. The engine task adds the index stats of Python.
+/// `API_KEY` is empty), the body adds `total_memories`, `dimension` and
+/// `model` of Python (when the store is open), then the extract queue depth
+/// and the age of the oldest queued job. Only the env key counts, as in Python.
 async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<Value> {
     let mut body = json!({"status": "ok", "service": "memories", "version": VERSION});
     let sent = headers
@@ -329,6 +443,11 @@ async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<
         .map(|v| v.as_bytes())
         .unwrap_or_default();
     if state.api_key.is_empty() || auth::ct_eq(sent, state.api_key.as_bytes()) {
+        if let Some(engine) = state.engine.get() {
+            body["total_memories"] = json!(engine.count());
+            body["dimension"] = json!(engine.dim);
+            body["model"] = json!(engine.embedder.config().model);
+        }
         body.as_object_mut()
             .unwrap()
             .extend(extract::health_fields(&state).await);

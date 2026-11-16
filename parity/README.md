@@ -22,6 +22,9 @@ The kit has three commands:
 | `parity/golden/golden.ndjson` | The golden captures from the Python server (v5.19.0). |
 | `parity/workspace/` | The files that `POST /index/build` reads (`WORKSPACE_DIR`). |
 | `parity/run_python_server.sh` | Starts the Python server with the parity settings. |
+| `parity/extract_golden.py` | Writes or checks `golden/extract/text.ndjson`: the text cases of the extraction pipeline. |
+| `parity/extract_pipeline.py` | The live extraction check with recorded LLM replies (`golden/extract/pipeline.ndjson`). Run it with `server/scripts/parity_pipeline.sh`. |
+| `parity/extract_corpus.py` | Gate G4 part a: the eval transcripts through the extraction pipeline, with LLM replies that are a function of the prompt (`golden/extract/corpus.ndjson`). Run it with `server/scripts/parity_pipeline.sh <target> --check extract_corpus`. |
 | `parity_capture.py` | The capture middleware of the Python server. |
 
 ## Scenario

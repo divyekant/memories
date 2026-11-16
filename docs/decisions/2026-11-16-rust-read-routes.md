@@ -1,0 +1,85 @@
+# Rust server: read routes
+
+Date: 2026-11-16
+Status: adopted (task P2-3 of the Rust rewrite plan)
+
+## Scope
+
+The Rust server answers these routes with the replies of the Python server
+v5.19.0:
+
+| Route | Read |
+|---|---|
+| `GET /memory/{memory_id}` | One Qdrant get |
+| `POST /memory/get-batch` | One Qdrant get for all IDs |
+| `GET /memories` | One Qdrant page (query with offset and limit, ID order) |
+| `GET /memories/count` | The source map; with no source, the record count |
+| `GET /folders` | The source map |
+| `GET /stats` | The record count, `state.db` and the backup folder |
+| `GET /memory/{memory_id}/links` | One get of the targets; a scroll on `links[].to_id` for incoming links |
+| `GET /memory/conflicts` | A scroll on `conflicts_with` |
+| `GET /health` (with the `API_KEY` value, or no `API_KEY`) | The record count of the engine |
+
+The engine of task P2-2 gives the store, the source map (each source and its
+record count) and the reinforcement overlay. Each read record shows a pending
+reinforcement, as the Python server shows its in-memory value.
+
+## Rules that the routes keep
+
+- A list page is the page of the records in the source scope. The records
+  that the key cannot read, and the records with another `pinned` value, are
+  removed from the page after the read. Thus a page of a scoped key can have
+  fewer items than `limit`, as in Python.
+- A list, a count and a get-batch read with the prefixes of the key only,
+  also for the admin role (Python `auth.filter_results`). A managed admin key
+  has no prefixes, so these routes give it no record. A single get, the
+  folders, the links and the conflicts use `can_read`, which lets the admin
+  role read all sources.
+- A path ID follows the pydantic int rules (`5.0`, ` 5` and `1_0` are valid,
+  `-07` is not). The 404 message shows the Python int, also above 2^63-1.
+- `total` of a list for a scoped key, and the count of a scoped key, are the
+  records of the readable sources in the scope. Archived records count.
+- `GET /memory/conflicts` gives the stored record without `confidence`, and
+  the conflicting record with `confidence`, as in Python. The route keeps only
+  the records of the requested page in memory.
+- An outgoing link with a deleted target is not in the links reply. A link to
+  or from a record that the key cannot read is not in the reply.
+- `created_at` and `last_updated` of `/stats` come from the `meta` table of
+  `state.db`. If the table has no value, they come from the `config.json` of
+  the Python install in `DATA_DIR`, else null. The write routes of task
+  P3-1 do not set `last_updated` in the `meta` table yet. Until a write task
+  sets it, `last_updated` stays at its value before the first Rust write.
+
+## Contract differences
+
+| Item | Python v5.19.0 | Rust |
+|---|---|---|
+| `index_size_bytes` of `/stats` | Size of the embedded Qdrant files (0 with a Qdrant server) | Always 0 (a Qdrant server keeps no files in `DATA_DIR`) |
+| `confidence` of a record whose source has an extraction profile with `confidence_half_life_days` | Half-life of the profile | Half-life 90 days until the profile routes are ported |
+| A get-batch ID above 2^63-1 in `missing_ids` | The ID as sent | 9223372036854775807 |
+| A record with `conflicts_with: []` in `/memory/conflicts` | In the list, with `conflicting_memory` null | Not in the list (the Qdrant `is_empty` filter removes it) |
+| `conflicts_with` of `true` or `5.0`, with a target that the key cannot read | `{"id": true}` or `{"id": 5.0}` in the redacted entry | `{"id": 1}` or `{"id": 5}` |
+| No `QDRANT_URL` | Embedded Qdrant | The store routes answer 503 (task P2-2) |
+
+## Tests
+
+- `server/scripts/parity_reads.sh`: the Python server runs the golden cases
+  up to `stats`, `memories-server migrate` (task P1-4) copies
+  `metadata.json` into the Rust collection, and the Rust server replays 20
+  read cases. The case `health-full` is left out, because task P4-1 adds the
+  extract queue fields to the full body. Then the Python server starts again
+  on the same data, and `server/scripts/parity_reads_ab.py` sends 371 more
+  read requests to both servers (links in each direction, four keys with a
+  managed admin key, path ID forms, pages, filters, the 422 replies, and the
+  full `/health` body without the extract queue fields). Zero differences is
+  the pass condition. A changed link type rule or key scope rule in the Rust
+  code makes the check fail.
+- `server/scripts/list_memory_check.sh`: 300,000 synthetic records, 200
+  warm-up list requests, then 1,000 list requests with random offsets, limits
+  up to 5,000 and source filters. The check fails if the resident memory of
+  the process increases by more than 16 MB. Local run (release build, Qdrant
+  1.15.4): 255,404 kB after the warm-up, 255,676 kB after the 1,000 requests
+  (+272 kB). An earlier run before the base merge: +4,480 kB.
+- Unit tests for the pydantic parse rules of the query values and the batch
+  IDs, the folders, the `pinned` compare and the backup count. A Qdrant test
+  for the page of the store.

@@ -14,7 +14,7 @@ use axum::{
 use memories_extract::provider::Provider;
 use memories_server::{
     AppState, Config, app,
-    extract::{Extract, ExtractConfig, Pipeline, PipelineFuture, spawn_workers},
+    extract::{Extract, ExtractConfig, Pipeline, PipelineError, PipelineFuture, spawn_workers},
     keys::KeyStore,
 };
 use rusqlite::Connection;
@@ -72,14 +72,14 @@ struct Stub {
 }
 
 impl Pipeline for Stub {
-    fn run(&self, request: Value) -> PipelineFuture {
+    fn run(&self, _state: Arc<AppState>, request: Value) -> PipelineFuture {
         let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         let r = (self.reply)(n, &request);
         Box::pin(async move {
             if r.as_ref().is_err_and(|e| e == "panic") {
                 panic!("stub pipeline panic");
             }
-            r
+            r.map_err(PipelineError::Retry)
         })
     }
 }
@@ -300,8 +300,14 @@ async fn a_job_runs_and_keeps_the_python_fields() {
     assert_eq!(job["auth_key_id"], Value::Null);
     assert_eq!(job["trusted_authorship"], Value::Null);
     assert!(job["created_at"].as_str().unwrap().ends_with("+00:00"));
+    let mut echo = job["result"]["echo"].clone();
+    let profile = echo.as_object_mut().unwrap().remove("profile").unwrap();
     assert_eq!(
-        job["result"]["echo"],
+        (&profile["dry_run"], &profile["max_facts"]),
+        (&json!(true), &json!(30))
+    );
+    assert_eq!(
+        echo,
         json!({"messages": MESSAGES, "source": "claude-code/voltis/extract", "context": "stop",
                "allowed_prefixes": null, "debug": true, "dry_run": true, "document_at": "2026-01-02",
                "trusted_authorship": null, "promotion_context": null})
@@ -562,4 +568,89 @@ async fn enqueue_p95_is_50_ms_or_less() {
     let p95 = times[times.len() * 95 / 100];
     eprintln!("enqueue p50 {:?} p95 {:?}", times[times.len() / 2], p95);
     assert!(p95 <= Duration::from_millis(50), "p95 {p95:?}");
+}
+
+#[tokio::test]
+async fn commit_and_profile_routes_check_the_body_and_the_key() {
+    let st = common::state(&config(false));
+    let (rw, _) = new_key(
+        &st,
+        json!({"name": "rw", "role": "read-write", "prefixes": ["codex/"]}),
+    )
+    .await;
+    // ExtractCommitRequest: actions is List[dict], source has 1 to 500 characters.
+    let r = send(
+        &st,
+        "POST",
+        "/memory/extract/commit",
+        ADMIN,
+        Some(json!({"actions": [1], "source": ""})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let kinds: Vec<&str> = r.body["detail"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["dict_type", "string_too_short"]);
+    assert_eq!(r.body["detail"][0]["loc"], json!(["body", "actions", 0]));
+    let r = send(
+        &st,
+        "POST",
+        "/memory/extract/commit",
+        rw.as_str(),
+        Some(json!({"actions": [], "source": "wip/x"})),
+    )
+    .await;
+    assert_eq!(
+        (r.status.as_u16(), &r.body),
+        (
+            403,
+            &json!({"detail": "Key does not have write access to source: wip/x"})
+        )
+    );
+    // No approved action: the empty counts, with no store.
+    let r = send(
+        &st,
+        "POST",
+        "/memory/extract/commit",
+        rw.as_str(),
+        Some(json!({"actions": [{"action": "ADD", "approved": false}], "source": "codex/x"})),
+    )
+    .await;
+    assert_eq!(
+        r.body,
+        json!({"stored_count": 0, "updated_count": 0, "deleted_count": 0, "conflict_count": 0})
+    );
+
+    for (method, path) in [
+        ("GET", "/extraction/profiles"),
+        ("GET", "/extraction/profiles/a/"),
+        ("PUT", "/extraction/profiles/a/"),
+        ("DELETE", "/extraction/profiles/a/"),
+    ] {
+        let r = send(&st, method, path, rw.as_str(), Some(json!({}))).await;
+        assert_eq!(
+            (r.status.as_u16(), &r.body),
+            (403, &json!({"detail": "Admin key required"})),
+            "{method} {path}"
+        );
+    }
+    let r = send(
+        &st,
+        "PUT",
+        "/extraction/profiles/claude-code/app/",
+        ADMIN,
+        Some(json!({"max_facts": 4})),
+    )
+    .await;
+    assert_eq!(
+        (r.body["max_facts"].clone(), r.body["source_prefix"].clone()),
+        (json!(4), json!("claude-code/app/"))
+    );
+    assert!(r.body.get("_explicit_fields").is_none());
+    let r = send(&st, "GET", "/extraction/profiles", ADMIN, None).await;
+    assert_eq!(r.body.as_array().unwrap().len(), 1);
 }

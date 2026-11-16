@@ -17,8 +17,8 @@ Status: adopted (task P5-5 of the Rust rewrite plan)
 
 The event bus is the P3-1 bus (`memories_engine::events`), now held by
 `AppState`. The writer sends `memory.added`, `memory.updated`,
-`memory.deleted` and `memory.linked` to it. The extract worker sends
-`extraction.completed` after it writes a completed job to `state.db`, with
+`memory.deleted` and `memory.linked` to it. The extract worker and the
+synchronous fallback (P4-3) send `extraction.completed` to the same bus, with
 the Python fields `job_id`, `source`, `stored_count`, `updated_count` and
 `conflict_count`.
 
@@ -37,7 +37,6 @@ does here.
 | `json.dumps` keeps the key order of the event data. | The keys of the event data come in alphabetical order (`serde_json` with no `preserve_order`). | A client reads the data as JSON; the order has no meaning. |
 | An open event stream stays open at shutdown. | Each event stream ends when the shutdown starts, so the server can write its pending rows and stop. | A stream must not hold the shutdown. |
 | Static files have `ETag`, `Last-Modified` and range support. | A static file has `Content-Type` and the bytes only. | The web UI does not use these headers. |
-| The synchronous extract fallback (`EXTRACT_FALLBACK_ADD`) also sends `extraction.completed`. | Not ported (see the P4-1 decision). | |
 
 ## Web UI files in the image
 

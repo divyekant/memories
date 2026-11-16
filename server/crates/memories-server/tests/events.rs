@@ -455,7 +455,7 @@ async fn the_stream_ends_when_the_shutdown_starts() {
         .unwrap();
     let mut body = res.into_body().into_data_stream();
     assert_eq!(next(&mut body).await, "retry: 5000\n\n");
-    st.stopping.send_replace(true);
+    st.shutdown.send_replace(true);
     let end = tokio::time::timeout(Duration::from_secs(5), body.next())
         .await
         .unwrap();

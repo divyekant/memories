@@ -354,6 +354,74 @@ impl QdrantStore {
         Ok(())
     }
 
+    /// Make the collection of the Python server (one unnamed cosine vector)
+    /// if it does not exist. Returns true if the call made it. An existing
+    /// collection must have an unnamed vector of `dim` values.
+    pub async fn ensure_legacy_collection(&self, dim: u64) -> Result<bool, StoreError> {
+        if !self.client.collection_exists(&self.collection).await? {
+            self.client
+                .create_collection(
+                    CreateCollectionBuilder::new(&self.collection)
+                        .vectors_config(VectorParamsBuilder::new(dim, Distance::Cosine))
+                        .replication_factor(self.replication_factor)
+                        .write_consistency_factor(self.write_consistency_factor),
+                )
+                .await?;
+            return Ok(true);
+        }
+        let info = self.client.collection_info(&self.collection).await?;
+        let size = info
+            .result
+            .and_then(|r| r.config)
+            .and_then(|c| c.params)
+            .and_then(|p| p.vectors_config)
+            .and_then(|v| v.config)
+            .and_then(|c| match c {
+                vectors_config::Config::Params(p) => Some(p.size),
+                vectors_config::Config::ParamsMap(_) => None,
+            });
+        if size != Some(dim) {
+            return Err(StoreError::BadCollection {
+                collection: self.collection.clone(),
+                detail: format!("unnamed vector size {size:?}, want {dim}"),
+            });
+        }
+        Ok(false)
+    }
+
+    /// Write whole points in the format of the Python server: the unnamed
+    /// dense vector and the record without `id` as payload.
+    pub async fn upsert_legacy(
+        &self,
+        points: Vec<(Record, Vec<f32>)>,
+        dim: u64,
+    ) -> Result<(), StoreError> {
+        self.op("upsert_legacy");
+        if points.is_empty() {
+            return Ok(());
+        }
+        let mut structs = Vec::with_capacity(points.len());
+        for (record, dense) in points {
+            if dense.len() as u64 != dim {
+                return Err(StoreError::BadDimension {
+                    id: record.id,
+                    got: dense.len(),
+                    want: dim,
+                });
+            }
+            let payload = Payload::from(checked_payload(&record)?);
+            structs.push(PointStruct::new(record.id, dense, payload));
+        }
+        self.client
+            .upsert_points(
+                UpsertPointsBuilder::new(&self.collection, structs)
+                    .wait(self.wait)
+                    .ordering(self.ordering),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Make a Qdrant snapshot of the collection. Returns its name.
     pub async fn create_snapshot(&self) -> Result<String, StoreError> {
         self.op("create_snapshot");
@@ -597,6 +665,31 @@ impl QdrantStore {
             .into_iter()
             .filter(|p| p.score > 0.0)
             .map(scored)
+            .collect()
+    }
+
+    /// The records that match `filter`, in ID order, after the first `offset`
+    /// of them. Qdrant skips the offset records; they do not come to this process.
+    pub async fn page(
+        &self,
+        filter: Option<Filter>,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<Record>, StoreError> {
+        let mut request = QueryPointsBuilder::new(&self.collection)
+            .offset(offset)
+            .limit(limit)
+            .with_payload(true)
+            .with_vectors(false)
+            .read_consistency(self.consistency.value.expect("set in new"));
+        if let Some(f) = filter {
+            request = request.filter(f);
+        }
+        let response = self.client.query(request).await?;
+        response
+            .result
+            .into_iter()
+            .map(|p| to_record(p.id, p.payload))
             .collect()
     }
 

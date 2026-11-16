@@ -51,6 +51,9 @@ def test_diff_float_tolerance():
     b = {"score": 0.50005}
     assert kit.diff_values(a, b) == []
     assert kit.diff_values({"score": 0.5}, {"score": 0.6})
+    # One step in the 4th decimal is inside the tolerance, also at a float edge.
+    assert kit.diff_values({"s": 0.8493}, {"s": 0.8492}) == []
+    assert kit.diff_values({"s": 0.8494}, {"s": 0.8492})
 
 
 def test_diff_reports_type_and_key_differences():
@@ -227,6 +230,35 @@ def test_replay_var_sets_a_saved_variable():
     assert seen == {"key:ro": "mem_1"}
 
 
+def test_run_gives_the_saved_variables_to_vars_out():
+    case = {"name": "x", "request": {"method": "GET", "path": "/health"}, "save": {"v": "version"}}
+    with patch.object(kit, "_run_case", lambda *a: ({"status": 200, "body": {"version": "9"}}, 1.0)):
+        out = {}
+        kit.run([case], "http://x", allow_nonempty=True, extra_vars={"a": 1}, vars_out=out)
+    assert out == {"key:admin": kit.ADMIN_KEY_DEFAULT, "a": 1, "v": "9"}
+
+
+def test_replay_saves_and_loads_variables(tmp_path):
+    saved = tmp_path / "vars.json"
+    seen = {}
+
+    def fake_run(cases, base_url, **kw):
+        seen.update(kw["extra_vars"])
+        if kw.get("vars_out") is not None:
+            kw["vars_out"].update({"seed0": [0, 1], **kw["extra_vars"]})
+        return []
+
+    from parity.__main__ import main
+    with patch.object(kit, "run", fake_run), patch.object(kit, "dump"):
+        assert main(["replay", "--base-url", "http://x", "--out", "/dev/null", "--only", "health-minimal",
+                     "--save-vars", str(saved)]) == 0
+        assert json.loads(saved.read_text()) == {"seed0": [0, 1]}
+        seen.clear()
+        assert main(["replay", "--base-url", "http://x", "--out", "/dev/null", "--only", "health-minimal",
+                     "--vars-file", str(saved), "--var", "key:ro=mem_1"]) == 0
+    assert seen == {"seed0": [0, 1], "key:ro": "mem_1"}
+
+
 def test_rust_route_table_matches_python_routes():
     """server/crates/memories-server/src/shell.rs ROUTES lists each route of app.py."""
     src = open(os.path.join(os.path.dirname(__file__), "..", "server", "crates", "memories-server",
@@ -236,3 +268,80 @@ def test_rust_route_table_matches_python_routes():
     rust = {m + " " + re.sub(r"{[*](\w+)}", r"{\1:path}", p) for m, p in pairs}
     python = _app_routes() | {"GET /openapi.json", "GET /ui/static/{path:path}"}
     assert rust == python
+
+
+# -- gate G4 corpus driver (task P4-4) ------------------------------------------
+
+def _audn_prompt(similar):
+    from llm_extract import AUDN_PROMPT
+    facts = json.dumps([{"index": 0, "text": "A fact.", "category": "detail"}], separators=(",", ":"))
+    return AUDN_PROMPT.format(facts_json=facts, similar_json=json.dumps(similar, separators=(",", ":")))
+
+
+def test_corpus_cases_come_from_the_evals():
+    from parity import extract_corpus as ec
+    names = [c["name"] for c in ec.cases()]
+    assert sum(n.startswith("corpus/") for n in names) == 20
+    assert any(n.startswith("scenario/") for n in names)
+    assert len(names) == len(set(names))
+
+
+def test_corpus_decision_uses_the_tie_rule_and_spares_the_highest_id():
+    from parity import extract_corpus as ec
+    sims = [{"id": 9, "text": "x", "relevance": 0.016}, {"id": 4, "text": "y", "relevance": 0.016},
+            {"id": 2, "text": "z", "relevance": 0.015}]
+    assert ec.target(sims)["id"] == 4
+    assert ec.target([]) is None
+    prompt = _audn_prompt({"0": sims})
+    assert ec.split_prompt(prompt)[1] == {"0": sims}
+    assert "<similar:python>" in ec.split_prompt(prompt)[0]
+    loose = prompt.replace(json.dumps({"0": sims}, separators=(",", ":")), json.dumps({"0": sims}, indent=2))
+    assert "<similar:other>" in ec.split_prompt(loose)[0]
+    ec.STATE["max_id"] = 4
+    try:
+        status, body = ec.reply("You are a memory manager. Output only valid JSON.", prompt)
+        assert status == 200
+        decision = json.loads(body)[0]
+        assert decision["action"] != "DELETE"
+        assert decision.get("old_id", decision.get("existing_id", 4)) == 4
+    finally:
+        ec.STATE["max_id"] = -1
+
+
+def test_corpus_check_tolerates_search_order_but_not_other_changes():
+    from parity import extract_corpus as ec
+    sims = [{"id": i, "text": "t", "relevance": 0.01} for i in range(5)]
+    base = {"name": "c", "enqueue": [202, {}], "prompts": [{"system": "s", "user": _audn_prompt({"0": sims})}],
+            "job": {"status": "completed", "error": None,
+                    "result": {"actions": [{"action": "add", "id": 1}], "tokens": {"audn": {"input": 3}}}}}
+    swapped = copy.deepcopy(base)
+    swapped["prompts"][0]["user"] = _audn_prompt({"0": sims[::-1]})
+    swapped["job"]["result"]["tokens"]["audn"]["input"] = 4
+    assert ec.check([swapped], [base], min_equal=0.0) == []
+    assert ec.check([swapped], [base])  # 0 of 1 lists equal: below the tolerance
+    changed = copy.deepcopy(base)
+    changed["job"]["result"]["actions"][0]["id"] = 2
+    assert ec.check([changed], [base])
+    other_text = copy.deepcopy(base)
+    other_text["prompts"][0]["system"] = "t"
+    assert ec.check([other_text], [base])
+
+
+def test_corpus_check_compares_similar_text_and_candidate_sources():
+    from parity import extract_corpus as ec
+    sims = [{"id": i, "text": f"t{i}", "relevance": 0.01} for i in range(3)]
+    base = {"name": "c", "enqueue": [202, {}], "prompts": [{"system": "s", "user": _audn_prompt({"0": sims})}],
+            "job": {"status": "completed", "error": None, "result": {
+                "actions": [], "tokens": {"audn": {"input": 3}},
+                "compaction_candidates": [{"fact_index": 0, "memory_ids": [0, 1], "avg_rrf_score": 0.01,
+                                           "sources": ["a"], "cross_source": False}]}}}
+    assert ec.check([copy.deepcopy(base)], [base]) == []
+    text = copy.deepcopy(base)
+    text["prompts"][0]["user"] = _audn_prompt({"0": [dict(sims[0], text="WRONG")] + sims[1:]})
+    assert ec.check([text], [base])
+    sources = copy.deepcopy(base)
+    sources["job"]["result"]["compaction_candidates"][0]["sources"] = ["x"]
+    assert ec.check([sources], [base])
+    tokens = copy.deepcopy(base)
+    tokens["job"]["result"]["tokens"]["audn"]["input"] = 4
+    assert ec.check([tokens], [base])  # compared when the similar lists are equal

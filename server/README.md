@@ -70,7 +70,8 @@ the old collection.
   answers. The other routes give HTTP 503.
 - If the migration or the check fails, the server stops with a message.
 - If `metadata.json` changed after the migration, the server does not start.
-  The message names the command `memories-server migrate --merge`.
+  The message names the command `memories-server migrate --merge`. See
+  "Return to the Python server".
 
 To run the steps by hand:
 
@@ -83,6 +84,49 @@ memories-server verify --sample 1000
 Each command writes a JSON report. `verify` gives exit code 1 if a count, a
 field or a sampled vector is different. Keep `state.db` on the data volume:
 it records the finished migration.
+
+## Return to the Python server
+
+Two commands help an install that goes back to the Python server. The rules
+are in `docs/decisions/2026-11-16-rust-rollback.md`.
+
+CAUTION: Stop the Rust server and the Python server before these commands.
+The commands take the lock of `DATA_DIR`, but they cannot see a Python server.
+
+```bash
+memories-server export-legacy      # write memories_v2 back to metadata.json and the old collection
+memories-server migrate --merge    # bring the writes of a Python server into memories_v2
+```
+
+- `export-legacy` exports only when `memories_v2` is the canonical store. If
+  a Python server changed `metadata.json`, the command skips the export.
+- `export-legacy` refuses an export that deletes most of the old data, for
+  example after the loss of the Qdrant volume. If `memories_v2` is correct,
+  run `memories-server export-legacy --force`.
+- If `export-legacy` stops, run it again. The Rust server does not start on
+  the data of a stopped export.
+- A job of a scoped key keeps its scope in the resend script. If its source
+  is not in the allowed prefixes of the key, the script does not send it.
+- `export-legacy` moves each waiting extract job to
+  `$DATA_DIR/rollback-extract-jobs.ndjson`. After the Python server starts,
+  send the jobs with
+  `MEMORIES_API_KEY=<admin key> scripts/resend_extract_jobs.py <file> --base-url <url>`.
+- The rollback image (`rollback/Dockerfile`) runs `export-legacy` at each
+  start, then the Python server.
+
+To build the rollback image, run these commands from the repository root:
+
+```bash
+docker build --target core -t memories-python .
+docker build -f server/rollback/Dockerfile --build-arg BASE_IMAGE=memories-python -t memories-rollback .
+```
+
+The rollback drill (task P7-1) runs the two cases of a return:
+
+```bash
+QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+  server/scripts/rollback_drill.sh server/target/debug/memories-server
+```
 
 ## Configuration
 
@@ -123,7 +167,9 @@ each variable with one of these states:
 The core write routes (add, add-batch, upsert, upsert-batch, PATCH and
 DELETE `/memory/{memory_id}`, delete-batch) need `QDRANT_URL`. Without it,
 they give HTTP 503. The rules and the differences from the Python server are
-in `docs/decisions/2026-11-16-rust-core-writes.md`.
+in `docs/decisions/2026-11-16-rust-core-writes.md`. The bulk writes and the
+relation writes (task P3-2) have the same need. Their rules are in
+`docs/decisions/2026-11-16-rust-bulk-writes.md`.
 
 Events, webhooks and the web UI:
 
@@ -156,6 +202,10 @@ server/scripts/parity_keys_audit.sh server/target/debug/memories-server
 QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
   server/scripts/parity_writes.sh server/target/debug/memories-server
 QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+  server/scripts/parity_bulk.sh server/target/debug/memories-server
+QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+  server/scripts/parity_promotions.sh server/target/debug/memories-server
+QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
   NODE_PATH=<node_modules with playwright> \
   server/scripts/parity_events.sh server/target/debug/memories-server
 ```
@@ -169,12 +219,19 @@ the web UI in Chromium and fails on a console error or a failed request.
 check of task P5-2. It also makes a key on each server and uses the key on
 the other server. `parity_writes.sh` is the check of task P3-1 (the core write
 routes). It uses a new Qdrant collection and deletes it at the end.
+`parity_bulk.sh` is the check of task P3-2. It replays the golden cases, then
+sends the bulk scenario to a new Python server and to a new Rust server and
+compares the replies.
+`parity_promotions.sh` is the check of task P5-6 (the promotion routes in
+the `off` mode). It also makes sure that `PROJECT_PROMOTION_MODE=shadow`
+stops the start.
 
 The Qdrant call test of the writes needs Qdrant and ONNX Runtime:
 
 ```bash
 QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
   cargo test --locked -p memories-engine --test writes -- --ignored
+  cargo test --locked -p memories-engine --test bulk -- --ignored
 ```
 
 ## Build the image

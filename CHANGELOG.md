@@ -10,6 +10,64 @@
   server tries each webhook call up to 3 times. The image build needs
   `--build-context webui=webui`. No change to the Python server or to a
   client. Details: `docs/decisions/2026-11-16-rust-events-webhooks-ui.md`.
+- **Gate G4 part a in CI (rewrite task P4-4).** `parity/extract_corpus.py`
+  sends the 105 transcripts of the extraction evals (the 20 texts of
+  `eval/run_extraction_eval.py` and the scenario memories) through the
+  extraction pipeline of the two servers. A fake LLM gives replies that are a
+  function of the prompt and of the highest record ID so far. The Rust server gives the same prompts, actions,
+  links and stored records as Python v5.19.0 (0 differences). 206 of 207
+  similar lists from hybrid search are equal. The other list differs by the
+  known keyword index design. The live part (24 probes with a real model) waits for
+  approval. No change to the Python server or to a client. Details:
+  `docs/rust-rewrite/gates/G4.md`.
+- **Gate G3 run for the Rust rewrite (task P2-4).** `server/scripts/gate_g3.sh`
+  writes the same records into the Python server and the Rust server, and
+  compares vector search, hybrid search, the graph eval and LongMemEval
+  recall at 5. G3 passes with the Qdrant sparse vector, so the tantivy
+  fallback is not necessary. CI job `rust-parity` runs the corpus and graph
+  parts. `parity/keyword_index/run.py --dataset grow` checks the avgdl rule on
+  a store that grows. No change to the Python server or to a client.
+  Details: `docs/rust-rewrite/gates/G3.md`.
+- **Rust project promotion routes, off mode (rewrite task P5-6).** The Rust
+  server answers `GET /promotions`, `GET /promotions/{candidate_id}` and the
+  approve and reject routes with the replies of the Python server in the
+  `off` mode, the mode of production. `GET /metrics` has the `promotion`
+  part. `PROJECT_PROMOTION_MODE=shadow` or `auto` stops the start with a
+  clear message. `server/scripts/parity_promotions.sh` replays the four golden
+  cases (0 differ) and sends 36 requests to a Python and a Rust server (0
+  differ). No change to the Python server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-promotions-off.md`.
+- **Rollback tool, merge and rollback drill of the Rust server (rewrite task
+  P7-1).** `memories-server export-legacy` writes the records of
+  `memories_v2` back to `metadata.json` and to the old collection, and moves
+  the waiting extract jobs to a file. It skips the export if a Python server
+  changed `metadata.json`, and it refuses an export that deletes most of the
+  old data unless `--force` is given. `memories-server migrate --merge` brings
+  the writes of a Python server into `memories_v2` with a three-way merge,
+  field by field. The
+  rollback image (`server/rollback/`) runs the export, then the Python
+  server. `server/scripts/rollback_drill.sh` runs the two return cases in CI.
+  No change to the Python server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-rollback.md`.
+- **Rust extraction pipeline (rewrite task P4-3).** The Rust server runs the
+  extraction pipeline for each queued job: hygiene, secret redaction, fact
+  extraction, the AUDN decision, the writes, the auto links, the dry run, the
+  debug trace, the single-call profile mode and the regex fallback. It adds
+  `POST /memory/extract/commit` and the four `/extraction/profiles` routes.
+  `server/scripts/parity_pipeline.sh` runs 16 cases with recorded LLM replies
+  against the Python capture: each prompt is equal byte for byte, and each
+  result and stored record is equal (0 differences). No change to the Python
+  server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-extract-pipeline.md`.
+- **Bulk writes and relation writes of the Rust server (rewrite task P3-2).**
+  The Rust server answers the 13 routes for bulk deletes, supersede, merge,
+  archive batch, links, folder rename, conflict resolution, deduplicate and
+  missed captures, with the replies of the Python server. The delete routes
+  keep the Python match rules: `delete-by-source` matches a substring and
+  `delete-by-prefix` a plain prefix. `server/scripts/parity_bulk.sh` replays
+  95 golden cases (0 differ) and runs 122 cases on a Python and a Rust server
+  (0 differ, the same deleted IDs). No change to the Python server or to a
+  client. Details: `docs/decisions/2026-11-16-rust-bulk-writes.md`.
 - **Rust usage, metrics and feedback routes (rewrite task P5-1).** The Rust
   server keeps `usage.db` with the seven tables of the Python tracker and
   writes the rows through one writer thread, in batches. It answers
@@ -85,6 +143,19 @@
   temporal filter, the graph step and the query intent rules. Golden cases
   from the Python functions are in `parity/golden/rank/`. CI checks that the
   golden cases are current. No change to the Python server or to a client.
+- **Read routes of the Rust server (rewrite task P2-3).** The Rust server
+  answers `GET /memory/{memory_id}`, `POST /memory/get-batch`, `GET /memories`,
+  `GET /memories/count`, `GET /folders`, `GET /stats`,
+  `GET /memory/{memory_id}/links`, `GET /memory/conflicts`, and the full body
+  of `GET /health` for a request with the `API_KEY` value. Each route reads
+  Qdrant with a get, a page, a count or a scroll, and the counts come from the
+  source map of the engine. No route reads all records into memory. The parity
+  kit replays the 20 golden cases of these routes and sends 371 more read
+  requests to the Python server and the Rust server on the same data: all
+  replies are equal. With 300,000 records, the memory of the process does not
+  increase after 1,000 list requests. `python -m parity replay` gets
+  `--save-vars` and `--vars-file`. No change to the Python server or to a
+  client. Details: `docs/decisions/2026-11-16-rust-read-routes.md`.
 - **Core writes of the Rust server (rewrite task P3-1).** The Rust server
   has `POST /memory/add` (with `deduplicate` and `on_duplicate`),
   `/memory/add-batch`, `/memory/upsert`, `/memory/upsert-batch`, PATCH and

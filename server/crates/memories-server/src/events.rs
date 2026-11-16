@@ -89,7 +89,7 @@ pub async fn stream(
         .filter(|t| !t.is_empty())
         .map(str::to_owned);
     let rx = state.events.subscribe();
-    let stop = state.stopping.subscribe();
+    let stop = state.shutdown.subscribe();
     let body = futures_util::stream::unfold((rx, stop, true), move |(mut rx, mut stop, first)| {
         let (auth, event_type) = (auth.clone(), event_type.clone());
         async move {
