@@ -23,7 +23,7 @@ pub const VARS: &[(&str, Use)] = &[
     ("ANTHROPIC_OAUTH_TOKEN", NotUsed),
     ("ANTHROPIC_WORKSPACE_ID", NotUsed),
     ("API_KEY", Supported),
-    ("AUDIT_LOG", NotUsed),
+    ("AUDIT_LOG", Supported),
     ("AUTH_RATE_LIMIT", Supported),
     ("CHATGPT_CLIENT_ID", NotUsed),
     ("CHATGPT_REFRESH_TOKEN", NotUsed),

@@ -1,5 +1,7 @@
 //! HTTP routes, auth, middleware and the `memories-server` binary.
 
+pub mod admin;
+pub mod audit;
 pub mod auth;
 pub mod error;
 pub mod healthcheck;
@@ -14,13 +16,14 @@ use axum::{
     extract::DefaultBodyLimit,
     middleware::from_fn,
     middleware::from_fn_with_state,
-    routing::{MethodFilter, get, on},
+    routing::{MethodFilter, get, on, patch, post},
 };
 use memories_types::config;
 use serde_json::{Value, json};
 use tower_http::catch_panic::CatchPanicLayer;
 
 use crate::{
+    audit::AuditLog,
     auth::{AuthContext, Failures},
     keys::KeyStore,
     shell::{Metrics, ROUTES, TrustedProxies},
@@ -37,6 +40,8 @@ pub struct Config {
     pub auth_rate_limit: i64,
     pub metrics_latency_samples: usize,
     pub forwarded_allow_ips: String,
+    /// `AUDIT_LOG`: write and read `audit.db`.
+    pub audit_log: bool,
 }
 
 impl Config {
@@ -58,6 +63,7 @@ impl Config {
             )?,
             metrics_latency_samples: samples as usize,
             forwarded_allow_ips: config::string("FORWARDED_ALLOW_IPS", "127.0.0.1"),
+            audit_log: config::parse_bool(var("AUDIT_LOG").as_deref(), false),
         })
     }
 }
@@ -66,17 +72,20 @@ pub struct AppState {
     pub api_key: String,
     pub auth_rate_limit: i64,
     pub keys: KeyStore,
+    /// `None` when `AUDIT_LOG` is off (the Python `NullAuditLog`).
+    pub audit: Option<AuditLog>,
     pub failures: Failures,
     pub metrics: Metrics,
     pub trusted: TrustedProxies,
 }
 
 impl AppState {
-    pub fn new(cfg: &Config, keys: KeyStore) -> Arc<Self> {
+    pub fn new(cfg: &Config, keys: KeyStore, audit: Option<AuditLog>) -> Arc<Self> {
         Arc::new(Self {
             api_key: cfg.api_key.clone(),
             auth_rate_limit: cfg.auth_rate_limit,
             keys,
+            audit,
             failures: Failures::default(),
             metrics: Metrics::new(cfg.metrics_latency_samples),
             trusted: TrustedProxies::parse(&cfg.forwarded_allow_ips),
@@ -90,6 +99,12 @@ const SERVED: &[(&str, &str)] = &[
     ("GET", "/health"),
     ("GET", "/health/ready"),
     ("GET", "/api/keys/me"),
+    ("POST", "/api/keys"),
+    ("GET", "/api/keys"),
+    ("PATCH", "/api/keys/{key_id}"),
+    ("DELETE", "/api/keys/{key_id}"),
+    ("GET", "/audit"),
+    ("POST", "/audit/purge"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -103,8 +118,17 @@ fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
 }
 
 pub fn app(state: Arc<AppState>) -> Router {
-    let protected = stubs(Router::new().route("/api/keys/me", get(keys_me)), false)
-        .route_layer(from_fn_with_state(state.clone(), auth::require_key));
+    let protected = Router::new()
+        .route("/api/keys/me", get(keys_me))
+        .route("/api/keys", post(admin::create_key).get(admin::list_keys))
+        .route(
+            "/api/keys/{key_id}",
+            patch(admin::update_key).delete(admin::revoke_key),
+        )
+        .route("/audit", get(admin::get_audit))
+        .route("/audit/purge", post(admin::purge_audit));
+    let protected =
+        stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
     let public = stubs(
         Router::new()
             .route("/health", get(health))

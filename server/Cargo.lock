@@ -1119,6 +1119,7 @@ version = "6.0.0"
 dependencies = [
  "axum",
  "clap",
+ "getrandom 0.3.4",
  "memories-types",
  "rusqlite",
  "serde_json",

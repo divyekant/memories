@@ -171,6 +171,241 @@ impl KeyStore {
     }
 }
 
+/// The reply of `POST /api/keys`: the raw key is in it only this one time.
+#[derive(Debug)]
+pub struct NewKey {
+    pub id: String,
+    pub key: String,
+    pub key_prefix: String,
+    pub name: String,
+    pub principal_id: Option<String>,
+    pub role: String,
+    pub prefixes: Vec<String>,
+    pub created_at: String,
+}
+
+/// The fields that `PATCH /api/keys/{key_id}` changes. `None` keeps the value.
+#[derive(Debug, Default)]
+pub struct KeyUpdate {
+    pub name: Option<String>,
+    pub principal_id: Option<String>,
+    pub role: Option<String>,
+    pub prefixes: Option<Vec<String>>,
+}
+
+/// Why a change to a key did not occur. The text is the Python `ValueError` text.
+#[derive(Debug)]
+pub enum KeyError {
+    NotFound(String),
+    Revoked(String),
+    AlreadyRevoked(String),
+    Db(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for KeyError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Db(e)
+    }
+}
+
+impl KeyStore {
+    /// `KeyStore.create_key`. The caller checks the role and the principal slug.
+    pub fn create(
+        &self,
+        name: &str,
+        role: &str,
+        prefixes: Vec<String>,
+        principal_id: Option<String>,
+    ) -> rusqlite::Result<NewKey> {
+        let principal_id = principal_id.or_else(|| is_valid_slug(name).then(|| name.to_string()));
+        // Admin keys ignore prefix scope.
+        let prefixes = if role == "admin" {
+            Vec::new()
+        } else {
+            prefixes
+        };
+        let key = format!("mem_{}", hex(&random_bytes::<16>()));
+        let new = NewKey {
+            id: uuid4(),
+            key_prefix: key[..8].to_string(),
+            name: name.to_string(),
+            principal_id,
+            role: role.to_string(),
+            created_at: utc_now(),
+            prefixes,
+            key,
+        };
+        self.conn.lock().unwrap().execute(
+            "INSERT INTO api_keys (id, name, principal_id, key_hash, key_prefix, role, prefixes, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                new.id,
+                new.name,
+                new.principal_id,
+                hash_key(&new.key),
+                new.key_prefix,
+                new.role,
+                py_json_list(&new.prefixes),
+                new.created_at
+            ],
+        )?;
+        Ok(new)
+    }
+
+    /// `KeyStore.list_keys`: all keys, revoked keys too, with no raw key or hash.
+    /// The buffered uses go to the database first, so the counts are current.
+    pub fn list(&self) -> rusqlite::Result<Vec<serde_json::Value>> {
+        if let Err(e) = self.flush_usage() {
+            tracing::warn!(error = %e, "keys.db: usage write failed before the key list");
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, principal_id, key_prefix, role, prefixes, created_at,
+                    last_used_at, usage_count, revoked FROM api_keys ORDER BY created_at",
+        )?;
+        let names: Vec<String> = stmt.column_names().map(str::to_string).collect();
+        stmt.query_map([], |r| {
+            let mut m = serde_json::Map::new();
+            for (i, n) in names.iter().enumerate() {
+                let v = sql_to_json(r.get_ref(i)?);
+                let v = if n == "prefixes" {
+                    // Python json.loads: a value that is not JSON fails the request.
+                    let text = v.as_str().unwrap_or_default().to_string();
+                    serde_json::from_str(&text).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            i,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?
+                } else {
+                    v
+                };
+                m.insert(n.clone(), v);
+            }
+            Ok(serde_json::Value::Object(m))
+        })?
+        .collect()
+    }
+
+    /// `KeyStore.update_key`: changes the given fields of a live key.
+    pub fn update(&self, key_id: &str, u: &KeyUpdate) -> Result<(), KeyError> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        live_key(&tx, key_id, || {
+            KeyError::Revoked(format!("Key '{key_id}' is revoked"))
+        })?;
+        let fields = [
+            ("name", u.name.clone()),
+            ("principal_id", u.principal_id.clone()),
+            ("role", u.role.clone()),
+            ("prefixes", u.prefixes.as_deref().map(py_json_list)),
+        ];
+        for (col, v) in fields {
+            if let Some(v) = v {
+                tx.execute(
+                    &format!("UPDATE api_keys SET {col} = ?1 WHERE id = ?2"),
+                    params![v, key_id],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// `KeyStore.revoke`: a soft delete. The key fails auth at the next request.
+    pub fn revoke(&self, key_id: &str) -> Result<(), KeyError> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        live_key(&tx, key_id, || {
+            KeyError::AlreadyRevoked(format!("Key '{key_id}' is already revoked"))
+        })?;
+        tx.execute("UPDATE api_keys SET revoked = 1 WHERE id = ?1", [key_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+fn live_key(
+    conn: &Connection,
+    key_id: &str,
+    revoked: impl FnOnce() -> KeyError,
+) -> Result<(), KeyError> {
+    let row: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT revoked FROM api_keys WHERE id = ?1",
+            [key_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match row {
+        None => Err(KeyError::NotFound(format!("Key '{key_id}' not found"))),
+        // Python: `if row["revoked"]`, so NULL and 0 are live.
+        Some(Some(r)) if r != 0 => Err(revoked()),
+        Some(_) => Ok(()),
+    }
+}
+
+/// A SQLite value as JSON, as Python `sqlite3` and `json` give it.
+pub fn sql_to_json(v: rusqlite::types::ValueRef<'_>) -> serde_json::Value {
+    use rusqlite::types::ValueRef;
+    match v {
+        ValueRef::Null => serde_json::Value::Null,
+        ValueRef::Integer(i) => i.into(),
+        ValueRef::Real(f) => f.into(),
+        ValueRef::Text(t) | ValueRef::Blob(t) => String::from_utf8_lossy(t).into(),
+    }
+}
+
+/// Python `json.dumps(list_of_str)`: `", "` between items and only ASCII
+/// (`\uXXXX` for each other character), so the stored text is the same.
+pub fn py_json_list(items: &[String]) -> String {
+    let mut out = String::from("[");
+    for (i, s) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        for c in serde_json::to_string(s).unwrap().chars() {
+            if (' '..='~').contains(&c) || matches!(c, '\n' | '\r' | '\t') {
+                out.push(c);
+            } else {
+                let mut buf = [0u16; 2];
+                for u in c.encode_utf16(&mut buf) {
+                    out.push_str(&format!("\\u{u:04x}"));
+                }
+            }
+        }
+    }
+    out.push(']');
+    out
+}
+
+fn random_bytes<const N: usize>() -> [u8; N] {
+    let mut b = [0u8; N];
+    getrandom::fill(&mut b).expect("the OS random source failed");
+    b
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Python `str(uuid.uuid4())`.
+fn uuid4() -> String {
+    let mut b = random_bytes::<16>();
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h = hex(&b);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
+}
+
 fn rows(conn: &Connection, sql: &str) -> rusqlite::Result<Vec<(String, String)>> {
     conn.prepare(sql)?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -225,6 +460,28 @@ mod tests {
         for bad in ["", "-a", "a-", "A", "a_b", "a b", "é"] {
             assert!(!is_valid_slug(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn python_json_dumps_of_prefixes() {
+        let v = |a: &[&str]| py_json_list(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(v(&[]), "[]");
+        assert_eq!(v(&["codex/", "wip/"]), r#"["codex/", "wip/"]"#);
+        // Python: json.dumps(["é😀\x7f\n\"\\"]) == '["\\u00e9\\ud83d\\ude00\\u007f\\n\\"\\\\"]'
+        assert_eq!(
+            v(&["é😀\u{7f}\n\"\\"]),
+            r#"["\u00e9\ud83d\ude00\u007f\n\"\\"]"#
+        );
+        assert_eq!(v(&["\u{1f}"]), r#"["\u001f"]"#);
+    }
+
+    #[test]
+    fn new_key_and_id_shapes() {
+        let id = uuid4();
+        assert_eq!(id.len(), 36);
+        assert_eq!(&id[14..15], "4");
+        assert!("89ab".contains(&id[19..20]));
+        assert_ne!(uuid4(), id);
     }
 
     #[test]
