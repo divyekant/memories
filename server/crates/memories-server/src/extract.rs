@@ -44,6 +44,8 @@ const HEALTH_CACHE: Duration = Duration::from_secs(60);
 const TRIM_INTERVAL: Duration = Duration::from_secs(60);
 /// A worker with no work looks at the queue again after this time.
 const IDLE_POLL: Duration = Duration::from_secs(1);
+/// The tries to write the result of a job before the job stays `running`.
+const WRITE_TRIES: u32 = 5;
 
 /// The settings of the queue, with the Python names.
 #[derive(Clone, Debug)]
@@ -61,6 +63,8 @@ pub struct ExtractConfig {
     pub max_message_chars: usize,
     /// `EXTRACT_FALLBACK_ADD`. Shown by `/extract/status`; task P4-3 ports the fallback.
     pub fallback_add: bool,
+    /// The delay before try n+1 is n times this value (10 s). Not an env var.
+    pub retry_delay: Duration,
 }
 
 impl Default for ExtractConfig {
@@ -89,16 +93,21 @@ impl ExtractConfig {
             jobs_max: int("EXTRACT_JOBS_MAX", 200, 10),
             max_message_chars: int("MAX_EXTRACT_MESSAGE_CHARS", 120_000, 1) as usize,
             fallback_add: config::parse_bool(var("EXTRACT_FALLBACK_ADD").as_deref(), false),
+            retry_delay: Duration::from_secs(10),
         }
     }
 }
 
 /// The result of one try of a job: the job result, or an error that uses a try.
+/// A job can run more than once (a retry, or a stop during a try), so the
+/// writes of a pipeline must give the same result when they run again.
 pub type PipelineFuture = Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>;
 
 /// The extraction of one job. `request` is the JSON that `POST /memory/extract`
 /// stored: `messages`, `source`, `context`, `allowed_prefixes`, `debug`,
 /// `dry_run`, `document_at`, `trusted_authorship` and `promotion_context`.
+/// `promotion_context` is the declaration of the client, checked only for its
+/// shape. The pipeline must apply the gates of `build_promotion_context`.
 pub trait Pipeline: Send + Sync {
     fn run(&self, request: Value) -> PipelineFuture;
 }
@@ -140,6 +149,8 @@ pub struct Extract {
     pub pipeline: Option<Arc<dyn Pipeline>>,
     wake: Notify,
     health: Mutex<Option<(Instant, bool)>>,
+    /// One health call at a time, so that the cache holds for each caller.
+    health_call: tokio::sync::Mutex<()>,
 }
 
 impl Extract {
@@ -167,14 +178,23 @@ impl Extract {
             pipeline,
             wake: Notify::new(),
             health: Mutex::new(None),
+            health_call: tokio::sync::Mutex::new(()),
         })
     }
 
-    async fn provider_healthy(&self, provider: &Provider) -> bool {
+    fn cached_health(&self) -> Option<bool> {
         let cached = *self.health.lock().unwrap();
-        if let Some((at, ok)) = cached
-            && at.elapsed() < HEALTH_CACHE
-        {
+        cached
+            .filter(|(at, _)| at.elapsed() < HEALTH_CACHE)
+            .map(|(_, ok)| ok)
+    }
+
+    async fn provider_healthy(&self, provider: &Provider) -> bool {
+        if let Some(ok) = self.cached_health() {
+            return ok;
+        }
+        let _one = self.health_call.lock().await;
+        if let Some(ok) = self.cached_health() {
             return ok;
         }
         let ok = provider.health_check().await;
@@ -248,20 +268,25 @@ async fn worker(state: Arc<AppState>, pipeline: Arc<dyn Pipeline>, id: u64) {
             Err(e) => Err(format!("the pipeline stopped: {e}")),
         };
         let job_id = job.job_id;
-        let done = match outcome {
-            Ok(result) => {
-                let id2 = job_id.clone();
-                blocking(&ex.queue, move |q| q.complete(&id2, &utc_now_iso(), result)).await
+        if let Err(err) = &outcome {
+            tracing::warn!(job_id, attempt = job.attempts, error = %err, "Extraction try failed");
+        }
+        let delay = ex.cfg.retry_delay * job.attempts;
+        let mut done = Ok(());
+        for n in 0..WRITE_TRIES {
+            let (id2, out) = (job_id.clone(), outcome.clone());
+            done = blocking(&ex.queue, move |q| match out {
+                Ok(result) => q.complete(&id2, &utc_now_iso(), result),
+                Err(err) => q
+                    .fail(&id2, &utc_now_iso(), &err, MAX_TRIES, delay)
+                    .map(drop),
+            })
+            .await;
+            if done.is_ok() {
+                break;
             }
-            Err(err) => {
-                tracing::warn!(job_id, attempt = job.attempts, error = %err, "Extraction try failed");
-                let id2 = job_id.clone();
-                blocking(&ex.queue, move |q| {
-                    q.fail(&id2, &utc_now_iso(), &err, MAX_TRIES).map(drop)
-                })
-                .await
-            }
-        };
+            tokio::time::sleep(Duration::from_millis(200 << n)).await;
+        }
         if let Err(e) = done {
             // The job stays `running`; the next start puts it back in the queue.
             tracing::error!(job_id, error = %e, "state.db: cannot write the job result");

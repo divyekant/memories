@@ -95,6 +95,23 @@ fn main() -> std::process::ExitCode {
     } else {
         None
     };
+    // A second server on the same DATA_DIR would put the running jobs of the
+    // first server back in the queue. Keep the lock until the process ends.
+    let lock_path = cfg.data_dir.join("memories-server.lock");
+    let _lock = match std::fs::File::create(&lock_path).map(|f| (f.try_lock(), f)) {
+        Ok((Ok(()), f)) => f,
+        Ok((Err(e), _)) => {
+            tracing::error!(
+                "cannot start: another memories-server uses DATA_DIR {} ({e})",
+                cfg.data_dir.display()
+            );
+            return std::process::ExitCode::FAILURE;
+        }
+        Err(e) => {
+            tracing::error!("cannot start: cannot make {}: {e}", lock_path.display());
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     // As Python: a provider that cannot start is a warning, and extraction is off.
     let provider = match Provider::from_process_env() {
         Ok(Some(p)) => {

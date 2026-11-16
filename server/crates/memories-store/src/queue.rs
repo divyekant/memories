@@ -73,6 +73,7 @@ impl JobQueue {
                  request TEXT NOT NULL,
                  job TEXT NOT NULL,
                  enqueued_at REAL NOT NULL,
+                 not_before REAL NOT NULL DEFAULT 0,
                  finished_at REAL
              );
              CREATE INDEX IF NOT EXISTS idx_extract_jobs_status ON extract_jobs(status, seq);",
@@ -184,8 +185,8 @@ impl JobQueue {
             let row: Option<(String, String, u32)> = tx
                 .query_row(
                     "SELECT job_id, request, attempts FROM extract_jobs
-                     WHERE status = 'queued' ORDER BY seq LIMIT 1",
-                    [],
+                     WHERE status = 'queued' AND not_before <= ?1 ORDER BY seq LIMIT 1",
+                    [now()],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?;
@@ -243,13 +244,15 @@ impl JobQueue {
     }
 
     /// A try failed. Before `max_tries` tries, the job goes back to the queue
-    /// in its old place; then it fails with `error`. Returns true if it failed.
+    /// in its old place, and no worker takes it for `delay`; then it fails
+    /// with `error`. Returns true if it failed.
     pub fn fail(
         &self,
         job_id: &str,
         completed_at: &str,
         error: &str,
         max_tries: u32,
+        delay: Duration,
     ) -> Result<bool, StateError> {
         self.with_tx(|tx| {
             let attempts: Option<u32> = tx
@@ -266,8 +269,8 @@ impl JobQueue {
                 let mut job = Self::job(tx, job_id)?.unwrap_or(Value::Null);
                 job["status"] = json!("queued");
                 tx.execute(
-                    "UPDATE extract_jobs SET status = 'queued' WHERE job_id = ?1",
-                    [job_id],
+                    "UPDATE extract_jobs SET status = 'queued', not_before = ?1 WHERE job_id = ?2",
+                    params![now() + delay.as_secs_f64(), job_id],
                 )?;
                 Self::set_job(tx, job_id, &job)?;
                 return Ok(false);
@@ -302,7 +305,7 @@ impl JobQueue {
     }
 
     /// Python `_trim_finished_extract_jobs`: delete finished jobs older than
-    /// `retention_sec`; then, above `max_jobs` rows, the oldest finished jobs.
+    /// `retention_sec`; then, above `max_jobs` finished jobs, the oldest ones.
     /// Queued and running jobs stay. Returns the count of deleted rows.
     pub fn trim(&self, retention_sec: u64, max_jobs: u64) -> Result<u64, StateError> {
         self.with_tx(|tx| {
@@ -310,8 +313,14 @@ impl JobQueue {
                 "DELETE FROM extract_jobs WHERE finished_at IS NOT NULL AND finished_at < ?1",
                 [now() - retention_sec as f64],
             )? as u64;
-            let total: i64 = tx.query_row("SELECT COUNT(*) FROM extract_jobs", [], |r| r.get(0))?;
-            let over = (total as u64).saturating_sub(max_jobs);
+            // Python counts all jobs, but its queue held only 40. With 10,000
+            // queued jobs, that rule would delete each result at once.
+            let finished: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM extract_jobs WHERE finished_at IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )?;
+            let over = (finished as u64).saturating_sub(max_jobs);
             if over > 0 {
                 n += tx.execute(
                     "DELETE FROM extract_jobs WHERE seq IN (
@@ -403,7 +412,7 @@ mod tests {
         for attempt in 1..=3 {
             let c = q.claim("t").unwrap().unwrap();
             assert_eq!((c.job_id.as_str(), c.attempts), ("a", attempt));
-            let failed = q.fail("a", "t9", "boom", 3).unwrap();
+            let failed = q.fail("a", "t9", "boom", 3, Duration::ZERO).unwrap();
             assert_eq!(failed, attempt == 3);
         }
         let job = q.get("a").unwrap().unwrap();
@@ -411,6 +420,20 @@ mod tests {
         assert_eq!(job["error"], "boom");
         assert_eq!(job["completed_at"], "t9");
         assert_eq!(q.claim("t").unwrap().unwrap().job_id, "b");
+    }
+
+    #[test]
+    fn a_failed_try_waits_for_its_delay() {
+        let dir = TempDir::new("delay");
+        let q = JobQueue::open(&dir.db()).unwrap();
+        add(&q, "a", 10);
+        add(&q, "b", 10);
+        q.claim("t").unwrap();
+        q.fail("a", "t", "busy", 3, Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(q.stats().unwrap().depth, 2);
+        assert_eq!(q.claim("t").unwrap().unwrap().job_id, "b");
+        assert!(q.claim("t").unwrap().is_none());
     }
 
     #[test]
@@ -471,12 +494,13 @@ mod tests {
             q.claim("t").unwrap();
             q.complete(id, "t", json!({})).unwrap();
         }
+        // Many queued jobs do not count against the cap.
+        assert_eq!(q.trim(300, 2).unwrap(), 0);
         // Retention not reached: the cap deletes the oldest finished job.
-        assert_eq!(q.trim(300, 3).unwrap(), 1);
+        assert_eq!(q.trim(300, 1).unwrap(), 1);
         assert!(q.get("a").unwrap().is_none());
         assert!(q.get("b").unwrap().is_some());
-        // The cap never deletes queued jobs.
-        assert_eq!(q.trim(300, 1).unwrap(), 1);
+        assert_eq!(q.trim(300, 0).unwrap(), 1);
         assert_eq!(q.stats().unwrap().tracked, 2);
         // Retention 0: each finished job goes.
         q.claim("t").unwrap();

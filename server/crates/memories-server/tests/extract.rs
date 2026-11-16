@@ -435,12 +435,11 @@ async fn a_failing_job_gets_three_tries() {
         (broken, "failed", "error", json!("try 3 failed")),
     ] {
         let pipe = stub(reply);
-        let st = state_with(
-            &config(false),
-            ExtractConfig::default(),
-            None,
-            Some(pipe.clone()),
-        );
+        let ecfg = ExtractConfig {
+            retry_delay: Duration::from_millis(50),
+            ..ExtractConfig::default()
+        };
+        let st = state_with(&config(false), ecfg, None, Some(pipe.clone()));
         let r = send(
             &st,
             "POST",

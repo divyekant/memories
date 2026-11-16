@@ -32,6 +32,7 @@ A job that gets 202 is on disk before the reply.
 | `request` | The pipeline input as JSON: `messages`, `source`, `context`, `allowed_prefixes`, `debug`, `dry_run`, `document_at`, `trusted_authorship`, `promotion_context` |
 | `job` | The body of `GET /memory/extract/{job_id}` as JSON |
 | `enqueued_at`, `finished_at` | Unix seconds, for the job age and the trim |
+| `not_before` | Unix seconds. No worker takes the job before this time (the delay after a failed try). |
 
 Rules:
 
@@ -39,13 +40,28 @@ Rules:
   limit, the reply is 429 with the Python detail and `Retry-After`.
 - A job gets 3 tries. A try fails when the pipeline returns an error, panics,
   or the server stops during the try. A failed try puts the job back in its
-  old place. After the third failed try, the job is `failed` with the error.
+  old place, with a delay of 10 s times the tries so far. After the third
+  failed try, the job is `failed` with the error.
+- The queue gives each job at least one run, and can give more than one. The
+  writes of the pipeline (task P4-3) must give the same result when they run
+  again. Python ran each job once, or lost it at a restart.
+- Between tries, the job body shows `status: queued` with the `started_at`
+  and `queue_depth` of the last try. The error of a try before the last one
+  is only in the log.
 - At start, each `running` job goes back to `queued`. If it already had 3
-  tries, it is `failed`. Thus a job that stops the server each time cannot
-  stop the server forever.
+  tries, it is `failed` with the error "the server stopped during the last
+  try". Thus a job that stops the server each time cannot stop the server
+  forever.
+- A server takes an exclusive lock on `DATA_DIR/memories-server.lock` at
+  start. A second server on the same `DATA_DIR` does not start, so it cannot
+  put the running jobs of the first server back in the queue.
+- If the result write fails, the worker tries it 5 times. Then the job stays
+  `running` until the next start.
 - A finished job stays `EXTRACT_JOB_RETENTION_SEC` (300 s). Above
-  `EXTRACT_JOBS_MAX` (200) jobs, the oldest finished jobs go first. Queued and
-  running jobs never go.
+  `EXTRACT_JOBS_MAX` (200) finished jobs, the oldest finished jobs go first.
+  Queued and running jobs never go. Python counted all jobs against the cap,
+  but its queue held only 40 jobs. With 10,000 queued jobs, that rule would
+  delete each result at once.
 - A provider failure inside the pipeline is a `completed` job with an error
   result, as in Python (rule W7). It does not use a try.
 
@@ -73,6 +89,16 @@ The `Pipeline` trait is the interface for P4-3. The binary uses
   ported yet.
 - `EXTRACT_FALLBACK_ADD` with no provider still gives 501. P4-3 ports the
   fallback.
+
+Notes for P4-3:
+
+- Python resolves the extraction profile at the request. This route stores
+  only `dry_run`. If P4-3 resolves the profile in the worker, a profile edit
+  applies to the jobs that are already queued.
+- `promotion_context` in the stored request is the declaration of the
+  client, checked only for its shape. Python runs `build_promotion_context`
+  (and `observe_declaration`) at the request. The pipeline must apply the
+  same gates from `source`, `allowed_prefixes` and `trusted_authorship`.
 
 ## Checks
 
