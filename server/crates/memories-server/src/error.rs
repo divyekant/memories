@@ -79,10 +79,43 @@ pub fn string_too_short(loc: Value, input: Value, min: usize) -> Value {
     v
 }
 
+/// pydantic 2 `int` from a string: spaces around, an optional sign, digits
+/// with single `_` between them, and an optional `.` with only zeros after it.
+/// A value out of the `i64` range saturates, so the bound check still fails.
+pub fn py_int(raw: &str) -> Option<i64> {
+    let s = raw.trim();
+    let (neg, s) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let (int, frac) = s.split_once('.').unwrap_or((s, ""));
+    if s.contains('.') && (frac.is_empty() || !frac.bytes().all(|b| b == b'0')) {
+        return None;
+    }
+    let b = int.as_bytes();
+    let digit_ok = |i: usize| {
+        b[i].is_ascii_digit()
+            || (b[i] == b'_'
+                && i > 0
+                && i + 1 < b.len()
+                && b[i - 1].is_ascii_digit()
+                && b[i + 1].is_ascii_digit())
+    };
+    if b.is_empty() || !(0..b.len()).all(digit_ok) {
+        return None;
+    }
+    let mut v: i64 = 0;
+    for d in b.iter().filter(|c| c.is_ascii_digit()) {
+        v = v.saturating_mul(10).saturating_add(i64::from(d - b'0'));
+    }
+    Some(if neg { -v } else { v })
+}
+
 /// A path parameter that must be an integer, as FastAPI checks `memory_id: int`.
 pub fn path_int(name: &str, raw: &str) -> Result<i64, ApiError> {
-    raw.parse()
-        .map_err(|_| ApiError::validation(vec![int_parsing(json!(["path", name]), json!(raw))]))
+    py_int(raw)
+        .ok_or_else(|| ApiError::validation(vec![int_parsing(json!(["path", name]), json!(raw))]))
 }
 
 /// The JSON object body of a request, read as FastAPI reads a model body.

@@ -1,4 +1,5 @@
-//! `state.db`: the SQLite file of the Rust server. It holds the ID counter.
+//! `state.db`: the SQLite file of the Rust server. It holds the ID counter and
+//! the BM25 document-length sums of decision P0-2 (table `meta`).
 //!
 //! The counter only goes up. An ID that the counter gave out is not given out
 //! again: not after a restart, not after a delete of the highest ID, and not
@@ -37,6 +38,10 @@ impl StateDb {
             "CREATE TABLE IF NOT EXISTS counters (
                  name TEXT PRIMARY KEY,
                  next INTEGER NOT NULL CHECK (next >= 0)
+             );
+             CREATE TABLE IF NOT EXISTS meta (
+                 name TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
              )",
         )?;
         Ok(Self {
@@ -108,6 +113,66 @@ impl StateDb {
             .optional()?;
         Ok(next.unwrap_or(0) as u64)
     }
+
+    /// The sum of the token counts of all stored texts, and the record count.
+    /// The keyword vector of a write uses `sum / count` as `avgdl`.
+    pub fn doc_lengths(&self) -> Result<(u64, u64), StateError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        read_doc_lengths(&conn)
+    }
+
+    /// Add the deltas in one transaction and return the new values. An add
+    /// gives (+len, +1), a delete (-len, -1), a text change (new - old, 0).
+    /// A value does not go below 0.
+    pub fn add_doc_lengths(
+        &self,
+        sum_delta: i64,
+        count_delta: i64,
+    ) -> Result<(u64, u64), StateError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (sum, count) = read_doc_lengths(&tx)?;
+        let apply = |v: u64, d: i64| (v as i64).saturating_add(d).max(0) as u64;
+        let new = (apply(sum, sum_delta), apply(count, count_delta));
+        write_doc_lengths(&tx, new)?;
+        tx.commit()?;
+        Ok(new)
+    }
+
+    /// Set both values, for example after a migration.
+    pub fn set_doc_lengths(&self, sum: u64, count: u64) -> Result<(), StateError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        write_doc_lengths(&tx, (sum, count))?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+const DOC_LEN_SUM: &str = "doc_len_sum";
+const DOC_COUNT: &str = "doc_count";
+
+fn read_doc_lengths(conn: &Connection) -> Result<(u64, u64), StateError> {
+    let get = |name: &str| -> Result<u64, StateError> {
+        let v: Option<String> = conn
+            .query_row("SELECT value FROM meta WHERE name = ?1", [name], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(v.and_then(|v| v.parse().ok()).unwrap_or(0))
+    };
+    Ok((get(DOC_LEN_SUM)?, get(DOC_COUNT)?))
+}
+
+fn write_doc_lengths(conn: &Connection, (sum, count): (u64, u64)) -> Result<(), StateError> {
+    for (name, v) in [(DOC_LEN_SUM, sum), (DOC_COUNT, count)] {
+        conn.execute(
+            "INSERT INTO meta (name, value) VALUES (?1, ?2)
+             ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+            rusqlite::params![name, v.to_string()],
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -134,6 +199,24 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn doc_lengths_add_subtract_and_persist() {
+        let dir = TempDir::new("doclen");
+        let db = StateDb::open(&dir.db()).unwrap();
+        assert_eq!(db.doc_lengths().unwrap(), (0, 0));
+        assert_eq!(db.add_doc_lengths(12, 2).unwrap(), (12, 2));
+        assert_eq!(db.add_doc_lengths(-5, -1).unwrap(), (7, 1));
+        // A replace: the new length minus the old length, no count change.
+        assert_eq!(db.add_doc_lengths(3, 0).unwrap(), (10, 1));
+        drop(db);
+        let db = StateDb::open(&dir.db()).unwrap();
+        assert_eq!(db.doc_lengths().unwrap(), (10, 1));
+        db.set_doc_lengths(900, 30).unwrap();
+        assert_eq!(db.doc_lengths().unwrap(), (900, 30));
+        // A sum never goes below 0, also after a lost update.
+        assert_eq!(db.add_doc_lengths(-1000, -40).unwrap(), (0, 0));
     }
 
     #[test]

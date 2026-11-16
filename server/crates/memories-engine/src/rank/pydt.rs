@@ -79,6 +79,19 @@ pub fn checked_ord(year: i64, month: i64, day: i64) -> Option<i64> {
 }
 
 impl PyDateTime {
+    /// `datetime.now(timezone.utc)`.
+    pub fn now_utc() -> Self {
+        let us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_micros() as i64);
+        let us = us + (ymd_to_ord(1970, 1, 1) - 1) * DAY_US;
+        Self {
+            ordinal: us.div_euclid(DAY_US) + 1,
+            day_us: us.rem_euclid(DAY_US),
+            offset_us: Some(0),
+        }
+    }
+
     pub fn fields(&self) -> [i64; 7] {
         let (y, m, d) = ord_to_ymd(self.ordinal);
         let s = self.day_us / 1_000_000;

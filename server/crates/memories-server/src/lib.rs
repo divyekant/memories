@@ -7,6 +7,7 @@ pub mod error;
 pub mod healthcheck;
 pub mod keys;
 pub mod shell;
+pub mod validate;
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
