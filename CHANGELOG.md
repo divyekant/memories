@@ -11,6 +11,15 @@
   parts. `parity/keyword_index/run.py --dataset grow` checks the avgdl rule on
   a store that grows. No change to the Python server or to a client.
   Details: `docs/rust-rewrite/gates/G3.md`.
+- **Bulk writes and relation writes of the Rust server (rewrite task P3-2).**
+  The Rust server answers the 13 routes for bulk deletes, supersede, merge,
+  archive batch, links, folder rename, conflict resolution, deduplicate and
+  missed captures, with the replies of the Python server. The delete routes
+  keep the Python match rules: `delete-by-source` matches a substring and
+  `delete-by-prefix` a plain prefix. `server/scripts/parity_bulk.sh` replays
+  95 golden cases (0 differ) and runs 122 cases on a Python and a Rust server
+  (0 differ, the same deleted IDs). No change to the Python server or to a
+  client. Details: `docs/decisions/2026-11-16-rust-bulk-writes.md`.
 - **Rust usage, metrics and feedback routes (rewrite task P5-1).** The Rust
   server keeps `usage.db` with the seven tables of the Python tracker and
   writes the rows through one writer thread, in batches. It answers
@@ -86,6 +95,19 @@
   temporal filter, the graph step and the query intent rules. Golden cases
   from the Python functions are in `parity/golden/rank/`. CI checks that the
   golden cases are current. No change to the Python server or to a client.
+- **Read routes of the Rust server (rewrite task P2-3).** The Rust server
+  answers `GET /memory/{memory_id}`, `POST /memory/get-batch`, `GET /memories`,
+  `GET /memories/count`, `GET /folders`, `GET /stats`,
+  `GET /memory/{memory_id}/links`, `GET /memory/conflicts`, and the full body
+  of `GET /health` for a request with the `API_KEY` value. Each route reads
+  Qdrant with a get, a page, a count or a scroll, and the counts come from the
+  source map of the engine. No route reads all records into memory. The parity
+  kit replays the 20 golden cases of these routes and sends 371 more read
+  requests to the Python server and the Rust server on the same data: all
+  replies are equal. With 300,000 records, the memory of the process does not
+  increase after 1,000 list requests. `python -m parity replay` gets
+  `--save-vars` and `--vars-file`. No change to the Python server or to a
+  client. Details: `docs/decisions/2026-11-16-rust-read-routes.md`.
 - **Core writes of the Rust server (rewrite task P3-1).** The Rust server
   has `POST /memory/add` (with `deduplicate` and `on_duplicate`),
   `/memory/add-batch`, `/memory/upsert`, `/memory/upsert-batch`, PATCH and

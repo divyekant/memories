@@ -227,6 +227,35 @@ def test_replay_var_sets_a_saved_variable():
     assert seen == {"key:ro": "mem_1"}
 
 
+def test_run_gives_the_saved_variables_to_vars_out():
+    case = {"name": "x", "request": {"method": "GET", "path": "/health"}, "save": {"v": "version"}}
+    with patch.object(kit, "_run_case", lambda *a: ({"status": 200, "body": {"version": "9"}}, 1.0)):
+        out = {}
+        kit.run([case], "http://x", allow_nonempty=True, extra_vars={"a": 1}, vars_out=out)
+    assert out == {"key:admin": kit.ADMIN_KEY_DEFAULT, "a": 1, "v": "9"}
+
+
+def test_replay_saves_and_loads_variables(tmp_path):
+    saved = tmp_path / "vars.json"
+    seen = {}
+
+    def fake_run(cases, base_url, **kw):
+        seen.update(kw["extra_vars"])
+        if kw.get("vars_out") is not None:
+            kw["vars_out"].update({"seed0": [0, 1], **kw["extra_vars"]})
+        return []
+
+    from parity.__main__ import main
+    with patch.object(kit, "run", fake_run), patch.object(kit, "dump"):
+        assert main(["replay", "--base-url", "http://x", "--out", "/dev/null", "--only", "health-minimal",
+                     "--save-vars", str(saved)]) == 0
+        assert json.loads(saved.read_text()) == {"seed0": [0, 1]}
+        seen.clear()
+        assert main(["replay", "--base-url", "http://x", "--out", "/dev/null", "--only", "health-minimal",
+                     "--vars-file", str(saved), "--var", "key:ro=mem_1"]) == 0
+    assert seen == {"seed0": [0, 1], "key:ro": "mem_1"}
+
+
 def test_rust_route_table_matches_python_routes():
     """server/crates/memories-server/src/shell.rs ROUTES lists each route of app.py."""
     src = open(os.path.join(os.path.dirname(__file__), "..", "server", "crates", "memories-server",
