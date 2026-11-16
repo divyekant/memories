@@ -37,6 +37,7 @@ and the Python vectors.
 | Out of shadow mode | The run does not replace or delete a record in `memories_v2`. A different record makes `verify` fail. |
 | Free disk space | Before the run: free bytes on the file system of `DATA_DIR` must be 3 times `metadata.json` plus 2 KiB for each record. If Qdrant keeps its files on another disk, this check does not see that disk. |
 | First start of `serve` | If `metadata.json` exists and no migration finished, the server listens, answers only `GET /health`, gives HTTP 503 on the other routes, and runs the migration. If it fails or panics, the process stops with exit code 1 and a message. |
+| No Qdrant server | If `QDRANT_URL` is empty, `serve` logs a warning and does not migrate. The data routes need Qdrant anyway. |
 | Changed file | If the SHA-256 of `metadata.json` differs from the recorded value, `serve` and `migrate` refuse to start and name `memories-server migrate --merge` (task P7-1). |
 
 ## Report

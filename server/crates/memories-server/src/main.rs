@@ -145,6 +145,16 @@ fn first_start_check(cfg: &Config) -> Result<bool, String> {
     if !migrate::metadata_path(&cfg.data_dir).exists() {
         return Ok(false);
     }
+    // With no Qdrant server there is no memories_v2 to write or read; the
+    // data routes stay off (see the Engine in AppState), so do not migrate.
+    if std::env::var("QDRANT_URL")
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        tracing::warn!("metadata.json exists, but QDRANT_URL is empty: no migration");
+        return Ok(false);
+    }
     let state = open_state(cfg)?;
     Ok(migrate::start_action(&cfg.data_dir, &state)? == migrate::StartAction::Migrate)
 }
