@@ -64,7 +64,9 @@ reinforcement, as the Python server shows its in-memory value.
 - `server/scripts/list_memory_check.sh`: 300,000 synthetic records, 200
   warm-up list requests, then 1,000 list requests with random offsets, limits
   up to 5,000 and source filters. The check fails if the resident memory of
-  the process increases by more than 16 MB.
+  the process increases by more than 16 MB. Local run (release build, Qdrant
+  1.15.4): 242,840 kB after the warm-up, 247,320 kB after the 1,000 requests
+  (+4,480 kB).
 - Unit tests for the pydantic parse rules of the query values and the batch
   IDs, the folders, the `pinned` compare and the backup count. A Qdrant test
   for the page of the store.
