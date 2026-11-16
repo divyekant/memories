@@ -198,6 +198,9 @@ jobs:
       - name: P5-2 key admin and audit routes, and keys across the two servers
         run: server/scripts/parity_keys_audit.sh server/target/debug/memories-server
 
+      - name: P4-1 extract job routes with a provider on a closed port
+        run: server/scripts/parity_extract.sh server/target/debug/memories-server
+
   rust-image:
     # Build the Rust image on each architecture. Then start the bundled compose
     # file with that image, with no change to the file, and wait for healthy.

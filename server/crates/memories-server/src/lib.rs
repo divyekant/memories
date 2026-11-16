@@ -4,6 +4,7 @@ pub mod admin;
 pub mod audit;
 pub mod auth;
 pub mod error;
+pub mod extract;
 pub mod healthcheck;
 pub mod keys;
 pub mod shell;
@@ -13,7 +14,8 @@ use std::sync::{Arc, LazyLock};
 
 use axum::{
     Extension, Json, Router,
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State},
+    http::HeaderMap,
     middleware::from_fn,
     middleware::from_fn_with_state,
     routing::{MethodFilter, get, on, patch, post},
@@ -25,6 +27,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 use crate::{
     audit::AuditLog,
     auth::{AuthContext, Failures},
+    extract::{Extract, ExtractConfig},
     keys::KeyStore,
     shell::{Metrics, ROUTES, TrustedProxies},
 };
@@ -77,10 +80,24 @@ pub struct AppState {
     pub failures: Failures,
     pub metrics: Metrics,
     pub trusted: TrustedProxies,
+    pub extract: Extract,
 }
 
 impl AppState {
+    /// A state with the default queue settings in `DATA_DIR` and no extract
+    /// provider. Panics if `state.db` cannot open.
     pub fn new(cfg: &Config, keys: KeyStore, audit: Option<AuditLog>) -> Arc<Self> {
+        let extract = Extract::open(&cfg.data_dir, ExtractConfig::default(), None, None)
+            .expect("cannot open state.db");
+        Self::with_extract(cfg, keys, audit, extract)
+    }
+
+    pub fn with_extract(
+        cfg: &Config,
+        keys: KeyStore,
+        audit: Option<AuditLog>,
+        extract: Extract,
+    ) -> Arc<Self> {
         Arc::new(Self {
             api_key: cfg.api_key.clone(),
             auth_rate_limit: cfg.auth_rate_limit,
@@ -89,6 +106,7 @@ impl AppState {
             failures: Failures::default(),
             metrics: Metrics::new(cfg.metrics_latency_samples),
             trusted: TrustedProxies::parse(&cfg.forwarded_allow_ips),
+            extract,
         })
     }
 }
@@ -105,6 +123,9 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/api/keys/{key_id}"),
     ("GET", "/audit"),
     ("POST", "/audit/purge"),
+    ("POST", "/memory/extract"),
+    ("GET", "/memory/extract/{job_id}"),
+    ("GET", "/extract/status"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -126,7 +147,10 @@ pub fn app(state: Arc<AppState>) -> Router {
             patch(admin::update_key).delete(admin::revoke_key),
         )
         .route("/audit", get(admin::get_audit))
-        .route("/audit/purge", post(admin::purge_audit));
+        .route("/audit/purge", post(admin::purge_audit))
+        .route("/memory/extract", post(extract::enqueue))
+        .route("/memory/extract/{job_id}", get(extract::get_job))
+        .route("/extract/status", get(extract::status));
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
     let public = stubs(
@@ -153,10 +177,21 @@ pub fn app(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// The minimal body. The Python server adds index stats when the caller sends
-/// the `API_KEY` value (or when `API_KEY` is empty); the engine task adds them.
-async fn health() -> Json<Value> {
-    Json(json!({"status": "ok", "service": "memories", "version": VERSION}))
+/// The minimal body. For a caller that sends the `API_KEY` value (or when
+/// `API_KEY` is empty), the body adds the extract queue depth and the age of
+/// the oldest queued job. The engine task adds the index stats of Python.
+async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<Value> {
+    let mut body = json!({"status": "ok", "service": "memories", "version": VERSION});
+    let sent = headers
+        .get("X-API-Key")
+        .map(|v| v.as_bytes())
+        .unwrap_or_default();
+    if state.api_key.is_empty() || auth::ct_eq(sent, state.api_key.as_bytes()) {
+        body.as_object_mut()
+            .unwrap()
+            .extend(extract::health_fields(&state).await);
+    }
+    Json(body)
 }
 
 /// shortcut: this server has no store yet, so the counts are 0. The store
