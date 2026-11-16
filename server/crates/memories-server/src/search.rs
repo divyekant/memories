@@ -162,8 +162,9 @@ impl SearchBody {
         Ok(())
     }
 
-    /// The intent step of `/search` and `/search/evidence`. An error is HTTP
-    /// 500, as in Python (for example "1000000000 days ago").
+    /// The intent step of `/search` and `/search/evidence`. A date that the
+    /// intent step cannot compute (for example "1000000000 days ago") leaves
+    /// the query with no intent. Python v5.19.0 gave HTTP 500.
     fn apply_intent(&mut self) -> Result<(), Response> {
         if !self.auto_intent {
             return Ok(());
@@ -177,17 +178,19 @@ impl SearchBody {
         let [y, mo, d, ..] = reference.fields();
         let given = |v: &Option<String>| v.clone().filter(|s| !s.is_empty());
         let caller_graph = (self.graph_weight != DEFAULT_GRAPH_WEIGHT).then_some(self.graph_weight);
-        let adj = classify_query(
+        let adj = match classify_query(
             &self.query,
             (y, mo, d),
             given(&self.since).as_deref(),
             given(&self.until).as_deref(),
             caller_graph,
-        )
-        .map_err(|e| {
-            tracing::error!(error = ?e, "query intent failed");
-            internal_error()
-        })?;
+        ) {
+            Ok(adj) => adj,
+            Err(e) => {
+                tracing::warn!(error = ?e, "query intent skipped");
+                return Ok(());
+            }
+        };
         if adj.auto_detected {
             self.auto_detected = true;
             if adj.since.as_deref().is_some_and(|s| !s.is_empty()) && given(&self.since).is_none() {

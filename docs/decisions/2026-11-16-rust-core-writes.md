@@ -63,6 +63,7 @@ Only the points of the affected records change.
 | Supersede of the old record | `superseded_by` only in `metadata.json`. | `archived` and `superseded_by` in the Qdrant payload. | Qdrant is the only store. |
 | Usage events (`_log_usage_event`) | Written. | Not written. | Task P5-1 adds them. |
 
-The Rust server keeps one Python defect: a scoped key that patches a record
-out of its scope gets HTTP 500, not 403, because the Python route raises the
-403 inside its `except Exception` block. A change needs a client decision.
+Fixed Python defect (dk, 2026-11-16): a scoped key that patches a record out
+of its scope gets HTTP 403. Python v5.19.0 gives HTTP 500, because the route
+raises the 403 inside its `except Exception` block. The fix is an intended
+difference in `parity/intended.json`.

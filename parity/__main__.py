@@ -60,12 +60,13 @@ def main(argv=None):
     d.add_argument("left")
     d.add_argument("right")
     d.add_argument("--only", type=_names)
+    d.add_argument("--intended", action="store_true", help="apply parity/intended.json (Python left, Rust right)")
     args = p.parse_args(argv)
 
     if args.cmd == "diff":
         left = kit.select(kit.load(args.left), args.only)
         right = kit.select(kit.load(args.right), args.only)
-        problems = kit.diff_captures(left, right)
+        problems = kit.diff_captures(left, right, kit.load_intended() if args.intended else None)
         for prob in problems:
             print(json.dumps(prob, ensure_ascii=False))
         print(f"{len(problems)} case(s) differ", file=sys.stderr)

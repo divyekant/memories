@@ -100,3 +100,11 @@ def test_sort_keeps_methods_of_two_classes_apart(tmp_path):
     rows = sort_tests.sort_file(f, sort_tests.routes())
     assert [(r["test"], r["group"]) for r in rows] == [
         ("test_x.py::TestA::test_same", "http"), ("test_x.py::TestB::test_same", "internals")]
+
+
+def test_fixed_defect_is_known_only_with_the_expected_replies():
+    py = rec("merge-missing-400", "Internal Server Error", rc=500, suite="probes", expect_rc=None)
+    rs = rec("merge-missing-400", {"detail": "Memory 999999 not found"}, rc=400, suite="probes", expect_rc=None)
+    assert verdicts([py], [rs]) == ({"merge-missing-400": "known"}, 0)
+    wrong = dict(rs, rc=500, out="Internal Server Error")
+    assert verdicts([py], [wrong])[1] == 1

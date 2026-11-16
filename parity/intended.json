@@ -1,0 +1,155 @@
+[
+  {
+    "case": "supersede-legacy-rw-missing",
+    "route": "POST /memory/supersede",
+    "python": {
+      "status": 500
+    },
+    "rust": {
+      "status": 404,
+      "body": {
+        "detail": "Memory 999999 not found"
+      }
+    },
+    "reason": "Python reads the record outside its try: a missing record with a scoped key gave the plain-text 500."
+  },
+  {
+    "case": "merge-missing-500",
+    "route": "POST /memory/merge",
+    "python": {
+      "status": 500
+    },
+    "rust": {
+      "status": 400,
+      "body": {
+        "detail": "Memory 999999 not found"
+      }
+    },
+    "reason": "Python reads each record outside its try: a missing ID gave the plain-text 500. The engine check gives 400."
+  },
+  {
+    "case": "merge-dup-400",
+    "route": "POST /memory/merge",
+    "python": {
+      "status": 400,
+      "body": {
+        "detail": "Link 245 --supersedes--> 83 already exists"
+      }
+    },
+    "rust": {
+      "status": 400,
+      "body": {
+        "detail": "Memory 83 is listed more than once"
+      }
+    },
+    "reason": "Python added the merged record, then failed on the second link. Rust refuses the request before any write."
+  },
+  {
+    "case": "merge-dup-cleanup",
+    "route": "POST /memory/delete-by-source",
+    "python": {
+      "status": 200,
+      "body": {
+        "deleted_count": 1,
+        "success": true
+      }
+    },
+    "rust": {
+      "status": 200,
+      "body": {
+        "deleted_count": 0,
+        "success": true
+      }
+    },
+    "reason": "Follows from merge-dup-400: the Python server holds the extra merged record, the Rust server does not."
+  },
+  {
+    "case": "link-rw",
+    "route": "POST /memory/{memory_id}/link",
+    "python": {
+      "status": 500
+    },
+    "rust": {
+      "status": 403,
+      "body": {
+        "detail": "Key does not have write access to source: claude-code/voltis/incidents/compliance-reporter"
+      }
+    },
+    "reason": "Python raised the 403 of _require_write inside except Exception: the JSON 500."
+  },
+  {
+    "case": "patch-rw-out-of-scope",
+    "route": "PATCH /memory/{memory_id}",
+    "python": {
+      "status": 500
+    },
+    "rust": {
+      "status": 403,
+      "body": {
+        "detail": "Key does not have write access to source: claude-code/voltis/incidents/compliance-reporter"
+      }
+    },
+    "reason": "Python raised the 403 of _require_write inside except Exception: the JSON 500."
+  },
+  {
+    "case": "keys-update-principal-404",
+    "route": "PATCH /api/keys/{key_id}",
+    "python": {
+      "status": 422
+    },
+    "rust": {
+      "status": 404,
+      "body": {
+        "detail": "Key 'no-principal_id-key' not found"
+      }
+    },
+    "reason": "Python gave 422 when the missing key ID held the text principal_id."
+  },
+  {
+    "case": "search-intent-overflow",
+    "route": "POST /search",
+    "python": {
+      "status": 500
+    },
+    "rust": {
+      "status": 200,
+      "body": {
+        "count": 0,
+        "query": "what happened 1000000000 days ago",
+        "results": []
+      }
+    },
+    "reason": "A date that the intent step cannot compute gave the plain-text 500. Rust searches with no intent."
+  },
+  {
+    "case": "unlink-missing-500",
+    "route": "DELETE /memory/{memory_id}/link/{target_id}",
+    "python": {
+      "status": 500
+    },
+    "rust": {
+      "status": 404,
+      "body": {
+        "detail": "Memory ID 999999 not found"
+      }
+    },
+    "reason": "Python has no try in this route: a missing record gave the plain-text 500."
+  },
+  {
+    "case": "dedup",
+    "route": "POST /memory/deduplicate",
+    "python": {
+      "status": 500
+    },
+    "rust": {
+      "status": 200,
+      "body": {
+        "dry_run": false,
+        "duplicate_pairs": 1,
+        "remaining": 146,
+        "removed": 1
+      }
+    },
+    "reason": "Python deleted the records, then its audit call did len() of an int: the JSON 500 and no audit row."
+  }
+]

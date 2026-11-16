@@ -347,6 +347,34 @@ def test_corpus_check_compares_similar_text_and_candidate_sources():
     assert ec.check([tokens], [base])  # compared when the similar lists are equal
 
 
+# -- intended differences -----------------------------------------------------
+
+def test_intended_difference_replaces_the_python_reply():
+    left = [{"name": "x", "request": {"method": "GET", "path": "/x"},
+             "response": {"status": 500, "content_type": "text/plain", "body_type": "text", "body": "Internal Server Error"}}]
+    right = copy.deepcopy(left)
+    right[0]["response"] = {"status": 404, "content_type": "application/json", "body_type": "json",
+                            "body": {"detail": "gone"}}
+    intended = {"x": {"case": "x", "python": {"status": 500}, "rust": {"status": 404, "body": {"detail": "gone"}}}}
+    assert kit.diff_captures(left, right, intended={}) != []
+    assert kit.diff_captures(left, right, intended=intended) == []
+    right[0]["response"]["body"] = {"detail": "other"}
+    assert kit.diff_captures(left, right, intended=intended) != []
+    left[0]["response"]["status"] = 404
+    stale = kit.diff_captures(left, left, intended=intended)
+    assert stale and "stale" in stale[0]["problems"][0]
+    assert kit.diff_captures(left, left) == [], "no intended differences unless the caller passes them"
+
+
+def test_intended_differences_name_bulk_cases_only():
+    from parity import bulk_scenario
+    bulk = {c["name"] for c in bulk_scenario.build()}
+    main = {c["name"] for c in scenario.build()}
+    for name, d in kit.load_intended().items():
+        assert name in bulk and name not in main, name
+        assert d["reason"] and d["route"]
+
+
 def test_live_probes_and_agreement():
     from parity import extract_live as live
     names = [p["name"] for p in live.probes()]

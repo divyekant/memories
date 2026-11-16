@@ -404,12 +404,10 @@ pub async fn patch(
         None
     };
     if auth.prefixes.is_some() {
-        let e = existing.as_ref().map(source_of).unwrap_or_default();
-        // Python raises the 403 inside its `except Exception`, so the reply is 500.
-        let denied =
-            !auth.can_write(&e) || patch.source.as_deref().is_some_and(|s| !auth.can_write(s));
-        if denied {
-            return Err(server_error());
+        // Python v5.19.0 raised this 403 inside `except Exception`: a 500.
+        require_write(&auth, &existing.as_ref().map(source_of).unwrap_or_default())?;
+        if let Some(s) = patch.source.as_deref() {
+            require_write(&auth, s)?;
         }
     }
     let apply = trusted.is_some()

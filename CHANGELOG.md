@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **Rust server fixes 10 Python defects that earlier tasks kept for parity.**
+  For example, a scoped key that writes out of its scope gets 403, not 500.
+  `POST /memory/deduplicate` returns its result and writes the audit row.
+  `POST /memory/merge` with a repeated ID writes nothing. The parity diff reads
+  the fixes from `parity/intended.json`. No change to the Python server or to
+  a client. Details: `docs/decisions/2026-11-16-rust-fixed-python-defects.md`.
 - **Keyword vector pass of the Rust server (rewrite task P3-4).** A background
   job writes all the keyword vectors again with the current average document
   length, when the average moves more than 25% from the last pass (at most

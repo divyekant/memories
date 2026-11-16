@@ -264,14 +264,13 @@ impl Writer {
         );
     }
 
-    /// `remove_link`. As in Python, a record with no `links` gets an empty
-    /// list when nothing is removed.
+    /// `remove_link`. A call that removes nothing writes nothing (Python
+    /// v5.19.0 gave a record with no links an empty `links` list).
     pub async fn remove_link(&self, from_id: i64, to_id: i64, link_type: &str) -> Result<Value> {
         let _g = self.lock.lock().await;
         let Some(mut from) = self.record(from_id).await? else {
             return Ok(json!({"removed": false}));
         };
-        let had_links = from.links.is_some();
         let links = from.links.get_or_insert_with(Vec::new);
         let before = links.len();
         links.retain(|l| !(l.to_id == to_id && l.link_type == link_type));
@@ -279,7 +278,7 @@ impl Writer {
         if removed && links.is_empty() {
             from.links = None;
         }
-        if removed || !had_links {
+        if removed {
             self.e().store.replace_payload(&from).await?;
             self.e().catalog_mut().put(&from);
         }
@@ -299,6 +298,14 @@ impl Writer {
     ) -> Result<Value> {
         if ids.len() < 2 {
             return Err(invalid("merge_memories requires at least 2 IDs"));
+        }
+        // Python v5.19.0 added the merged record, then failed on the repeated link.
+        if let Some(i) = ids
+            .iter()
+            .enumerate()
+            .find_map(|(n, i)| ids[..n].contains(i).then_some(i))
+        {
+            return Err(invalid(format!("Memory {i} is listed more than once")));
         }
         let _g = self.lock.lock().await;
         let sources: Vec<String> = {
@@ -321,15 +328,10 @@ impl Writer {
         }
         validate_project_write(&merged_text, source, trusted)?;
         // Python adds the record, then adds each link. This server writes the
-        // links with the new point. A repeated ID fails as the second
-        // `add_link` fails in Python: after the add, with no record archived.
+        // links with the new point.
         let mut holder = Record::default();
-        let mut duplicate = None;
         for &mid in ids {
-            if let Err(e) = push_link(&mut holder, mid, "supersedes") {
-                duplicate = Some(e);
-                break;
-            }
+            push_link(&mut holder, mid, "supersedes")?;
         }
         let links = holder.links.unwrap_or_default();
         let mut extra = Map::new();
@@ -345,16 +347,6 @@ impl Writer {
         let unique: Vec<u64> = ids.iter().map(|&i| i as u64).collect();
         let reserved = self.e().state.reserve_ids(1)?;
         let new_id = reserved.start as i64;
-        // A repeated ID has no second step, so it needs no journal entry.
-        if let Some(WriteError::Invalid(m)) = duplicate {
-            self.put_new(vec![item], trusted, vec![extra], reserved)
-                .await?;
-            for l in &links {
-                self.linked(new_id, l.to_id, "supersedes", source);
-            }
-            let to = m.split("--> ").nth(1).unwrap_or_default().to_owned();
-            return Err(invalid(format!("Link {new_id} --supersedes--> {to}")));
-        }
         let op = json!({"op": "merge", "ids": unique, "new": new_id});
         let entry = self.begin(&op)?;
         let steps = async {

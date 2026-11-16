@@ -129,8 +129,8 @@ PROBES = [
     ("restore-400", "admin", "POST", "/restore", {"backup_name": "../etc"}),
     ("merge-422-one", "admin", "POST", "/memory/merge", {"ids": ["{mine}"], "merged_text": "g6", "source": "claude-code/g6scope"}),
     ("merge-422-empty", "admin", "POST", "/memory/merge", {"ids": [], "merged_text": "g6", "source": "claude-code/g6scope"}),
-    # The real Python engine gives 500 here; the 400 of the Python test needs a mock.
-    ("merge-500-missing", "admin", "POST", "/memory/merge", {"ids": ["{mine}", 999999], "merged_text": "g6", "source": "claude-code/g6scope"}),
+    # Python v5.19.0 gives a plain 500 here; the Rust server gives 400 (see FIXED).
+    ("merge-missing-400", "admin", "POST", "/memory/merge", {"ids": ["{mine}", 999999], "merged_text": "g6", "source": "claude-code/g6scope"}),
     ("extract-422-size", "admin", "POST", "/memory/extract", {"messages": "x" * 600000, "source": "claude-code/g6scope"}),
     ("extract-400-scoped", "scoped", "POST", "/memory/extract", {"messages": "user: g6"}),
     ("extract-dry-run-202", "admin", "POST", "/memory/extract", {"messages": "user: g6", "source": "claude-code/g6scope", "dry_run": True}),
@@ -193,6 +193,13 @@ KNOWN = {
                               "the release bump of task P7-2 (G6.md, finding 1)."),
                               lambda v: re.sub(r"deployed: [^\n]*", "deployed: <version>", v)
                               if isinstance(v, str) else v),
+}
+
+# Python v5.19.0 defects that the Rust server fixes: (suite, step) ->
+# (Python status, Rust status, Rust output, reason). See docs/decisions/2026-11-16-rust-fixed-python-defects.md.
+FIXED = {
+    ("probes", "merge-missing-400"): (500, 400, {"detail": "Memory 999999 not found"},
+                                  "Python gives a plain-text 500 for a missing merge ID; Rust gives 400."),
 }
 
 
@@ -498,6 +505,14 @@ def compare(ref, new):
         key = (n["suite"], n["step"])
         r = by_key.pop(key, None)
         problems, known = [], False
+        fixed = FIXED.get(key)
+        if fixed and r is not None:
+            py_rc, rs_rc, rs_out, reason = fixed
+            if (r["rc"], n["rc"], n["out"]) == (py_rc, rs_rc, rs_out):
+                rows.append((*key, "known", reason))
+                continue
+            problems.append(f"fixed defect: expected Python {py_rc} and Rust {rs_rc} {rs_out}, "
+                            f"got {r['rc']} and {n['rc']} {n['out']}")
         if r is None:
             problems.append("step is missing on the reference server")
         else:

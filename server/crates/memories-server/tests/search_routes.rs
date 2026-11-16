@@ -122,7 +122,7 @@ async fn explain_needs_an_admin_key_and_routes_need_the_engine() {
 }
 
 #[tokio::test]
-async fn intent_error_is_a_plain_500() {
+async fn intent_error_leaves_the_query_with_no_intent() {
     let st = state_with_ro_key();
     let req = Request::post("/search")
         .header("X-API-Key", ADMIN)
@@ -131,7 +131,6 @@ async fn intent_error_is_a_plain_500() {
         ))
         .unwrap();
     let res = app(st).oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    assert_eq!(&bytes[..], b"Internal Server Error");
+    // The search goes past the intent step to the engine, which this state has not.
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
