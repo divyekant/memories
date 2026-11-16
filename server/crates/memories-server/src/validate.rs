@@ -58,7 +58,12 @@ impl<'a> Fields<'a> {
         };
         let loc = self.at(name);
         let Some(s) = v.as_str() else {
-            let e = item("string_type", loc, "Input should be a valid string", v.clone());
+            let e = item(
+                "string_type",
+                loc,
+                "Input should be a valid string",
+                v.clone(),
+            );
             self.errors.push(e);
             return None;
         };
@@ -235,7 +240,12 @@ pub fn int(v: &Value, loc: Vec<Value>, errors: &mut Vec<Value>) -> Option<i64> {
         _ => None,
     };
     if r.is_none() {
-        errors.push(item("int_type", loc, "Input should be a valid integer", v.clone()));
+        errors.push(item(
+            "int_type",
+            loc,
+            "Input should be a valid integer",
+            v.clone(),
+        ));
     }
     r
 }
@@ -327,7 +337,9 @@ mod tests {
             let e = errors_of(json!({"text": "x", "source": "s", "deduplicate": v}));
             assert_eq!(e.as_array().unwrap().is_empty(), ok, "{v}: {e}");
         }
-        let kind = |v: Value| errors_of(json!({"text": "x", "source": "s", "deduplicate": v}))[0]["type"].clone();
+        let kind = |v: Value| {
+            errors_of(json!({"text": "x", "source": "s", "deduplicate": v}))[0]["type"].clone()
+        };
         assert_eq!(kind(json!(2)), "bool_parsing");
         assert_eq!(kind(json!(0.5)), "bool_type");
         assert_eq!(kind(Value::Null), "bool_type");
@@ -356,7 +368,8 @@ mod tests {
         let check = |body: Value| {
             let m = obj(body);
             let mut errors = Vec::new();
-            Fields::new(&m, vec![json!("body")], &mut errors).list("ids", (1, 2), |v, l, e| int(v, l, e));
+            Fields::new(&m, vec![json!("body")], &mut errors)
+                .list("ids", (1, 2), |v, l, e| int(v, l, e));
             Value::Array(errors)
         };
         assert_eq!(

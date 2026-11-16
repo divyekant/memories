@@ -1235,6 +1235,7 @@ dependencies = [
  "memories-embed",
  "memories-store",
  "memories-types",
+ "qdrant-client",
  "regex",
  "serde_json",
  "thiserror",

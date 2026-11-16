@@ -27,10 +27,7 @@ pub struct PolicyError(pub String);
 pub fn is_valid_slug(s: &str) -> bool {
     let ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
     let b = s.as_bytes();
-    !b.is_empty()
-        && ok(b[0])
-        && ok(b[b.len() - 1])
-        && b.iter().all(|&c| ok(c) || c == b'-')
+    !b.is_empty() && ok(b[0]) && ok(b[b.len() - 1]) && b.iter().all(|&c| ok(c) || c == b'-')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +45,9 @@ pub fn parse_memory_source(source: &str) -> Option<MemorySource<'_>> {
     let parts: Vec<&str> = source.split('/').collect();
     match parts.as_slice() {
         ["person", principal, project, kind]
-            if is_valid_slug(principal) && is_valid_slug(project) && PROJECT_KINDS.contains(kind) =>
+            if is_valid_slug(principal)
+                && is_valid_slug(project)
+                && PROJECT_KINDS.contains(kind) =>
         {
             Some(MemorySource {
                 namespace: "person",
@@ -261,11 +260,7 @@ fn is_placeholder(value: &str) -> bool {
 /// `_suppressed`, with Python character windows of 30 before and 60 after.
 fn suppressed(text: &str, start: usize, end: usize, value: &str) -> bool {
     let before = &text[..start];
-    let from = before
-        .char_indices()
-        .rev()
-        .nth(29)
-        .map_or(0, |(i, _)| i);
+    let from = before.char_indices().rev().nth(29).map_or(0, |(i, _)| i);
     let after = &text[end..];
     let to = after.char_indices().nth(60).map_or(after.len(), |(i, _)| i);
     is_placeholder(value)
@@ -291,23 +286,34 @@ mod tests {
     // Expected values: project_memory.py and transcript_hygiene.py of v5.19.0.
     #[test]
     fn sources_parse_as_python() {
+        #[allow(clippy::type_complexity)]
         let cases: [(&str, Option<(&str, &str, &str, Option<&str>)>); 13] = [
-            ("project/a/decisions", Some(("project", "a", "decisions", None))),
+            (
+                "project/a/decisions",
+                Some(("project", "a", "decisions", None)),
+            ),
             ("project/a/bad", None),
             ("project/A/state", None),
             ("project//state", None),
-            ("person/dk/a/knowledge", Some(("person", "a", "knowledge", Some("dk")))),
+            (
+                "person/dk/a/knowledge",
+                Some(("person", "a", "knowledge", Some("dk"))),
+            ),
             ("person/dk/a", None),
             ("personx/y", None),
             ("person/dk/a/knowledge/x", None),
             ("codex/x", None),
             ("project/", None),
             ("person", None),
-            ("project/a-b/operations", Some(("project", "a-b", "operations", None))),
+            (
+                "project/a-b/operations",
+                Some(("project", "a-b", "operations", None)),
+            ),
             ("project/-a/state", None),
         ];
         for (s, want) in cases {
-            let got = parse_memory_source(s).map(|p| (p.namespace, p.project_id, p.kind, p.principal_id));
+            let got =
+                parse_memory_source(s).map(|p| (p.namespace, p.project_id, p.kind, p.principal_id));
             assert_eq!(got, want, "{s}");
         }
     }
@@ -386,11 +392,15 @@ mod tests {
     fn project_writes() {
         let t = TrustedAuthorship::principal("dk", "codex");
         assert_eq!(
-            validate_project_write("x", "project/bad", None).unwrap_err().0,
+            validate_project_write("x", "project/bad", None)
+                .unwrap_err()
+                .0,
             MSG_PROJECT_SHAPE
         );
         assert_eq!(
-            validate_project_write("x", "project/a/state", None).unwrap_err().0,
+            validate_project_write("x", "project/a/state", None)
+                .unwrap_err()
+                .0,
             MSG_NEEDS_AUTHOR
         );
         assert_eq!(

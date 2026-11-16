@@ -77,7 +77,10 @@ impl EventBus {
     /// `recent_events(limit)`: the last `limit` events, oldest first.
     pub fn recent(&self, limit: usize) -> Vec<Event> {
         let h = self.history.lock().unwrap_or_else(|e| e.into_inner());
-        h.iter().skip(h.len().saturating_sub(limit)).cloned().collect()
+        h.iter()
+            .skip(h.len().saturating_sub(limit))
+            .cloned()
+            .collect()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
