@@ -1,0 +1,29 @@
+{
+  "case": "ollama-health",
+  "provider": "ollama",
+  "model": null,
+  "env": {},
+  "base_url_env": "OLLAMA_URL",
+  "base_url_suffix": "",
+  "call": {
+    "kind": "health",
+    "system": "You extract facts.\nReturn a JSON array.",
+    "user": "Conversation:\nuser: I moved to Lisbon in 2024. ünïcode ✓"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/tags",
+    "headers": {},
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "models": []
+    }
+  },
+  "result": {
+    "healthy": true,
+    "model": "gemma3:4b"
+  }
+}
