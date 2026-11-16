@@ -175,6 +175,12 @@ jobs:
           ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: cargo test --locked -p memories-engine --test writes -- --ignored --nocapture
 
+      - name: Backup, export and import routes against Qdrant 1.15.4 (task P5-4)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: cargo test --locked -p memories-server --test backup -- --ignored --nocapture
+
       - name: Bulk writes and relation writes against Qdrant 1.15.4 and the embedder (task P3-2)
         env:
           QDRANT_TEST_URL: http://127.0.0.1:6333
@@ -288,6 +294,12 @@ jobs:
         run: |
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
           server/scripts/parity_writes.sh server/target/debug/memories-server
+
+      - name: P5-4 export and import across the two servers, backup and restore
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_backup.sh server/target/debug/memories-server
 
       - name: P5-1 usage, metrics and feedback routes, and usage.db across the two servers
         # Uses the ONNX Runtime that the P2-2 step unpacked.

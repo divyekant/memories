@@ -55,6 +55,17 @@ pub enum StoreError {
     IdInPayload { id: u64 },
     #[error("collection {collection} exists with another vector config: {detail}")]
     BadCollection { collection: String, detail: String },
+    /// A call of the Qdrant REST API (snapshot files) failed.
+    #[error("qdrant rest: {0}")]
+    Rest(String),
+    #[error("snapshot file: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl From<reqwest::Error> for StoreError {
+    fn from(e: reqwest::Error) -> Self {
+        Self::Rest(e.to_string())
+    }
 }
 
 /// A point to write.
@@ -84,6 +95,22 @@ pub struct QdrantStore {
     write_consistency_factor: u32,
     /// Qdrant data calls by operation name, for the write cost tests.
     ops: Mutex<BTreeMap<&'static str, u64>>,
+    /// The REST URL and key, for the snapshot files (gRPC does not send them).
+    rest_url: String,
+    api_key: Option<String>,
+    http: reqwest::Client,
+}
+
+/// Percent-encode a path segment (each byte that is not unreserved).
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 fn too_large(value: &Json) -> bool {
@@ -186,6 +213,16 @@ impl QdrantStore {
             replication_factor: settings.replication_factor,
             write_consistency_factor: settings.write_consistency_factor,
             ops: Mutex::default(),
+            rest_url: settings.url.trim_end_matches('/').to_owned(),
+            api_key: settings.api_key.clone(),
+            // As the gRPC client: no HTTP proxy from the environment.
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                // A stalled transfer must not hold the write lock with no limit.
+                .read_timeout(std::time::Duration::from_secs(300))
+                .build()
+                .map_err(StoreError::from)?,
         })
     }
 
@@ -427,6 +464,93 @@ impl QdrantStore {
         self.op("create_snapshot");
         let r = self.client.create_snapshot(&self.collection).await?;
         Ok(r.snapshot_description.map(|d| d.name).unwrap_or_default())
+    }
+
+    fn rest(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        let url = format!(
+            "{}/collections/{}/snapshots{path}",
+            self.rest_url, self.collection
+        );
+        let r = self.http.request(method, url);
+        match &self.api_key {
+            Some(k) => r.header("api-key", k),
+            None => r,
+        }
+    }
+
+    async fn checked(r: reqwest::RequestBuilder) -> Result<reqwest::Response, StoreError> {
+        let resp = r.send().await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(StoreError::Rest(format!(
+            "HTTP {status}: {}",
+            body.chars().take(300).collect::<String>()
+        )))
+    }
+
+    /// Write the snapshot `name` of the collection to `dest`.
+    pub async fn download_snapshot(
+        &self,
+        name: &str,
+        dest: &std::path::Path,
+    ) -> Result<(), StoreError> {
+        use tokio::io::AsyncWriteExt;
+        let path = format!("/{}", urlencode(name));
+        let mut resp = Self::checked(self.rest(reqwest::Method::GET, &path)).await?;
+        let mut file = tokio::fs::File::create(dest).await?;
+        while let Some(chunk) = resp.chunk().await? {
+            file.write_all(&chunk).await?;
+        }
+        file.sync_all().await?;
+        Ok(())
+    }
+
+    pub async fn delete_snapshot(&self, name: &str) -> Result<(), StoreError> {
+        let path = format!("/{}?wait=true", urlencode(name));
+        Self::checked(self.rest(reqwest::Method::DELETE, &path)).await?;
+        Ok(())
+    }
+
+    /// Replace the collection with the points of a snapshot file
+    /// (`priority=snapshot`). The file streams; it does not go into memory.
+    pub async fn upload_snapshot(&self, file: &std::path::Path) -> Result<(), StoreError> {
+        use futures_util::StreamExt;
+        use futures_util::stream;
+        use tokio::io::AsyncReadExt;
+        let boundary = "memories-snapshot-boundary-7f3a9c";
+        let head = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"snapshot\"; filename=\"collection.snapshot\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        );
+        let tail = format!("\r\n--{boundary}--\r\n");
+        let f = tokio::fs::File::open(file).await?;
+        let len = f.metadata().await?.len() + head.len() as u64 + tail.len() as u64;
+        let chunks = stream::unfold(f, |mut f| async move {
+            let mut buf = vec![0u8; 1 << 20];
+            match f.read(&mut buf).await {
+                Ok(0) => None,
+                Ok(n) => {
+                    buf.truncate(n);
+                    Some((Ok(buf), f))
+                }
+                Err(e) => Some((Err(e), f)),
+            }
+        });
+        let body = stream::once(async move { Ok(head.into_bytes()) })
+            .chain(chunks)
+            .chain(stream::once(async move { Ok(tail.into_bytes()) }));
+        let r = self
+            .rest(reqwest::Method::POST, "/upload?priority=snapshot&wait=true")
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header(reqwest::header::CONTENT_LENGTH, len)
+            .body(reqwest::Body::wrap_stream(body));
+        Self::checked(r).await?;
+        Ok(())
     }
 
     pub async fn delete_collection(&self) -> Result<(), StoreError> {
