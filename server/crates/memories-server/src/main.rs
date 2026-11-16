@@ -13,9 +13,10 @@ use memories_extract::provider::Provider;
 use memories_server::{
     AppState, Config,
     audit::AuditLog,
-    extract::{Extract, ExtractConfig, Pipeline, ProviderOnly},
+    extract::{Extract, ExtractConfig, Pipeline},
     keys::KeyStore,
     migrate,
+    pipeline::{ExtractPipeline, PipelineConfig},
 };
 use memories_store::{QdrantSettings, QdrantStore, StateDb};
 use memories_types::config;
@@ -173,9 +174,12 @@ fn main() -> std::process::ExitCode {
             None
         }
     };
-    let pipeline = provider
-        .clone()
-        .map(|p| Arc::new(ProviderOnly(p)) as Arc<dyn Pipeline>);
+    let pipeline = provider.clone().map(|provider| {
+        Arc::new(ExtractPipeline {
+            provider,
+            cfg: PipelineConfig::from_env(),
+        }) as Arc<dyn Pipeline>
+    });
     let extract = match Extract::open(&cfg.data_dir, ExtractConfig::from_env(), provider, pipeline)
     {
         Ok(e) => e,

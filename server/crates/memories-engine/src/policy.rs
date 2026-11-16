@@ -285,6 +285,49 @@ fn suppressed(text: &str, start: usize, end: usize, value: &str) -> bool {
         || LOCAL_HOST_AFTER.is_match(&after[..to])
 }
 
+/// The type names of [`PATTERNS`], in the same order.
+const PATTERN_NAMES: [&str; 9] = [
+    "aws_access_key",
+    "github_token",
+    "openai_style_key",
+    "slack_token",
+    "telegram_bot_token",
+    "jwt",
+    "url_credentials",
+    "bearer_token",
+    "key_value_secret",
+];
+
+/// `transcript_hygiene.redact_secrets`: each credential becomes
+/// `[REDACTED:<type>]`, one pattern after the other on the changed text.
+/// Returns the text and the sorted names of the types that it found.
+pub fn redact_secrets(text: &str) -> (String, Vec<&'static str>) {
+    let mut text = text.to_owned();
+    let mut found = std::collections::BTreeSet::new();
+    for (name, p) in PATTERN_NAMES.iter().zip(PATTERNS.iter()) {
+        let mut out = String::new();
+        let mut last = 0;
+        for c in p.re.captures_iter(&text) {
+            let m = c.get(1).expect("group 1");
+            if suppressed(&text, m.start(), m.end(), c.get(p.secret).unwrap().as_str()) {
+                continue;
+            }
+            out.push_str(&text[last..m.start()]);
+            if *name == "key_value_secret" {
+                out.push_str(c.get(2).unwrap().as_str());
+            }
+            out.push_str(&format!("[REDACTED:{name}]"));
+            last = m.end();
+            found.insert(*name);
+        }
+        if last > 0 {
+            out.push_str(&text[last..]);
+            text = out;
+        }
+    }
+    (text, found.into_iter().collect())
+}
+
 /// True when `redact_secrets(text)` finds a credential. A match of an earlier
 /// pattern changes the text only after a find, so the original text is enough.
 pub fn has_secret(text: &str) -> bool {
