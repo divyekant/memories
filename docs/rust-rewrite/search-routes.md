@@ -58,8 +58,10 @@ after the search.
   reinforces the hits after it makes the result.
 - `/memory/is-novel` reinforces its hit, because it calls `search(k=1)`.
 - `/memory/is-novel` does not apply the key scope.
-- An error in the intent step gives a plain-text 500 `Internal Server Error`.
-  An error in the engine gives the JSON 500 `{"detail":"Internal server error"}`.
+- An error in the engine gives the JSON 500 `{"detail":"Internal server error"}`.
+- Fixed Python defect: a date that the intent step cannot compute (for example
+  "1000000000 days ago") gave a plain-text 500 in Python v5.19.0. The Rust
+  server searches with no intent. See `parity/intended.json`.
 
 ## Differences and deferred work
 

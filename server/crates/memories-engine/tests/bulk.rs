@@ -236,6 +236,15 @@ async fn links_merge_and_their_errors() {
         "an empty list goes away"
     );
     assert_eq!(
+        w.remove_link(r[0], r[1], "related_to").await.unwrap(),
+        json!({"removed": false})
+    );
+    assert_eq!(
+        s.field(r[0], "links").await,
+        None,
+        "a call that removes nothing adds no empty list"
+    );
+    assert_eq!(
         w.remove_link(999_999, r[1], "related_to").await.unwrap(),
         json!({"removed": false})
     );
@@ -258,6 +267,20 @@ async fn links_merge_and_their_errors() {
             "merge sets no pointer"
         );
     }
+    let before = w.engine.catalog().len();
+    assert_eq!(
+        invalid(
+            w.merge_memories(&[r[2], r[3], r[2]], "x".into(), "team/m", None)
+                .await
+                .unwrap_err()
+        ),
+        format!("Memory {} is listed more than once", r[2])
+    );
+    assert_eq!(
+        w.engine.catalog().len(),
+        before,
+        "a repeated ID adds no record"
+    );
     match w
         .merge_memories(&[r[2], 999_999], "x".into(), "team/m", None)
         .await

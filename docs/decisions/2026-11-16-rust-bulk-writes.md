@@ -38,20 +38,24 @@ The code is `memories_engine::writes::bulk` (the engine part) and
 | Usage rows | `POST /memory/{memory_id}/supersede` and `DELETE /memories` write the usage row of `_log_usage_event`, as Python does. |
 | Errors | Where Python raises an error that no handler catches, the reply is the plain-text 500 of Starlette. Where Python raises an `HTTPException` inside `except Exception`, the reply is the JSON 500. |
 
-## Kept Python defects
+## Fixed Python defects
 
-The live parity run compares each reply with Python, so the Rust server keeps
-these replies of v5.19.0:
+Task P3-2 kept these replies of v5.19.0 for parity. On 2026-11-16, dk decided
+to fix them in the Rust server. Each fix is an intended difference in
+`parity/intended.json`, so the live parity run stays green.
 
-| Route | Python v5.19.0 reply |
-|---|---|
-| `POST /memory/deduplicate` with `dry_run` false | The records are deleted, then HTTP 500: the audit call does `len()` of an int. No audit row. |
-| `POST /memory/{memory_id}/link` with a key that cannot write a record | HTTP 500, not 403. |
-| `POST /memory/merge` with a missing ID | Plain-text HTTP 500, not 400. |
-| `POST /memory/merge` with a repeated ID | HTTP 400 after the merged record is added. No record is archived. |
-| `POST /memory/supersede` with a scoped key and a missing ID | Plain-text HTTP 500. |
-| `DELETE /memory/{memory_id}/link/{target_id}` with a missing record | Plain-text HTTP 500. |
-| `DELETE /memory/{memory_id}/link/{target_id}` with no match | A record with no links gets an empty `links` list. |
+| Route | Python v5.19.0 reply | Rust server reply |
+|---|---|---|
+| `POST /memory/deduplicate` with `dry_run` false | The records are deleted, then HTTP 500: the audit call does `len()` of an int. No audit row. | HTTP 200 with the result. The audit row `memory.deduplicated` has the source `maintenance:count=<removed>`. |
+| `POST /memory/{memory_id}/link` with a key that cannot write a record | HTTP 500. | HTTP 403. |
+| `POST /memory/merge` with a missing ID | Plain-text HTTP 500. | HTTP 400 `Memory <id> not found`. |
+| `POST /memory/merge` with a repeated ID | HTTP 400 after the merged record is added. No record is archived. | HTTP 400 `Memory <id> is listed more than once`. No write. |
+| `POST /memory/supersede` with a scoped key and a missing ID | Plain-text HTTP 500. | HTTP 404 `Memory <id> not found`, as with an admin key. |
+| `DELETE /memory/{memory_id}/link/{target_id}` with a missing record | Plain-text HTTP 500. | HTTP 404 `Memory ID <id> not found`. |
+| `DELETE /memory/{memory_id}/link/{target_id}` with no match | A record with no links gets an empty `links` list. | No write. |
+
+Clients see no new reply type: each new status is one that the route already
+gives for other requests.
 
 ## Differences from the Python server
 

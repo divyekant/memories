@@ -25,6 +25,7 @@ The kit has three commands:
 | `parity/extract_golden.py` | Writes or checks `golden/extract/text.ndjson`: the text cases of the extraction pipeline. |
 | `parity/extract_pipeline.py` | The live extraction check with recorded LLM replies (`golden/extract/pipeline.ndjson`). Run it with `server/scripts/parity_pipeline.sh`. |
 | `parity/extract_corpus.py` | Gate G4 part a: the eval transcripts through the extraction pipeline, with LLM replies that are a function of the prompt (`golden/extract/corpus.ndjson`). Run it with `server/scripts/parity_pipeline.sh <target> --check extract_corpus`. |
+| `parity/intended.json` | The intended differences: Python v5.19.0 defects that the Rust server fixes. Each entry names a case, the Python status and the Rust reply. |
 | `parity_capture.py` | The capture middleware of the Python server. |
 
 ## Scenario
@@ -190,3 +191,17 @@ To write the files again, run this command with Python 3.11:
   thus get a different reply.
 - The text of some Python error messages depends on the order of a Python
   set. `run_python_server.sh` sets `PYTHONHASHSEED=0` to fix the order.
+
+## Intended differences
+
+`diff` reads `parity/intended.json`. For each case in the file, the diff
+compares the reply of the server under test with the `rust` reply of the
+entry, not with the Python reply. If the Python reply no longer has the
+status of the entry, the diff reports the entry as stale.
+
+To add an intended difference, do these steps:
+
+1. Add a case for the defect to a live scenario (for example
+   `parity/bulk_scenario.py`). Do not add it to the golden scenario.
+2. Add an entry with `case`, `route`, `python`, `rust` and `reason`.
+3. Write the fix in the decision record of the route.

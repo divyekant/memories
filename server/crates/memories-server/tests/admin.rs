@@ -183,7 +183,7 @@ async fn key_lifecycle() {
     }
     let (_, list) = call(&st, "GET", "/api/keys", ADMIN, None).await;
     assert_eq!(list["keys"][0]["revoked"], 1);
-    // The Python status test looks for "principal_id" in the message, which holds the id.
+    // Python v5.19.0 gave 422 here: its status test looked for "principal_id" in the message.
     let (s, v) = call(
         &st,
         "PATCH",
@@ -195,7 +195,7 @@ async fn key_lifecycle() {
     assert_eq!(
         (s, v),
         (
-            StatusCode::UNPROCESSABLE_ENTITY,
+            StatusCode::NOT_FOUND,
             json!({"detail": "Key 'principal_id-x' not found"})
         )
     );

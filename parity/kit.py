@@ -10,6 +10,7 @@ import httpx
 from parity_capture import REDACTED, decode_body
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "golden.ndjson"
+INTENDED_PATH = Path(__file__).parent / "intended.json"
 ADMIN_KEY_DEFAULT = "parity-admin-key"
 TOLERANCE = 1e-4
 
@@ -116,8 +117,28 @@ def _media_type(ct):
     return (ct or "").split(";")[0].strip().lower()
 
 
-def diff_captures(left, right):
-    """Compare two capture lists case by case. The right side is the server under test."""
+def load_intended(path=INTENDED_PATH):
+    """The intended differences: Python v5.19.0 defects that the Rust server fixes, by case name."""
+    return {d["case"]: d for d in json.loads(Path(path).read_text(encoding="utf-8"))}
+
+
+def _expected(name, ra, intended):
+    """The reply that the server under test must give. A Python reply that no longer
+    has the defect makes the entry stale, which is a difference."""
+    d = intended.get(name)
+    if d is None:
+        return ra, []
+    if ra["status"] != d["python"]["status"]:
+        return ra, [f"intended difference is stale: Python status {ra['status']} != {d['python']['status']}"]
+    rust = d["rust"]
+    return {"status": rust["status"], "content_type": rust.get("content_type", "application/json"),
+            "body_type": rust.get("body_type", "json"), "body": rust.get("body")}, []
+
+
+def diff_captures(left, right, intended=None):
+    """Compare two capture lists case by case. The right side is the server under test.
+    `intended` maps a case name to an intended difference (see `load_intended`)."""
+    intended = load_intended() if intended is None else intended
     problems = []
     if len(left) != len(right):
         problems.append({"name": "<file>", "problems": [f"case count {len(left)} != {len(right)}"]})
@@ -126,7 +147,9 @@ def diff_captures(left, right):
         found = []
         if a.get("name") != b.get("name"):
             found.append(f"case name {a.get('name')!r} != {b.get('name')!r}")
-        ra, rb = a["response"], b["response"]
+        ra, found_intended = _expected(a.get("name"), a["response"], intended)
+        found += found_intended
+        rb = b["response"]
         if ra["status"] != rb["status"]:
             found.append(f"status {ra['status']} != {rb['status']}")
         if _media_type(ra.get("content_type")) != _media_type(rb.get("content_type")):

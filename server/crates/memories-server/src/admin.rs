@@ -302,16 +302,8 @@ pub async fn update_key(
     let id = key_id.clone();
     match tokio::task::spawn_blocking(move || st.keys.update(&id, &u)).await {
         Ok(Ok(())) => Ok(Json(json!({"success": true, "id": key_id}))),
-        // Python: `422 if "principal_id" in str(e) else 404`. The message holds the
-        // key id, so an id with that text gives 422.
-        Ok(Err(e)) => {
-            let status = if key_id.contains("principal_id") {
-                StatusCode::UNPROCESSABLE_ENTITY
-            } else {
-                StatusCode::NOT_FOUND
-            };
-            Err(key_error(e, status))
-        }
+        // Python v5.19.0 gave 422 when the key id held the text "principal_id".
+        Ok(Err(e)) => Err(key_error(e, StatusCode::NOT_FOUND)),
         Err(e) => {
             tracing::error!(error = %e, "keys.db task failed");
             Err(internal_error())

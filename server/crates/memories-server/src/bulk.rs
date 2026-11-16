@@ -188,8 +188,14 @@ pub async fn supersede(
     require_write(&auth, &source)?;
     let w = writer(&state)?;
     if auth.prefixes.is_some() {
-        // Python reads the record outside its `try`: a missing record is a 500.
-        let existing = w.get(old_id).await.map_err(|_| internal_error())?;
+        // Python v5.19.0 read the record outside its `try`: a missing record was a 500.
+        let existing = w.get(old_id).await.map_err(|e| match e {
+            // The same text as the 404 of the engine step below.
+            WriteError::NotFound(_) => {
+                err(StatusCode::NOT_FOUND, format!("Memory {old_id} not found"))
+            }
+            e => failed(e, false),
+        })?;
         require_write(&auth, &source_of(&existing))?;
     }
     let r = w
@@ -287,8 +293,13 @@ pub async fn merge(
     let trusted = trusted(&auth, &headers);
     let w = writer(&state)?;
     for &mid in &ids {
-        // Python reads each record outside its `try`.
-        let existing = w.get(mid).await.map_err(|_| internal_error())?;
+        // Python v5.19.0 read each record outside its `try`: a missing record was a 500.
+        let existing = w.get(mid).await.map_err(|e| match e {
+            WriteError::NotFound(_) => {
+                err(StatusCode::BAD_REQUEST, format!("Memory {mid} not found"))
+            }
+            e => failed(e, false),
+        })?;
         require_write(&auth, &source_of(&existing))?;
     }
     require_write(&auth, &source)?;
@@ -332,8 +343,8 @@ pub async fn add_link(
     let (id, (to_id, kind)) =
         finish(errors, id.zip(fields)).map_err(IntoResponse::into_response)?;
     let w = writer(&state)?;
-    // Python catches each error here: a ValueError is a 400, and each other
-    // error (the 403 of `_require_write` too) is the JSON 500.
+    // A ValueError is a 400. Python v5.19.0 also caught the 403 of
+    // `_require_write` and gave the JSON 500.
     let fail = |e: WriteError| match e {
         WriteError::NotFound(m) | WriteError::Invalid(m) => err(StatusCode::BAD_REQUEST, m),
         e => {
@@ -342,9 +353,9 @@ pub async fn add_link(
         }
     };
     let from = w.get(id).await.map_err(fail)?;
-    require_write(&auth, &source_of(&from)).map_err(|_| server_error())?;
+    require_write(&auth, &source_of(&from))?;
     let to = w.get(to_id).await.map_err(fail)?;
-    require_write(&auth, &source_of(&to)).map_err(|_| server_error())?;
+    require_write(&auth, &source_of(&to))?;
     let r = w.add_link(id, to_id, &kind).await.map_err(fail)?;
     audit(
         &state,
@@ -374,8 +385,8 @@ pub async fn remove_link(
     let (id, target) = finish(errors, id.zip(target)).map_err(IntoResponse::into_response)?;
     let kind = query_value(&q, "type").unwrap_or_else(|| "related_to".into());
     let w = writer(&state)?;
-    // Python has no `try` here: each engine error is the plain 500.
-    let from = w.get(id).await.map_err(|_| internal_error())?;
+    // Python v5.19.0 gave the plain 500 for a missing record.
+    let from = w.get(id).await.map_err(|e| failed(e, true))?;
     require_write(&auth, &source_of(&from))?;
     let r = w
         .remove_link(id, target, &kind)
@@ -555,6 +566,7 @@ pub async fn resolve_conflicts(
 pub async fn deduplicate(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
+    client: Option<Extension<Client>>,
     JsonBody(map): JsonBody,
 ) -> Reply {
     let mut m = Model::new(&map, body_loc());
@@ -569,10 +581,17 @@ pub async fn deduplicate(
         .await
         .map_err(|e| failed(e, false))?;
     if !dry_run {
-        // Python v5.19.0 audits with `len(result["removed"])` of an int: the
-        // TypeError gives the JSON 500 after the delete, and no audit row.
-        tracing::error!("deduplicate: kept Python reply, 500 after the delete");
-        return Err(server_error());
+        // Python v5.19.0 did `len()` of the int `removed`: a 500 after the delete, no audit row.
+        let source = format!("maintenance:count={}", r["removed"]);
+        audit(
+            &state,
+            &auth,
+            &client,
+            "memory.deduplicated",
+            String::new(),
+            &source,
+        )
+        .await;
     }
     Ok(Json(r))
 }

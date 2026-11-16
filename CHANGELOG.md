@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **Rust server fixes 10 Python defects that earlier tasks kept for parity.**
+  For example, a scoped key that writes out of its scope gets 403, not 500.
+  `POST /memory/deduplicate` returns its result and writes the audit row.
+  `POST /memory/merge` with a repeated ID writes nothing. The parity diff reads
+  the fixes from `parity/intended.json`. No change to the Python server or to
+  a client. Details: `docs/decisions/2026-11-16-rust-fixed-python-defects.md`.
 - **Rust events, webhooks and web UI routes (rewrite task P5-5).** The Rust
   server answers `GET /events/recent`, `GET /events/stream`, the three
   `/webhooks` routes, `GET /ui` and `GET /ui/static/*` with the replies of the

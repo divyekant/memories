@@ -63,8 +63,9 @@ order of tied graph results.
    `SEARCH_PPR_MAX_ITERS`, `SEARCH_PPR_MIN_RELATIVE` and
    `SEARCH_GRAPH_RESERVED_SLOTS` (else `SEARCH_GRAPH_MAX_NEIGHBORS`), with the
    Python defaults.
-8. Call `classify_query` only when `auto_intent` is true. Map `IntentError`
-   to HTTP 500, as Python does (for example "1000000000 days ago").
+8. Call `classify_query` only when `auto_intent` is true. After an
+   `IntentError` (for example "1000000000 days ago"), search with no intent.
+   Python v5.19.0 gives HTTP 500; this fix is an intended difference.
 
 ## Contract differences
 
