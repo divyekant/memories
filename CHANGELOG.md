@@ -11,6 +11,15 @@
   parts. `parity/keyword_index/run.py --dataset grow` checks the avgdl rule on
   a store that grows. No change to the Python server or to a client.
   Details: `docs/rust-rewrite/gates/G3.md`.
+- **Rust usage, metrics and feedback routes (rewrite task P5-1).** The Rust
+  server keeps `usage.db` with the seven tables of the Python tracker and
+  writes the rows through one writer thread, in batches. It answers
+  `GET /usage`, `GET /metrics`, the eight `/metrics/*` routes and the three
+  feedback routes with the replies of the Python server. The new route
+  `GET /metrics/prometheus` (admin only) gives the Prometheus text format.
+  Hybrid search reads the feedback scores. `server/scripts/parity_usage.sh`
+  runs the two servers on one `usage.db` (0 cases differ). No change to the
+  Python server or to a client. Details: `docs/rust-rewrite/usage-metrics.md`.
 - **Rust search routes (rewrite task P2-2).** The Rust server answers
   `POST /search`, `/search/batch`, `/search/explain`, `/search/evidence` and
   `/memory/is-novel` with the replies of the Python server (hybrid false). The
@@ -77,6 +86,16 @@
   temporal filter, the graph step and the query intent rules. Golden cases
   from the Python functions are in `parity/golden/rank/`. CI checks that the
   golden cases are current. No change to the Python server or to a client.
+- **Core writes of the Rust server (rewrite task P3-1).** The Rust server
+  has `POST /memory/add` (with `deduplicate` and `on_duplicate`),
+  `/memory/add-batch`, `/memory/upsert`, `/memory/upsert-batch`, PATCH and
+  DELETE `/memory/{memory_id}` and `/memory/delete-batch`, with the project
+  namespace policy, the events and the audit actions of the Python server.
+  A write changes only the Qdrant points of its records. A PATCH embeds again
+  only when the text changes. CI replays the 49 golden cases of these routes
+  and counts the Qdrant calls at two corpus sizes. No change to the Python
+  server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-core-writes.md`.
 
 ### Changed
 - **Client and tool libraries are updated (Rust rewrite task P0-5).** The
