@@ -32,6 +32,15 @@ ORT_DYLIB_PATH=/path/to/libonnxruntime.so \
   cargo test --locked -p memories-embed --test parity -- --ignored --nocapture
 ```
 
+The record store tests (task P1-3) need a Qdrant server, version 1.15.4 or
+newer. The tests make and delete their own collections:
+
+```bash
+docker run -d -p 6333:6333 -p 6334:6334 qdrant/qdrant:v1.15.4
+QDRANT_TEST_URL=http://127.0.0.1:6333 \
+  cargo test --locked -p memories-store --test qdrant_store -- --ignored
+```
+
 ## Run the server
 
 ```bash
