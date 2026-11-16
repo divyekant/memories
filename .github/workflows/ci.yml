@@ -64,6 +64,12 @@ jobs:
       - name: Search golden files match the Python code (task P2-2)
         run: .venv/bin/python -m parity.search_golden --check
 
+      - name: Extract golden file matches the Python code (task P4-3)
+        run: .venv/bin/python -m parity.extract_golden --check
+
+      - name: Extraction pipeline of the Python server against its golden capture (task P4-3)
+        run: server/scripts/parity_pipeline.sh python
+
       - name: Start the Python reference server
         run: |
           PYTHON=.venv/bin/python parity/run_python_server.sh "$RUNNER_TEMP/parity-data" 18000 > "$RUNNER_TEMP/server.log" 2>&1 &
@@ -273,6 +279,12 @@ jobs:
           QDRANT_URL: http://127.0.0.1:6333
           ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_bulk.sh server/target/debug/memories-server
+
+      - name: P4-3 extraction pipeline with recorded LLM replies
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_pipeline.sh server/target/debug/memories-server
 
       - name: P2-4 gate G3, corpus and graph parts (synthetic data)
         # The steps before leave memories_v2 in the throwaway Qdrant service.

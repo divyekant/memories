@@ -11,6 +11,16 @@
   parts. `parity/keyword_index/run.py --dataset grow` checks the avgdl rule on
   a store that grows. No change to the Python server or to a client.
   Details: `docs/rust-rewrite/gates/G3.md`.
+- **Rust extraction pipeline (rewrite task P4-3).** The Rust server runs the
+  extraction pipeline for each queued job: hygiene, secret redaction, fact
+  extraction, the AUDN decision, the writes, the auto links, the dry run, the
+  debug trace, the single-call profile mode and the regex fallback. It adds
+  `POST /memory/extract/commit` and the four `/extraction/profiles` routes.
+  `server/scripts/parity_pipeline.sh` runs 16 cases with recorded LLM replies
+  against the Python capture: each prompt is equal byte for byte, and each
+  result and stored record is equal (0 differences). No change to the Python
+  server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-extract-pipeline.md`.
 - **Bulk writes and relation writes of the Rust server (rewrite task P3-2).**
   The Rust server answers the 13 routes for bulk deletes, supersede, merge,
   archive batch, links, folder rename, conflict resolution, deduplicate and
