@@ -67,12 +67,30 @@ each provider.
 |---|---|---|---|
 | Commit or sync fallback with an admin managed key | The key's empty prefix list refuses each write | No source limit | The same rule as the queued path (`allowed_prefixes` is `None` for admin) |
 | Single-call provider error | The job fails at once | The try fails; the job gets 3 tries | The queue retry rule of task P4-1 |
-| Write or search error of the store during a job | The job fails at once | The try fails; the job gets 3 tries | The same retry rule. A repeated job is safe: a repeated add is a duplicate (deduplicated), a repeated update finds the old record archived and skips it. |
+| Store not ready, or an error in the regex fallback, during a job | The job fails at once | The try fails; the job gets 3 tries | The same retry rule |
+| A panic in a job | Any exception fails the job at once | The try fails; the job gets 3 tries | The same retry rule |
 | Provider error text in `error_message` and `primary_error` | The SDK exception text | The Rust provider error text | Different HTTP clients. The parity check masks these keys. |
 | A `fact_index` or `old_id` that is not an integer | Python type errors of different kinds | A float `fact_index` or a string fails the job; an integral float `old_id` finds the record | Edge cases of LLM replies |
 | Project promotion | Gated by the promotion settings | Not run | Promotion is off in production. Task P5-6 owns it. |
 | Shadow providers, `EXTRACT_TRAINING_DATA_DIR`, `memory_trimmer` | Present | Not ported | Not used in production |
 | A job with no store yet | Not possible | A job that needs no write ends; a job that needs a write waits for a retry | The store can open after the first-start migration |
+
+A store write error inside one action gives an `error` action, as in
+Python. The job does not fail.
+
+A job can run again after a forced stop or a panic. The new run calls the LLM
+again and does all the writes again. Only some writes are safe to repeat:
+
+| Action | Second run |
+|---|---|
+| ADD | Safe: the add is deduplicated |
+| UPDATE with an `old_id` | Safe: the old record is archived, so the update skips it |
+| UPDATE with a null `old_id` | Makes a duplicate record |
+| CONFLICT | Makes a second conflict record |
+| DELETE | Gives an `error` action, because the record is gone |
+
+A profile `max_facts` or `max_fact_chars` that is negative or a float uses
+the default. Python slices with the negative value, or fails on the float.
 
 `EXTRACT_MAX_FACTS` stays "not used": the profile always gives `max_facts`.
 

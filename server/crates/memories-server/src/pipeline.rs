@@ -178,6 +178,14 @@ fn record_id(v: &Value) -> Option<i64> {
     }
 }
 
+/// A `fact_index` as a Python dict key: `True` finds key 1, `1.0` finds key 1.
+fn index_key(v: &Value) -> Option<i64> {
+    match v {
+        Value::Bool(b) => Some(*b as i64),
+        v => record_id(v),
+    }
+}
+
 /// `facts[fact_index]` with the Python range check.
 fn fact_index(v: Option<&Value>) -> Result<i64, ExecError> {
     match v {
@@ -469,7 +477,7 @@ impl Exec<'_> {
                     return Ok(());
                 }
                 if let Some(id) = record_id(old_id) {
-                    self.writer.delete_memory(id, true).await?;
+                    self.writer.delete_memory(id, false).await?;
                 }
                 out.actions
                     .push(json!({"action": "delete", "old_id": old_id}));
@@ -681,11 +689,13 @@ async fn maintenance(
     source: &str,
 ) -> (Vec<Value>, Vec<Value>) {
     let score = text::mem_score;
-    let deleted: Vec<&Value> = result_actions
+    // Python compares with `==`, so a deleted `5.0` matches the record 5.
+    let deleted: Vec<i64> = result_actions
         .iter()
-        .filter(|a| a["action"] == "delete" && !a["old_id"].is_null())
-        .map(|a| &a["old_id"])
+        .filter(|a| a["action"] == "delete")
+        .filter_map(|a| record_id(&a["old_id"]))
         .collect();
+    let gone = |m: &Value| record_id(&m["id"]).is_some_and(|id| deleted.contains(&id));
     let mut links = Vec::new();
     let mut max_links = cfg.max_links;
     if max_links > 0 && decisions.len() != result_actions.len() {
@@ -709,7 +719,7 @@ async fn maintenance(
             };
             let fi = match d.get("fact_index") {
                 None => -1,
-                Some(v) => record_id(v).unwrap_or(-1),
+                Some(v) => index_key(v).unwrap_or(-1),
             };
             let mems = usize::try_from(fi).ok().and_then(|i| similar.get(i));
             let mut scored: Vec<&Value> = mems
@@ -719,7 +729,7 @@ async fn maintenance(
                     score(m) >= cfg.min_link_score
                         && !m["id"].is_null()
                         && src_of(m) == source
-                        && !deleted.contains(&&m["id"])
+                        && !gone(m)
                         && m["id"].as_i64() != Some(new_id)
                 })
                 .collect();
@@ -745,7 +755,7 @@ async fn maintenance(
         }
         let mut scores: Vec<(&Value, f64, String)> = mems
             .iter()
-            .filter(|m| !m["id"].is_null() && src_of(m) == source && !deleted.contains(&&m["id"]))
+            .filter(|m| !m["id"].is_null() && src_of(m) == source && !gone(m))
             .map(|m| (&m["id"], score(m), src_of(m)))
             .collect();
         if scores.len() < 3 {
@@ -830,7 +840,12 @@ async fn run_job(
             } else {
                 source
             };
-            state.extract.profiles.lock().unwrap().resolve(effective)
+            // A job queued by an older binary has `dry_run` only at the top level.
+            let mut p = state.extract.profiles.lock().unwrap().resolve(effective);
+            if truthy(&request["dry_run"]) {
+                p.insert("dry_run".into(), json!(true));
+            }
+            p
         }
     };
     let job = Job {
@@ -1162,7 +1177,7 @@ impl Job<'_> {
             .iter()
             .map(|d| {
                 let fi_value = d.get("fact_index").cloned().unwrap_or(json!(-1));
-                let fi = record_id(&fi_value).unwrap_or(-1);
+                let fi = index_key(&fi_value).unwrap_or(-1);
                 let mut e = Map::new();
                 e.insert("fact_index".into(), fi_value);
                 e.insert(
@@ -1276,6 +1291,8 @@ mod tests {
         ));
         assert_eq!(record_id(&json!(3.0)), Some(3));
         assert_eq!(record_id(&json!("3")), None);
+        assert_eq!(index_key(&json!(true)), Some(1));
+        assert_eq!(index_key(&json!(2.0)), Some(2));
     }
 
     #[test]
