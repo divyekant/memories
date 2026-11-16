@@ -7,6 +7,8 @@
 
   --only NAME,NAME (replay, diff) uses only the cases with these names.
   --var NAME=VALUE (replay) sets a variable that an earlier case would save, for example key:ro.
+  --save-vars FILE (replay) writes the variables of the run to FILE (JSON), without key:admin.
+  --vars-file FILE (replay) sets the variables of FILE before the --var values.
 """
 
 import argparse
@@ -50,6 +52,8 @@ def main(argv=None):
             s.add_argument("--input", default=str(kit.GOLDEN_PATH))
             s.add_argument("--only", type=_names)
             s.add_argument("--var", action="append", default=[], type=_var)
+            s.add_argument("--save-vars")
+            s.add_argument("--vars-file")
     d = sub.add_parser("diff")
     d.add_argument("left")
     d.add_argument("right")
@@ -65,16 +69,27 @@ def main(argv=None):
         print(f"{len(problems)} case(s) differ", file=sys.stderr)
         return 1 if problems else 0
 
+    vars_out = None
     if args.cmd == "capture":
         cases, extra_vars = SCENARIOS[args.scenario](), {}
     else:
-        cases, extra_vars = kit.select(kit.load(args.input), args.only), dict(args.var)
+        cases, extra_vars = kit.select(kit.load(args.input), args.only), {}
+        if args.vars_file:
+            with open(args.vars_file, encoding="utf-8") as f:
+                extra_vars.update(json.load(f))
+        extra_vars.update(args.var)
+        vars_out = {} if args.save_vars else None
     try:
         records = kit.run(cases, args.base_url, admin_key=args.admin_key, allow_nonempty=args.allow_nonempty,
-                          log=lambda m: print(m, file=sys.stderr), extra_vars=extra_vars)
+                          log=lambda m: print(m, file=sys.stderr), extra_vars=extra_vars, vars_out=vars_out)
     except kit.NotEmptyError as e:
         print(f"refused: {e}", file=sys.stderr)
         return 2
+    if vars_out is not None:
+        vars_out.pop("key:admin", None)  # the admin key is never written to a file
+        fd = os.open(args.save_vars, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(vars_out, f)
     kit.dump(records, args.out)
     print(f"wrote {len(records)} case(s) to {args.out}", file=sys.stderr)
     return 0

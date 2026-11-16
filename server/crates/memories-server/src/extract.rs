@@ -2,8 +2,9 @@
 //! and `GET /extract/status`, with the durable queue in `state.db`.
 //!
 //! The request handler only checks the body and writes the job. Workers take
-//! the jobs and give each one to the [`Pipeline`]. The pipeline of task P4-3
-//! does the extraction; until then the binary uses [`ProviderOnly`].
+//! the jobs and give each one to the [`Pipeline`] (the binary uses
+//! [`crate::pipeline::ExtractPipeline`]). This module also has the commit
+//! route and the four extraction profile routes.
 
 // Each handler returns the axum `Response` as its error; a box gives no gain here.
 #![allow(clippy::result_large_err)]
@@ -20,7 +21,9 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use memories_extract::profiles::ExtractionProfiles;
 use memories_extract::provider::Provider;
+use memories_extract::text::FallbackConfig;
 use memories_store::{Enqueue, JobQueue, QueueStats, StateError};
 use memories_types::config;
 use serde_json::{Map, Value, json};
@@ -32,8 +35,10 @@ use crate::{
     auth::AuthContext,
     error::{ApiError, JsonBody, item, missing, string_too_short},
     keys::{is_valid_slug, utc_now_iso, uuid4_hex},
+    pipeline::{Exec, ExecError, fallback_config, run_fallback},
     shell::{Client, internal_error},
     usage::Row,
+    writes::{require_write, trusted, writer},
 };
 
 /// A job gets this many tries. A try fails when the pipeline returns an error,
@@ -62,8 +67,8 @@ pub struct ExtractConfig {
     pub jobs_max: u64,
     /// `MAX_EXTRACT_MESSAGE_CHARS`.
     pub max_message_chars: usize,
-    /// `EXTRACT_FALLBACK_ADD`. Shown by `/extract/status`; task P4-3 ports the fallback.
-    pub fallback_add: bool,
+    /// `EXTRACT_FALLBACK_*`: the synchronous fallback when there is no provider.
+    pub fallback: FallbackConfig,
     /// The delay before try n+1 is n times this value (10 s). Not an env var.
     pub retry_delay: Duration,
 }
@@ -93,53 +98,38 @@ impl ExtractConfig {
             retention_sec: int("EXTRACT_JOB_RETENTION_SEC", 300, 60),
             jobs_max: int("EXTRACT_JOBS_MAX", 200, 10),
             max_message_chars: int("MAX_EXTRACT_MESSAGE_CHARS", 120_000, 1) as usize,
-            fallback_add: config::parse_bool(var("EXTRACT_FALLBACK_ADD").as_deref(), false),
+            fallback: fallback_config(&var),
             retry_delay: Duration::from_secs(10),
         }
     }
 }
 
-/// The result of one try of a job: the job result, or an error that uses a try.
+/// The error of one try of a job.
+#[derive(Clone, Debug)]
+pub enum PipelineError {
+    /// The try fails; the job goes back to the queue until it had
+    /// [`MAX_TRIES`] tries.
+    Retry(String),
+    /// The job fails at once (Python fails the job with no retry). `result`
+    /// goes in the job body, for example the `project_policy` result.
+    Fatal {
+        error: String,
+        result: Option<Value>,
+    },
+}
+
+/// The result of one try of a job: the job result or an error.
 /// A job can run more than once (a retry, or a stop during a try), so the
 /// writes of a pipeline must give the same result when they run again.
-pub type PipelineFuture = Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>;
+pub type PipelineFuture = Pin<Box<dyn Future<Output = Result<Value, PipelineError>> + Send>>;
 
 /// The extraction of one job. `request` is the JSON that `POST /memory/extract`
 /// stored: `messages`, `source`, `context`, `allowed_prefixes`, `debug`,
-/// `dry_run`, `document_at`, `trusted_authorship` and `promotion_context`.
-/// `promotion_context` is the declaration of the client, checked only for its
-/// shape. The pipeline must apply the gates of `build_promotion_context`.
+/// `dry_run`, `profile`, `document_at`, `trusted_authorship` and
+/// `promotion_context`. `promotion_context` is the declaration of the client,
+/// checked only for its shape.
 pub trait Pipeline: Send + Sync {
-    fn run(&self, request: Value) -> PipelineFuture;
-}
-
-/// The pipeline of the binary until task P4-3. A provider that does not answer
-/// gives the Python result of a provider failure (a completed job). A provider
-/// that answers fails the try, because the extraction is not ported yet.
-// shortcut: no extraction; P4-3 replaces this type with the real pipeline.
-pub struct ProviderOnly(pub Arc<Provider>);
-
-impl Pipeline for ProviderOnly {
-    fn run(&self, _request: Value) -> PipelineFuture {
-        let provider = self.0.clone();
-        Box::pin(async move {
-            if provider.health_check().await {
-                return Err("the extraction pipeline is not ported yet (task P4-3)".into());
-            }
-            Ok(json!({
-                "actions": [],
-                "extracted_count": 0,
-                "stored_count": 0,
-                "updated_count": 0,
-                "deleted_count": 0,
-                "promotion_candidates": [],
-                "tokens": {"extract": {"input": 0, "output": 0}, "audn": {"input": 0, "output": 0}},
-                "error": "provider_runtime_failure",
-                "error_stage": "extract_facts",
-                "error_message": format!("{} provider is not reachable", provider.name()),
-            }))
-        })
-    }
+    fn run(&self, state: Arc<AppState>, request: Value) -> PipelineFuture;
 }
 
 pub struct Extract {
@@ -148,6 +138,8 @@ pub struct Extract {
     pub provider: Option<Arc<Provider>>,
     /// `None`: `POST /memory/extract` answers 501.
     pub pipeline: Option<Arc<dyn Pipeline>>,
+    /// `<data_dir>/extraction_profiles.json`.
+    pub profiles: Mutex<ExtractionProfiles>,
     wake: Notify,
     health: Mutex<Option<(Instant, bool)>>,
     /// One health call at a time, so that the cache holds for each caller.
@@ -164,6 +156,8 @@ impl Extract {
         pipeline: Option<Arc<dyn Pipeline>>,
     ) -> Result<Self, StateError> {
         let queue = JobQueue::open(&data_dir.join("state.db"))?;
+        let profiles = ExtractionProfiles::open(&data_dir.join("extraction_profiles.json"))
+            .map_err(StateError::Task)?;
         let (back, failed) = queue.recover(MAX_TRIES, &utc_now_iso())?;
         if back + failed > 0 {
             tracing::info!(
@@ -177,6 +171,7 @@ impl Extract {
             queue: Arc::new(queue),
             provider,
             pipeline,
+            profiles: Mutex::new(profiles),
             wake: Notify::new(),
             health: Mutex::new(None),
             health_call: tokio::sync::Mutex::new(()),
@@ -263,18 +258,21 @@ async fn worker(state: Arc<AppState>, pipeline: Arc<dyn Pipeline>, id: u64) {
                 continue;
             }
         };
-        let source = job.request["source"].as_str().unwrap_or("").to_string();
+        let source = job.request["source"].as_str().unwrap_or("").to_owned();
         // A task of its own, so that a panic in the pipeline fails only the try.
-        let outcome = match tokio::spawn(pipeline.run(job.request)).await {
+        let outcome = match tokio::spawn(pipeline.run(state.clone(), job.request)).await {
             Ok(r) => r,
-            Err(e) => Err(format!("the pipeline stopped: {e}")),
+            Err(e) => Err(PipelineError::Retry(format!("the pipeline stopped: {e}"))),
         };
         let job_id = job.job_id;
-        if let Ok(result) = &outcome {
-            log_outcome(&state, &source, result);
-        }
-        if let Err(err) = &outcome {
-            tracing::warn!(job_id, attempt = job.attempts, error = %err, "Extraction try failed");
+        match &outcome {
+            Ok(result) => {
+                completed(&state, &job_id, &source, result);
+                log_outcome(&state, &source, result);
+            }
+            Err(PipelineError::Retry(err) | PipelineError::Fatal { error: err, .. }) => {
+                tracing::warn!(job_id, attempt = job.attempts, error = %err, "Extraction try failed");
+            }
         }
         let delay = ex.cfg.retry_delay * job.attempts;
         let mut done = Ok(());
@@ -282,9 +280,12 @@ async fn worker(state: Arc<AppState>, pipeline: Arc<dyn Pipeline>, id: u64) {
             let (id2, out) = (job_id.clone(), outcome.clone());
             done = blocking(&ex.queue, move |q| match out {
                 Ok(result) => q.complete(&id2, &utc_now_iso(), result),
-                Err(err) => q
+                Err(PipelineError::Retry(err)) => q
                     .fail(&id2, &utc_now_iso(), &err, MAX_TRIES, delay)
                     .map(drop),
+                Err(PipelineError::Fatal { error, result }) => {
+                    q.fail_now(&id2, &utc_now_iso(), &error, result)
+                }
             })
             .await;
             if done.is_ok() {
@@ -297,6 +298,23 @@ async fn worker(state: Arc<AppState>, pipeline: Arc<dyn Pipeline>, id: u64) {
             tracing::error!(job_id, error = %e, "state.db: cannot write the job result");
         }
         trim(ex).await;
+    }
+}
+
+/// The `extraction.completed` event of a finished job.
+fn completed(state: &AppState, job_id: &str, source: &str, result: &Value) {
+    if let Some(w) = state.writer.get() {
+        let count = |k: &str| result.get(k).cloned().unwrap_or(json!(0));
+        w.events.emit(
+            "extraction.completed",
+            json!({
+                "job_id": job_id,
+                "source": source,
+                "stored_count": count("stored_count"),
+                "updated_count": count("updated_count"),
+                "conflict_count": count("conflict_count"),
+            }),
+        );
     }
 }
 
@@ -641,13 +659,27 @@ pub async fn enqueue(
             "source is required for scoped keys",
         ));
     }
+    // Admin managed keys have an empty prefix list but no source limit.
+    let allowed = if auth.role == "admin" {
+        None
+    } else {
+        auth.prefixes.clone()
+    };
     if ex.pipeline.is_none() {
-        // shortcut: the synchronous fallback (`EXTRACT_FALLBACK_ADD` with no
-        // provider) is task P4-3; until then that setting also gives 501.
-        return Err(deny(
-            StatusCode::NOT_IMPLEMENTED,
-            "Extraction not configured. Set EXTRACT_PROVIDER env var.",
-        ));
+        if !ex.cfg.fallback.enabled {
+            return Err(deny(
+                StatusCode::NOT_IMPLEMENTED,
+                "Extraction not configured. Set EXTRACT_PROVIDER env var.",
+            ));
+        }
+        let fb = Fallback {
+            auth: &auth,
+            client: client.as_ref().map(|c| &c.0),
+            headers: &headers,
+            body: &body,
+            allowed: allowed.as_deref(),
+        };
+        return fb.run(&state).await;
     }
 
     crate::search::log(
@@ -670,12 +702,15 @@ pub async fn enqueue(
         "auth_key_id": auth.key_id,
         "trusted_authorship": authorship,
     });
-    // Admin managed keys have an empty prefix list but no source limit.
-    let allowed = if auth.role == "admin" {
-        Value::Null
+    let effective = if body.source.is_empty() {
+        "extract/unknown"
     } else {
-        json!(auth.prefixes)
+        &body.source
     };
+    let mut profile = ex.profiles.lock().unwrap().resolve(effective);
+    if body.dry_run {
+        profile.insert("dry_run".into(), json!(true));
+    }
     let request = json!({
         "messages": body.messages,
         "source": body.source,
@@ -683,6 +718,7 @@ pub async fn enqueue(
         "allowed_prefixes": allowed,
         "debug": body.debug,
         "dry_run": body.dry_run,
+        "profile": profile,
         "document_at": body.document_at,
         "trusted_authorship": authorship,
         "promotion_context": body.promotion_context,
@@ -790,7 +826,7 @@ pub async fn queue_fields(state: &AppState) -> Result<Value, Response> {
 pub async fn status(State(state): State<Arc<AppState>>) -> Result<Json<Value>, Response> {
     let ex = &state.extract;
     let mut body = queue_fields(&state).await?;
-    body["fallback_add_enabled"] = json!(ex.cfg.fallback_add);
+    body["fallback_add_enabled"] = json!(ex.cfg.fallback.enabled);
     let Some(provider) = &ex.provider else {
         body["enabled"] = json!(false);
         return Ok(Json(body));
@@ -819,6 +855,301 @@ pub async fn health_fields(state: &Arc<AppState>) -> Map<String, Value> {
     m
 }
 
+// ---- Synchronous fallback ------------------------------------------------------
+
+/// `POST /memory/extract` with no provider and `EXTRACT_FALLBACK_ADD`: the
+/// regex fallback runs in the request, and the job is stored as finished.
+struct Fallback<'a> {
+    auth: &'a AuthContext,
+    client: Option<&'a Client>,
+    headers: &'a HeaderMap,
+    body: &'a ExtractBody,
+    allowed: Option<&'a [String]>,
+}
+
+impl Fallback<'_> {
+    async fn run(&self, state: &Arc<AppState>) -> Result<Response, Response> {
+        let (ex, body) = (&state.extract, self.body);
+        let w = writer(state)?;
+        let job_id = uuid4_hex();
+        let now = utc_now_iso();
+        let mut job = json!({
+            "job_id": job_id,
+            "status": "running",
+            "source": body.source,
+            "context": body.context,
+            "message_length": body.messages.chars().count(),
+            "created_at": now,
+            "started_at": now,
+            "mode": "fallback_add",
+            "auth_key_id": self.auth.key_id,
+            "trusted_authorship": trusted_authorship(self.auth, self.headers),
+        });
+        let t = trusted(self.auth, self.headers);
+        let out = run_fallback(
+            &w,
+            &ex.cfg.fallback,
+            &body.messages,
+            &body.source,
+            &body.context,
+            self.allowed,
+            t.as_ref(),
+        )
+        .await;
+        job["completed_at"] = json!(utc_now_iso());
+        match out {
+            Ok(result) => {
+                completed(state, &job_id, &body.source, &result);
+                let source = if body.source.is_empty() {
+                    "extract/fallback"
+                } else {
+                    &body.source
+                };
+                log_outcome(state, source, &result);
+                tracing::info!(
+                    "Extract fallback completed: job_id={job_id} source={} context={} extracted={} stored={}",
+                    body.source,
+                    body.context,
+                    result["extracted_count"],
+                    result["stored_count"]
+                );
+                job["status"] = json!("completed");
+                job["result"] = result;
+            }
+            Err(e) => {
+                tracing::error!(job_id, error = %e, "Extract fallback failed");
+                job["status"] = json!("failed");
+                job["error"] = json!(e.to_string());
+                if let memories_engine::writes::WriteError::Policy(p) = &e {
+                    job["result"] = json!({"error": "project_policy", "detail": p.0});
+                }
+            }
+        }
+        let (id, stored) = (job_id.clone(), job.clone());
+        blocking(&ex.queue, move |q| q.insert_finished(&id, &stored))
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "state.db: fallback job write failed");
+                internal_error()
+            })?;
+        trim(ex).await;
+        let source = if body.source.is_empty() {
+            "extract/fallback"
+        } else {
+            &body.source
+        };
+        let mut entry = Entry::from_request(self.auth, self.client, "extract");
+        entry.source_prefix = source.into();
+        state.audit(entry).await;
+        let depth = stats(ex).await?.depth;
+        Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "job_id": job_id,
+                "status": job["status"],
+                "queue_depth": depth,
+                "result_url": format!("/memory/extract/{job_id}"),
+            })),
+        )
+            .into_response())
+    }
+}
+
+// ---- Commit ----------------------------------------------------------------------
+
+/// `ExtractCommitRequest`: `actions: List[dict]`, `source` of 1 to 500 characters.
+fn check_commit(map: &Map<String, Value>) -> Result<(Vec<Map<String, Value>>, String), ApiError> {
+    let mut c = Checker {
+        prefix: vec![json!("body")],
+        errors: Vec::new(),
+    };
+    let mut actions = Vec::new();
+    match map.get("actions") {
+        None => {
+            let loc = c.loc("actions");
+            c.errors.push(missing(loc, Value::Object(map.clone())));
+        }
+        Some(Value::Array(items)) => {
+            for (i, v) in items.iter().enumerate() {
+                match v {
+                    Value::Object(m) => actions.push(m.clone()),
+                    v => c.errors.push(item(
+                        "dict_type",
+                        json!(["body", "actions", i]),
+                        "Input should be a valid dictionary",
+                        v.clone(),
+                    )),
+                }
+            }
+        }
+        Some(v) => {
+            let loc = c.loc("actions");
+            c.errors.push(item(
+                "list_type",
+                loc,
+                "Input should be a valid list",
+                v.clone(),
+            ));
+        }
+    }
+    let source = c.string(map, "source", true, false, (1, 500), None);
+    if !c.errors.is_empty() {
+        return Err(ApiError::validation(c.errors));
+    }
+    Ok((actions, source.unwrap_or_default()))
+}
+
+/// `POST /memory/extract/commit`: the approved actions of a dry run, with no
+/// novelty gate. An admin managed key has no source limit here (Python gave
+/// its empty prefix list, which refused each write).
+pub async fn commit(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
+    JsonBody(map): JsonBody,
+) -> Result<Json<Value>, Response> {
+    let (actions, source) = check_commit(&map).map_err(IntoResponse::into_response)?;
+    require_write(&auth, &source)?;
+    let mut approved: Vec<Map<String, Value>> = actions
+        .into_iter()
+        .filter(|a| {
+            a.get("approved")
+                .is_some_and(memories_extract::text::truthy)
+        })
+        .collect();
+    if approved.is_empty() {
+        return Ok(Json(json!({
+            "stored_count": 0, "updated_count": 0, "deleted_count": 0, "conflict_count": 0,
+        })));
+    }
+    let facts: Vec<Value> = approved
+        .iter_mut()
+        .enumerate()
+        .map(|(i, a)| {
+            a.insert("fact_index".into(), json!(i));
+            a.get("fact")
+                .cloned()
+                .unwrap_or_else(|| json!({"text": "", "category": "detail"}))
+        })
+        .collect();
+    let w = writer(&state)?;
+    let t = trusted(&auth, &headers);
+    let allowed = if auth.role == "admin" {
+        None
+    } else {
+        auth.prefixes.clone()
+    };
+    let exec = Exec {
+        writer: &w,
+        source: &source,
+        allowed: allowed.as_deref(),
+        trusted: t.as_ref(),
+        job_id: None,
+        document_at: None,
+        gate: false,
+        threshold: 0.0,
+    };
+    match exec.run(&approved, &facts).await {
+        Ok(r) => Ok(Json(r)),
+        Err(ExecError::Policy(m)) => {
+            Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, m).into_response())
+        }
+        Err(ExecError::Internal(m)) => {
+            tracing::error!(error = %m, "extract commit failed");
+            Err(internal_error())
+        }
+    }
+}
+
+// ---- Extraction profiles -----------------------------------------------------------
+
+fn admin(auth: &AuthContext) -> Result<(), Response> {
+    auth.require_admin().map_err(IntoResponse::into_response)
+}
+
+fn no_profile(prefix: &str) -> Response {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        format!("Profile not found: {prefix}"),
+    )
+    .into_response()
+}
+
+fn profile_io(e: std::io::Error) -> Response {
+    tracing::error!(error = %e, "extraction_profiles.json: write failed");
+    internal_error()
+}
+
+pub async fn list_profiles(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Value>, Response> {
+    admin(&auth)?;
+    Ok(Json(json!(
+        state.extract.profiles.lock().unwrap().list_all()
+    )))
+}
+
+pub async fn get_profile(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    UrlPath(prefix): UrlPath<String>,
+) -> Result<Json<Value>, Response> {
+    admin(&auth)?;
+    let p = state.extract.profiles.lock().unwrap().get(&prefix);
+    p.map(|p| Json(Value::Object(p)))
+        .ok_or_else(|| no_profile(&prefix))
+}
+
+/// The body is any JSON; a body that is not a JSON object gives 500, as the
+/// Python `request.json()` and dict merge do.
+pub async fn put_profile(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    client: Option<Extension<Client>>,
+    UrlPath(prefix): UrlPath<String>,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, Response> {
+    admin(&auth)?;
+    let Ok(Value::Object(config)) = serde_json::from_slice::<Value>(&body) else {
+        return Err(internal_error());
+    };
+    let profile = state
+        .extract
+        .profiles
+        .lock()
+        .unwrap()
+        .put(&prefix, &config)
+        .map_err(profile_io)?;
+    let mut entry = Entry::from_request(
+        &auth,
+        client.as_ref().map(|c| &c.0),
+        "extraction.profile_updated",
+    );
+    entry.resource_id = prefix;
+    state.audit(entry).await;
+    Ok(Json(Value::Object(profile)))
+}
+
+pub async fn delete_profile(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    UrlPath(prefix): UrlPath<String>,
+) -> Result<Json<Value>, Response> {
+    admin(&auth)?;
+    let deleted = state
+        .extract
+        .profiles
+        .lock()
+        .unwrap()
+        .delete(&prefix)
+        .map_err(profile_io)?;
+    if !deleted {
+        return Err(no_profile(&prefix));
+    }
+    Ok(Json(json!({"deleted": true, "source_prefix": prefix})))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -836,7 +1167,7 @@ mod tests {
             ),
             (2, 10_000, 300, 200, 120_000)
         );
-        assert!(!c.fallback_add);
+        assert!(!c.fallback.enabled);
         let c = ExtractConfig::from_lookup(|n| {
             Some(match n {
                 "EXTRACT_MAX_INFLIGHT" => "0".into(),
@@ -851,7 +1182,7 @@ mod tests {
             (c.workers, c.queue_max, c.retention_sec, c.jobs_max),
             (1, 40, 60, 200)
         );
-        assert!(c.fallback_add);
+        assert!(c.fallback.enabled);
     }
 
     #[test]

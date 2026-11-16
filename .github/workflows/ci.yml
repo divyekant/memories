@@ -64,6 +64,12 @@ jobs:
       - name: Search golden files match the Python code (task P2-2)
         run: .venv/bin/python -m parity.search_golden --check
 
+      - name: Extract golden file matches the Python code (task P4-3)
+        run: .venv/bin/python -m parity.extract_golden --check
+
+      - name: Extraction pipeline of the Python server against its golden capture (task P4-3)
+        run: server/scripts/parity_pipeline.sh python
+
       - name: Start the Python reference server
         run: |
           PYTHON=.venv/bin/python parity/run_python_server.sh "$RUNNER_TEMP/parity-data" 18000 > "$RUNNER_TEMP/server.log" 2>&1 &
@@ -188,9 +194,10 @@ jobs:
   rust-parity:
     # Exit checks of the Rust tasks: replay their golden cases against the Rust server.
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     services:
       qdrant:
+        # The minimum Qdrant version of the Rust server.
         image: qdrant/qdrant:v1.15.4
         ports:
           - 6333:6333
@@ -239,10 +246,19 @@ jobs:
           curl -sSfLo "$RUNNER_TEMP/ort.tgz" https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-linux-x64-1.31.0.tgz
           echo "cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57  $RUNNER_TEMP/ort.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP"
+          echo "ORT_DYLIB_PATH=$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" >> "$GITHUB_ENV"
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
           QDRANT_URL=http://127.0.0.1:6333 \
           ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
             server/scripts/parity_search.sh server/target/debug/memories-server
+
+      - name: P2-3 read routes (golden cases and more requests to both servers)
+        run: server/scripts/parity_reads.sh server/target/debug/memories-server
+
+      - name: P2-3 memory check, 300,000 records and 1,000 list requests
+        run: |
+          (cd server && cargo build --locked --release -p memories-server)
+          server/scripts/list_memory_check.sh server/target/release/memories-server 300000
 
       - name: P3-1 core write routes
         env:
@@ -263,6 +279,12 @@ jobs:
           QDRANT_URL: http://127.0.0.1:6333
           ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_bulk.sh server/target/debug/memories-server
+
+      - name: P4-3 extraction pipeline with recorded LLM replies
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_pipeline.sh server/target/debug/memories-server
 
       - name: P7-1 rollback drill (export-legacy, rollback entrypoint, migrate --merge)
         env:

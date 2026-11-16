@@ -15,6 +15,16 @@
   server. `server/scripts/rollback_drill.sh` runs the two return cases in CI.
   No change to the Python server or to a client. Details:
   `docs/decisions/2026-11-16-rust-rollback.md`.
+- **Rust extraction pipeline (rewrite task P4-3).** The Rust server runs the
+  extraction pipeline for each queued job: hygiene, secret redaction, fact
+  extraction, the AUDN decision, the writes, the auto links, the dry run, the
+  debug trace, the single-call profile mode and the regex fallback. It adds
+  `POST /memory/extract/commit` and the four `/extraction/profiles` routes.
+  `server/scripts/parity_pipeline.sh` runs 16 cases with recorded LLM replies
+  against the Python capture: each prompt is equal byte for byte, and each
+  result and stored record is equal (0 differences). No change to the Python
+  server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-extract-pipeline.md`.
 - **Bulk writes and relation writes of the Rust server (rewrite task P3-2).**
   The Rust server answers the 13 routes for bulk deletes, supersede, merge,
   archive batch, links, folder rename, conflict resolution, deduplicate and
@@ -99,6 +109,19 @@
   temporal filter, the graph step and the query intent rules. Golden cases
   from the Python functions are in `parity/golden/rank/`. CI checks that the
   golden cases are current. No change to the Python server or to a client.
+- **Read routes of the Rust server (rewrite task P2-3).** The Rust server
+  answers `GET /memory/{memory_id}`, `POST /memory/get-batch`, `GET /memories`,
+  `GET /memories/count`, `GET /folders`, `GET /stats`,
+  `GET /memory/{memory_id}/links`, `GET /memory/conflicts`, and the full body
+  of `GET /health` for a request with the `API_KEY` value. Each route reads
+  Qdrant with a get, a page, a count or a scroll, and the counts come from the
+  source map of the engine. No route reads all records into memory. The parity
+  kit replays the 20 golden cases of these routes and sends 371 more read
+  requests to the Python server and the Rust server on the same data: all
+  replies are equal. With 300,000 records, the memory of the process does not
+  increase after 1,000 list requests. `python -m parity replay` gets
+  `--save-vars` and `--vars-file`. No change to the Python server or to a
+  client. Details: `docs/decisions/2026-11-16-rust-read-routes.md`.
 - **Core writes of the Rust server (rewrite task P3-1).** The Rust server
   has `POST /memory/add` (with `deduplicate` and `on_duplicate`),
   `/memory/add-batch`, `/memory/upsert`, `/memory/upsert-batch`, PATCH and

@@ -10,6 +10,8 @@ pub mod healthcheck;
 pub mod keys;
 pub mod migrate;
 pub mod model;
+pub mod pipeline;
+pub mod reads;
 pub mod rollback;
 pub mod search;
 pub mod shell;
@@ -98,6 +100,7 @@ impl Config {
 
 pub struct AppState {
     pub api_key: String,
+    pub data_dir: PathBuf,
     pub auth_rate_limit: i64,
     pub keys: KeyStore,
     /// `None` when `AUDIT_LOG` is off (the Python `NullAuditLog`).
@@ -148,6 +151,7 @@ impl AppState {
         });
         Arc::new(Self {
             api_key: cfg.api_key.clone(),
+            data_dir: cfg.data_dir.clone(),
             auth_rate_limit: cfg.auth_rate_limit,
             keys,
             audit,
@@ -179,6 +183,14 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/api/keys/{key_id}"),
     ("GET", "/audit"),
     ("POST", "/audit/purge"),
+    ("GET", "/memory/{memory_id}"),
+    ("POST", "/memory/get-batch"),
+    ("GET", "/memories"),
+    ("GET", "/memories/count"),
+    ("GET", "/folders"),
+    ("GET", "/stats"),
+    ("GET", "/memory/{memory_id}/links"),
+    ("GET", "/memory/conflicts"),
     ("POST", "/memory/add"),
     ("POST", "/memory/add-batch"),
     ("POST", "/memory/upsert"),
@@ -205,8 +217,13 @@ const SERVED: &[(&str, &str)] = &[
     ("POST", "/search/evidence"),
     ("POST", "/memory/is-novel"),
     ("POST", "/memory/extract"),
+    ("POST", "/memory/extract/commit"),
     ("GET", "/memory/extract/{job_id}"),
     ("GET", "/extract/status"),
+    ("GET", "/extraction/profiles"),
+    ("GET", "/extraction/profiles/{*prefix}"),
+    ("PUT", "/extraction/profiles/{*prefix}"),
+    ("DELETE", "/extraction/profiles/{*prefix}"),
     ("GET", "/usage"),
     ("GET", "/metrics"),
     ("GET", "/metrics/search-quality"),
@@ -242,13 +259,22 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/audit", get(admin::get_audit))
         .route("/audit/purge", post(admin::purge_audit))
+        .route("/memory/conflicts", get(reads::conflicts))
+        .route("/memory/get-batch", post(reads::get_batch))
+        .route("/memory/{memory_id}/links", get(reads::links))
+        .route("/memories", get(reads::list))
+        .route("/memories/count", get(reads::count))
+        .route("/folders", get(reads::list_folders))
+        .route("/stats", get(reads::stats))
         .route("/memory/add", post(writes::add))
         .route("/memory/add-batch", post(writes::add_batch))
         .route("/memory/upsert", post(writes::upsert))
         .route("/memory/upsert-batch", post(writes::upsert_batch))
         .route(
             "/memory/{memory_id}",
-            patch(writes::patch).delete(writes::delete),
+            get(reads::get_memory)
+                .patch(writes::patch)
+                .delete(writes::delete),
         )
         .route("/memory/delete-batch", post(writes::delete_batch))
         .route("/memory/delete-by-source", post(bulk::delete_by_source))
@@ -274,7 +300,15 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/memory/is-novel", post(search::is_novel))
         .route("/memory/extract", post(extract::enqueue))
         .route("/memory/extract/{job_id}", get(extract::get_job))
-        .route("/extract/status", get(extract::status));
+        .route("/memory/extract/commit", post(extract::commit))
+        .route("/extract/status", get(extract::status))
+        .route("/extraction/profiles", get(extract::list_profiles))
+        .route(
+            "/extraction/profiles/{*prefix}",
+            get(extract::get_profile)
+                .put(extract::put_profile)
+                .delete(extract::delete_profile),
+        );
     let protected = usage_routes::routes(protected);
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
@@ -320,8 +354,9 @@ async fn refuse_while_migrating(
 }
 
 /// The minimal body. For a caller that sends the `API_KEY` value (or when
-/// `API_KEY` is empty), the body adds the extract queue depth and the age of
-/// the oldest queued job. The engine task adds the index stats of Python.
+/// `API_KEY` is empty), the body adds `total_memories`, `dimension` and
+/// `model` of Python (when the store is open), then the extract queue depth
+/// and the age of the oldest queued job. Only the env key counts, as in Python.
 async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<Value> {
     let mut body = json!({"status": "ok", "service": "memories", "version": VERSION});
     let sent = headers
@@ -329,6 +364,11 @@ async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<
         .map(|v| v.as_bytes())
         .unwrap_or_default();
     if state.api_key.is_empty() || auth::ct_eq(sent, state.api_key.as_bytes()) {
+        if let Some(engine) = state.engine.get() {
+            body["total_memories"] = json!(engine.count());
+            body["dimension"] = json!(engine.dim);
+            body["model"] = json!(engine.embedder.config().model);
+        }
         body.as_object_mut()
             .unwrap()
             .extend(extract::health_fields(&state).await);

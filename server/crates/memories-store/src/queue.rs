@@ -326,6 +326,40 @@ impl JobQueue {
         })
     }
 
+    /// The job fails with no more tries (a project policy error). `result`
+    /// goes in the job body if set.
+    pub fn fail_now(
+        &self,
+        job_id: &str,
+        completed_at: &str,
+        error: &str,
+        result: Option<Value>,
+    ) -> Result<(), StateError> {
+        self.with_tx(|tx| {
+            Self::finish(tx, job_id, "failed", |job| {
+                job["completed_at"] = json!(completed_at);
+                job["error"] = json!(error);
+                if let Some(r) = result {
+                    job["result"] = r;
+                }
+            })
+        })
+    }
+
+    /// Store a job that finished outside the queue (the synchronous fallback).
+    /// The row status is `job["status"]`.
+    pub fn insert_finished(&self, job_id: &str, job: &Value) -> Result<(), StateError> {
+        let status = job["status"].as_str().unwrap_or("failed");
+        self.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO extract_jobs (job_id, status, request, job, enqueued_at, finished_at)
+                 VALUES (?1, ?2, '{}', ?3, ?4, ?4)",
+                params![job_id, status, job.to_string(), now()],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn get(&self, job_id: &str) -> Result<Option<Value>, StateError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         Ok(Self::job(&conn, job_id)?)
@@ -486,6 +520,30 @@ mod tests {
         assert!(q.waiting().unwrap().is_empty());
         assert_eq!(q.get("a").unwrap().unwrap()["error"], "exported");
         assert_eq!(q.get("b").unwrap().unwrap()["status"], "completed");
+    }
+
+    #[test]
+    fn fail_now_and_insert_finished_skip_the_queue() {
+        let dir = TempDir::new("now");
+        let q = JobQueue::open(&dir.db()).unwrap();
+        add(&q, "a", 10);
+        q.claim("t").unwrap();
+        q.fail_now(
+            "a",
+            "t2",
+            "policy",
+            Some(json!({"error": "project_policy"})),
+        )
+        .unwrap();
+        let job = q.get("a").unwrap().unwrap();
+        assert_eq!(job["status"], "failed");
+        assert_eq!(job["result"]["error"], "project_policy");
+        q.insert_finished("b", &json!({"job_id": "b", "status": "completed"}))
+            .unwrap();
+        assert_eq!(q.get("b").unwrap().unwrap()["status"], "completed");
+        let s = q.stats().unwrap();
+        assert_eq!((s.depth, s.tracked), (0, 2));
+        assert!(q.claim("t").unwrap().is_none());
     }
 
     #[test]
