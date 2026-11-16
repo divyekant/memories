@@ -104,8 +104,19 @@ pub fn metadata_path(data_dir: &Path) -> std::path::PathBuf {
 }
 
 pub fn file_sha256(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    Ok(hex(&Sha256::digest(&bytes)))
+    // Stream the file: a read of the whole file added its size to the start peak (G5).
+    let read_err = |e: std::io::Error| format!("cannot read {}: {e}", path.display());
+    let mut file = std::fs::File::open(path).map_err(read_err)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf).map_err(read_err)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex(&hasher.finalize()))
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -684,6 +695,7 @@ mod tests {
         std::fs::write(metadata_path(&d), r#"[{"id": 0, "text": "a"}]"#).unwrap();
         assert_eq!(start_action(&d, &state).unwrap(), StartAction::Migrate);
         let sha = file_sha256(&metadata_path(&d)).unwrap();
+        assert_eq!(sha, Legacy::read(&d).unwrap().sha256);
         state.set_meta(&[(DONE_HASH, &sha)]).unwrap();
         assert_eq!(start_action(&d, &state).unwrap(), StartAction::Serve);
         std::fs::write(metadata_path(&d), r#"[{"id": 0, "text": "b"}]"#).unwrap();
