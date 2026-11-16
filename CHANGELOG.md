@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [5.19.0] - 2026-11-16
+
 ### Fixed
 - **No more false "not reachable" alerts.** On 2026-11-15, 13 sessions said
   that Memories was not reachable, but the server was up. The causes and the
