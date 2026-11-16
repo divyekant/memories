@@ -8,11 +8,11 @@ use memories_types::Record;
 use qdrant_client::qdrant::{
     Condition, CountPointsBuilder, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder,
     DeletePointsBuilder, Distance, FacetCountsBuilder, FieldType, Filter, GetPointsBuilder,
-    Modifier, PointId, PointStruct, PointsIdsList, QueryPointsBuilder, ReadConsistency,
-    RetrievedPoint, ScoredPoint, ScrollPointsBuilder, SetPayloadPointsBuilder,
-    SparseVectorParamsBuilder, SparseVectorsConfigBuilder, UpsertPointsBuilder, Value, Vector,
-    VectorParamsBuilder, VectorsConfigBuilder, WriteOrdering, facet_value, point_id,
-    vectors_config,
+    Modifier, PointId, PointStruct, PointVectors, PointsIdsList, QueryPointsBuilder,
+    ReadConsistency, RetrievedPoint, ScoredPoint, ScrollPointsBuilder, SetPayloadPointsBuilder,
+    SparseVectorParamsBuilder, SparseVectorsConfigBuilder, UpdatePointVectorsBuilder,
+    UpsertPointsBuilder, Value, Vector, VectorParamsBuilder, VectorsConfigBuilder, WriteOrdering,
+    facet_value, point_id, vectors_config,
 };
 use qdrant_client::{Payload, Qdrant};
 use serde_json::{Map, Value as Json};
@@ -587,6 +587,40 @@ impl QdrantStore {
         self.client
             .upsert_points(
                 UpsertPointsBuilder::new(&self.collection, structs)
+                    .wait(self.wait)
+                    .ordering(self.ordering),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Replace the keyword vector of each point of `points`. The dense vector
+    /// and the payload do not change. Each point must exist.
+    pub async fn update_keyword_vectors(
+        &self,
+        points: Vec<(u64, Vec<(u32, f32)>)>,
+    ) -> Result<(), StoreError> {
+        self.op("update_keyword_vectors");
+        if points.is_empty() {
+            return Ok(());
+        }
+        let structs: Vec<PointVectors> = points
+            .into_iter()
+            .map(|(id, keyword)| {
+                let (indices, values): (Vec<u32>, Vec<f32>) = keyword.into_iter().unzip();
+                let vectors: HashMap<String, Vector> = HashMap::from([(
+                    KEYWORD_VECTOR.to_owned(),
+                    Vector::new_sparse(indices, values),
+                )]);
+                PointVectors {
+                    id: Some(id.into()),
+                    vectors: Some(vectors.into()),
+                }
+            })
+            .collect();
+        self.client
+            .update_vectors(
+                UpdatePointVectorsBuilder::new(&self.collection, structs)
                     .wait(self.wait)
                     .ordering(self.ordering),
             )

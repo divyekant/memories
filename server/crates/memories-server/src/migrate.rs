@@ -380,6 +380,14 @@ pub async fn migrate(
         .state
         .set_doc_lengths(len_sum, legacy.records.len() as u64)
         .map_err(|e| e.to_string())?;
+    // The migration wrote each keyword vector with this average: a full pass.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    stores
+        .state
+        .finish_keyword_pass(avgdl, now)
+        .map_err(|e| e.to_string())?;
     stores
         .state
         .set_legacy_base(

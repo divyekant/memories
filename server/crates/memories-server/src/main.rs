@@ -465,6 +465,7 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     }
     let flusher = tokio::spawn(flush_key_usage_forever(state.clone()));
     let reinforcer = tokio::spawn(flush_reinforcements_forever(state.clone()));
+    let refresher = tokio::spawn(refresh_keywords_forever(state.clone()));
     // A running job stays `running` in state.db at a stop; the next start puts it back.
     let workers = memories_server::extract::spawn_workers(&state);
     let webhooks = memories_server::events::spawn_webhooks(state.clone());
@@ -499,6 +500,8 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     .expect("server error");
     flusher.abort();
     reinforcer.abort();
+    // A stop between two batches is safe: the next start continues the pass.
+    refresher.abort();
     workers.iter().for_each(|w| w.abort());
     webhooks.abort();
     if let Some(s) = scheduler {
@@ -518,6 +521,52 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     // Python writes each usage row before it replies; write the queued rows before the exit.
     if let Some(u) = &state.usage {
         u.flush().await;
+    }
+}
+
+/// Seconds from the environment, or `default`. A bad value stops the start.
+fn env_secs(name: &str, default: u64) -> u64 {
+    match std::env::var(name) {
+        Err(_) => default,
+        Ok(v) => v.trim().parse().unwrap_or_else(|_| {
+            tracing::error!("{name} must be a whole number of seconds, not {v:?}");
+            std::process::exit(1);
+        }),
+    }
+}
+
+/// Checks the rule of the keyword vector pass (task P3-4) at each interval,
+/// and runs the pass when it is due. `MEMORIES_KEYWORD_REFRESH_CHECK_SEC`
+/// (default 60) and `MEMORIES_KEYWORD_REFRESH_MIN_GAP_SEC` (default 3600)
+/// are for tests.
+async fn refresh_keywords_forever(state: Arc<AppState>) {
+    use memories_engine::writes::refresh::RefreshRule;
+    let check = env_secs("MEMORIES_KEYWORD_REFRESH_CHECK_SEC", 60).max(1);
+    let rule = RefreshRule {
+        min_gap: Duration::from_secs(env_secs("MEMORIES_KEYWORD_REFRESH_MIN_GAP_SEC", 3_600)),
+        ..RefreshRule::default()
+    };
+    let mut tick = tokio::time::interval(Duration::from_secs(check));
+    loop {
+        tick.tick().await;
+        // No writer while the first-start migration runs.
+        let Some(w) = state.writer.get() else {
+            continue;
+        };
+        let result = match w.keyword_refresh_due(&rule) {
+            Ok(true) => w.refresh_keywords(&rule).await,
+            Ok(false) => Ok(None),
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(Some(r)) => tracing::info!(
+                records = r.records,
+                avgdl = r.avgdl,
+                "keyword vector pass completed"
+            ),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(error = %e, "keyword vector pass failed; will try again"),
+        }
     }
 }
 

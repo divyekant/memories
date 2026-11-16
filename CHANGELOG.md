@@ -9,6 +9,13 @@
   `POST /memory/merge` with a repeated ID writes nothing. The parity diff reads
   the fixes from `parity/intended.json`. No change to the Python server or to
   a client. Details: `docs/decisions/2026-11-16-rust-fixed-python-defects.md`.
+- **Keyword vector pass of the Rust server (rewrite task P3-4).** A background
+  job writes all the keyword vectors again with the current average document
+  length, when the average moves more than 25% from the last pass (at most
+  once an hour), or more than 2 times or less than half (at once). The job
+  holds the write lock for one batch of 100 records only, changes only the
+  keyword vectors, and continues after a forced stop. No change to the Python
+  server or to a client. Details: `docs/rust-rewrite/keyword-refresh.md`.
 - **Rust events, webhooks and web UI routes (rewrite task P5-5).** The Rust
   server answers `GET /events/recent`, `GET /events/stream`, the three
   `/webhooks` routes, `GET /ui` and `GET /ui/static/*` with the replies of the
