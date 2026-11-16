@@ -81,8 +81,8 @@ pub fn string_too_short(loc: Value, input: Value, min: usize) -> Value {
 
 /// A path parameter that must be an integer, as FastAPI checks `memory_id: int`.
 pub fn path_int(name: &str, raw: &str) -> Result<i64, ApiError> {
-    raw.parse()
-        .map_err(|_| ApiError::validation(vec![int_parsing(json!(["path", name]), json!(raw))]))
+    crate::admin::py_int(raw)
+        .ok_or_else(|| ApiError::validation(vec![int_parsing(json!(["path", name]), json!(raw))]))
 }
 
 /// The JSON object body of a request, read as FastAPI reads a model body.

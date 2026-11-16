@@ -30,6 +30,13 @@ reinforcement, as the Python server shows its in-memory value.
   that the key cannot read, and the records with another `pinned` value, are
   removed from the page after the read. Thus a page of a scoped key can have
   fewer items than `limit`, as in Python.
+- A list, a count and a get-batch read with the prefixes of the key only,
+  also for the admin role (Python `auth.filter_results`). A managed admin key
+  has no prefixes, so these routes give it no record. A single get, the
+  folders, the links and the conflicts use `can_read`, which lets the admin
+  role read all sources.
+- A path ID follows the pydantic int rules (`5.0`, ` 5` and `1_0` are valid,
+  `-07` is not). The 404 message shows the Python int, also above 2^63-1.
 - `total` of a list for a scoped key, and the count of a scoped key, are the
   records of the readable sources in the scope. Archived records count.
 - `GET /memory/conflicts` gives the stored record without `confidence`, and
@@ -50,6 +57,8 @@ reinforcement, as the Python server shows its in-memory value.
 | `confidence` of a record whose source has an extraction profile with `confidence_half_life_days` | Half-life of the profile | Half-life 90 days until the profile routes are ported |
 | `/usage` events `get` and `get_batch` | Written when `USAGE_TRACKING` is on | Not written until the usage task |
 | A get-batch ID above 2^63-1 in `missing_ids` | The ID as sent | 9223372036854775807 |
+| A record with `conflicts_with: []` in `/memory/conflicts` | In the list, with `conflicting_memory` null | Not in the list (the Qdrant `is_empty` filter removes it) |
+| `conflicts_with` of `true` or `5.0`, with a target that the key cannot read | `{"id": true}` or `{"id": 5.0}` in the redacted entry | `{"id": 1}` or `{"id": 5}` |
 | No `QDRANT_URL` | Embedded Qdrant | The store routes answer 503 (task P2-2) |
 
 ## Tests
@@ -59,8 +68,9 @@ reinforcement, as the Python server shows its in-memory value.
   `metadata.json` into the Rust collection,
   and the Rust server replays the 21 read cases. Then the Python server
   starts again on the same data, and `server/scripts/parity_reads_ab.py`
-  sends 257 more read requests to both servers (links in each direction,
-  three keys, pages, filters, the 422 replies). Zero differences is the pass
+  sends 370 more read requests to both servers (links in each direction,
+  four keys with a managed admin key, path ID forms, pages, filters, the 422
+  replies). Zero differences is the pass
   condition. A changed link type rule in the Rust code makes the check fail.
 - `server/scripts/list_memory_check.sh`: 300,000 synthetic records, 200
   warm-up list requests, then 1,000 list requests with random offsets, limits

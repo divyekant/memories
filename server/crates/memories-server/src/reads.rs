@@ -17,7 +17,12 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use memories_engine::{Engine, rank::PyDateTime, records, scope::source_matches_scope};
+use memories_engine::{
+    Engine,
+    rank::PyDateTime,
+    records,
+    scope::{source_matches_prefixes, source_matches_scope},
+};
 use memories_store::{Condition, Filter, QdrantStore, StoreError};
 use memories_types::Record;
 use serde_json::{Map, Value, json};
@@ -108,6 +113,12 @@ fn source_in(sources: Vec<String>) -> Filter {
 }
 
 /// The `source` of a record as Python reads it: `m.get("source", "")`.
+/// Python `auth.filter_results`: the prefixes only, also for an admin role.
+/// A managed admin key has `prefixes=[]` and sees no record in a list.
+fn readable(auth: &AuthContext, source: &str) -> bool {
+    source_matches_prefixes(source, auth.prefixes.as_deref())
+}
+
 fn source_of(r: &Record) -> &str {
     r.source.as_deref().unwrap_or("")
 }
@@ -120,8 +131,35 @@ fn with_confidence(r: &Record, now: &PyDateTime) -> Value {
     records::with_confidence(r, None, now)
 }
 
-fn not_found(id: i64) -> Response {
-    ApiError::new(StatusCode::NOT_FOUND, format!("Memory ID {id} not found")).into_response()
+/// Python shows the parsed int, which can be above the range of i64.
+fn not_found(raw: &str) -> Response {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        format!("Memory ID {} not found", int_text(raw)),
+    )
+    .into_response()
+}
+
+/// `str(int(raw))` for a path value that `py_int` accepts.
+fn int_text(raw: &str) -> String {
+    let s = raw.trim();
+    let (neg, s) = match s.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    let digits: String = s
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect();
+    let digits = digits.trim_start_matches('0');
+    match (digits.is_empty(), neg) {
+        (true, _) => "0".into(),
+        (false, true) => format!("-{digits}"),
+        (false, false) => digits.into(),
+    }
 }
 
 /// The JSON 500 of the Python handlers that catch each error.
@@ -339,7 +377,7 @@ pub async fn get_memory(
     let id = path_int("memory_id", &raw).map_err(IntoResponse::into_response)?;
     let rd = reader(&state)?;
     let Some(r) = rd.get(id).await.map_err(caught_500)? else {
-        return Err(not_found(id));
+        return Err(not_found(&raw));
     };
     if !auth.can_read(source_of(&r)) {
         return Err(ApiError::new(
@@ -366,7 +404,7 @@ pub async fn get_batch(
     let mut missing_ids = Vec::new();
     for id in ids {
         match u64::try_from(id).ok().and_then(|i| by_id.get(&i)) {
-            Some(r) if auth.can_read(source_of(r)) => memories.push(with_confidence(r, &now)),
+            Some(r) if readable(&auth, source_of(r)) => memories.push(with_confidence(r, &now)),
             Some(_) => {}
             None => missing_ids.push(id),
         }
@@ -425,7 +463,7 @@ pub async fn count(
     scope.check_access(&auth)?;
     let rd = reader(&state)?;
     let count = if auth.prefixes.is_some() {
-        rd.count_where(|s| scope.matches(s) && auth.can_read(s))
+        rd.count_where(|s| scope.matches(s) && readable(&auth, s))
     } else if scope.prefix().is_some() {
         rd.count_where(|s| scope.matches(s))
     } else {
@@ -464,12 +502,12 @@ pub async fn list(
     let now = PyDateTime::now_utc();
     let memories: Vec<Value> = page
         .iter()
-        .filter(|r| auth.can_read(source_of(r)))
+        .filter(|r| readable(&auth, source_of(r)))
         .filter(|r| pinned.is_none_or(|p| pinned_equals(r, p)))
         .map(|r| with_confidence(r, &now))
         .collect();
     let total = if auth.prefixes.is_some() {
-        rd.count_where(|s| scope.matches(s) && auth.can_read(s))
+        rd.count_where(|s| scope.matches(s) && readable(&auth, s))
     } else {
         total
     };
@@ -567,7 +605,7 @@ pub async fn links(
     let rd = reader(&state)?;
     // Python lets a store error here go to the 500 of Starlette.
     let Some(mem) = rd.get(id).await.map_err(uncaught_500)? else {
-        return Err(not_found(id));
+        return Err(not_found(&raw));
     };
     if !auth.can_read(source_of(&mem)) {
         return Err(
@@ -630,6 +668,20 @@ pub async fn links(
     Ok(Json(json!({"memory_id": id, "links": out})))
 }
 
+/// The ID of `conflicts_with`, as Python's dict lookup finds it: `True` and
+/// `5.0` equal the int keys 1 and 5.
+fn conflict_id(r: &Record) -> Option<u64> {
+    match r.field("conflicts_with")? {
+        Value::Bool(b) => Some(u64::from(b)),
+        Value::Number(n) => n.as_u64().or_else(|| {
+            n.as_f64()
+                .filter(|f| *f >= 0.0 && f.fract() == 0.0 && *f < 1.8e19)
+                .map(|f| f as u64)
+        }),
+        _ => None,
+    }
+}
+
 pub async fn conflicts(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
@@ -672,19 +724,19 @@ pub async fn conflicts(
             None => break,
         }
     }
+    let wanted: Vec<u64> = page.iter().filter_map(conflict_id).collect();
+    let found = rd.get_many(&wanted).await.map_err(uncaught_500)?;
+    let by_id: BTreeMap<u64, &Record> = found.iter().map(|o| (o.id, o)).collect();
     let mut entries = Vec::with_capacity(page.len());
-    for r in page {
+    for r in &page {
         let mut entry = r.to_json();
         if let Some(review) = r.field("conflict_review").filter(records::truthy) {
             entry["needs_review"] = review;
         }
-        let other = match r.field("conflicts_with").and_then(|v| v.as_i64()) {
-            Some(cw) => rd.get(cw).await.map_err(uncaught_500)?.map(|o| (cw, o)),
-            None => None,
-        };
-        entry["conflicting_memory"] = match other {
-            Some((_, o)) if auth.can_read(source_of(&o)) => with_confidence(&o, &now),
-            Some((cw, _)) => json!({"id": cw, "redacted": true}),
+        let cw = conflict_id(r);
+        entry["conflicting_memory"] = match cw.and_then(|c| by_id.get(&c).map(|o| (c, *o))) {
+            Some((_, o)) if auth.can_read(source_of(o)) => with_confidence(o, &now),
+            Some((c, _)) => json!({"id": c, "redacted": true}),
             None => Value::Null,
         };
         entries.push(entry);
@@ -709,6 +761,48 @@ mod tests {
             prefixes: Some(prefixes.iter().map(|p| p.to_string()).collect()),
             ..AuthContext::unrestricted()
         }
+    }
+
+    #[test]
+    fn a_managed_admin_key_reads_no_record_in_a_list() {
+        let admin = AuthContext {
+            role: "admin".into(),
+            prefixes: Some(vec![]),
+            ..AuthContext::unrestricted()
+        };
+        assert!(!readable(&admin, "claude-code/x"));
+        assert!(admin.can_read("claude-code/x"));
+        assert!(readable(&AuthContext::unrestricted(), "claude-code/x"));
+        assert!(readable(&scoped(&["claude-code/"]), "claude-code/x"));
+    }
+
+    #[test]
+    fn the_404_shows_the_python_int() {
+        for (raw, text) in [
+            ("5", "5"),
+            (" 5", "5"),
+            ("5.0", "5"),
+            ("1_0", "10"),
+            ("-17", "-17"),
+            ("007", "7"),
+            ("-0", "0"),
+            ("+3", "3"),
+            ("99999999999999999999999", "99999999999999999999999"),
+        ] {
+            assert!(crate::admin::py_int(raw).is_some(), "{raw}");
+            assert_eq!(int_text(raw), text, "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_conflict_id_matches_as_a_python_dict_key() {
+        let r = |v: Value| Record::from_json(json!({"id": 1, "conflicts_with": v})).unwrap();
+        assert_eq!(conflict_id(&r(json!(5))), Some(5));
+        assert_eq!(conflict_id(&r(json!(5.0))), Some(5));
+        assert_eq!(conflict_id(&r(json!(true))), Some(1));
+        assert_eq!(conflict_id(&r(json!(5.5))), None);
+        assert_eq!(conflict_id(&r(json!("5"))), None);
+        assert_eq!(conflict_id(&r(Value::Null)), None);
     }
 
     #[test]

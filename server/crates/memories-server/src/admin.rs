@@ -205,7 +205,8 @@ pub(crate) fn py_int(raw: &str) -> Option<i64> {
                 && b[i - 1].is_ascii_digit()
                 && b[i + 1].is_ascii_digit())
     };
-    if b.is_empty() || !(0..b.len()).all(digit_ok) {
+    // pydantic-core takes leading zeros only without a minus sign: "-07" fails.
+    if b.is_empty() || !(0..b.len()).all(digit_ok) || (neg && b.len() > 1 && b[0] == b'0') {
         return None;
     }
     let mut v: i64 = 0;
@@ -441,6 +442,9 @@ mod tests {
             (" -5 ", -5),
             ("+0", 0),
             ("-0", 0),
+            ("-0.0", 0),
+            ("007", 7),
+            ("0_7", 7),
             ("\u{a0}5", 5),
             ("\t5\u{b}", 5),
             ("5\n", 5),
@@ -449,7 +453,8 @@ mod tests {
         }
         for s in [
             "", "abc", "5.5", "5.", ".0", "_1", "1__0", "5_", "+-5", "--5", "5.0_0", "5e0",
-            "5.0e0", "1 0", "0005.", "5.10", "0x10", "\u{661}", "\u{2460}",
+            "5.0e0", "1 0", "0005.", "5.10", "0x10", "\u{661}", "\u{2460}", "-007", "-00", "-0_7",
+            "-05.0",
         ] {
             assert_eq!(py_int(s), None, "{s:?}");
         }

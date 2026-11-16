@@ -6,8 +6,8 @@ pub mod auth;
 pub mod error;
 pub mod healthcheck;
 pub mod keys;
-pub mod reads;
 pub mod model;
+pub mod reads;
 pub mod search;
 pub mod shell;
 

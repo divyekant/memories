@@ -16,12 +16,12 @@ from parity import kit
 
 
 def requests(records, keys):
-    admin, ro, rw = keys
+    admin, ro, rw, managed_admin = keys
     linked = [r["id"] for r in records if r.get("links")]
     targets = sorted({link["to_id"] for r in records for link in r.get("links", [])})
     conflict = [r["id"] for r in records if r.get("conflicts_with") is not None]
     out = []
-    for key in (admin, ro, rw):
+    for key in (admin, ro, rw, managed_admin):
         for mid in linked[:10] + targets[:10]:
             out.append(("GET", f"/memory/{mid}/links?include_incoming=true", key, None))
             out.append(("GET", f"/memory/{mid}/links?type=related_to&include_incoming=1", key, None))
@@ -46,6 +46,13 @@ def requests(records, keys):
             ("GET", "/stats", key, None),
             ("GET", "/memory/abc", key, None),
             ("GET", "/memory/-1", key, None),
+            ("GET", "/memory/5.0", key, None),
+            ("GET", "/memory/%205", key, None),
+            ("GET", "/memory/1_0", key, None),
+            ("GET", "/memory/-007", key, None),
+            ("GET", "/memory/99999999999999999999999", key, None),
+            ("GET", "/memory/5.5/links", key, None),
+            ("GET", "/memory/99999999999999999999999/links", key, None),
             ("GET", f"/memory/{records[-1]['id']}", key, None),
             ("GET", "/memory/abc/links?include_incoming=x", key, None),
             ("POST", "/memory/get-batch", key, {"ids": [r["id"] for r in records[:40]] + [10**6, "7"]}),
@@ -63,10 +70,17 @@ def main(meta_path, vars_path, py_url, rs_url):
         records = json.load(f)
     with open(vars_path, encoding="utf-8") as f:
         saved = json.load(f)
-    keys = (kit.ADMIN_KEY_DEFAULT, saved["key:ro"], saved["key:rw"])
     failed = 0
-    reqs = requests(records, keys)
     with httpx.Client(base_url=py_url, timeout=60) as py, httpx.Client(base_url=rs_url, timeout=60) as rs:
+        # A managed admin key has no prefixes: Python lists no record for it.
+        made = py.post(
+            "/api/keys",
+            headers={"X-API-Key": kit.ADMIN_KEY_DEFAULT},
+            json={"name": "parity-admin-managed", "role": "admin"},
+        )
+        made.raise_for_status()
+        keys = (kit.ADMIN_KEY_DEFAULT, saved["key:ro"], saved["key:rw"], made.json()["key"])
+        reqs = requests(records, keys)
         for method, path, key, body in reqs:
             headers = {"X-API-Key": key} if key else {}
             replies = []
@@ -79,7 +93,7 @@ def main(meta_path, vars_path, py_url, rs_url):
             problems = kit.diff_values(replies[0], replies[1])
             if problems:
                 failed += 1
-                who = "admin" if key == keys[0] else "ro" if key == keys[1] else "rw" if key else "none"
+                who = dict(zip(keys, ("admin", "ro", "rw", "managed-admin"))).get(key, "none")
                 print(json.dumps({"request": f"{method} {path[:120]}", "key": who, "diff": problems[:5]}))
     print(f"{failed} of {len(reqs)} request(s) differ", file=sys.stderr)
     return 1 if failed else 0

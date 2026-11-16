@@ -65,7 +65,7 @@
   of `GET /health` for a request with the `API_KEY` value. Each route reads
   Qdrant with a get, a page, a count or a scroll, and the counts come from the
   source map of the engine. No route reads all records into memory. The parity
-  kit replays the 21 golden cases of these routes and sends 257 more read
+  kit replays the 21 golden cases of these routes and sends 370 more read
   requests to the Python server and the Rust server on the same data: all
   replies are equal. With 300,000 records, the memory of the process does not
   increase after 1,000 list requests. `python -m parity replay` gets
