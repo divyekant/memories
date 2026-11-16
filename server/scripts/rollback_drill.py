@@ -11,7 +11,8 @@ Commands (URL is a server, QDRANT is the Qdrant REST address):
   search URL OUT                   Run the vector search cases; write the replies to OUT.
   check-python URL EXPECTED        Each record of EXPECTED is in the Python server, and
                                    no other record. Each read case answers 2xx.
-  diff A B                         The two search capture files are equal.
+  diff A B [ann]                   The two search capture files are equal. With ann,
+                                   a reply can have one other ID (production size).
   python-writes URL TOUCHED RUST OUT
                                    Case 2: writes on the Python server; write them to OUT.
   check-merge QDRANT NAME RUST PY  Case 2: each record of the two sides is in NAME.
@@ -71,8 +72,11 @@ def cmd_load(qdrant, name, src, data_dir):
     if len(points) != len(ids):
         raise SystemExit(f"{len(ids) - len(points)} records of metadata.json have no point: copy again")
     data.mkdir(parents=True, exist_ok=True)
-    for f in ("metadata.json", "config.json"):
-        shutil.copyfile(src / f, data / f)
+    shutil.copyfile(src / "metadata.json", data / "metadata.json")
+    # The Python server writes its QDRANT_COLLECTION here; export-legacy reads it.
+    config = json.loads((src / "config.json").read_text())
+    config["qdrant_collection"] = name
+    (data / "config.json").write_text(json.dumps(config, indent=2))
     dim = len(points[0]["vector"])
     with httpx.Client(base_url=qdrant, timeout=120) as q:
         q.put(f"/collections/{name}", json={"vectors": {"size": dim, "distance": "Cosine"}}).raise_for_status()
@@ -191,8 +195,36 @@ def cmd_search(url, out_path):
     kit.dump(kit.run(search_cases(), url, admin_key=KEY, allow_nonempty=True), out_path)
 
 
-def cmd_diff(a, b):
-    diffs = kit.diff_captures(kit.load(a), kit.load(b))
+def cmd_diff(a, b, mode="exact"):
+    left, right = kit.load(a), kit.load(b)
+    diffs = kit.diff_captures(left, right)
+    if mode == "ann":
+        # At production size Qdrant searches the HNSW graph, which is approximate,
+        # and the two collections have different graphs. Accept one other ID in
+        # a reply (the G3 tolerance); check-python checks each record exactly.
+        def results(case):
+            return (case["response"].get("body") or {}).get("results", [])
+
+        def ids(case):
+            return [r.get("id") for r in results(case)]
+
+        def same_shared(x, y):
+            # relative_score depends on the other results of the reply.
+            def strip(r):
+                return {k: v for k, v in r.items() if k != "relative_score"}
+            by_id = {r.get("id"): strip(r) for r in results(y)}
+            return all(by_id[r.get("id")] == strip(r) for r in results(x) if r.get("id") in by_id)
+        cases = {c["name"]: (c, d) for c, d in zip(left, right)}
+        kept = []
+        for d in diffs:
+            pair = cases.get(d["name"])
+            other = len(set(ids(pair[0])) ^ set(ids(pair[1]))) // 2 if pair else None
+            if pair and len(ids(pair[0])) == len(ids(pair[1])) and other is not None and other <= 1 \
+                    and same_shared(*pair):
+                print(f"{d['name']}: {other} other ID (HNSW tolerance): {ids(pair[0])} / {ids(pair[1])}")
+            else:
+                kept.append(d)
+        diffs = kept
     for d in diffs:
         print(d)
     if diffs:
