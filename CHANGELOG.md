@@ -7,12 +7,29 @@
   sends the 105 transcripts of the extraction evals (the 20 texts of
   `eval/run_extraction_eval.py` and the scenario memories) through the
   extraction pipeline of the two servers. A fake LLM gives replies that are a
-  function of the prompt. The Rust server gives the same prompts, actions,
+  function of the prompt and of the highest record ID so far. The Rust server gives the same prompts, actions,
   links and stored records as Python v5.19.0 (0 differences). 206 of 207
   similar lists from hybrid search are equal. The other list differs by the
   known keyword index design. The live part (24 probes with a real model) waits for
   approval. No change to the Python server or to a client. Details:
   `docs/rust-rewrite/gates/G4.md`.
+- **Gate G3 run for the Rust rewrite (task P2-4).** `server/scripts/gate_g3.sh`
+  writes the same records into the Python server and the Rust server, and
+  compares vector search, hybrid search, the graph eval and LongMemEval
+  recall at 5. G3 passes with the Qdrant sparse vector, so the tantivy
+  fallback is not necessary. CI job `rust-parity` runs the corpus and graph
+  parts. `parity/keyword_index/run.py --dataset grow` checks the avgdl rule on
+  a store that grows. No change to the Python server or to a client.
+  Details: `docs/rust-rewrite/gates/G3.md`.
+- **Rust project promotion routes, off mode (rewrite task P5-6).** The Rust
+  server answers `GET /promotions`, `GET /promotions/{candidate_id}` and the
+  approve and reject routes with the replies of the Python server in the
+  `off` mode, the mode of production. `GET /metrics` has the `promotion`
+  part. `PROJECT_PROMOTION_MODE=shadow` or `auto` stops the start with a
+  clear message. `server/scripts/parity_promotions.sh` replays the four golden
+  cases (0 differ) and sends 36 requests to a Python and a Rust server (0
+  differ). No change to the Python server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-promotions-off.md`.
 - **Rollback tool, merge and rollback drill of the Rust server (rewrite task
   P7-1).** `memories-server export-legacy` writes the records of
   `memories_v2` back to `metadata.json` and to the old collection, and moves

@@ -272,6 +272,7 @@ async fn metrics_has_the_python_shape() {
             "embedder_reload",
             "extract",
             "memory",
+            "promotion",
             "requests",
             "routes",
             "uptime_sec"
