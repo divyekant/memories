@@ -4,6 +4,7 @@ pub mod admin;
 pub mod audit;
 pub mod auth;
 pub mod error;
+pub mod events;
 pub mod extract;
 pub mod healthcheck;
 pub mod keys;
@@ -28,9 +29,10 @@ use axum::{
     http::HeaderMap,
     middleware::from_fn,
     middleware::from_fn_with_state,
-    routing::{MethodFilter, get, on, patch, post},
+    routing::{MethodFilter, delete, get, on, patch, post},
 };
 use memories_engine::Engine;
+use memories_engine::events::EventBus;
 use memories_engine::writes::Writer;
 use memories_types::config;
 use serde_json::{Value, json};
@@ -62,6 +64,8 @@ pub struct Config {
     pub usage_tracking: bool,
     /// `METRICS_TREND_SAMPLES`: the memory count samples that `GET /metrics` keeps.
     pub metrics_trend_samples: usize,
+    /// `UI_DIR`: the web UI files that `/ui` and `/ui/static` serve.
+    pub ui_dir: PathBuf,
 }
 
 impl Config {
@@ -90,6 +94,7 @@ impl Config {
             audit_log: config::parse_bool(var("AUDIT_LOG").as_deref(), false),
             usage_tracking: config::parse_bool(var("USAGE_TRACKING").as_deref(), false),
             metrics_trend_samples: trend as usize,
+            ui_dir: config::string("UI_DIR", "/app/webui").into(),
         })
     }
 }
@@ -118,6 +123,11 @@ pub struct AppState {
     pub trend_max: usize,
     /// The write flow of the engine. Set with `engine`.
     pub writer: OnceLock<Arc<Writer>>,
+    /// The lifecycle events. The writer sends its events here.
+    pub events: Arc<EventBus>,
+    /// The webhooks in `state.db`.
+    pub webhooks: memories_store::Webhooks,
+    pub ui_dir: PathBuf,
 }
 
 impl AppState {
@@ -142,6 +152,8 @@ impl AppState {
             tracing::info!("Usage tracking enabled");
             u
         });
+        let webhooks = memories_store::Webhooks::open(&cfg.data_dir.join("state.db"))
+            .expect("cannot open state.db");
         Arc::new(Self {
             api_key: cfg.api_key.clone(),
             auth_rate_limit: cfg.auth_rate_limit,
@@ -158,6 +170,9 @@ impl AppState {
             trend: Mutex::default(),
             trend_max: cfg.metrics_trend_samples,
             writer: OnceLock::new(),
+            events: Arc::default(),
+            webhooks,
+            ui_dir: cfg.ui_dir.clone(),
         })
     }
 }
@@ -202,6 +217,13 @@ const SERVED: &[(&str, &str)] = &[
     ("POST", "/search/feedback"),
     ("GET", "/search/feedback/history"),
     ("DELETE", "/search/feedback/{feedback_id}"),
+    ("GET", "/events/stream"),
+    ("GET", "/events/recent"),
+    ("POST", "/webhooks"),
+    ("GET", "/webhooks"),
+    ("DELETE", "/webhooks/{webhook_id}"),
+    ("GET", "/ui"),
+    ("GET", "/ui/static/{*path}"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -240,7 +262,14 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/memory/is-novel", post(search::is_novel))
         .route("/memory/extract", post(extract::enqueue))
         .route("/memory/extract/{job_id}", get(extract::get_job))
-        .route("/extract/status", get(extract::status));
+        .route("/extract/status", get(extract::status))
+        .route("/events/stream", get(events::stream))
+        .route("/events/recent", get(events::recent))
+        .route(
+            "/webhooks",
+            post(events::create_webhook).get(events::list_webhooks),
+        )
+        .route("/webhooks/{webhook_id}", delete(events::delete_webhook));
     let protected = usage_routes::routes(protected);
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
@@ -248,7 +277,9 @@ pub fn app(state: Arc<AppState>) -> Router {
         Router::new()
             .route("/health", get(health))
             .route("/health/ready", get(health_ready))
-            .route("/openapi.json", get(openapi)),
+            .route("/openapi.json", get(openapi))
+            .route("/ui", get(events::ui_page))
+            .route("/ui/static/{*path}", get(events::ui_static)),
         true,
     );
     protected

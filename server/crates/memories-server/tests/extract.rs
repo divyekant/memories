@@ -144,6 +144,17 @@ async fn wait_done(st: &Arc<AppState>, job_id: &str) -> Value {
 
 const MESSAGES: &str = "User: the route-optimizer cache TTL is 5 minutes.\nAssistant: Noted.";
 
+/// The data of the `extraction.completed` events, after a short wait for the worker.
+async fn completed_events(st: &Arc<AppState>) -> Vec<Value> {
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    st.events
+        .recent(100)
+        .into_iter()
+        .filter(|e| e.event_type == "extraction.completed")
+        .map(|e| e.data)
+        .collect()
+}
+
 #[tokio::test]
 async fn body_errors_match_pydantic() {
     let st = common::state(&config(false));
@@ -296,6 +307,15 @@ async fn a_job_runs_and_keeps_the_python_fields() {
                "trusted_authorship": null, "promotion_context": null})
     );
     assert_eq!(pipe.calls.load(Ordering::SeqCst), 1);
+
+    // Python `event_bus.emit("extraction.completed", ...)` after the job completes.
+    let events = completed_events(&st).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0],
+        json!({"job_id": job_id, "source": "claude-code/voltis/extract", "stored_count": 0,
+               "updated_count": 0, "conflict_count": 0})
+    );
 
     // Python `_audit(request, "extract", source=...)`.
     let conn = Connection::open(cfg.data_dir.join("audit.db")).unwrap();
@@ -456,6 +476,9 @@ async fn a_failing_job_gets_three_tries() {
             (status, &expected)
         );
         assert_eq!(pipe.calls.load(Ordering::SeqCst), 3);
+        // Only a completed job sends `extraction.completed`, once.
+        let n = completed_events(&st).await.len();
+        assert_eq!(n, usize::from(status == "completed"));
         workers.iter().for_each(|w| w.abort());
     }
 }

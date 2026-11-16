@@ -1,5 +1,5 @@
 //! The event bus of `event_bus.py`: the five event types and a history of the
-//! last 100 events. Task P5-5 adds the stream route and the webhooks.
+//! last 100 events. The server gives them to the stream route and the webhooks.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -33,6 +33,66 @@ impl Event {
     pub fn to_json(&self) -> Value {
         json!({"type": self.event_type, "data": self.data,
                "timestamp": self.timestamp, "id": self.id})
+    }
+
+    /// `Event.to_sse`: one server-sent event, with the data as `json.dumps`.
+    pub fn to_sse(&self) -> String {
+        format!(
+            "id: {}\nevent: {}\ndata: {}\n\n",
+            self.id,
+            self.event_type,
+            py_dumps(&self.data)
+        )
+    }
+}
+
+/// Python `json.dumps(v)`: `", "` and `": "` between items, and only ASCII
+/// (`\uXXXX` for each other character). Keys come in the `serde_json` order.
+/// shortcut: a float uses the `serde_json` text, not the Python `repr`; the
+/// event data holds no float now. Upgrade if an event gets a float field.
+pub fn py_dumps(v: &Value) -> String {
+    let mut out = String::new();
+    write_py(v, &mut out);
+    out
+}
+
+fn write_py(v: &Value, out: &mut String) {
+    match v {
+        Value::String(s) => {
+            for c in serde_json::to_string(s).expect("a string").chars() {
+                if c.is_ascii() && c != '\u{7f}' {
+                    out.push(c);
+                } else {
+                    let mut buf = [0u16; 2];
+                    for u in c.encode_utf16(&mut buf) {
+                        out.push_str(&format!("\\u{u:04x}"));
+                    }
+                }
+            }
+        }
+        Value::Array(a) => {
+            out.push('[');
+            for (i, x) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_py(x, out);
+            }
+            out.push(']');
+        }
+        Value::Object(m) => {
+            out.push('{');
+            for (i, (k, x)) in m.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_py(&Value::String(k.clone()), out);
+                out.push_str(": ");
+                write_py(x, out);
+            }
+            out.push('}');
+        }
+        other => out.push_str(&other.to_string()),
     }
 }
 
@@ -109,5 +169,24 @@ mod tests {
         assert!(first.timestamp.ends_with("+00:00"));
         assert!(first.timestamp.as_str() > "2026-11-16T00");
         assert_eq!(first.to_json()["data"], json!({"id": 0}));
+    }
+
+    #[test]
+    fn sse_text_has_the_python_json_dumps_data() {
+        let e = Event {
+            event_type: "memory.updated",
+            data: json!({"id": 7, "source": "é/😀", "updated_fields": ["a", "b"], "x": null, "ok": true}),
+            timestamp: "t".into(),
+            id: "42".into(),
+        };
+        // Python: json.dumps({...}) with the same key order.
+        assert_eq!(
+            e.to_sse(),
+            "id: 42\nevent: memory.updated\ndata: {\"id\": 7, \"ok\": true, \"source\": \"\\u00e9/\\ud83d\\ude00\", \"updated_fields\": [\"a\", \"b\"], \"x\": null}\n\n"
+        );
+        assert_eq!(
+            py_dumps(&json!("a\"\\\n\u{1f}\u{7f}")),
+            r#""a\"\\\n\u001f\u007f""#
+        );
     }
 }

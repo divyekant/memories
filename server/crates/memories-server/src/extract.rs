@@ -292,9 +292,20 @@ async fn worker(state: Arc<AppState>, pipeline: Arc<dyn Pipeline>, id: u64) {
             }
             tokio::time::sleep(Duration::from_millis(200 << n)).await;
         }
-        if let Err(e) = done {
+        match (done, &outcome) {
             // The job stays `running`; the next start puts it back in the queue.
-            tracing::error!(job_id, error = %e, "state.db: cannot write the job result");
+            (Err(e), _) => {
+                tracing::error!(job_id, error = %e, "state.db: cannot write the job result")
+            }
+            (Ok(()), Ok(result)) => {
+                let n = |k: &str| result.get(k).cloned().unwrap_or(json!(0));
+                state.events.emit(
+                    "extraction.completed",
+                    json!({"job_id": job_id, "source": source, "stored_count": n("stored_count"),
+                           "updated_count": n("updated_count"), "conflict_count": n("conflict_count")}),
+                );
+            }
+            (Ok(()), Err(_)) => {}
         }
         trim(ex).await;
     }

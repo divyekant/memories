@@ -53,13 +53,13 @@ async fn blocking<T: Send + 'static, E: std::fmt::Display + Send + 'static>(
 
 // ---- Body checks, with the pydantic 2 error items ----------------------------
 
-struct Body<'a> {
+pub(crate) struct Body<'a> {
     map: &'a Map<String, Value>,
     errors: Vec<Value>,
 }
 
 impl<'a> Body<'a> {
-    fn new(map: &'a Map<String, Value>) -> Self {
+    pub(crate) fn new(map: &'a Map<String, Value>) -> Self {
         Self {
             map,
             errors: Vec::new(),
@@ -73,7 +73,7 @@ impl<'a> Body<'a> {
     }
 
     /// `bounded` adds `min_length=1, max_length=200`; `role` has only a pattern.
-    fn string_checked(
+    pub(crate) fn string_checked(
         &mut self,
         name: &str,
         required: bool,
@@ -128,7 +128,7 @@ impl<'a> Body<'a> {
     }
 
     /// A `List[str]` field. `None` is a missing field, or `null` when `nullable`.
-    fn string_list(&mut self, name: &str, nullable: bool) -> Option<Vec<String>> {
+    pub(crate) fn string_list(&mut self, name: &str, nullable: bool) -> Option<Vec<String>> {
         let v = match self.map.get(name) {
             None => return None,
             Some(Value::Null) if nullable => return None,
@@ -163,7 +163,7 @@ impl<'a> Body<'a> {
         (self.errors.len() == before).then_some(out)
     }
 
-    fn finish(self) -> Result<(), ApiError> {
+    pub(crate) fn finish(self) -> Result<(), ApiError> {
         if self.errors.is_empty() {
             Ok(())
         } else {

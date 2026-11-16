@@ -253,6 +253,21 @@ jobs:
           ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
             server/scripts/parity_usage.sh server/target/debug/memories-server
 
+      - name: Install Playwright and Chromium for the web UI check
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          npm init -y > /dev/null
+          npm install --no-save --ignore-scripts playwright@1.56.1
+          npx playwright install --with-deps chromium
+
+      - name: P5-5 event, webhook and web UI routes, and the browser check of each page
+        # Uses the ONNX Runtime that the P2-2 step unpacked.
+        run: |
+          QDRANT_URL=http://127.0.0.1:6333 \
+          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" \
+            server/scripts/parity_events.sh server/target/debug/memories-server
+
   rust-image:
     # Build the Rust image on each architecture. Then start the bundled compose
     # file with that image, with no change to the file, and wait for healthy.
@@ -266,7 +281,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build image
-        run: docker build -t ghcr.io/divyekant/memories:rust-ci server
+        run: docker build --build-context webui=webui -t ghcr.io/divyekant/memories:rust-ci server
 
       - name: Bundled compose file reports healthy
         run: server/scripts/compose_health_check.sh rust-ci
