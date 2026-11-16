@@ -24,6 +24,14 @@ python3 -m unittest discover -s scripts -v
 python3 scripts/check_crate_age.py Cargo.lock --days 2
 ```
 
+The embedding parity test (gate G2) needs ONNX Runtime 1.31.0. It downloads
+the model if the model is not in the Hugging Face cache:
+
+```bash
+ORT_DYLIB_PATH=/path/to/libonnxruntime.so \
+  cargo test --locked -p memories-embed --test parity -- --ignored --nocapture
+```
+
 ## Run the server
 
 ```bash

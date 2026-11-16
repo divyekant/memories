@@ -15,6 +15,9 @@ Each version below is the newest stable release that was 2 days old or more on
 `server/Cargo.toml`. A crate goes into `Cargo.lock` only when a member crate
 uses it. On this date, only `memories-server` uses crates (axum, tokio, clap,
 serde_json, tracing).
+From task P1-2, `memories-embed` uses ort, tokenizers, reqwest, serde_json,
+thiserror, tokio and tracing. `rand` is pinned to 0.10.3, because 0.10.4 was
+less than 2 days old.
 
 | Crate | Version | Use | Note |
 |---|---|---|---|
@@ -23,6 +26,7 @@ serde_json, tracing).
 | tower | 0.5.3 | Middleware | |
 | tower-http | 0.7.1 | CORS, static files, trace | |
 | qdrant-client | 1.20.0 | Qdrant store | Must work with Qdrant 1.15.4 (P0-2, P1-3 check this). |
+| regex | 1.13.1 | Query intent rules (P2-1) | Added by P2-1. The rank core changes the Python `\s` and `\b` rules to match Python `re`. |
 | ort | =2.0.0-rc.15 | ONNX embedding | No stable 2.x release exists. Exact pin, because cargo does not move between pre-releases safely. Feature `load-dynamic`: the library comes from the image, not from a build-time download. |
 | tokenizers | 0.23.2 | Tokens for the embedder | 1.0.0-rc.4 is a pre-release. |
 | rusqlite | 0.42.0 (bundled) | keys.db, usage.db, audit.db, state.db | 0.43.0 was less than 2 days old. |

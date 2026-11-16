@@ -18,12 +18,24 @@
   server answers `GET /health` only. CI adds format, lint, test, `cargo deny`
   and crate age checks, and starts the bundled compose file with the Rust
   image on each architecture. No change to the Python server or to a client.
+- **Rust embedder (rewrite task P1-2, gate G2).** The crate `memories-embed`
+  runs `all-MiniLM-L6-v2` with ONNX Runtime 1.31.0 and gives the vectors of
+  the Python embedder (lowest cosine 0.9999997 on 1,000 fixed texts). It reads
+  and fills the same Hugging Face model cache. The ONNX Runtime CPU arena is
+  off, so memory after bulk embedding is 225 MB, not 1.27 GB. CI runs the
+  parity test. Details: `docs/decisions/2026-11-16-rust-embedder.md`.
 - **Rust LLM providers (rewrite task P4-2).** Crate `memories-extract` has
   the providers `anthropic` (API key and OAuth token modes), `openai`, `omlx`
   and `ollama`, with a time limit of 120 s for each attempt and at most 2
   retries. Replay tests check that each Rust request is equal to the Python
   request. `chatgpt-subscription` is not ported. Details:
   `docs/decisions/2026-11-16-rust-llm-providers.md`.
+- **Rank core of the Rust server (rewrite task P2-1).** The crate
+  `memories-engine` has the rank rules of the search as pure functions: the
+  fusion of the vector and keyword ranks, the weights, the threshold, the
+  temporal filter, the graph step and the query intent rules. Golden cases
+  from the Python functions are in `parity/golden/rank/`. CI checks that the
+  golden cases are current. No change to the Python server or to a client.
 
 ### Changed
 - **Client and tool libraries are updated (Rust rewrite task P0-5).** The
