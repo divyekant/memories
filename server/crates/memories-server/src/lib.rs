@@ -7,9 +7,11 @@ pub mod error;
 pub mod extract;
 pub mod healthcheck;
 pub mod keys;
+pub mod migrate;
 pub mod shell;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use axum::{
@@ -80,6 +82,8 @@ pub struct AppState {
     pub failures: Failures,
     pub metrics: Metrics,
     pub trusted: TrustedProxies,
+    /// True while the first-start migration runs: only `/health` answers.
+    pub migrating: AtomicBool,
     pub extract: Extract,
 }
 
@@ -106,6 +110,7 @@ impl AppState {
             failures: Failures::default(),
             metrics: Metrics::new(cfg.metrics_latency_samples),
             trusted: TrustedProxies::parse(&cfg.forwarded_allow_ips),
+            migrating: AtomicBool::new(false),
             extract,
         })
     }
@@ -167,6 +172,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .layer(CatchPanicLayer::custom(shell::panic_reply))
         // Python reads bodies of any size (for example `/import`).
         .layer(DefaultBodyLimit::disable())
+        .layer(from_fn_with_state(state.clone(), refuse_while_migrating))
         .layer(from_fn(shell::refuse_head))
         .layer(from_fn(shell::cors))
         .layer(from_fn_with_state(state.clone(), shell::record_metrics))
@@ -175,6 +181,22 @@ pub fn app(state: Arc<AppState>) -> Router {
             shell::client_and_access_log,
         ))
         .with_state(state)
+}
+
+async fn refuse_while_migrating(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if state.migrating.load(Ordering::Acquire) && request.uri().path() != "/health" {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"detail": "The server is migrating the data. Try again later."})),
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 /// The minimal body. For a caller that sends the `API_KEY` value (or when
