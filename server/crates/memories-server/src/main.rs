@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use memories_engine::Engine;
+use memories_engine::writes::{DEFAULT_IDENTICAL_THRESHOLD, Writer};
 use std::sync::atomic::Ordering;
 
 use memories_embed::{EmbedConfig, Embedder, prepare_cache_dir};
@@ -192,10 +193,10 @@ fn main() -> std::process::ExitCode {
     };
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     // After a first-start migration, the engine opens when the migration ends.
-    let engine = if migrate_first {
+    let writer = if migrate_first {
         None
     } else {
-        match runtime.block_on(open_engine(&cfg)) {
+        match runtime.block_on(open_writer(&cfg)) {
             Ok(e) => e,
             Err(msg) => {
                 tracing::error!("cannot start: {msg}");
@@ -203,7 +204,11 @@ fn main() -> std::process::ExitCode {
             }
         }
     };
+    let engine = writer.as_ref().map(|w| w.engine.clone());
     let state = AppState::with_extract(&cfg, keys, audit, extract, engine);
+    if let Some(w) = writer {
+        let _ = state.writer.set(w);
+    }
     runtime.block_on(serve(port, state, migrate_first.then_some(cfg)));
     std::process::ExitCode::SUCCESS
 }
@@ -315,6 +320,25 @@ async fn open_engine(cfg: &Config) -> Result<Option<Arc<Engine>>, String> {
     Ok(Some(Arc::new(engine)))
 }
 
+/// The engine and its write flow. `DOCTRINE_IDENTICAL_THRESHOLD` must be a
+/// number (Python reads it with `float()` on each doctrine add).
+async fn open_writer(cfg: &Config) -> Result<Option<Arc<Writer>>, String> {
+    let Some(engine) = open_engine(cfg).await? else {
+        return Ok(None);
+    };
+    let raw = std::env::var("DOCTRINE_IDENTICAL_THRESHOLD").ok();
+    let threshold = match raw.as_deref().map(str::trim) {
+        None => DEFAULT_IDENTICAL_THRESHOLD,
+        Some(v) => v.parse::<f64>().map_err(|_| {
+            format!("DOCTRINE_IDENTICAL_THRESHOLD={v:?} is not a valid number. Set a number or remove it.")
+        })?,
+    };
+    let writer = Writer::open(engine, cfg.data_dir.clone(), threshold)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(Arc::new(writer)))
+}
+
 async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .await
@@ -336,9 +360,10 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
             match run_migration(&cfg, &opts, false).await {
                 Ok(report) => {
                     tracing::info!(%report, "migration done");
-                    match open_engine(&cfg).await {
-                        Ok(Some(e)) => {
-                            let _ = st.engine.set(e);
+                    match open_writer(&cfg).await {
+                        Ok(Some(w)) => {
+                            let _ = st.engine.set(w.engine.clone());
+                            let _ = st.writer.set(w);
                         }
                         Ok(None) => {}
                         Err(msg) => {
@@ -391,9 +416,17 @@ async fn flush_reinforcements_forever(state: Arc<AppState>) {
 }
 
 async fn flush_reinforcements(state: &Arc<AppState>) {
-    if let Some(engine) = state.engine.get()
-        && let Err(e) = engine.flush_reinforcements().await
-    {
+    // The writer lock keeps a flush out of a write that reads, then writes a payload.
+    let result = match (state.writer.get(), state.engine.get()) {
+        (Some(w), _) => w.flush_reinforcements().await.map_err(|e| e.to_string()),
+        (None, Some(engine)) => engine
+            .flush_reinforcements()
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        (None, None) => Ok(()),
+    };
+    if let Err(e) = result {
         tracing::warn!(error = %e, "reinforcement write failed; will try again");
     }
 }

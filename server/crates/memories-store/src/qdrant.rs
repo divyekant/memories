@@ -1,7 +1,8 @@
 //! The Qdrant store of the Rust server (collection `memories_v2`). Each point
 //! holds the dense vector, the keyword vector and the full record as payload.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
 
 use memories_types::Record;
 use qdrant_client::qdrant::{
@@ -81,6 +82,8 @@ pub struct QdrantStore {
     consistency: ReadConsistency,
     replication_factor: u32,
     write_consistency_factor: u32,
+    /// Qdrant data calls by operation name, for the write cost tests.
+    ops: Mutex<BTreeMap<&'static str, u64>>,
 }
 
 fn too_large(value: &Json) -> bool {
@@ -182,7 +185,22 @@ impl QdrantStore {
             },
             replication_factor: settings.replication_factor,
             write_consistency_factor: settings.write_consistency_factor,
+            ops: Mutex::default(),
         })
+    }
+
+    fn op(&self, name: &'static str) {
+        *self
+            .ops
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(name)
+            .or_default() += 1;
+    }
+
+    /// The count of Qdrant data calls of each operation since the start.
+    pub fn op_counts(&self) -> BTreeMap<&'static str, u64> {
+        self.ops.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn collection(&self) -> &str {
@@ -336,6 +354,13 @@ impl QdrantStore {
         Ok(())
     }
 
+    /// Make a Qdrant snapshot of the collection. Returns its name.
+    pub async fn create_snapshot(&self) -> Result<String, StoreError> {
+        self.op("create_snapshot");
+        let r = self.client.create_snapshot(&self.collection).await?;
+        Ok(r.snapshot_description.map(|d| d.name).unwrap_or_default())
+    }
+
     pub async fn delete_collection(&self) -> Result<(), StoreError> {
         self.client.delete_collection(&self.collection).await?;
         Ok(())
@@ -343,6 +368,7 @@ impl QdrantStore {
 
     /// Write whole points. A point with the same ID is replaced.
     pub async fn upsert(&self, points: Vec<NewPoint>, dim: u64) -> Result<(), StoreError> {
+        self.op("upsert");
         if points.is_empty() {
             return Ok(());
         }
@@ -382,6 +408,7 @@ impl QdrantStore {
 
     /// The records of `ids` that exist, in the order of `ids`.
     pub async fn get_many(&self, wanted: &[u64]) -> Result<Vec<Record>, StoreError> {
+        self.op("get_many");
         if wanted.is_empty() {
             return Ok(Vec::new());
         }
@@ -413,6 +440,7 @@ impl QdrantStore {
         id_list: &[u64],
         fields: Map<String, Json>,
     ) -> Result<(), StoreError> {
+        self.op("set_payload");
         check_fields(id_list.first().copied().unwrap_or_default(), &fields)?;
         self.client
             .set_payload(
@@ -432,6 +460,7 @@ impl QdrantStore {
         id_list: &[u64],
         fields: Map<String, Json>,
     ) -> Result<(), StoreError> {
+        self.op("set_payload_existing");
         check_fields(id_list.first().copied().unwrap_or_default(), &fields)?;
         let filter = Filter::must([Condition::has_id(id_list.iter().copied())]);
         self.client
@@ -448,6 +477,7 @@ impl QdrantStore {
     /// Replace the full payload of the point of `record` (a field that the
     /// record does not have is removed). The vectors do not change.
     pub async fn replace_payload(&self, record: &Record) -> Result<(), StoreError> {
+        self.op("replace_payload");
         let payload = Payload::from(checked_payload(record)?);
         self.client
             .overwrite_payload(
@@ -463,6 +493,7 @@ impl QdrantStore {
     }
 
     pub async fn delete(&self, id_list: &[u64]) -> Result<(), StoreError> {
+        self.op("delete");
         if id_list.is_empty() {
             return Ok(());
         }
@@ -485,6 +516,7 @@ impl QdrantStore {
         offset: Option<u64>,
         limit: u32,
     ) -> Result<(Vec<Record>, Option<u64>), StoreError> {
+        self.op("scroll");
         let mut request = ScrollPointsBuilder::new(&self.collection)
             .limit(limit)
             .with_payload(true)
@@ -518,6 +550,7 @@ impl QdrantStore {
         threshold: Option<f32>,
         filter: Option<Filter>,
     ) -> Result<Vec<(Record, f32)>, StoreError> {
+        self.op("search_dense");
         let mut request = QueryPointsBuilder::new(&self.collection)
             .query(vector)
             .using(DENSE_VECTOR)
@@ -542,6 +575,7 @@ impl QdrantStore {
         limit: u64,
         filter: Option<Filter>,
     ) -> Result<Vec<(Record, f32)>, StoreError> {
+        self.op("search_keyword");
         if query.is_empty() {
             return Ok(Vec::new());
         }
@@ -568,6 +602,7 @@ impl QdrantStore {
 
     /// The exact count of the points that match `filter`.
     pub async fn count(&self, filter: Option<Filter>) -> Result<u64, StoreError> {
+        self.op("count");
         let mut request = CountPointsBuilder::new(&self.collection)
             .exact(true)
             .read_consistency(self.consistency.value.expect("set in new"));
@@ -590,6 +625,7 @@ impl QdrantStore {
         filter: Option<Filter>,
         limit: u64,
     ) -> Result<Vec<(String, u64)>, StoreError> {
+        self.op("facet");
         let mut request = FacetCountsBuilder::new(&self.collection, key)
             .limit(limit)
             .exact(true)

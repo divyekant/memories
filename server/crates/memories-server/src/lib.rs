@@ -13,6 +13,8 @@ pub mod search;
 pub mod shell;
 pub mod usage;
 pub mod usage_routes;
+pub mod validate;
+pub mod writes;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -29,6 +31,7 @@ use axum::{
     routing::{MethodFilter, get, on, patch, post},
 };
 use memories_engine::Engine;
+use memories_engine::writes::Writer;
 use memories_types::config;
 use serde_json::{Value, json};
 use tower_http::catch_panic::CatchPanicLayer;
@@ -113,6 +116,8 @@ pub struct AppState {
     /// The memory count samples of `GET /metrics` (`memory_trend`).
     pub trend: Mutex<VecDeque<Value>>,
     pub trend_max: usize,
+    /// The write flow of the engine. Set with `engine`.
+    pub writer: OnceLock<Arc<Writer>>,
 }
 
 impl AppState {
@@ -152,6 +157,7 @@ impl AppState {
             started: Instant::now(),
             trend: Mutex::default(),
             trend_max: cfg.metrics_trend_samples,
+            writer: OnceLock::new(),
         })
     }
 }
@@ -168,6 +174,13 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/api/keys/{key_id}"),
     ("GET", "/audit"),
     ("POST", "/audit/purge"),
+    ("POST", "/memory/add"),
+    ("POST", "/memory/add-batch"),
+    ("POST", "/memory/upsert"),
+    ("POST", "/memory/upsert-batch"),
+    ("PATCH", "/memory/{memory_id}"),
+    ("DELETE", "/memory/{memory_id}"),
+    ("POST", "/memory/delete-batch"),
     ("POST", "/search"),
     ("POST", "/search/batch"),
     ("POST", "/search/explain"),
@@ -211,6 +224,15 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/audit", get(admin::get_audit))
         .route("/audit/purge", post(admin::purge_audit))
+        .route("/memory/add", post(writes::add))
+        .route("/memory/add-batch", post(writes::add_batch))
+        .route("/memory/upsert", post(writes::upsert))
+        .route("/memory/upsert-batch", post(writes::upsert_batch))
+        .route(
+            "/memory/{memory_id}",
+            patch(writes::patch).delete(writes::delete),
+        )
+        .route("/memory/delete-batch", post(writes::delete_batch))
         .route("/search", post(search::search))
         .route("/search/batch", post(search::search_batch))
         .route("/search/explain", post(search::search_explain))

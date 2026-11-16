@@ -196,19 +196,36 @@ if a != b:
 print("ok: GET /metrics has the key set and types of the Python body")
 PY
 
-# 7. A Rust search with usage headers; Python reads the rows.
-curl -sf -X POST "http://127.0.0.1:$rs_port/search" -H "X-API-Key: $key" \
-  -H "Content-Type: application/json" -H "X-Memories-Client: rust-check" \
-  -H "X-Memories-Session-Id: rust-session" -d '{"query": "fleet-api rate limit", "k": 3, "hybrid": false}' > /dev/null
+# 7. A Rust search, add, add-batch, delete and delete-batch with usage
+# headers; Python reads the rows.
+rs() {
+  curl -sf -X "$1" "http://127.0.0.1:$rs_port$2" -H "X-API-Key: $key" -H "Content-Type: application/json" \
+    -H "X-Memories-Client: rust-check" -H "X-Memories-Session-Id: rust-session" ${3:+-d "$3"}
+}
+rs POST /search '{"query": "fleet-api rate limit", "k": 3, "hybrid": false}' > /dev/null
+one="$(rs POST /memory/add '{"text": "Rust usage check one.", "source": "rust/usage"}' | .venv/bin/python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+two="$(rs POST /memory/add-batch '{"memories": [{"text": "Rust usage check two.", "source": "rust/usage"}, {"text": "Rust usage check three.", "source": "rust/usage"}]}' |
+  .venv/bin/python -c 'import json,sys; print(",".join(map(str, json.load(sys.stdin)["ids"])))')"
+rs DELETE "/memory/$one" > /dev/null
+rs POST /memory/delete-batch "{\"ids\": [$two]}" > /dev/null
 stop
 start_python
+want="search 1 {'rust-check': 1} {'(unknown)': 1}
+add 3 {'rust-check': 3} {'(unknown)': 2, 'rust/usage': 1}
+delete 3 {'rust-check': 3} {'(unknown)': 2, 'rust/usage': 1}"
 got="$(curl -sf "http://127.0.0.1:$py_port/usage?period=all&session_id=rust-session" -H "X-API-Key: $key" |
-  .venv/bin/python -c 'import json,sys; o=json.load(sys.stdin)["operations"]["search"]; print(o["total"], o["by_client"])')"
-if [ "$got" != "1 {'rust-check': 1}" ]; then
-  echo "FAIL: the Python server reads '$got' for the Rust search" >&2
+  .venv/bin/python -c '
+import json, sys
+ops = json.load(sys.stdin)["operations"]
+for op in ("search", "add", "delete"):
+    o = ops.get(op, {})
+    print(op, o.get("total"), o.get("by_client"), o.get("by_source"))')"
+if [ "$got" != "$want" ]; then
+  echo "FAIL: the Python server reads other rows for the Rust calls" >&2
+  printf 'want:\n%s\ngot:\n%s\n' "$want" "$got" >&2
   status=1
 else
-  echo "ok: the Python server reads the usage row of a Rust search"
+  echo "ok: the Python server reads the usage rows of the Rust calls"
 fi
 stop
 exit "$status"

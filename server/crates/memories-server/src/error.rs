@@ -79,10 +79,43 @@ pub fn string_too_short(loc: Value, input: Value, min: usize) -> Value {
     v
 }
 
+/// pydantic 2 `int` from a string: spaces around, an optional sign, digits
+/// with single `_` between them, and an optional `.` with only zeros after it.
+/// A value out of the `i64` range saturates, so the bound check still fails.
+pub fn py_int(raw: &str) -> Option<i64> {
+    let s = raw.trim();
+    let (neg, s) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let (int, frac) = s.split_once('.').unwrap_or((s, ""));
+    if s.contains('.') && (frac.is_empty() || !frac.bytes().all(|b| b == b'0')) {
+        return None;
+    }
+    let b = int.as_bytes();
+    let digit_ok = |i: usize| {
+        b[i].is_ascii_digit()
+            || (b[i] == b'_'
+                && i > 0
+                && i + 1 < b.len()
+                && b[i - 1].is_ascii_digit()
+                && b[i + 1].is_ascii_digit())
+    };
+    if b.is_empty() || !(0..b.len()).all(digit_ok) {
+        return None;
+    }
+    let mut v: i64 = 0;
+    for d in b.iter().filter(|c| c.is_ascii_digit()) {
+        v = v.saturating_mul(10).saturating_add(i64::from(d - b'0'));
+    }
+    Some(if neg { -v } else { v })
+}
+
 /// A path parameter that must be an integer, as FastAPI checks `memory_id: int`.
 pub fn path_int(name: &str, raw: &str) -> Result<i64, ApiError> {
-    raw.parse()
-        .map_err(|_| ApiError::validation(vec![int_parsing(json!(["path", name]), json!(raw))]))
+    py_int(raw)
+        .ok_or_else(|| ApiError::validation(vec![int_parsing(json!(["path", name]), json!(raw))]))
 }
 
 /// The JSON object body of a request, read as FastAPI reads a model body.
@@ -93,6 +126,42 @@ impl<S: Send + Sync> FromRequest<S> for JsonBody {
     type Rejection = Response;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let BodyResult(r) = BodyResult::from_request(req, state).await?;
+        r.map(JsonBody).map_err(IntoResponse::into_response)
+    }
+}
+
+/// Like [`JsonBody`], but a body error does not stop the request. The route
+/// puts the error items after its path and query items, as FastAPI does.
+/// A JSON decode error is `Err(Some(..))` with only its own item.
+pub struct BodyResult(pub Result<Map<String, Value>, ApiError>);
+
+impl BodyResult {
+    /// The body map. A body error goes into `errors` (after the path and query
+    /// items) and gives `None`. A JSON decode error is the reply alone, as in
+    /// FastAPI.
+    pub fn take(self, errors: &mut Vec<Value>) -> Result<Option<Map<String, Value>>, ApiError> {
+        match self.0 {
+            Ok(m) => Ok(Some(m)),
+            Err(e) if is_json_invalid(&e) => Err(e),
+            Err(e) => {
+                if let Value::Array(items) = e.detail {
+                    errors.extend(items);
+                }
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn is_json_invalid(e: &ApiError) -> bool {
+    e.detail[0]["type"] == "json_invalid"
+}
+
+impl<S: Send + Sync> FromRequest<S> for BodyResult {
+    type Rejection = Response;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let is_json = req
             .headers()
             .get(header::CONTENT_TYPE)
@@ -100,9 +169,7 @@ impl<S: Send + Sync> FromRequest<S> for JsonBody {
         let bytes = Bytes::from_request(req, state)
             .await
             .map_err(IntoResponse::into_response)?;
-        object_body(&bytes, is_json.unwrap_or(true))
-            .map(JsonBody)
-            .map_err(IntoResponse::into_response)
+        Ok(Self(object_body(&bytes, is_json.unwrap_or(true))))
     }
 }
 
