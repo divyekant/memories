@@ -50,6 +50,19 @@
   temporal filter, the graph step and the query intent rules. Golden cases
   from the Python functions are in `parity/golden/rank/`. CI checks that the
   golden cases are current. No change to the Python server or to a client.
+- **Read routes of the Rust server (rewrite task P2-3).** The Rust server
+  answers `GET /memory/{memory_id}`, `POST /memory/get-batch`, `GET /memories`,
+  `GET /memories/count`, `GET /folders`, `GET /stats`,
+  `GET /memory/{memory_id}/links`, `GET /memory/conflicts`, and the full body
+  of `GET /health` for a request with the `API_KEY` value. Each route reads
+  Qdrant with a get, a page, a count or a scroll, and the counts come from the
+  source map of the engine. No route reads all records into memory. The parity
+  kit replays the 21 golden cases of these routes and sends 257 more read
+  requests to the Python server and the Rust server on the same data: all
+  replies are equal. With 300,000 records, the memory of the process does not
+  increase after 1,000 list requests. `python -m parity replay` gets
+  `--save-vars` and `--vars-file`. No change to the Python server or to a
+  client. Details: `docs/decisions/2026-11-16-rust-read-routes.md`.
 
 ### Changed
 - **Client and tool libraries are updated (Rust rewrite task P0-5).** The

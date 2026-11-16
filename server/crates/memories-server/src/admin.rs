@@ -175,7 +175,7 @@ impl<'a> Body<'a> {
 // ---- Query checks ------------------------------------------------------------
 
 /// The last value of each name, as Starlette gives a scalar query parameter.
-fn last<'a>(q: &'a [(String, String)], name: &str) -> Option<&'a str> {
+pub(crate) fn last<'a>(q: &'a [(String, String)], name: &str) -> Option<&'a str> {
     q.iter()
         .rev()
         .find(|(k, _)| k == name)
@@ -185,7 +185,7 @@ fn last<'a>(q: &'a [(String, String)], name: &str) -> Option<&'a str> {
 /// pydantic 2 `int` from a string: spaces around, an optional sign, digits
 /// with single `_` between them, and an optional `.` with only zeros after it.
 /// A value out of the `i64` range saturates, so the bound check still fails.
-fn py_int(raw: &str) -> Option<i64> {
+pub(crate) fn py_int(raw: &str) -> Option<i64> {
     let s = raw.trim();
     let (neg, s) = match s.as_bytes().first() {
         Some(b'-') => (true, &s[1..]),
@@ -216,7 +216,7 @@ fn py_int(raw: &str) -> Option<i64> {
 }
 
 /// `name: int = Query(default, ge=min, le=max)`.
-fn query_int(
+pub(crate) fn query_int(
     q: &[(String, String)],
     name: &str,
     default: i64,

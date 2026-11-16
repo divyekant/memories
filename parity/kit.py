@@ -225,11 +225,12 @@ def select(cases, names):
 
 
 def run(cases, base_url, admin_key=ADMIN_KEY_DEFAULT, timeout=120.0, log=None, allow_nonempty=False,
-        extra_vars=None):
+        extra_vars=None, vars_out=None):
     """Send each case in order. Return capture records with normalized replies.
 
     The scenario deletes records, so a server that holds records is refused unless allow_nonempty is set.
     `extra_vars` sets variables that a case before the selected cases would save.
+    `vars_out` (a dict) gets the variables at the end, so a later run can use them.
     """
     vars_ = {"key:admin": admin_key, **(extra_vars or {})}
     out = []
@@ -260,4 +261,6 @@ def run(cases, base_url, admin_key=ADMIN_KEY_DEFAULT, timeout=120.0, log=None, a
             out.append(rec)
             if log:
                 log(f"{resp['status']} {case.get('name', case['request']['path'])}")
+    if vars_out is not None:
+        vars_out.update(vars_)
     return out

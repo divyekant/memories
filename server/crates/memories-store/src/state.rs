@@ -1,4 +1,5 @@
-//! `state.db`: the SQLite file of the Rust server. It holds the ID counter.
+//! `state.db`: the SQLite file of the Rust server. It holds the ID counter and
+//! the `meta` values (for example `created_at` and `last_updated` of `/stats`).
 //!
 //! The counter only goes up. An ID that the counter gave out is not given out
 //! again: not after a restart, not after a delete of the highest ID, and not
@@ -37,6 +38,10 @@ impl StateDb {
             "CREATE TABLE IF NOT EXISTS counters (
                  name TEXT PRIMARY KEY,
                  next INTEGER NOT NULL CHECK (next >= 0)
+             );
+             CREATE TABLE IF NOT EXISTS meta (
+                 key TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
              )",
         )?;
         Ok(Self {
@@ -96,6 +101,23 @@ impl StateDb {
         })
     }
 
+    pub fn meta(&self, key: &str) -> Result<Option<String>, StateError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .optional()?)
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<(), StateError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [key, value],
+        )?;
+        Ok(())
+    }
+
     /// The next ID that `reserve_ids` gives.
     pub fn next_id(&self) -> Result<u64, StateError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -146,6 +168,23 @@ mod tests {
         let db = StateDb::open(&dir.db()).unwrap();
         assert_eq!(db.next_id().unwrap(), 4);
         assert_eq!(db.reserve_ids(2).unwrap(), 4..6);
+    }
+
+    #[test]
+    fn meta_values_stay_after_a_restart() {
+        let dir = TempDir::new("meta");
+        let db = StateDb::open(&dir.db()).unwrap();
+        assert_eq!(db.meta("last_updated").unwrap(), None);
+        db.set_meta("last_updated", "2026-11-16T00:00:00+00:00")
+            .unwrap();
+        db.set_meta("last_updated", "2026-11-17T00:00:00+00:00")
+            .unwrap();
+        drop(db);
+        let db = StateDb::open(&dir.db()).unwrap();
+        assert_eq!(
+            db.meta("last_updated").unwrap().as_deref(),
+            Some("2026-11-17T00:00:00+00:00")
+        );
     }
 
     #[test]

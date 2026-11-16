@@ -495,6 +495,31 @@ impl QdrantStore {
             .collect()
     }
 
+    /// The records that match `filter`, in ID order, after the first `offset`
+    /// of them. Qdrant skips the offset records; they do not come to this process.
+    pub async fn page(
+        &self,
+        filter: Option<Filter>,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<Record>, StoreError> {
+        let mut request = QueryPointsBuilder::new(&self.collection)
+            .offset(offset)
+            .limit(limit)
+            .with_payload(true)
+            .with_vectors(false)
+            .read_consistency(self.consistency.value.expect("set in new"));
+        if let Some(f) = filter {
+            request = request.filter(f);
+        }
+        let response = self.client.query(request).await?;
+        response
+            .result
+            .into_iter()
+            .map(|p| to_record(p.id, p.payload))
+            .collect()
+    }
+
     /// The exact count of the points that match `filter`.
     pub async fn count(&self, filter: Option<Filter>) -> Result<u64, StoreError> {
         let mut request = CountPointsBuilder::new(&self.collection)

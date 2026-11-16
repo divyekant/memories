@@ -5,6 +5,6 @@ mod settings;
 mod state;
 
 pub use qdrant::{DENSE_VECTOR, KEYWORD_VECTOR, NewPoint, QdrantStore, StoreError};
-pub use qdrant_client::qdrant::Filter;
+pub use qdrant_client::qdrant::{Condition, Filter};
 pub use settings::{QdrantSettings, SettingsError};
 pub use state::{StateDb, StateError};

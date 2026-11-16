@@ -6,6 +6,7 @@ pub mod auth;
 pub mod error;
 pub mod healthcheck;
 pub mod keys;
+pub mod reads;
 pub mod shell;
 
 use std::path::PathBuf;
@@ -71,6 +72,7 @@ impl Config {
 
 pub struct AppState {
     pub api_key: String,
+    pub data_dir: PathBuf,
     pub auth_rate_limit: i64,
     pub keys: KeyStore,
     /// `None` when `AUDIT_LOG` is off (the Python `NullAuditLog`).
@@ -96,6 +98,7 @@ impl AppState {
     ) -> Arc<Self> {
         Arc::new(Self {
             api_key: cfg.api_key.clone(),
+            data_dir: cfg.data_dir.clone(),
             auth_rate_limit: cfg.auth_rate_limit,
             keys,
             audit,
@@ -119,6 +122,14 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/api/keys/{key_id}"),
     ("GET", "/audit"),
     ("POST", "/audit/purge"),
+    ("GET", "/memory/{memory_id}"),
+    ("POST", "/memory/get-batch"),
+    ("GET", "/memories"),
+    ("GET", "/memories/count"),
+    ("GET", "/folders"),
+    ("GET", "/stats"),
+    ("GET", "/memory/{memory_id}/links"),
+    ("GET", "/memory/conflicts"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -140,7 +151,15 @@ pub fn app(state: Arc<AppState>) -> Router {
             patch(admin::update_key).delete(admin::revoke_key),
         )
         .route("/audit", get(admin::get_audit))
-        .route("/audit/purge", post(admin::purge_audit));
+        .route("/audit/purge", post(admin::purge_audit))
+        .route("/memory/conflicts", get(reads::conflicts))
+        .route("/memory/get-batch", post(reads::get_batch))
+        .route("/memory/{memory_id}", get(reads::get_memory))
+        .route("/memory/{memory_id}/links", get(reads::links))
+        .route("/memories", get(reads::list))
+        .route("/memories/count", get(reads::count))
+        .route("/folders", get(reads::list_folders))
+        .route("/stats", get(reads::stats));
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
     let public = stubs(
@@ -167,10 +186,23 @@ pub fn app(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// The minimal body. The Python server adds index stats when the caller sends
-/// the `API_KEY` value (or when `API_KEY` is empty); the engine task adds them.
-async fn health() -> Json<Value> {
-    Json(json!({"status": "ok", "service": "memories", "version": VERSION}))
+/// The minimal body, plus `total_memories`, `dimension` and `model` when the
+/// caller sends the `API_KEY` value or `API_KEY` is empty. Only the env key
+/// counts, not a managed key, as in Python. With no store: the minimal body.
+async fn health(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Json<Value> {
+    let mut body = json!({"status": "ok", "service": "memories", "version": VERSION});
+    let sent = headers.get("X-API-Key").map_or(&b""[..], |v| v.as_bytes());
+    if let Some(engine) = &state.engine
+        && (state.api_key.is_empty() || auth::ct_eq(sent, state.api_key.as_bytes()))
+    {
+        body["total_memories"] = json!(engine.count());
+        body["dimension"] = json!(engine.dim);
+        body["model"] = json!(engine.embedder.config().model);
+    }
+    Json(body)
 }
 
 /// shortcut: this server has no store yet, so the counts are 0. The store
