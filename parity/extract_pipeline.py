@@ -64,7 +64,9 @@ class Script:
             self.calls.append({"system": system, "user": user})
             if not self.replies:
                 return 400, "no scripted reply"
-            return self.replies.pop(0)
+            reply = self.replies.pop(0)
+            # A callable reply is a function of the prompt (parity/extract_corpus.py).
+            return reply(system, user) if callable(reply) else reply
 
 
 SCRIPT = Script()
@@ -354,21 +356,27 @@ def check(got, golden):
     return problems
 
 
-def main(argv=None):
+def main(argv=None, run_fn=None, golden_path=None, check_fn=None):
+    run_fn = run_fn or run
+    check_fn = check_fn or check
+    golden_path = golden_path or GOLDEN
     p = argparse.ArgumentParser()
     p.add_argument("--base-url", required=True)
     p.add_argument("--provider-port", type=int, required=True)
     p.add_argument("--out")
     p.add_argument("--check", action="store_true")
+    p.add_argument("--record", action="store_true", help="write the golden file")
     args = p.parse_args(argv)
-    got = run(args.base_url, args.provider_port)
+    if args.record:
+        args.out = str(golden_path)
+    got = run_fn(args.base_url, args.provider_port)
     if args.out:
         with open(args.out, "w") as f:
             for c in got:
                 f.write(json.dumps(c, sort_keys=True) + "\n")
     if args.check:
-        golden = [json.loads(line) for line in GOLDEN.read_text().splitlines()]
-        problems = check(got, golden)
+        golden = [json.loads(line) for line in Path(golden_path).read_text().splitlines()]
+        problems = check_fn(got, golden)
         for line in problems:
             print(line)
         print(f"{len(got)} cases, {len(problems)} differences")

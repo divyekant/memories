@@ -70,6 +70,9 @@ jobs:
       - name: Extraction pipeline of the Python server against its golden capture (task P4-3)
         run: server/scripts/parity_pipeline.sh python
 
+      - name: Gate G4 part a, eval corpus of the Python server against its golden capture (task P4-4)
+        run: server/scripts/parity_pipeline.sh python --check extract_corpus
+
       - name: Start the Python reference server
         run: |
           PYTHON=.venv/bin/python parity/run_python_server.sh "$RUNNER_TEMP/parity-data" 18000 > "$RUNNER_TEMP/server.log" 2>&1 &
@@ -285,6 +288,12 @@ jobs:
           QDRANT_URL: http://127.0.0.1:6333
           ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_pipeline.sh server/target/debug/memories-server
+
+      - name: P4-4 gate G4 part a, eval corpus with recorded LLM replies
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_pipeline.sh server/target/debug/memories-server --check extract_corpus
 
   rust-image:
     # Build the Rust image on each architecture. Then start the bundled compose

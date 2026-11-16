@@ -265,3 +265,58 @@ def test_rust_route_table_matches_python_routes():
     rust = {m + " " + re.sub(r"{[*](\w+)}", r"{\1:path}", p) for m, p in pairs}
     python = _app_routes() | {"GET /openapi.json", "GET /ui/static/{path:path}"}
     assert rust == python
+
+
+# -- gate G4 corpus driver (task P4-4) ------------------------------------------
+
+def _audn_prompt(similar):
+    from llm_extract import AUDN_PROMPT
+    facts = json.dumps([{"index": 0, "text": "A fact.", "category": "detail"}], separators=(",", ":"))
+    return AUDN_PROMPT.format(facts_json=facts, similar_json=json.dumps(similar, separators=(",", ":")))
+
+
+def test_corpus_cases_come_from_the_evals():
+    from parity import extract_corpus as ec
+    names = [c["name"] for c in ec.cases()]
+    assert sum(n.startswith("corpus/") for n in names) == 20
+    assert any(n.startswith("scenario/") for n in names)
+    assert len(names) == len(set(names))
+
+
+def test_corpus_decision_uses_the_tie_rule_and_spares_the_highest_id():
+    from parity import extract_corpus as ec
+    sims = [{"id": 9, "text": "x", "relevance": 0.016}, {"id": 4, "text": "y", "relevance": 0.016},
+            {"id": 2, "text": "z", "relevance": 0.015}]
+    assert ec.target(sims)["id"] == 4
+    assert ec.target([]) is None
+    prompt = _audn_prompt({"0": sims})
+    assert ec.split_prompt(prompt)[1] == {"0": sims}
+    assert "<similar>" in ec.split_prompt(prompt)[0]
+    ec.STATE["max_id"] = 4
+    try:
+        status, body = ec.reply("You are a memory manager. Output only valid JSON.", prompt)
+        assert status == 200
+        decision = json.loads(body)[0]
+        assert decision["action"] != "DELETE"
+        assert decision.get("old_id", decision.get("existing_id", 4)) == 4
+    finally:
+        ec.STATE["max_id"] = -1
+
+
+def test_corpus_check_tolerates_search_order_but_not_other_changes():
+    from parity import extract_corpus as ec
+    sims = [{"id": i, "text": "t", "relevance": 0.01} for i in range(5)]
+    base = {"name": "c", "enqueue": [202, {}], "prompts": [{"system": "s", "user": _audn_prompt({"0": sims})}],
+            "job": {"status": "completed", "error": None,
+                    "result": {"actions": [{"action": "add", "id": 1}], "tokens": {"audn": {"input": 3}}}}}
+    swapped = copy.deepcopy(base)
+    swapped["prompts"][0]["user"] = _audn_prompt({"0": sims[::-1]})
+    swapped["job"]["result"]["tokens"]["audn"]["input"] = 4
+    assert ec.check([swapped], [base], min_equal=0.0) == []
+    assert ec.check([swapped], [base])  # 0 of 1 lists equal: below the tolerance
+    changed = copy.deepcopy(base)
+    changed["job"]["result"]["actions"][0]["id"] = 2
+    assert ec.check([changed], [base])
+    other_text = copy.deepcopy(base)
+    other_text["prompts"][0]["system"] = "t"
+    assert ec.check([other_text], [base])
