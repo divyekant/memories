@@ -76,3 +76,6 @@ data-eval.bak*/
 !.claude/
 .claude/*
 !.claude/settings.json
+
+# Rust server build output
+server/target/

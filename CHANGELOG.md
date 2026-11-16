@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- **Rust server workspace (rewrite task P0-4).** `server/` holds the cargo
+  workspace of the Rust server, with six crates, a pinned toolchain, a
+  committed `Cargo.lock` and `server/Dockerfile` for amd64 and arm64. The
+  server answers `GET /health` only. CI adds format, lint, test, `cargo deny`
+  and crate age checks, and starts the bundled compose file with the Rust
+  image on each architecture. No change to the Python server or to a client.
+
 ## [5.19.0] - 2026-11-16
 
 ### Fixed
