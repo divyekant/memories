@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use axum::{
@@ -399,11 +400,15 @@ pub async fn prune(
     let mut pruned = 0;
     if !dry_run {
         for id in &candidates {
-            w.delete_memory(*id, false).await.map_err(|e| {
-                tracing::error!(error = %e, id, "prune delete failed");
-                internal_error()
-            })?;
-            pruned += 1;
+            match w.delete_memory(*id, false).await {
+                Ok(_) => pruned += 1,
+                // Pinned or deleted after the scan: skip it, as the scheduled prune does.
+                Err(WriteError::NotFound(_) | WriteError::Pinned(_)) => {}
+                Err(e) => {
+                    tracing::error!(error = %e, id, "prune delete failed");
+                    return Err(internal_error());
+                }
+            }
         }
         let source = format!("maintenance:count={pruned}");
         audit(
@@ -661,21 +666,29 @@ pub fn last_due(job: &Job, now_us: i64) -> i64 {
 /// What the scheduler does with a job at a tick.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
-    /// No last run is stored (a new install): store `now`, run nothing.
+    /// No last run is stored (a new install) and `now` is outside the job's
+    /// 5-minute window: store `now`, run nothing.
     FirstStart,
     Run,
     Wait,
 }
 
 /// A job runs when its last run is before its last scheduled time. Thus a
-/// job that was due while the server did not run, runs after the start.
+/// job that was due while the server did not run, runs after the start. A
+/// last run more than one day after `now` (the clock went back) also runs,
+/// so that the job does not stop until that time. A new install runs a job only inside the
+/// 5-minute window of Python.
 pub fn decide(job: &Job, last_run_us: Option<i64>, now_us: i64) -> Decision {
+    let due = last_due(job, now_us);
     match last_run_us {
+        None if now_us - due < WINDOW_US => Decision::Run,
         None => Decision::FirstStart,
-        Some(last) if last < last_due(job, now_us) => Decision::Run,
+        Some(last) if last < due || last > now_us + DAY_US => Decision::Run,
         Some(_) => Decision::Wait,
     }
 }
+
+const WINDOW_US: i64 = 5 * 60 * 1_000_000;
 
 fn meta_key(job: &Job) -> String {
     format!("maintenance_last_{}", job.name)
@@ -690,16 +703,23 @@ pub struct SchedulerConfig {
 }
 
 impl SchedulerConfig {
-    pub fn from_env() -> Self {
+    /// A `MAINTENANCE_CONFLICT_MAX` that is not an integer is an error (Python
+    /// fails at the start). A negative value drains nothing, as in Python.
+    pub fn from_env() -> Result<Self, String> {
         let var = |n: &str| std::env::var(n).ok();
-        let max = var("MAINTENANCE_CONFLICT_MAX")
-            .and_then(|v| v.trim().parse::<i64>().ok())
-            .unwrap_or(200);
-        Self {
+        let max = match var("MAINTENANCE_CONFLICT_MAX") {
+            None => 200,
+            Some(v) => v
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| format!("MAINTENANCE_CONFLICT_MAX is not an integer: {v:?}"))?,
+        };
+        Ok(Self {
             enabled: config::parse_bool(var("MAINTENANCE_ENABLED").as_deref(), false),
-            conflict_drain: config::parse_bool(var("MAINTENANCE_CONFLICT_DRAIN").as_deref(), true),
+            conflict_drain: max >= 0
+                && config::parse_bool(var("MAINTENANCE_CONFLICT_DRAIN").as_deref(), true),
             conflict_max: max.max(0) as usize,
-        }
+        })
     }
 }
 
@@ -719,6 +739,10 @@ async fn run_job(
             Ok(clusters) => {
                 let mut r = Ok(format!("{} clusters merged", clusters.len()));
                 for c in &clusters {
+                    if state.stopping.load(Ordering::Relaxed) {
+                        r = Ok("stopped at shutdown".into());
+                        break;
+                    }
                     if let Err(e) = consolidate_cluster(provider, w, c, false).await {
                         r = Err(format!("{e:?}"));
                         break;
@@ -742,6 +766,9 @@ async fn run_job(
             Ok(ids) => {
                 let (mut deleted, mut skipped) = (0, 0);
                 for id in ids {
+                    if state.stopping.load(Ordering::Relaxed) {
+                        break;
+                    }
                     match w.delete_memory(id, false).await {
                         Ok(_) => deleted += 1,
                         Err(_) => skipped += 1,
@@ -838,6 +865,12 @@ mod tests {
     fn decide_runs_due_and_missed_jobs_only() {
         let now = us("2026-11-16T03:10:00+00:00");
         assert_eq!(decide(&CONSOLIDATION, None, now), Decision::FirstStart);
+        // A new install inside the 5-minute window runs the job, as Python.
+        let in_window = us("2026-11-16T03:04:59+00:00");
+        assert_eq!(decide(&CONSOLIDATION, None, in_window), Decision::Run);
+        // A last run in the future (the clock went back) does not stop the job.
+        let future = us("2030-01-01T00:00:00+00:00");
+        assert_eq!(decide(&CONSOLIDATION, Some(future), now), Decision::Run);
         // Ran yesterday after 03:00: due again today.
         let yesterday = us("2026-11-15T03:01:00+00:00");
         assert_eq!(decide(&CONSOLIDATION, Some(yesterday), now), Decision::Run);

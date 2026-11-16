@@ -124,6 +124,8 @@ pub struct AppState {
     pub writer: OnceLock<Arc<Writer>>,
     /// `_missed_counts`: `POST /memory/missed` calls of each source since the start.
     pub missed: Mutex<HashMap<String, u64>>,
+    /// Set at shutdown: the scheduled job stops between clusters and deletes.
+    pub stopping: AtomicBool,
     /// One maintenance job at a time (routes and the scheduler).
     pub jobs: tokio::sync::Mutex<()>,
     /// The `manual` counters of `embedder_reload` in `GET /metrics`.
@@ -170,6 +172,7 @@ impl AppState {
             trend_max: cfg.metrics_trend_samples,
             writer: OnceLock::new(),
             missed: Mutex::default(),
+            stopping: AtomicBool::new(false),
             jobs: tokio::sync::Mutex::new(()),
             reload: Mutex::new(maintenance::reload_counters()),
         })

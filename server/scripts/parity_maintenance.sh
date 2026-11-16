@@ -154,11 +154,16 @@ jobs = [("/maintenance/reembed", {}), ("/maintenance/compact", {"threshold": 0.8
         ("/maintenance/consolidate?dry_run=true", {}), ("/maintenance/enforce-policies", {}),
         ("/maintenance/prune", {})]
 done = threading.Event()
+errors = []
 def run_jobs():
-    for _ in range(3):
-        for path, body in jobs:
-            call(path, body)
-    done.set()
+    try:
+        for _ in range(3):
+            for path, body in jobs:
+                call(path, body)
+    except Exception as e:  # stop the search loop on a failed job
+        errors.append(f"{path}: {e}")
+    finally:
+        done.set()
 queries = ["How is the fleet-api rate limit configured?", "release", "incident root cause",
            "design decision", "database migration"]
 for i in range(10):
@@ -171,6 +176,9 @@ while not done.is_set():
     call("/search", {"query": queries[len(times) % 5], "k": 10, "hybrid": False})
     times.append((time.perf_counter() - s) * 1000)
 t.join()
+if errors or not times:
+    print(f"maintenance job failed: {errors or 'no searches ran'}", file=sys.stderr)
+    sys.exit(1)
 times.sort()
 p95 = times[int(len(times) * 0.95) - 1] if len(times) >= 20 else times[-1]
 print(f"search during jobs: {len(times)} searches, p50 {times[len(times) // 2]:.1f} ms, "
