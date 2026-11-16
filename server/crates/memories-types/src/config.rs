@@ -79,7 +79,7 @@ pub const VARS: &[(&str, Use)] = &[
     ("MAINTENANCE_CONFLICT_DRAIN", NotUsed),
     ("MAINTENANCE_CONFLICT_MAX", NotUsed),
     ("MAINTENANCE_ENABLED", NotUsed),
-    ("MAX_BACKUPS", NotUsed),
+    ("MAX_BACKUPS", Supported),
     ("MAX_EXTRACT_MESSAGE_CHARS", Supported),
     ("MEMORIES_PERSIST_DELAY_SEC", NotUsed),
     ("MEMORY_TRIM_COOLDOWN_SEC", NotUsed),

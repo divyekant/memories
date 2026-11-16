@@ -286,6 +286,48 @@ async fn the_id_counter_gives_a_new_id_after_a_restart_and_after_the_delete_of_t
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Qdrant server: set QDRANT_TEST_URL"]
+async fn a_snapshot_file_gives_back_the_points_after_an_upload() {
+    let store = store("snapfile").await;
+    store.ensure_collection(DIM).await.unwrap();
+    let records = fixture("seed_records.json");
+    store
+        .upsert(records.iter().cloned().map(point).collect(), DIM)
+        .await
+        .unwrap();
+
+    let name = store.create_snapshot().await.unwrap();
+    let file = std::env::temp_dir().join(format!("p54_snap_{}.snapshot", std::process::id()));
+    store.download_snapshot(&name, &file).await.unwrap();
+    assert!(std::fs::metadata(&file).unwrap().len() > 0);
+    store.delete_snapshot(&name).await.unwrap();
+    assert!(
+        store
+            .download_snapshot(&name, &file.with_extension("x"))
+            .await
+            .is_err(),
+        "the snapshot is gone from Qdrant"
+    );
+
+    store.delete(&[records[0].id, records[1].id]).await.unwrap();
+    store
+        .upsert(
+            vec![point(Record::from_payload(999_999, serde_json::Map::new()))],
+            DIM,
+        )
+        .await
+        .unwrap();
+    store.upload_snapshot(&file).await.unwrap();
+    assert_eq!(store.count(None).await.unwrap(), records.len() as u64);
+    assert!(store.get(999_999).await.unwrap().is_none());
+    let back = store.get(records[0].id).await.unwrap().unwrap();
+    assert_eq!(back.to_json(), records[0].to_json());
+
+    let _ = std::fs::remove_file(&file);
+    store.delete_collection().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Qdrant server: set QDRANT_TEST_URL"]
 async fn a_page_skips_offset_records_in_id_order() {
     let store = store("page").await;
     store.ensure_collection(DIM).await.unwrap();
