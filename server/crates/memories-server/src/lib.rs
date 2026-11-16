@@ -119,6 +119,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .layer(CatchPanicLayer::custom(shell::panic_reply))
         // Python reads bodies of any size (for example `/import`).
         .layer(DefaultBodyLimit::disable())
+        .layer(from_fn(shell::refuse_head))
         .layer(from_fn(shell::cors))
         .layer(from_fn_with_state(state.clone(), shell::record_metrics))
         .layer(from_fn_with_state(

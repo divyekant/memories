@@ -349,3 +349,19 @@ async fn old_keys_db_is_migrated_like_python() {
     KeyStore::open(&dir.join("keys.db")).unwrap();
     assert_eq!(p("a"), None);
 }
+
+#[tokio::test]
+async fn head_is_405_except_on_starlette_routes() {
+    let st = admin_state();
+    let head = |p: &str| Request::head(p).body(Body::empty()).unwrap();
+    let r = send(&st, head("/health")).await;
+    assert_eq!(r.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        send(&st, head("/stats")).await.status,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    assert_eq!(
+        send(&st, head("/openapi.json")).await.status,
+        StatusCode::OK
+    );
+}

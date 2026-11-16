@@ -13,7 +13,15 @@ key="parity-admin-key"
 py_port=18101
 rs_port=18102
 pids=()
-trap 'kill "${pids[@]}" 2>/dev/null || true; rm -rf "$work"' EXIT
+cleanup() {
+  local rc=$?
+  kill "${pids[@]}" 2>/dev/null || true
+  if [ "$rc" -ne 0 ]; then
+    for log in "$work"/*.log; do echo "== $log"; tail -n 50 "$log"; done >&2
+  fi
+  rm -rf "$work"
+}
+trap cleanup EXIT
 
 wait_up() {
   for _ in $(seq 1 180); do
@@ -48,7 +56,4 @@ status=0
 .venv/bin/python -m parity replay --base-url "http://127.0.0.1:$rs_port" --allow-nonempty \
   --only "$cases" --var "key:ro=$ro_key" --var "key:rw=$rw_key" --out "$work/replay.ndjson"
 .venv/bin/python -m parity diff --only "$cases" parity/golden/golden.ndjson "$work/replay.ndjson" || status=1
-if [ "$status" -ne 0 ]; then
-  tail -n 50 "$work/rust.log" >&2
-fi
 exit "$status"

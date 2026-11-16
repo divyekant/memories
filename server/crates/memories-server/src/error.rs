@@ -147,13 +147,17 @@ fn object_body(bytes: &[u8], is_json: bool) -> Result<Map<String, Value>, ApiErr
 /// `loc` holds the character position of the error, as Python's JSONDecodeError.pos.
 /// `ctx.error` is the serde_json message; the Python message text is different.
 fn json_invalid(bytes: &[u8], e: &serde_json::Error) -> ApiError {
-    let text = String::from_utf8_lossy(bytes);
-    let line_start: usize = text
-        .split_inclusive('\n')
+    // serde_json gives a line and a byte column; Python gives a character index.
+    let mut lines = bytes.split_inclusive(|&b| b == b'\n');
+    let chars = |b: &[u8]| String::from_utf8_lossy(b).chars().count();
+    let before: usize = lines
+        .by_ref()
         .take(e.line().saturating_sub(1))
-        .map(|l| l.chars().count())
+        .map(chars)
         .sum();
-    let pos = line_start + e.column().saturating_sub(1);
+    let line = lines.next().unwrap_or_default();
+    let col = e.column().saturating_sub(1).min(line.len());
+    let pos = before + chars(&line[..col]);
     let mut v = item(
         "json_invalid",
         json!(["body", pos]),
@@ -199,6 +203,9 @@ mod tests {
         assert_eq!(e[0]["input"], json!({}));
         let e = detail(object_body(b"{\n \"a\": x}", true).unwrap_err());
         assert_eq!(e[0]["loc"], json!(["body", 8]));
+        // Python: json.loads('{"q":"é", bad}') fails at character 10.
+        let e = detail(object_body("{\"q\":\"é\", bad}".as_bytes(), true).unwrap_err());
+        assert_eq!(e[0]["loc"], json!(["body", 10]));
     }
 
     #[test]

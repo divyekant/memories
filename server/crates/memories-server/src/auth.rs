@@ -114,7 +114,7 @@ impl AuthContext {
 
 /// Failed attempts for each client host in the last 60 s.
 #[derive(Default)]
-pub struct Failures(Mutex<HashMap<String, Vec<Instant>>>);
+pub struct Failures(Mutex<HashMap<String, Vec<Instant>>>, Mutex<Option<Instant>>);
 
 impl Failures {
     /// Python order: prune, then refuse at the limit.
@@ -126,7 +126,9 @@ impl Failures {
                 map.remove(host);
             }
         }
-        if map.len() > 10_000 {
+        let mut last_sweep = self.1.lock().unwrap();
+        if map.len() > 10_000 && last_sweep.is_none_or(|t| now.duration_since(t) >= FAIL_WINDOW) {
+            *last_sweep = Some(now);
             map.retain(|_, times| {
                 times.retain(|t| now.duration_since(*t) < FAIL_WINDOW);
                 !times.is_empty()

@@ -51,8 +51,11 @@ impl TrustedProxies {
             return c;
         }
         let text = |name| {
+            // uvicorn reads the headers into a dict, so the last line of a repeated header wins.
             headers
-                .get(name)
+                .get_all(name)
+                .iter()
+                .next_back()
                 .map(|v: &HeaderValue| String::from_utf8_lossy(v.as_bytes()).into_owned())
         };
         if let Some(proto) = text("x-forwarded-proto") {
@@ -371,6 +374,16 @@ pub async fn not_found(req: Request) -> Response {
     ApiError::new(StatusCode::NOT_FOUND, "Not Found").into_response()
 }
 
+/// FastAPI routes do not answer HEAD (axum sends HEAD to the GET handler).
+/// Only the Starlette routes `/openapi.json` and `/ui/static` answer it.
+pub async fn refuse_head(req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    if req.method() == Method::HEAD && path != "/openapi.json" && !path.starts_with("/ui/static/") {
+        return method_not_allowed().await;
+    }
+    next.run(req).await
+}
+
 pub async fn method_not_allowed() -> Response {
     ApiError::new(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed").into_response()
 }
@@ -586,5 +599,8 @@ mod tests {
         let c = TrustedProxies::parse("*").client(Some(remote), &h);
         assert_eq!(c.host, "1.1.1.1");
         assert_eq!(t.client(None, &h).host, "unknown");
+        // A repeated header: the last line wins, as in uvicorn.
+        h.append("x-forwarded-for", HeaderValue::from_static("2.2.2.2"));
+        assert_eq!(t.client(Some(local), &h).host, "2.2.2.2");
     }
 }
