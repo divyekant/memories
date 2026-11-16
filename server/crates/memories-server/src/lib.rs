@@ -13,6 +13,7 @@ pub mod migrate;
 pub mod model;
 pub mod pipeline;
 pub mod reads;
+pub mod rollback;
 pub mod search;
 pub mod shell;
 pub mod usage;

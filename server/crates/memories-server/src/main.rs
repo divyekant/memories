@@ -47,6 +47,20 @@ enum Command {
         /// The count of vectors that the verify step compares.
         #[arg(long, default_value_t = 1000)]
         sample: usize,
+        /// Bring the writes that a Python server made after the migration
+        /// into memories_v2. A record ID that the two sides used for
+        /// different records gives the Python record a new ID.
+        #[arg(long, conflicts_with = "shadow")]
+        merge: bool,
+    },
+    /// Write the records of memories_v2 to metadata.json and to the old
+    /// collection, for a return to the Python server. Also moves the waiting
+    /// extract jobs to rollback-extract-jobs.ndjson. Stop the servers first.
+    ExportLegacy {
+        /// Export also if memories_v2 holds less than half of the records
+        /// of the last base, or if it is empty.
+        #[arg(long)]
+        force: bool,
     },
     /// Compare memories_v2 with metadata.json. Exit code 1 on a difference.
     Verify {
@@ -89,20 +103,28 @@ fn main() -> std::process::ExitCode {
     };
     let port = match cli.command {
         Command::Serve { port } => port,
-        Command::Migrate { shadow, sample } => {
+        Command::Migrate {
+            shadow,
+            sample,
+            merge,
+        } => {
             let opts = migrate::Options {
                 shadow,
                 sample,
                 ..Default::default()
             };
-            return run_command(&cfg, opts, false);
+            let job = if merge { Job::Merge } else { Job::Migrate };
+            return run_command(&cfg, opts, job);
         }
         Command::Verify { sample } => {
             let opts = migrate::Options {
                 sample,
                 ..Default::default()
             };
-            return run_command(&cfg, opts, true);
+            return run_command(&cfg, opts, Job::Verify);
+        }
+        Command::ExportLegacy { force } => {
+            return run_command(&cfg, Default::default(), Job::ExportLegacy(force));
         }
     };
     for name in config::set_but_not_used(|n| std::env::var(n).ok()) {
@@ -140,18 +162,10 @@ fn main() -> std::process::ExitCode {
     };
     // A second server on the same DATA_DIR would put the running jobs of the
     // first server back in the queue. Keep the lock until the process ends.
-    let lock_path = cfg.data_dir.join("memories-server.lock");
-    let _lock = match std::fs::File::create(&lock_path).map(|f| (f.try_lock(), f)) {
-        Ok((Ok(()), f)) => f,
-        Ok((Err(e), _)) => {
-            tracing::error!(
-                "cannot start: another memories-server uses DATA_DIR {} ({e})",
-                cfg.data_dir.display()
-            );
-            return std::process::ExitCode::FAILURE;
-        }
-        Err(e) => {
-            tracing::error!("cannot start: cannot make {}: {e}", lock_path.display());
+    let _lock = match lock_data_dir(cfg.data_dir.as_path()) {
+        Ok(f) => f,
+        Err(msg) => {
+            tracing::error!("cannot start: {msg}");
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -217,6 +231,28 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
+/// The lock of `DATA_DIR`. Keep the file open until the process ends.
+fn lock_data_dir(data_dir: &Path) -> Result<std::fs::File, String> {
+    let lock_path = data_dir.join("memories-server.lock");
+    match std::fs::File::create(&lock_path).map(|f| (f.try_lock(), f)) {
+        Ok((Ok(()), f)) => Ok(f),
+        Ok((Err(e), _)) => Err(format!(
+            "another memories-server uses DATA_DIR {} ({e})",
+            data_dir.display()
+        )),
+        Err(e) => Err(format!("cannot make {}: {e}", lock_path.display())),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Job {
+    Migrate,
+    Verify,
+    Merge,
+    /// The value is `--force`.
+    ExportLegacy(bool),
+}
+
 /// True if the server must migrate before it serves. An error stops the start.
 fn first_start_check(cfg: &Config) -> Result<bool, String> {
     if !migrate::metadata_path(&cfg.data_dir).exists() {
@@ -249,38 +285,61 @@ async fn load_embedder() -> Result<Embedder, String> {
     Embedder::load(config).await.map_err(|e| e.to_string())
 }
 
-/// Run `migrate` (or `verify`) with the stores and the embedder of the
-/// environment. Returns the report.
-async fn run_migration(
-    cfg: &Config,
-    opts: &migrate::Options,
-    verify_only: bool,
-) -> Result<Value, String> {
+/// Run `migrate`, `verify`, `migrate --merge` or `export-legacy` with the
+/// stores (and for the first three, the embedder) of the environment.
+/// Returns the report.
+async fn run_migration(cfg: &Config, opts: &migrate::Options, job: Job) -> Result<Value, String> {
+    if matches!(job, Job::ExportLegacy(_)) {
+        // The rollback image runs the export at each start, also on an
+        // install that the Rust server never used.
+        let reason = if !cfg.data_dir.join("state.db").exists() {
+            Some("the Rust server never ran on this DATA_DIR (no state.db)")
+        } else if std::env::var("QDRANT_URL").map_or(true, |u| u.trim().is_empty()) {
+            Some("QDRANT_URL is empty, so the Rust server has no records")
+        } else {
+            None
+        };
+        if let Some(r) = reason {
+            return Ok(serde_json::json!({"status": "skipped", "reason": r}));
+        }
+    }
     let settings = QdrantSettings::from_env().map_err(|e| e.to_string())?;
-    let legacy = migrate::Legacy::read(&cfg.data_dir)?;
-    let old_name = legacy
-        .old_collection
+    let old_name =
+        if matches!(job, Job::ExportLegacy(_)) && !migrate::metadata_path(&cfg.data_dir).exists() {
+            None
+        } else {
+            migrate::Legacy::read(&cfg.data_dir)?.old_collection
+        }
         .unwrap_or_else(|| settings.collection.clone());
     let new = QdrantStore::new(&settings, &settings.v2_collection()).map_err(|e| e.to_string())?;
     let old = QdrantStore::new(&settings, &old_name).map_err(|e| e.to_string())?;
     let state = open_state(cfg)?;
-    let embed = load_embedder().await?;
     let stores = migrate::Stores {
         new: &new,
         old: &old,
         state: &state,
     };
-    if verify_only {
-        migrate::verify(&cfg.data_dir, &stores, &embed, opts).await
-    } else {
-        migrate::migrate(&cfg.data_dir, &stores, &embed, opts).await
+    // The two commands that write must not run beside a server on DATA_DIR.
+    let _lock = match job {
+        Job::Merge | Job::ExportLegacy(_) => Some(lock_data_dir(&cfg.data_dir)?),
+        Job::Migrate | Job::Verify => None,
+    };
+    if let Job::ExportLegacy(force) = job {
+        let now = memories_server::keys::utc_now_iso();
+        return memories_server::rollback::export_legacy(&cfg.data_dir, &stores, &now, force).await;
+    }
+    let embed = load_embedder().await?;
+    match job {
+        Job::Verify => migrate::verify(&cfg.data_dir, &stores, &embed, opts).await,
+        Job::Merge => memories_server::rollback::merge(&cfg.data_dir, &stores, &embed, opts).await,
+        _ => migrate::migrate(&cfg.data_dir, &stores, &embed, opts).await,
     }
 }
 
-fn run_command(cfg: &Config, opts: migrate::Options, verify_only: bool) -> std::process::ExitCode {
+fn run_command(cfg: &Config, opts: migrate::Options, job: Job) -> std::process::ExitCode {
     let result = tokio::runtime::Runtime::new()
         .expect("tokio runtime")
-        .block_on(run_migration(cfg, &opts, verify_only));
+        .block_on(run_migration(cfg, &opts, job));
     match result {
         Ok(report) => {
             println!("{}", serde_json::to_string_pretty(&report).expect("json"));
@@ -361,7 +420,7 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
                 sample: 1000,
                 ..Default::default()
             };
-            match run_migration(&cfg, &opts, false).await {
+            match run_migration(&cfg, &opts, Job::Migrate).await {
                 Ok(report) => {
                     tracing::info!(%report, "migration done");
                     match open_writer(&cfg).await {

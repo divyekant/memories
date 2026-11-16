@@ -283,6 +283,49 @@ impl JobQueue {
         })
     }
 
+    /// The jobs that wait (`queued`) or ran at the last stop (`running`), in
+    /// queue order: `{job_id, status, request}` for each job.
+    pub fn waiting(&self) -> Result<Vec<Value>, StateError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare(
+            "SELECT job_id, status, request FROM extract_jobs
+             WHERE status IN ('queued', 'running') ORDER BY seq",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let (id, status, request): (String, String, String) = (r.get(0)?, r.get(1)?, r.get(2)?);
+            Ok(json!({"job_id": id, "status": status, "request": parse(&request)}))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// End each job of `job_ids` that still waits with status `failed` and
+    /// `error`. A finished job does not change.
+    pub fn fail_waiting(
+        &self,
+        job_ids: &[String],
+        completed_at: &str,
+        error: &str,
+    ) -> Result<(), StateError> {
+        self.with_tx(|tx| {
+            for id in job_ids {
+                let status: Option<String> = tx
+                    .query_row(
+                        "SELECT status FROM extract_jobs WHERE job_id = ?1",
+                        [id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if matches!(status.as_deref(), Some("queued" | "running")) {
+                    Self::finish(tx, id, "failed", |job| {
+                        job["completed_at"] = json!(completed_at);
+                        job["error"] = json!(error);
+                    })?;
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// The job fails with no more tries (a project policy error). `result`
     /// goes in the job body if set.
     pub fn fail_now(
@@ -454,6 +497,29 @@ mod tests {
         assert_eq!(job["error"], "boom");
         assert_eq!(job["completed_at"], "t9");
         assert_eq!(q.claim("t").unwrap().unwrap().job_id, "b");
+    }
+
+    #[test]
+    fn waiting_jobs_are_listed_in_order_and_then_fail() {
+        let dir = TempDir::new("waiting");
+        let q = JobQueue::open(&dir.db()).unwrap();
+        for id in ["a", "b", "c"] {
+            add(&q, id, 10);
+        }
+        q.claim("t").unwrap();
+        q.claim("t").unwrap();
+        q.complete("b", "t", json!({})).unwrap();
+        let w = q.waiting().unwrap();
+        let ids: Vec<&str> = w.iter().map(|j| j["job_id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["a", "c"]);
+        assert_eq!(w[0]["status"], "running");
+        assert_eq!(w[1]["status"], "queued");
+        assert!(w[1]["request"].is_object());
+        let all = ["a".to_string(), "b".to_string(), "c".to_string()];
+        q.fail_waiting(&all, "t5", "exported").unwrap();
+        assert!(q.waiting().unwrap().is_empty());
+        assert_eq!(q.get("a").unwrap().unwrap()["error"], "exported");
+        assert_eq!(q.get("b").unwrap().unwrap()["status"], "completed");
     }
 
     #[test]

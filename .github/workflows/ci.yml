@@ -298,6 +298,37 @@ jobs:
           ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_maintenance.sh server/target/debug/memories-server
 
+      - name: P7-1 rollback drill (export-legacy, rollback entrypoint, migrate --merge)
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/rollback_drill.sh server/target/debug/memories-server
+
+  rollback-image:
+    # The rollback image of task P7-1: the Python image plus memories-server.
+    # The build runs the binary, so a C library that does not agree stops it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the Python image
+        run: docker build -t memories-python --target core .
+
+      - name: Build the rollback image
+        run: docker build -f server/rollback/Dockerfile --build-arg BASE_IMAGE=memories-python -t memories-rollback .
+
+      - name: The entrypoint skips the export on a new data volume and starts the Python server
+        run: |
+          docker run -d --name rollback -p 8000:8000 memories-rollback
+          for i in $(seq 1 90); do curl -sf http://127.0.0.1:8000/health > /dev/null && break; sleep 2; done
+          curl -sf http://127.0.0.1:8000/health
+          docker logs rollback 2>&1 | grep -q '"status": "skipped"'
+
+      - name: Container log
+        if: failure()
+        run: docker logs rollback || true
+
   rust-image:
     # Build the Rust image on each architecture. Then start the bundled compose
     # file with that image, with no change to the file, and wait for healthy.
