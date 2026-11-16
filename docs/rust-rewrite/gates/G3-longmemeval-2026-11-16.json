@@ -1,0 +1,24 @@
+{
+  "longmemeval": {
+    "python": {
+      "r5": 0.94
+    },
+    "rust": {
+      "r5": 0.94
+    },
+    "questions": 100,
+    "every": 5,
+    "hybrid_top5_overlap": 0.986
+  },
+  "seconds": 22,
+  "verdict": {
+    "pass": "partial",
+    "checks": {
+      "longmemeval_r5": true
+    },
+    "not_run": [
+      "corpus",
+      "graph"
+    ]
+  }
+}
