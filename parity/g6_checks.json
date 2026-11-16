@@ -1,0 +1,13 @@
+{
+  "GET /promotions/{candidate_id} 200": "Promotion is in the off mode on the Rust server, so no candidate exists: docs/decisions/2026-11-16-rust-promotions-off.md, Rust test server/crates/memories-server/tests/promotions.rs::get_finds_no_candidate",
+  "POST /import 422": "The Python test gets 422 only with a mocked engine. The real servers give 200 with the policy error on the line: probe import-200-policy-line, and probe missed-422-policy for the policy text",
+  "POST /memory/extract 429": "Rust test server/crates/memories-server/tests/extract.rs::a_full_queue_gives_429_with_retry_after",
+  "POST /memory/extract 501": "Rust test server/crates/memories-server/tests/extract.rs::access_rules_and_501_follow_python (a server with no provider)",
+  "POST /memory/merge 400": "The Python test gets 400 only with a mocked engine. The real Python server gives 500 for a missing ID; the Rust server gives 400 (fixed defect): probe merge-missing-400, docs/decisions/2026-11-16-rust-fixed-python-defects.md",
+  "POST /promotions/{candidate_id}/approve 200": "Promotion off mode: docs/decisions/2026-11-16-rust-promotions-off.md, Rust test server/crates/memories-server/tests/promotions.rs::approve_and_reject_check_the_body_then_find_no_candidate",
+  "POST /promotions/{candidate_id}/reject 200": "Promotion off mode: docs/decisions/2026-11-16-rust-promotions-off.md, Rust test server/crates/memories-server/tests/promotions.rs::approve_and_reject_check_the_body_then_find_no_candidate",
+  "POST /sync/download 404": "Cloud sync is off on the Rust server, so the reply is 400 `Cloud sync not configured`: docs/decisions/2026-11-16-rust-sync-off.md, Rust test server/crates/memories-server/tests/sync.rs::admin_gets_the_replies_of_a_server_with_no_sync",
+  "UNMATCHED GET /openapi.json": "Rust test server/crates/memories-server/tests/http.rs::openapi_is_public_and_has_the_health_version. The version is 6.0.0, so BACKEND_VERSION must move to 6.0.0 at the release (G6.md, finding 1)",
+  "UNMATCHED GET /ui/static/": "The Rust server serves the webui/ files unchanged from UI_DIR: golden case ui-static, and the browser check of each page (server/scripts/parity_events.sh, webui_check.cjs)",
+  "UNMATCHED POST /sync/restore/../../../etc": "Probe sync-restore-404-traversal: the two servers give 404, a status that the Python test accepts (400, 404 or 422)"
+}

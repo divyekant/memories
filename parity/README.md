@@ -26,6 +26,9 @@ The kit has three commands:
 | `parity/extract_pipeline.py` | The live extraction check with recorded LLM replies (`golden/extract/pipeline.ndjson`). Run it with `server/scripts/parity_pipeline.sh`. |
 | `parity/extract_corpus.py` | Gate G4 part a: the eval transcripts through the extraction pipeline, with LLM replies that are a function of the prompt (`golden/extract/corpus.ndjson`). Run it with `server/scripts/parity_pipeline.sh <target> --check extract_corpus`. |
 | `parity/intended.json` | The intended differences: Python v5.19.0 defects that the Rust server fixes. Each entry names a case, the Python status and the Rust reply. |
+| `parity/clients.py` | Gate G6: runs the real clients and the probes against two servers and compares them. Run it with `server/scripts/gate_g6.sh`. |
+| `parity/sort_tests.py` | Gate G6: sorts the Python tests (`docs/rust-rewrite/gates/G6-tests.tsv`) and finds the check of each HTTP test. |
+| `parity/g6_checks.json` | Gate G6: the check of each HTTP test status that no golden case or probe has. |
 | `parity_capture.py` | The capture middleware of the Python server. |
 
 ## Scenario
