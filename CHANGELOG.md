@@ -12,6 +12,18 @@
   cases (0 differ) and sends 36 requests to a Python and a Rust server (0
   differ). No change to the Python server or to a client. Details:
   `docs/decisions/2026-11-16-rust-promotions-off.md`.
+- **Rollback tool, merge and rollback drill of the Rust server (rewrite task
+  P7-1).** `memories-server export-legacy` writes the records of
+  `memories_v2` back to `metadata.json` and to the old collection, and moves
+  the waiting extract jobs to a file. It skips the export if a Python server
+  changed `metadata.json`, and it refuses an export that deletes most of the
+  old data unless `--force` is given. `memories-server migrate --merge` brings
+  the writes of a Python server into `memories_v2` with a three-way merge,
+  field by field. The
+  rollback image (`server/rollback/`) runs the export, then the Python
+  server. `server/scripts/rollback_drill.sh` runs the two return cases in CI.
+  No change to the Python server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-rollback.md`.
 - **Rust extraction pipeline (rewrite task P4-3).** The Rust server runs the
   extraction pipeline for each queued job: hygiene, secret redaction, fact
   extraction, the AUDN decision, the writes, the auto links, the dry run, the

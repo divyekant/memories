@@ -70,7 +70,8 @@ the old collection.
   answers. The other routes give HTTP 503.
 - If the migration or the check fails, the server stops with a message.
 - If `metadata.json` changed after the migration, the server does not start.
-  The message names the command `memories-server migrate --merge`.
+  The message names the command `memories-server migrate --merge`. See
+  "Return to the Python server".
 
 To run the steps by hand:
 
@@ -83,6 +84,49 @@ memories-server verify --sample 1000
 Each command writes a JSON report. `verify` gives exit code 1 if a count, a
 field or a sampled vector is different. Keep `state.db` on the data volume:
 it records the finished migration.
+
+## Return to the Python server
+
+Two commands help an install that goes back to the Python server. The rules
+are in `docs/decisions/2026-11-16-rust-rollback.md`.
+
+CAUTION: Stop the Rust server and the Python server before these commands.
+The commands take the lock of `DATA_DIR`, but they cannot see a Python server.
+
+```bash
+memories-server export-legacy      # write memories_v2 back to metadata.json and the old collection
+memories-server migrate --merge    # bring the writes of a Python server into memories_v2
+```
+
+- `export-legacy` exports only when `memories_v2` is the canonical store. If
+  a Python server changed `metadata.json`, the command skips the export.
+- `export-legacy` refuses an export that deletes most of the old data, for
+  example after the loss of the Qdrant volume. If `memories_v2` is correct,
+  run `memories-server export-legacy --force`.
+- If `export-legacy` stops, run it again. The Rust server does not start on
+  the data of a stopped export.
+- A job of a scoped key keeps its scope in the resend script. If its source
+  is not in the allowed prefixes of the key, the script does not send it.
+- `export-legacy` moves each waiting extract job to
+  `$DATA_DIR/rollback-extract-jobs.ndjson`. After the Python server starts,
+  send the jobs with
+  `MEMORIES_API_KEY=<admin key> scripts/resend_extract_jobs.py <file> --base-url <url>`.
+- The rollback image (`rollback/Dockerfile`) runs `export-legacy` at each
+  start, then the Python server.
+
+To build the rollback image, run these commands from the repository root:
+
+```bash
+docker build --target core -t memories-python .
+docker build -f server/rollback/Dockerfile --build-arg BASE_IMAGE=memories-python -t memories-rollback .
+```
+
+The rollback drill (task P7-1) runs the two cases of a return:
+
+```bash
+QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+  server/scripts/rollback_drill.sh server/target/debug/memories-server
+```
 
 ## Configuration
 
