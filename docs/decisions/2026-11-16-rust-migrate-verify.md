@@ -17,7 +17,7 @@ count of the old collection before and after each run.
 |---|---|
 | Records | `$DATA_DIR/metadata.json`, the canonical store of v5. A repeated ID keeps the last entry, as the Python `_id_map` does. The report names each repeated ID. |
 | Old collection | `qdrant_collection` of `config.json`. If the file has no value, `QDRANT_COLLECTION`. |
-| Dense vector | The unnamed vector of the old point, if `embedding_signature` of `config.json` is equal to the signature of the Rust embedder and the vector has the right dimension. If not, the server embeds the text again (`EMBED_DOC_PREFIX`). |
+| Dense vector | The unnamed vector of the old point, if `embedding_signature` of `config.json` is equal to the signature of the Rust embedder and the vector has the right dimension. If `config.json` has no signature, up to 8 old vectors must have a cosine of 0.9999 or more with new embeddings. If not, the server embeds each text again (`EMBED_DOC_PREFIX`). The old and new collection names must be different. |
 | Keyword vector | `doc_vector(text, avgdl)` of decision P0-2, with the exact average token count of all records. `state.db` gets the sum of the token counts and the record count. |
 
 An install with the embedded Qdrant mode of Python has no old collection on
@@ -32,10 +32,11 @@ and the Python vectors.
 | Second run | Out of shadow mode, the command writes only the IDs that are not in `memories_v2`. After a finished migration it reports `up_to_date`. |
 | Stopped run | The next run writes the remaining IDs. Each batch of 256 points is one upsert. |
 | End of a run | `verify` runs. Only if it passes, `state.db` gets the ID floor (highest ID plus 1), the token count sums and the SHA-256 of `metadata.json` (`migration_metadata_sha256`). |
-| Shadow mode (`--shadow`) | `metadata.json` stays the canonical store: the run writes each record again and deletes the IDs that `metadata.json` does not have. |
+| Shadow mode (`--shadow`) | `metadata.json` stays the canonical store: the run writes each record again and deletes the IDs that `metadata.json` does not have. After a migration that finished out of shadow mode, `--shadow` is refused, because `memories_v2` is then the canonical store. |
+| File changed during an unfinished run | A run records the SHA-256 of `metadata.json` when it starts. If the file is different at the next run or start, the server refuses and names `memories-server migrate --shadow`, which writes each record again. |
 | Out of shadow mode | The run does not replace or delete a record in `memories_v2`. A different record makes `verify` fail. |
 | Free disk space | Before the run: free bytes on the file system of `DATA_DIR` must be 3 times `metadata.json` plus 2 KiB for each record. If Qdrant keeps its files on another disk, this check does not see that disk. |
-| First start of `serve` | If `metadata.json` exists and no migration finished, the server listens, answers only `GET /health`, gives HTTP 503 on the other routes, and runs the migration. If it fails, the process stops with exit code 1 and a message. |
+| First start of `serve` | If `metadata.json` exists and no migration finished, the server listens, answers only `GET /health`, gives HTTP 503 on the other routes, and runs the migration. If it fails or panics, the process stops with exit code 1 and a message. |
 | Changed file | If the SHA-256 of `metadata.json` differs from the recorded value, `serve` and `migrate` refuse to start and name `memories-server migrate --merge` (task P7-1). |
 
 ## Report
@@ -68,6 +69,10 @@ Records that the Rust server wrote after the migration count as `extra`.
   to start.
 
 ## Open items
+
+- If `state.db` is lost after the migration, the records that the Rust
+  server wrote count as `extra`, and the first start fails `verify`. Keep
+  `state.db` in the backups.
 
 - Shadow mode of `serve` (task P6-2): the start check refuses a changed
   `metadata.json`. A shadow container must skip this check.

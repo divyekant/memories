@@ -17,6 +17,10 @@ use sha2::{Digest, Sha256};
 /// The `state.db` value that marks a finished migration: the SHA-256 of the
 /// `metadata.json` that it copied.
 pub const DONE_HASH: &str = "migration_metadata_sha256";
+/// The SHA-256 of the `metadata.json` that an unfinished run started from.
+const STARTED_HASH: &str = "migration_started_sha256";
+/// `shadow` or `normal`: the mode of the finished migration.
+const DONE_MODE: &str = "migration_mode";
 const BATCH: usize = 256;
 /// The IDs that a report names, at most.
 const REPORT_IDS: usize = 20;
@@ -115,7 +119,7 @@ impl Legacy {
             std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let entries: Vec<Value> = serde_json::from_slice(&bytes).map_err(|e| {
             format!(
-                "{} is not a JSON list of records ({e}). Restore it from metadata.json.bak or a backup",
+                "{} is not a JSON list of records ({e}). A Python float NaN or Infinity also gives this error: correct that value. Otherwise restore the file from metadata.json.bak or a backup",
                 path.display()
             )
         })?;
@@ -185,6 +189,13 @@ fn changed_message(path: &Path) -> String {
     )
 }
 
+fn resume_changed_message(path: &Path) -> String {
+    format!(
+        "{} changed during an unfinished migration. Run `memories-server migrate --shadow` to write each record again from the current file",
+        path.display()
+    )
+}
+
 /// What the server does at start.
 #[derive(Debug, PartialEq)]
 pub enum StartAction {
@@ -201,18 +212,55 @@ pub fn start_action(data_dir: &Path, state: &StateDb) -> Result<StartAction, Str
     if !path.exists() {
         return Ok(StartAction::Serve);
     }
-    match state.get_meta(DONE_HASH).map_err(|e| e.to_string())? {
-        None => Ok(StartAction::Migrate),
-        Some(done) if done == file_sha256(&path)? => Ok(StartAction::Serve),
+    let meta = |k| state.get_meta(k).map_err(|e| e.to_string());
+    let sha = file_sha256(&path)?;
+    match meta(DONE_HASH)? {
+        Some(done) if done == sha => Ok(StartAction::Serve),
         Some(_) => Err(changed_message(&path)),
+        None => match meta(STARTED_HASH)? {
+            Some(started) if started != sha => Err(resume_changed_message(&path)),
+            _ => Ok(StartAction::Migrate),
+        },
     }
 }
 
-fn signature_matches(legacy: &Legacy, embed: &impl Embed) -> bool {
-    legacy
-        .signature
-        .as_ref()
-        .is_none_or(|s| *s == embed.signature())
+/// True if the vectors of the old collection come from the embedder of this
+/// server. With no `embedding_signature` in `config.json`, a sample of old
+/// vectors must be equal to new embeddings.
+async fn may_copy(
+    legacy: &Legacy,
+    stores: &Stores<'_>,
+    embed: &impl Embed,
+) -> Result<bool, String> {
+    if stores.old.collection() == stores.new.collection() {
+        return Err(format!(
+            "the old collection and the new collection have the same name {:?}",
+            stores.new.collection()
+        ));
+    }
+    if !stores.old.exists().await.map_err(|e| e.to_string())? {
+        return Ok(false);
+    }
+    if let Some(sig) = &legacy.signature {
+        return Ok(*sig == embed.signature());
+    }
+    let ids: Vec<u64> = legacy.records.keys().take(BATCH).copied().collect();
+    let old = stores.old.vectors(&ids).await.map_err(|e| e.to_string())?;
+    let pairs: Vec<(Vec<f32>, &str)> = ids
+        .iter()
+        .filter_map(|id| Some((old.get(id)?.dense.clone()?, text_of(&legacy.records[id]))))
+        .take(8)
+        .collect();
+    if pairs.is_empty() {
+        return Ok(false);
+    }
+    let new = embed
+        .embed_docs(pairs.iter().map(|(_, t)| (*t).to_owned()).collect())
+        .await?;
+    Ok(pairs
+        .iter()
+        .zip(&new)
+        .all(|((o, _), n)| o.len() == n.len() && cosine(o, n) >= MIN_COSINE))
 }
 
 /// Copy the records into `memories_v2`, then run [`verify`]. A run that stops
@@ -231,16 +279,38 @@ pub async fn migrate(
         .state
         .get_meta(DONE_HASH)
         .map_err(|e| e.to_string())?;
-    if !opts.shadow {
+    let meta = |k| stores.state.get_meta(k).map_err(|e| e.to_string());
+    let path = metadata_path(data_dir);
+    if opts.shadow {
+        // After a normal migration, memories_v2 is the canonical store: a
+        // shadow run would delete or replace the records of the Rust server.
+        if done.is_some() && meta(DONE_MODE)?.as_deref() != Some("shadow") {
+            return Err(format!(
+                "the migration finished out of shadow mode, so memories_v2 is the canonical store. `--shadow` would delete or replace its records. {}",
+                changed_message(&path)
+            ));
+        }
+    } else {
         match done {
             Some(h) if h == legacy.sha256 => {
                 return Ok(json!({"status": "up_to_date", "metadata_sha256": legacy.sha256}));
             }
-            Some(_) => return Err(changed_message(&metadata_path(data_dir))),
-            None => {}
+            Some(_) => return Err(changed_message(&path)),
+            None => {
+                if meta(STARTED_HASH)?.is_some_and(|h| h != legacy.sha256) {
+                    return Err(resume_changed_message(&path));
+                }
+            }
         }
     }
     check_space(free_space(data_dir)?, space_needed(&legacy))?;
+    if opts.sample == 0 {
+        return Err("the verify sample must be 1 or more".into());
+    }
+    stores
+        .state
+        .set_meta(&[(STARTED_HASH, &legacy.sha256)])
+        .map_err(|e| e.to_string())?;
 
     let dim = embed.dim();
     let created = stores
@@ -277,8 +347,7 @@ pub async fn migrate(
         .filter(|r| opts.shadow || !existing.contains(&r.id))
         .collect();
 
-    let copy = signature_matches(&legacy, embed)
-        && stores.old.exists().await.map_err(|e| e.to_string())?;
+    let copy = may_copy(&legacy, stores, embed).await?;
     let (mut copied, mut embedded) = (0usize, 0usize);
     let size = if opts.batch == 0 { BATCH } else { opts.batch };
     for (batch_no, batch) in todo.chunks(size).enumerate() {
@@ -335,7 +404,7 @@ pub async fn migrate(
             .map_err(|e| e.to_string())?;
     }
 
-    let report_verify = verify(data_dir, stores, embed, opts).await?;
+    let report_verify = verify_legacy(&legacy, stores, embed, opts).await?;
     if report_verify["ok"] != json!(true) {
         return Err(format!(
             "verify failed after the migration; the server did not start. Report: {report_verify}"
@@ -353,7 +422,10 @@ pub async fn migrate(
         .map_err(|e| e.to_string())?;
     stores
         .state
-        .set_meta(&[(DONE_HASH, &legacy.sha256)])
+        .set_meta(&[
+            (DONE_HASH, &legacy.sha256),
+            (DONE_MODE, if opts.shadow { "shadow" } else { "normal" }),
+        ])
         .map_err(|e| e.to_string())?;
     Ok(json!({
         "status": "migrated",
@@ -401,7 +473,18 @@ pub async fn verify(
     embed: &impl Embed,
     opts: &Options,
 ) -> Result<Value, String> {
-    let legacy = Legacy::read(data_dir)?;
+    verify_legacy(&Legacy::read(data_dir)?, stores, embed, opts).await
+}
+
+async fn verify_legacy(
+    legacy: &Legacy,
+    stores: &Stores<'_>,
+    embed: &impl Embed,
+    opts: &Options,
+) -> Result<Value, String> {
+    if opts.sample == 0 {
+        return Err("the verify sample must be 1 or more".into());
+    }
     if !stores.new.exists().await.map_err(|e| e.to_string())? {
         return Ok(
             json!({"ok": false, "error": format!("collection {} does not exist", stores.new.collection())}),
@@ -451,8 +534,7 @@ pub async fn verify(
         .copied()
         .collect();
     let (avgdl, _) = legacy.avgdl();
-    let copy = signature_matches(&legacy, embed)
-        && stores.old.exists().await.map_err(|e| e.to_string())?;
+    let copy = may_copy(legacy, stores, embed).await?;
     let mut bad_vectors = Vec::new();
     let mut lowest = 1.0f64;
     for chunk in sample.chunks(BATCH) {

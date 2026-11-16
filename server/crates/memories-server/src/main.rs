@@ -222,7 +222,7 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     if let Some(cfg) = migrate_first {
         state.migrating.store(true, Ordering::Release);
         let st = state.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             tracing::info!("first start: migrating metadata.json to memories_v2");
             let opts = migrate::Options {
                 sample: 1000,
@@ -239,6 +239,13 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
                     );
                     std::process::exit(1);
                 }
+            }
+        });
+        // A panic in the migration must stop the server, not leave it at 503.
+        tokio::spawn(async move {
+            if let Err(e) = task.await {
+                tracing::error!("migration task failed, the server stops: {e}");
+                std::process::exit(1);
             }
         });
     }

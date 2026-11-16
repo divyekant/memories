@@ -251,7 +251,9 @@ async fn two_runs_give_the_same_collection_and_the_old_data_does_not_change() {
     assert_eq!(again["written"], 0, "{again}");
     assert_eq!(t.snapshot().await, first);
 
-    // A shadow run writes each record again: still the same collection.
+    // A shadow run (shadow state, P6-2) writes each record again: still the
+    // same collection.
+    t.new_state("shadow");
     let shadow = t
         .migrate(&Options {
             shadow: true,
@@ -324,6 +326,16 @@ async fn only_shadow_mode_replaces_or_deletes_records() {
         .await
         .unwrap();
 
+    let err = t
+        .migrate(&Options {
+            shadow: true,
+            ..all()
+        })
+        .await
+        .unwrap_err();
+    assert!(err.contains("canonical store"), "{err}");
+    assert!(t.new.get(999_999).await.unwrap().is_some());
+
     t.new_state("again");
     let err = t.migrate(&all()).await.unwrap_err();
     assert!(err.contains("verify failed"), "{err}");
@@ -366,15 +378,18 @@ async fn verify_finds_each_kind_of_difference_and_a_changed_file_stops_the_start
     let mut fields = Map::new();
     fields.insert("pinned".into(), json!(true));
     t.new.set_payload(&[2], fields).await.unwrap();
-    let mut r4 = t.new.get(4).await.unwrap().unwrap();
-    let text4 = r4.text.clone().unwrap();
-    r4.text = Some(text4.clone());
+    // Only the dense vector of record 4 changes.
+    let r4 = t.new.get(4).await.unwrap().unwrap();
+    let keyword4 = t.new.vectors(&[4]).await.unwrap()[&4]
+        .keyword
+        .clone()
+        .unwrap();
     t.new
         .upsert(
             vec![memories_store::NewPoint {
                 record: r4,
                 dense: fake_vector("another text"),
-                keyword: memories_engine::keyword::doc_vector(&text4, 1.0),
+                keyword: keyword4,
             }],
             DIM as u64,
         )
@@ -397,6 +412,62 @@ async fn verify_finds_each_kind_of_difference_and_a_changed_file_stops_the_start
     assert!(err.contains("migrate --merge"), "{err}");
     let err = t.migrate(&all()).await.unwrap_err();
     assert!(err.contains("migrate --merge"), "{err}");
+    let _ = t.new.delete_collection().await;
+    let _ = t.old.delete_collection().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Qdrant server: set QDRANT_TEST_URL"]
+async fn a_file_change_during_an_unfinished_run_needs_shadow_mode() {
+    let t = setup("resume").await;
+    let opts = Options {
+        batch: 50,
+        stop_after_batches: Some(1),
+        ..all()
+    };
+    t.migrate(&opts).await.unwrap_err();
+    let path = migrate::metadata_path(&t.dir);
+    let mut entries: Vec<Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    entries[0]["text"] = json!("changed by Python during the migration");
+    std::fs::write(&path, serde_json::to_vec(&entries).unwrap()).unwrap();
+
+    let err = migrate::start_action(&t.dir, &t.state).unwrap_err();
+    assert!(err.contains("--shadow"), "{err}");
+    let err = t.migrate(&all()).await.unwrap_err();
+    assert!(err.contains("--shadow"), "{err}");
+    let report = t
+        .migrate(&Options {
+            shadow: true,
+            ..all()
+        })
+        .await
+        .unwrap();
+    assert_eq!(report["verify"]["ok"], true, "{report}");
+    let zero = sample_err(&t).await;
+    assert!(zero.contains("sample"), "{zero}");
+    let _ = t.new.delete_collection().await;
+    let _ = t.old.delete_collection().await;
+}
+
+async fn sample_err(t: &Setup) -> String {
+    migrate::verify(&t.dir, &t.stores(), &Fake, &Options::default())
+        .await
+        .unwrap_err()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Qdrant server: set QDRANT_TEST_URL"]
+async fn with_no_signature_old_vectors_of_another_model_are_not_copied() {
+    let t = setup("nosig").await;
+    let config = json!({"qdrant_collection": t.old.collection()});
+    std::fs::write(
+        t.dir.join("config.json"),
+        serde_json::to_vec(&config).unwrap(),
+    )
+    .unwrap();
+    let report = t.migrate(&all()).await.unwrap();
+    assert_eq!(report["copied_vectors"], 0, "{report}");
+    assert_eq!(report["verify"]["ok"], true, "{report}");
     let _ = t.new.delete_collection().await;
     let _ = t.old.delete_collection().await;
 }
