@@ -59,7 +59,7 @@ fn require_write(auth: &AuthContext, source: &str) -> Result<(), Response> {
 }
 
 /// `_trusted_authorship`: only a managed key with a valid principal.
-fn trusted(auth: &AuthContext, headers: &HeaderMap) -> Option<TrustedAuthorship> {
+pub(crate) fn trusted(auth: &AuthContext, headers: &HeaderMap) -> Option<TrustedAuthorship> {
     if auth.key_type != "managed" {
         return None;
     }

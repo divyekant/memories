@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod audit;
 pub mod auth;
+pub mod backup;
 pub mod error;
 pub mod extract;
 pub mod healthcheck;
@@ -53,6 +54,8 @@ pub struct Config {
     pub forwarded_allow_ips: String,
     /// `AUDIT_LOG`: write and read `audit.db`.
     pub audit_log: bool,
+    /// `MAX_BACKUPS`: the newest backup folders that stay (see `backup::survivors`).
+    pub max_backups: usize,
 }
 
 impl Config {
@@ -75,6 +78,8 @@ impl Config {
             metrics_latency_samples: samples as usize,
             forwarded_allow_ips: config::string("FORWARDED_ALLOW_IPS", "127.0.0.1"),
             audit_log: config::parse_bool(var("AUDIT_LOG").as_deref(), false),
+            max_backups: config::int_strict("MAX_BACKUPS", var("MAX_BACKUPS").as_deref(), 10)?
+                .max(0) as usize,
         })
     }
 }
@@ -97,6 +102,9 @@ pub struct AppState {
     pub extract: Extract,
     /// The write flow of the engine. Set with `engine`.
     pub writer: OnceLock<Arc<Writer>>,
+    /// `DATA_DIR`: the backups, the snapshot manifest and the SQLite files.
+    pub data_dir: PathBuf,
+    pub max_backups: usize,
 }
 
 impl AppState {
@@ -127,6 +135,8 @@ impl AppState {
             migrating: AtomicBool::new(false),
             extract,
             writer: OnceLock::new(),
+            data_dir: cfg.data_dir.clone(),
+            max_backups: cfg.max_backups,
         })
     }
 }
@@ -158,6 +168,14 @@ const SERVED: &[(&str, &str)] = &[
     ("POST", "/memory/extract"),
     ("GET", "/memory/extract/{job_id}"),
     ("GET", "/extract/status"),
+    ("GET", "/backups"),
+    ("POST", "/backup"),
+    ("POST", "/restore"),
+    ("GET", "/snapshots"),
+    ("POST", "/snapshots"),
+    ("POST", "/snapshots/{name}/restore"),
+    ("GET", "/export"),
+    ("POST", "/import"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -196,7 +214,17 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/memory/is-novel", post(search::is_novel))
         .route("/memory/extract", post(extract::enqueue))
         .route("/memory/extract/{job_id}", get(extract::get_job))
-        .route("/extract/status", get(extract::status));
+        .route("/extract/status", get(extract::status))
+        .route("/backups", get(backup::list_backups))
+        .route("/backup", post(backup::create))
+        .route("/restore", post(backup::restore))
+        .route(
+            "/snapshots",
+            get(backup::list_snapshots).post(backup::create_snapshot),
+        )
+        .route("/snapshots/{name}/restore", post(backup::restore_snapshot))
+        .route("/export", get(backup::export))
+        .route("/import", post(backup::import));
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
     let public = stubs(

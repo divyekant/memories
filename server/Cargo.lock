@@ -1279,6 +1279,7 @@ dependencies = [
  "rustix",
  "serde_json",
  "sha2",
+ "thiserror",
  "tokio",
  "tower",
  "tower-http 0.7.1",
@@ -1290,8 +1291,10 @@ dependencies = [
 name = "memories-store"
 version = "6.0.0"
 dependencies = [
+ "futures-util",
  "memories-types",
  "qdrant-client",
+ "reqwest",
  "rusqlite",
  "serde_json",
  "thiserror",
