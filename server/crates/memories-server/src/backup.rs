@@ -361,23 +361,53 @@ fn copy_sqlite(data_dir: &Path, dest: &Path) -> Result<(), BackupError> {
     Ok(())
 }
 
-/// Make a backup folder. The caller holds the write lock if it needs a
-/// backup that agrees with a later step (a restore).
+/// Make a backup folder, then delete the old folders (`cleanup`). The caller
+/// holds the write lock if it needs a backup that agrees with a later step.
 pub async fn create_backup(
     w: &Writer,
     data_dir: &Path,
     max_backups: usize,
     prefix: &str,
 ) -> Result<PathBuf, BackupError> {
+    let path = make_backup(w, data_dir, prefix).await?;
+    run_cleanup(data_dir, max_backups).await?;
+    Ok(path)
+}
+
+async fn run_cleanup(data_dir: &Path, max_backups: usize) -> Result<(), BackupError> {
     let root = backup_dir(data_dir);
-    let path = root.join(backup_name(prefix, &PyDateTime::now_utc()));
-    std::fs::create_dir_all(&path)?;
+    tokio::task::spawn_blocking(move || cleanup(&root, max_backups))
+        .await
+        .map_err(std::io::Error::other)??;
+    Ok(())
+}
+
+/// A new, empty folder `<prefix>_<time>`. If a backup of the same second has
+/// the name, wait for the next second, so two backups never share a folder.
+async fn new_folder(root: &Path, prefix: &str) -> Result<PathBuf, BackupError> {
+    std::fs::create_dir_all(root)?;
+    for _ in 0..5 {
+        let path = root.join(backup_name(prefix, &PyDateTime::now_utc()));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(std::io::Error::other("no free backup name after 5 tries").into())
+}
+
+/// Make a backup folder with no cleanup. A failed backup removes its folder.
+async fn make_backup(w: &Writer, data_dir: &Path, prefix: &str) -> Result<PathBuf, BackupError> {
+    let path = new_folder(&backup_dir(data_dir), prefix).await?;
     let made = fill_backup(w, data_dir, &path).await;
     if let Err(e) = made {
-        let _ = std::fs::remove_dir_all(&path);
+        let p = path.clone();
+        let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(p)).await;
         return Err(e);
     }
-    cleanup(&root, max_backups)?;
     Ok(path)
 }
 
@@ -390,35 +420,42 @@ async fn fill_backup(w: &Writer, data_dir: &Path, path: &Path) -> Result<(), Bac
         tracing::warn!(error = %e, snapshot = %name, "cannot delete the Qdrant snapshot of a backup");
     }
     got?;
-    std::fs::rename(&part, path.join(SNAPSHOT_FILE))?;
+    tokio::fs::rename(&part, path.join(SNAPSHOT_FILE)).await?;
     let (header, lines) = export_lines(w, &ExportFilter::default()).await?;
-    let mut body = header;
-    body.push('\n');
-    for (_, line) in lines {
-        body.push_str(&line);
-        body.push('\n');
-    }
-    std::fs::write(path.join(EXPORT_FILE), body)?;
     let (d, p) = (data_dir.to_owned(), path.to_owned());
-    tokio::task::spawn_blocking(move || copy_sqlite(&d, &p))
-        .await
-        .map_err(std::io::Error::other)??;
+    tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        let mut f = std::io::BufWriter::new(std::fs::File::create(p.join(EXPORT_FILE))?);
+        writeln!(f, "{header}")?;
+        for (_, line) in lines {
+            writeln!(f, "{line}")?;
+        }
+        f.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        copy_sqlite(&d, &p)
+    })
+    .await
+    .map_err(std::io::Error::other)??;
     Ok(())
 }
 
-/// Replace the collection with a snapshot file. Holds the write lock, and
-/// makes a `pre_restore` backup first. Returns the record count.
-async fn restore_file(
+/// Replace the collection with a snapshot file. The caller holds the write
+/// lock. Makes a `pre_restore` backup first, and deletes old folders only
+/// after the upload, so the cleanup cannot remove the source. Returns the
+/// record count.
+async fn restore_locked(
     w: &Writer,
     data_dir: &Path,
     max_backups: usize,
     file: &Path,
 ) -> Result<usize, BackupError> {
-    let _g = w.lock_writes().await;
     w.engine.flush_reinforcements().await?;
-    create_backup(w, data_dir, max_backups, "pre_restore").await?;
-    w.engine.store.upload_snapshot(file).await?;
-    Ok(w.reload().await?)
+    make_backup(w, data_dir, "pre_restore").await?;
+    let uploaded = w.engine.store.upload_snapshot(file).await;
+    // A failed upload can still have changed the collection: load it again.
+    let n = w.reload().await?;
+    uploaded?;
+    run_cleanup(data_dir, max_backups).await?;
+    Ok(n)
 }
 
 // ---- Backup routes ------------------------------------------------------------------
@@ -509,7 +546,8 @@ pub async fn restore(
         ));
     }
     let w = writer(&state)?;
-    let total = restore_file(&w, &state.data_dir, state.max_backups, &file)
+    let _g = w.lock_writes().await;
+    let total = restore_locked(&w, &state.data_dir, state.max_backups, &file)
         .await
         .map_err(server_error)?;
     Ok(Json(json!({
@@ -558,11 +596,13 @@ pub async fn restore_snapshot(
     admin(&auth)?;
     let w = writer(&state)?;
     let root = backup_dir(&state.data_dir);
+    // Under the lock, so two snapshot restores do not share the file.
+    let _g = w.lock_writes().await;
     let file = root.join(".snapshot-restore.part");
     let run = async {
         std::fs::create_dir_all(&root)?;
         w.engine.store.download_snapshot(&name, &file).await?;
-        restore_file(&w, &state.data_dir, state.max_backups, &file).await
+        restore_locked(&w, &state.data_dir, state.max_backups, &file).await
     };
     let done = run.await;
     let _ = std::fs::remove_file(&file);
@@ -806,12 +846,9 @@ pub async fn import(
         }
     };
     let mut line_errors = Vec::new();
-    match parse_import(&lines, remap_to.as_ref()).map_err(|_| {
-        err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "an import line has a value of a wrong type",
-        )
-    })? {
+    match parse_import(&lines, remap_to.as_ref())
+        .map_err(|_| server_error("an import line has a value of a wrong type"))?
+    {
         None => line_errors.push(line_error(1, HEADER_ERROR)),
         Some((records, parse_errors)) => {
             line_errors.extend(parse_errors);

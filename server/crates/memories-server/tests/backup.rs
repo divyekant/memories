@@ -33,6 +33,10 @@ struct T {
 }
 
 async fn setup(name: &str) -> T {
+    setup_with(name, 10).await
+}
+
+async fn setup_with(name: &str, max_backups: usize) -> T {
     let url =
         std::env::var("QDRANT_TEST_URL").expect("set QDRANT_TEST_URL, e.g. http://127.0.0.1:6333");
     let base = format!("p54_{name}_{}", std::process::id());
@@ -44,6 +48,7 @@ async fn setup(name: &str) -> T {
     let settings = QdrantSettings::from_lookup(lookup).unwrap();
     let mut cfg = common::config(ADMIN, 1000);
     cfg.audit_log = true;
+    cfg.max_backups = max_backups;
     let dir = cfg.data_dir.clone();
     let embed = EmbedConfig {
         cache_dir: std::env::var("MEMORIES_TEST_MODEL_CACHE")
@@ -461,5 +466,117 @@ async fn snapshot_create_list_and_restore() {
     );
     let (s, _) = t.json("GET", "/snapshots", &t.ro, Value::Null).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
+    t.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+async fn a_restore_keeps_its_source_when_the_cleanup_runs() {
+    // MAX_BACKUPS=3. The restore source is the third newest manual folder:
+    // the new pre_restore folder pushes it out of the 3 newest, and it is not
+    // one of the 2 newest manual folders.
+    let t = setup_with("keep", 3).await;
+    t.import("?no_backup=true", ADMIN, &seed()).await;
+    let mut names = Vec::new();
+    for _ in 0..4 {
+        let (s, r) = t.json("POST", "/backup", ADMIN, Value::Null).await;
+        assert_eq!(s, StatusCode::OK, "{r}");
+        let p = PathBuf::from(r["backup_path"].as_str().unwrap());
+        names.push(p.file_name().unwrap().to_str().unwrap().to_owned());
+    }
+    assert_eq!(
+        names.iter().collect::<std::collections::HashSet<_>>().len(),
+        4,
+        "no shared folder"
+    );
+    let (_, r) = t.json("GET", "/backups", ADMIN, Value::Null).await;
+    assert_eq!(r["count"], 3, "the oldest manual folder is gone");
+    let (s, r) = t
+        .json("POST", "/restore", ADMIN, json!({"backup_name": names[1]}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let (_, r) = t.json("GET", "/backups", ADMIN, Value::Null).await;
+    let left: Vec<&str> = r["backups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        !left.contains(&names[1].as_str()),
+        "cleanup ran after the upload: {left:?}"
+    );
+    t.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+async fn smart_import_keeps_the_newer_record_of_a_borderline_match() {
+    let t = setup("smart").await;
+    let old = ndjson(&[
+        json!({"_header": true}),
+        json!({"text": "The billing service stores invoices in Postgres.", "source": "learning/s"}),
+    ]);
+    t.import("?no_backup=true", ADMIN, &old).await;
+    let near = "The billing service keeps all of its invoices in a Postgres database.";
+    let body = |created: &str| {
+        ndjson(&[
+            json!({"_header": true}),
+            json!({"text": near, "source": "learning/s", "created_at": created}),
+        ])
+    };
+    let (_, top) = t
+        .json(
+            "POST",
+            "/memory/is-novel",
+            ADMIN,
+            json!({"text": near, "threshold": 0.5}),
+        )
+        .await;
+    let sim = top["most_similar"]["similarity"].as_f64().unwrap();
+    assert!(
+        (0.80..0.95).contains(&sim),
+        "borderline fixture: similarity {sim}"
+    );
+    // Older than the stored record: skipped.
+    let (_, r) = t
+        .import("?strategy=smart&no_backup=true", ADMIN, &body("2000-01-01"))
+        .await;
+    assert_eq!(
+        (
+            r["imported"].clone(),
+            r["skipped"].clone(),
+            r["updated"].clone()
+        ),
+        (json!(0), json!(1), json!(0))
+    );
+    // Newer: the stored record is replaced.
+    let (_, r) = t
+        .import("?strategy=smart&no_backup=true", ADMIN, &body("2999-01-01"))
+        .await;
+    assert_eq!(
+        (
+            r["imported"].clone(),
+            r["skipped"].clone(),
+            r["updated"].clone()
+        ),
+        (json!(1), json!(0), json!(1))
+    );
+    let all = t.export("", ADMIN).await;
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[1]["text"], near);
+    // A cross-source borderline match is never deleted: the record is added.
+    let cross = ndjson(&[
+        json!({"_header": true}),
+        json!({"text": "The billing service stores invoices in Postgres.", "source": "codex/other", "created_at": "2999-01-01"}),
+    ]);
+    let (_, r) = t
+        .import("?strategy=smart&no_backup=true", ADMIN, &cross)
+        .await;
+    assert_eq!(
+        (r["imported"].clone(), r["updated"].clone()),
+        (json!(1), json!(0))
+    );
+    assert_eq!(t.export("", ADMIN).await.len(), 3);
     t.cleanup().await;
 }

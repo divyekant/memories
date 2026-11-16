@@ -42,6 +42,10 @@ Python. The folder holds these files:
   for a manual recovery of keys, the audit log and the queue.
 - `POST /snapshots/{name}/restore` downloads the named snapshot from Qdrant
   and restores it in the same way, also after a `pre_restore` backup.
+- A restore deletes old folders only after the upload, so the cleanup
+  cannot remove the backup that the restore reads.
+- Two backups never share a folder. If the name of the second exists, the
+  server waits for the next second.
 - Retention: the `MAX_BACKUPS` newest folders, the 2 newest folders of each
   prefix, and the 7 newest `scheduled` folders stay. The server deletes the
   other folders.
@@ -62,3 +66,7 @@ Python. The folder holds these files:
 | A snapshot restore in server mode passes only the name to Qdrant and fails. | The snapshot restore works, and makes a `pre_restore` backup first. |
 | A JSON line that is not an object, or a `text` or `source` that is not a string, gives HTTP 500 with the Python exception text. | The same lines give HTTP 500 with "Internal server error". |
 | No scheduled backup. | One scheduled backup each day. |
+| A backup also goes to cloud sync when it is on. | No cloud sync upload (task P5-7 decides on cloud sync). |
+| A `MAX_BACKUPS` of -N keeps all folders but the N oldest (before the prefix rule). | A `MAX_BACKUPS` below 0 is 0. |
+| A `created_at` of null in a smart import gives HTTP 500. | The value is an empty string. |
+| The export writes `custom_fields` in the stored key order. | The export writes the keys in sorted order. The parsed data is the same. |

@@ -218,6 +218,9 @@ impl QdrantStore {
             // As the gRPC client: no HTTP proxy from the environment.
             http: reqwest::Client::builder()
                 .no_proxy()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                // A stalled transfer must not hold the write lock with no limit.
+                .read_timeout(std::time::Duration::from_secs(300))
                 .build()
                 .map_err(StoreError::from)?,
         })
