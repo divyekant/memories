@@ -20,8 +20,8 @@ pub const DONE_HASH: &str = "migration_metadata_sha256";
 /// The SHA-256 of the `metadata.json` that an unfinished run started from.
 const STARTED_HASH: &str = "migration_started_sha256";
 /// `shadow` or `normal`: the mode of the finished migration.
-const DONE_MODE: &str = "migration_mode";
-const BATCH: usize = 256;
+pub(crate) const DONE_MODE: &str = "migration_mode";
+pub(crate) const BATCH: usize = 256;
 /// The IDs that a report names, at most.
 const REPORT_IDS: usize = 20;
 /// The lowest cosine similarity for a sampled vector.
@@ -108,7 +108,7 @@ pub fn file_sha256(path: &Path) -> Result<String, String> {
     Ok(hex(&Sha256::digest(&bytes)))
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -156,7 +156,7 @@ impl Legacy {
     }
 }
 
-fn text_of(r: &Record) -> &str {
+pub(crate) fn text_of(r: &Record) -> &str {
     r.text.as_deref().unwrap_or("")
 }
 
@@ -182,7 +182,7 @@ pub fn check_space(free: u64, need: u64) -> Result<(), String> {
     Ok(())
 }
 
-fn changed_message(path: &Path) -> String {
+pub(crate) fn changed_message(path: &Path) -> String {
     format!(
         "{} changed after the migration: a Python server wrote to the old data. Run `memories-server migrate --merge` (task P7-1) to keep the records of the two sides",
         path.display()
@@ -214,6 +214,9 @@ pub fn start_action(data_dir: &Path, state: &StateDb) -> Result<StartAction, Str
     }
     let meta = |k| state.get_meta(k).map_err(|e| e.to_string());
     let sha = file_sha256(&path)?;
+    if meta(crate::rollback::EXPORT_PENDING)?.as_deref() == Some(sha.as_str()) {
+        return Err(crate::rollback::unfinished_export_message());
+    }
     match meta(DONE_HASH)? {
         Some(done) if done == sha => Ok(StartAction::Serve),
         Some(_) => Err(changed_message(&path)),
@@ -227,7 +230,7 @@ pub fn start_action(data_dir: &Path, state: &StateDb) -> Result<StartAction, Str
 /// True if the vectors of the old collection come from the embedder of this
 /// server. With no `embedding_signature` in `config.json`, a sample of old
 /// vectors must be equal to new embeddings.
-async fn may_copy(
+pub(crate) async fn may_copy(
     legacy: &Legacy,
     stores: &Stores<'_>,
     embed: &impl Embed,
@@ -348,61 +351,18 @@ pub async fn migrate(
         .collect();
 
     let copy = may_copy(&legacy, stores, embed).await?;
-    let (mut copied, mut embedded) = (0usize, 0usize);
     let size = if opts.batch == 0 { BATCH } else { opts.batch };
-    for (batch_no, batch) in todo.chunks(size).enumerate() {
-        if opts.stop_after_batches == Some(batch_no) {
-            return Err(format!("stopped after {batch_no} batches (test)"));
-        }
-        let ids: Vec<u64> = batch.iter().map(|r| r.id).collect();
-        let mut old = if copy {
-            stores.old.vectors(&ids).await.map_err(|e| e.to_string())?
-        } else {
-            HashMap::new()
-        };
-        let mut dense: Vec<Option<Vec<f32>>> = ids
-            .iter()
-            .map(|id| {
-                old.remove(id)
-                    .and_then(|v| v.dense)
-                    .filter(|d| d.len() == dim)
-            })
-            .collect();
-        let missing: Vec<usize> = (0..batch.len()).filter(|&i| dense[i].is_none()).collect();
-        if !missing.is_empty() {
-            let texts = missing
-                .iter()
-                .map(|&i| text_of(batch[i]).to_owned())
-                .collect();
-            let vectors = embed.embed_docs(texts).await?;
-            if vectors.len() != missing.len() {
-                return Err(format!(
-                    "the embedder gave {} vectors for {} texts",
-                    vectors.len(),
-                    missing.len()
-                ));
-            }
-            for (i, v) in missing.iter().zip(vectors) {
-                dense[*i] = Some(v);
-            }
-        }
-        embedded += missing.len();
-        copied += batch.len() - missing.len();
-        let points = batch
-            .iter()
-            .zip(dense)
-            .map(|(r, d)| NewPoint {
-                record: (*r).clone(),
-                dense: d.expect("filled above"),
-                keyword: keyword::doc_vector(text_of(r), avgdl),
-            })
-            .collect();
-        stores
-            .new
-            .upsert(points, dim as u64)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
+    let todo_pairs: Vec<(u64, &Record)> = todo.iter().map(|r| (r.id, *r)).collect();
+    let (copied, embedded) = write_points(
+        &todo_pairs,
+        stores,
+        embed,
+        copy,
+        avgdl,
+        size,
+        opts.stop_after_batches,
+    )
+    .await?;
 
     let report_verify = verify_legacy(&legacy, stores, embed, opts).await?;
     if report_verify["ok"] != json!(true) {
@@ -422,10 +382,13 @@ pub async fn migrate(
         .map_err(|e| e.to_string())?;
     stores
         .state
-        .set_meta(&[
-            (DONE_HASH, &legacy.sha256),
-            (DONE_MODE, if opts.shadow { "shadow" } else { "normal" }),
-        ])
+        .set_legacy_base(
+            &crate::rollback::base_of(legacy.records.values()),
+            &[
+                (DONE_HASH, &legacy.sha256),
+                (DONE_MODE, if opts.shadow { "shadow" } else { "normal" }),
+            ],
+        )
         .map_err(|e| e.to_string())?;
     Ok(json!({
         "status": "migrated",
@@ -449,7 +412,82 @@ pub async fn migrate(
     }))
 }
 
-fn cosine(a: &[f32], b: &[f32]) -> f64 {
+/// Write `records` to `memories_v2` in batches of `size`. Each pair is (the ID
+/// of the vector in the old collection, the record to write). With `copy`,
+/// the dense vector comes from the old collection; else, or if it is absent,
+/// the embedder makes it. Returns (copied, embedded).
+pub(crate) async fn write_points(
+    records: &[(u64, &Record)],
+    stores: &Stores<'_>,
+    embed: &impl Embed,
+    copy: bool,
+    avgdl: f64,
+    size: usize,
+    stop_after_batches: Option<usize>,
+) -> Result<(usize, usize), String> {
+    let dim = embed.dim();
+    let (mut copied, mut embedded) = (0usize, 0usize);
+    for (batch_no, batch) in records.chunks(size.max(1)).enumerate() {
+        if stop_after_batches == Some(batch_no) {
+            return Err(format!("stopped after {batch_no} batches (test)"));
+        }
+        let old_ids: Vec<u64> = batch.iter().map(|(old, _)| *old).collect();
+        let mut old = if copy {
+            stores
+                .old
+                .vectors(&old_ids)
+                .await
+                .map_err(|e| e.to_string())?
+        } else {
+            HashMap::new()
+        };
+        let mut dense: Vec<Option<Vec<f32>>> = old_ids
+            .iter()
+            .map(|id| {
+                old.remove(id)
+                    .and_then(|v| v.dense)
+                    .filter(|d| d.len() == dim)
+            })
+            .collect();
+        let missing: Vec<usize> = (0..batch.len()).filter(|&i| dense[i].is_none()).collect();
+        if !missing.is_empty() {
+            let texts = missing
+                .iter()
+                .map(|&i| text_of(batch[i].1).to_owned())
+                .collect();
+            let vectors = embed.embed_docs(texts).await?;
+            if vectors.len() != missing.len() {
+                return Err(format!(
+                    "the embedder gave {} vectors for {} texts",
+                    vectors.len(),
+                    missing.len()
+                ));
+            }
+            for (i, v) in missing.iter().zip(vectors) {
+                dense[*i] = Some(v);
+            }
+        }
+        embedded += missing.len();
+        copied += batch.len() - missing.len();
+        let points = batch
+            .iter()
+            .zip(dense)
+            .map(|((_, r), d)| NewPoint {
+                record: (*r).clone(),
+                dense: d.expect("filled above"),
+                keyword: keyword::doc_vector(text_of(r), avgdl),
+            })
+            .collect();
+        stores
+            .new
+            .upsert(points, dim as u64)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok((copied, embedded))
+}
+
+pub(crate) fn cosine(a: &[f32], b: &[f32]) -> f64 {
     let dot: f64 = a
         .iter()
         .zip(b)
@@ -643,6 +681,12 @@ mod tests {
         std::fs::write(metadata_path(&d), r#"[{"id": 0, "text": "b"}]"#).unwrap();
         let err = start_action(&d, &state).unwrap_err();
         assert!(err.contains("migrate --merge"), "{err}");
+        let sha = file_sha256(&metadata_path(&d)).unwrap();
+        state
+            .set_meta(&[(crate::rollback::EXPORT_PENDING, &sha)])
+            .unwrap();
+        let err = start_action(&d, &state).unwrap_err();
+        assert!(err.contains("export-legacy"), "{err}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

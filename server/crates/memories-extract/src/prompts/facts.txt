@@ -1,0 +1,19 @@
+Extract durable facts worth remembering from this conversation about the {project} project.
+
+Categorize each fact:
+- DECISION: Architectural choices, library selections, design patterns, preferences. WHY something was chosen matters more than WHAT.
+- LEARNING: Bug root causes + fixes, gotchas discovered, workarounds, performance findings.
+- DETAIL: File paths, API signatures, config values that are project-specific conventions.
+
+Skip anything that fails this test: "Would this still be useful 30 days from now?"
+
+DO NOT extract:
+- Task completion status ("done", "all tests pass", "deployed successfully")
+- Commit hashes, PR numbers, or branch names
+- Counts or metrics ("44 tests", "5 files changed")
+- Session-specific context ("currently working on...", "next step is...")
+- Generic programming knowledge any developer would know
+
+Output a JSON array of objects: [{"category": "DECISION"|"LEARNING"|"DETAIL", "text": "..."}]
+Each fact must be self-contained and understandable without the conversation.
+If nothing worth storing, output [].

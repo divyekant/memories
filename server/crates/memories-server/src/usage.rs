@@ -842,6 +842,16 @@ impl Usage {
         rows.collect()
     }
 
+    /// The memory IDs of each `retrieval_log` row, after the queued rows are
+    /// written (for `get_unretrieved_memory_ids`).
+    pub async fn retrieved_ids(&self) -> rusqlite::Result<std::collections::HashSet<i64>> {
+        self.flush().await;
+        let c = self.conn();
+        let mut st = c.prepare_cached("SELECT DISTINCT memory_id FROM retrieval_log")?;
+        let rows = st.query_map([], |r| r.get::<_, i64>(0))?;
+        rows.collect()
+    }
+
     /// `get_feedback_scores()`: the net score (useful minus not_useful) of
     /// each memory with feedback, in the order of the SQL rows.
     pub fn feedback_scores(&self) -> rusqlite::Result<Vec<(i64, f64)>> {

@@ -532,7 +532,7 @@ impl Writer {
     // ---- deduplicate -----------------------------------------------------------
 
     /// `find_duplicates` from the stored dense vectors.
-    async fn find_duplicates(&self, threshold: f64) -> Result<Vec<Value>> {
+    pub(super) async fn find_duplicates(&self, threshold: f64) -> Result<Vec<Value>> {
         if self.e().count() < 2 {
             return Ok(Vec::new());
         }

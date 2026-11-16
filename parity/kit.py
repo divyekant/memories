@@ -94,7 +94,8 @@ def diff_values(a, b, path="$"):
     if isinstance(a, bool) or isinstance(b, bool):
         return [] if a == b and type(a) is type(b) else [f"{path}: {a!r} != {b!r}"]
     if isinstance(a, float) and isinstance(b, float):
-        return [] if abs(a - b) <= TOLERANCE else [f"{path}: {a!r} != {b!r}"]
+        # 1e-12: 0.8493 - 0.8492 is 1.0000000000000009e-04 in floating point.
+        return [] if abs(a - b) <= TOLERANCE + 1e-12 else [f"{path}: {a!r} != {b!r}"]
     if type(a) is not type(b):
         return [f"{path}: type {_type_name(a)} != {_type_name(b)}"]
     if isinstance(a, dict):

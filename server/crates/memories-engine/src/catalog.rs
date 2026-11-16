@@ -22,6 +22,9 @@ pub struct Entry {
     pub archived: bool,
     /// `(to_id, type)` of each link, in stored order.
     pub links: Vec<(i64, String)>,
+    /// `source_memory_ids` is a list with more than one item (the exact reuse
+    /// count of the `promotion` part of `GET /metrics`).
+    pub multi_source: bool,
 }
 
 impl Entry {
@@ -49,11 +52,17 @@ impl Entry {
             .flatten()
             .map(|l| (l.to_id, l.link_type.clone()))
             .collect();
+        let multi_source = record
+            .extra
+            .get("source_memory_ids")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|ids| ids.len() > 1);
         Self {
             source,
             source_is_str,
             archived,
             links,
+            multi_source,
         }
     }
 }

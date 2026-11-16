@@ -8,9 +8,13 @@ pub mod error;
 pub mod extract;
 pub mod healthcheck;
 pub mod keys;
+pub mod maintenance;
 pub mod migrate;
 pub mod model;
+pub mod pipeline;
+pub mod promotions;
 pub mod reads;
+pub mod rollback;
 pub mod search;
 pub mod shell;
 pub mod usage;
@@ -123,6 +127,12 @@ pub struct AppState {
     pub writer: OnceLock<Arc<Writer>>,
     /// `_missed_counts`: `POST /memory/missed` calls of each source since the start.
     pub missed: Mutex<HashMap<String, u64>>,
+    /// Set at shutdown: the scheduled job stops between clusters and deletes.
+    pub stopping: AtomicBool,
+    /// One maintenance job at a time (routes and the scheduler).
+    pub jobs: tokio::sync::Mutex<()>,
+    /// The `manual` counters of `embedder_reload` in `GET /metrics`.
+    pub reload: Mutex<Value>,
 }
 
 impl AppState {
@@ -165,6 +175,9 @@ impl AppState {
             trend_max: cfg.metrics_trend_samples,
             writer: OnceLock::new(),
             missed: Mutex::default(),
+            stopping: AtomicBool::new(false),
+            jobs: tokio::sync::Mutex::new(()),
+            reload: Mutex::new(maintenance::reload_counters()),
         })
     }
 }
@@ -181,6 +194,10 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/api/keys/{key_id}"),
     ("GET", "/audit"),
     ("POST", "/audit/purge"),
+    ("GET", "/promotions"),
+    ("GET", "/promotions/{candidate_id}"),
+    ("POST", "/promotions/{candidate_id}/approve"),
+    ("POST", "/promotions/{candidate_id}/reject"),
     ("GET", "/memory/{memory_id}"),
     ("POST", "/memory/get-batch"),
     ("GET", "/memories"),
@@ -215,8 +232,13 @@ const SERVED: &[(&str, &str)] = &[
     ("POST", "/search/evidence"),
     ("POST", "/memory/is-novel"),
     ("POST", "/memory/extract"),
+    ("POST", "/memory/extract/commit"),
     ("GET", "/memory/extract/{job_id}"),
     ("GET", "/extract/status"),
+    ("GET", "/extraction/profiles"),
+    ("GET", "/extraction/profiles/{*prefix}"),
+    ("PUT", "/extraction/profiles/{*prefix}"),
+    ("DELETE", "/extraction/profiles/{*prefix}"),
     ("GET", "/usage"),
     ("GET", "/metrics"),
     ("GET", "/metrics/search-quality"),
@@ -230,6 +252,13 @@ const SERVED: &[(&str, &str)] = &[
     ("POST", "/search/feedback"),
     ("GET", "/search/feedback/history"),
     ("DELETE", "/search/feedback/{feedback_id}"),
+    ("POST", "/maintenance/consolidate"),
+    ("POST", "/maintenance/prune"),
+    ("POST", "/maintenance/enforce-policies"),
+    ("POST", "/maintenance/compact"),
+    ("POST", "/maintenance/reembed"),
+    ("POST", "/maintenance/embedder/reload"),
+    ("POST", "/index/build"),
 ];
 
 fn stubs(router: Router<Arc<AppState>>, public: bool) -> Router<Arc<AppState>> {
@@ -252,6 +281,16 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/audit", get(admin::get_audit))
         .route("/audit/purge", post(admin::purge_audit))
+        .route("/promotions", get(promotions::list))
+        .route("/promotions/{candidate_id}", get(promotions::get))
+        .route(
+            "/promotions/{candidate_id}/approve",
+            post(promotions::approve),
+        )
+        .route(
+            "/promotions/{candidate_id}/reject",
+            post(promotions::reject),
+        )
         .route("/memory/conflicts", get(reads::conflicts))
         .route("/memory/get-batch", post(reads::get_batch))
         .route("/memory/{memory_id}/links", get(reads::links))
@@ -293,7 +332,28 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/memory/is-novel", post(search::is_novel))
         .route("/memory/extract", post(extract::enqueue))
         .route("/memory/extract/{job_id}", get(extract::get_job))
-        .route("/extract/status", get(extract::status));
+        .route("/memory/extract/commit", post(extract::commit))
+        .route("/extract/status", get(extract::status))
+        .route("/extraction/profiles", get(extract::list_profiles))
+        .route(
+            "/extraction/profiles/{*prefix}",
+            get(extract::get_profile)
+                .put(extract::put_profile)
+                .delete(extract::delete_profile),
+        )
+        .route("/maintenance/consolidate", post(maintenance::consolidate))
+        .route("/maintenance/prune", post(maintenance::prune))
+        .route(
+            "/maintenance/enforce-policies",
+            post(maintenance::enforce_policies),
+        )
+        .route("/maintenance/compact", post(maintenance::compact))
+        .route("/maintenance/reembed", post(maintenance::reembed))
+        .route(
+            "/maintenance/embedder/reload",
+            post(maintenance::embedder_reload),
+        )
+        .route("/index/build", post(maintenance::index_build));
     let protected = usage_routes::routes(protected);
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));

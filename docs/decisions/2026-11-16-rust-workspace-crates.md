@@ -39,6 +39,8 @@ less than 2 days old.
 | thiserror | 2.0.21 | Error types | |
 | anyhow | 1.0.104 | Errors in the binary | |
 | sha2 | 0.11.1 | API key hashes | |
+| speedate | 0.18.0 | `since` and `until` of `GET /promotions` | Added by P5-6. The datetime parser of pydantic-core, so a 422 reply gives the Python error text. |
+| strum | 0.28.0 | `EnumMessage` for the speedate error text | Added by P5-6. speedate already depends on it. |
 
 Other pins:
 
