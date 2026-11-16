@@ -4,6 +4,11 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+  # paste is unmaintained, not vulnerable. It is a build-time macro of tokenizers 0.23.2.
+  # Remove when tokenizers drops it (tokenizers 1.x).
+  { id = "RUSTSEC-2024-0436", reason = "unmaintained build-time macro of tokenizers; no fix release" },
+]
 
 [licenses]
 version = 2
