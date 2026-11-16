@@ -9,6 +9,7 @@ import datetime as dt
 import json
 import re
 import sys
+import time
 import urllib.request
 
 INDEX = "https://index.crates.io/"
@@ -34,16 +35,23 @@ def index_path(name):
 
 
 def too_new(pubtime, now, days):
-    # Index entries from before 2025 have no pubtime. Those releases are old.
+    # A missing pubtime cannot prove the age, so the check fails.
     if not pubtime:
-        return False
+        return True
     published = dt.datetime.fromisoformat(pubtime.replace("Z", "+00:00"))
     return now - published < dt.timedelta(days=days)
 
 
-def pubtimes(name):
-    with urllib.request.urlopen(INDEX + index_path(name), timeout=30) as r:
-        return {e["vers"]: e.get("pubtime") for e in map(json.loads, r.read().decode().splitlines())}
+def pubtimes(name, tries=3):
+    for attempt in range(1, tries + 1):
+        try:
+            with urllib.request.urlopen(INDEX + index_path(name), timeout=30) as r:
+                lines = r.read().decode().splitlines()
+            return {e["vers"]: e.get("pubtime") for e in map(json.loads, lines)}
+        except OSError as e:
+            if attempt == tries:
+                raise SystemExit(f"Cannot read the crates.io index for {name}: {e}")
+            time.sleep(2 * attempt)
 
 
 def main():
@@ -62,7 +70,7 @@ def main():
         if vers not in cache[name]:
             bad.append(f"{name} {vers}: not in the crates.io index")
         elif too_new(cache[name][vers], now, a.days):
-            bad.append(f"{name} {vers}: published {cache[name][vers]}")
+            bad.append(f"{name} {vers}: published {cache[name][vers] or 'at an unknown time'}")
     if bad:
         print(f"Crates published less than {a.days} days ago:", *bad, sep="\n  ")
         return 1

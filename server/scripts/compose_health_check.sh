@@ -11,7 +11,7 @@ compose_file="$root/mcp-server/assets/backend/docker-compose.standalone.yml"
 project="memories-health-$$"
 
 compose() { MEMORIES_IMAGE_TAG="$tag" docker compose -f "$compose_file" -p "$project" "$@"; }
-trap 'compose logs memories | tail -50; compose down -v >/dev/null 2>&1 || true' EXIT
+trap '{ compose logs memories | tail -50; } || true; compose down -v >/dev/null 2>&1 || true' EXIT
 
 compose up -d --pull missing
 cid="$(compose ps -q memories)"

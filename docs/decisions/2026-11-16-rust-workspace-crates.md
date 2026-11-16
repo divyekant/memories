@@ -66,12 +66,27 @@ Other pins:
   same as in the Python image, so an existing `/data` volume stays writable.
 - The compose files of current installs run `python -c "...urlopen(...)..."`
   for the health check. The image links `python` and `python3` to
-  `memories-server`. If the program name starts with `python`, the binary does
-  an HTTP GET of the first `http://` URL in its arguments (default
-  `http://localhost:8000/health`) and exits 0 for a status from 200 to 399.
+  `memories-server`. If the program name starts with `python` and the
+  arguments are `-c <code>` with `urlopen(` in the code, the binary does an
+  HTTP GET of the first `http://` URL in the code (default
+  `http://localhost:8000/health`). It exits 0 for a status from 200 to 399,
+  else 1. Each other `python` call prints a message and exits 127, so that a
+  script call does not give a false success.
 - `ORT_DYLIB_PATH` points to the ONNX Runtime library in the image.
 
 ## Consequences
+
+- The workspace declares crates that no member uses yet. Cargo 1.100 prints
+  an "unused workspace dependency" warning for each of them. The age check
+  and `cargo deny` do not check them before a member uses them. On
+  2026-11-16, a full resolve took `rand 0.10.4`, which was less than 2 days
+  old. If the age check fails, pin the crate with
+  `cargo update -p <crate> --precise <older version>`.
+- Dependabot updates only the crates. The base image digests, the ONNX
+  Runtime hash, `rust-toolchain.toml` and the GitHub Actions tags have no
+  automatic update. Update them by hand, with the same 2-day rule.
+- `docker-compose.eval.yml` checks `/health/ready`. The Rust image is not
+  healthy with that file until task P1-1 adds the route.
 
 - The workspace version is 6.0.0. The release bump of task P7-2 must also
   change `server/Cargo.toml`.

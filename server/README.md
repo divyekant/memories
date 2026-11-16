@@ -52,6 +52,9 @@ with the local image and no change to the file. The script passes when Docker
 reports the `memories` container as healthy. The script then removes the
 containers and the volumes of its own compose project.
 
+The compose file uses the host ports 8900 and 6333. If a Memories install
+runs on the same machine, stop the install before you run the script.
+
 ## Crates
 
 | Crate | Content |

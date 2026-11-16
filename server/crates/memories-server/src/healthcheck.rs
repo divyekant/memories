@@ -30,7 +30,14 @@ pub fn url_from_args(args: &[String]) -> String {
 }
 
 /// Exit code: 0 if the URL answers with a status from 200 to 399, else 1.
+/// Exit code 127 for each call that is not `python -c "...urlopen(...)..."`.
 pub fn run(args: &[String]) -> i32 {
+    let is_check = args.get(1).is_some_and(|a| a == "-c")
+        && args.get(2).is_some_and(|code| code.contains("urlopen("));
+    if !is_check {
+        eprintln!("memories image: python is a health check shim only, not a Python interpreter");
+        return 127;
+    }
     match get(&url_from_args(args)) {
         Ok(r) if (200..400).contains(&r.status) => 0,
         _ => 1,

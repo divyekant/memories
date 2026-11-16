@@ -74,3 +74,16 @@ fn shim_reads_url_from_python_command_or_uses_default() {
         "http://localhost:8000/health"
     );
 }
+
+#[test]
+fn shim_refuses_calls_that_are_not_the_health_check() {
+    for args in [
+        vec!["python", "-c", "import app"],
+        vec!["python3", "--version"],
+        vec!["python", "/app/script.py"],
+        vec!["python"],
+    ] {
+        let args: Vec<String> = args.into_iter().map(String::from).collect();
+        assert_eq!(healthcheck::run(&args), 127, "{args:?}");
+    }
+}

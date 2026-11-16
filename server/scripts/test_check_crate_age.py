@@ -37,7 +37,7 @@ class CrateAgeTest(unittest.TestCase):
     def test_too_new(self):
         self.assertTrue(too_new("2026-11-15T00:00:00Z", NOW, days=2))
         self.assertFalse(too_new("2026-11-14T00:00:00Z", NOW, days=2))
-        self.assertFalse(too_new(None, NOW, days=2))
+        self.assertTrue(too_new(None, NOW, days=2))
 
 
 if __name__ == "__main__":

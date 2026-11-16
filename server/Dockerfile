@@ -11,7 +11,7 @@ FROM scratch AS ort-arm64
 ADD --checksum=sha256:c5b8b3cca31f3d643a3b313b8f42e2d0f16a4fcefd02cda343d97bd5306afaab \
     https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-linux-aarch64-1.31.0.tgz /ort.tgz
 
-ARG TARGETARCH
+# BuildKit sets TARGETARCH (amd64 or arm64) in the global scope.
 FROM ort-${TARGETARCH} AS ort
 
 FROM rust:1.100.0-slim-trixie@sha256:e9d95b74296f7126a83ae3d041aeaba1ff4c478f13abc5cc034fcf7c131c3d4a AS build
@@ -19,8 +19,9 @@ WORKDIR /src
 # Use the toolchain of the base image. rust-toolchain.toml names the same version.
 ENV RUSTUP_TOOLCHAIN=1.100.0
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+ARG TARGETARCH
+RUN --mount=type=cache,id=cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-target-${TARGETARCH},target=/src/target \
     cargo build --release --locked --bin memories-server && \
     cp target/release/memories-server /memories-server
 
@@ -32,8 +33,9 @@ RUN apt-get update && \
 
 RUN --mount=from=ort,source=/ort.tgz,target=/tmp/ort.tgz \
     mkdir -p /opt/onnxruntime/lib && \
-    tar -xzf /tmp/ort.tgz -C /opt/onnxruntime/lib --strip-components=2 --wildcards '*/lib/libonnxruntime.so*' && \
-    ! ldd /opt/onnxruntime/lib/libonnxruntime.so | grep "not found"
+    tar -xzf /tmp/ort.tgz -C /opt/onnxruntime/lib --strip-components=2 --no-same-owner --wildcards '*/lib/libonnxruntime.so*' && \
+    ldd /opt/onnxruntime/lib/libonnxruntime.so > /tmp/ldd.txt && \
+    ! grep -q "not found" /tmp/ldd.txt && rm /tmp/ldd.txt
 
 COPY --from=build /memories-server /usr/local/bin/memories-server
 # The compose files of current installs run "python -c ..." for the health check.
@@ -41,7 +43,8 @@ RUN ln -s memories-server /usr/local/bin/python && \
     ln -s memories-server /usr/local/bin/python3
 
 # Same user and UID (999) as the Python image, so that an existing /data volume stays writable.
-RUN useradd -r -m -s /bin/false memories && \
+RUN groupadd -r -g 999 memories && \
+    useradd -r -u 999 -g 999 -m -s /bin/false memories && \
     mkdir -p /data/backups /data/model-cache && \
     chown -R memories:memories /data
 
