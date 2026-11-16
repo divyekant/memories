@@ -33,6 +33,7 @@ use crate::{
     error::{ApiError, JsonBody, item, missing, string_too_short},
     keys::{is_valid_slug, utc_now_iso, uuid4_hex},
     shell::{Client, internal_error},
+    usage::Row,
 };
 
 /// A job gets this many tries. A try fails when the pipeline returns an error,
@@ -262,12 +263,16 @@ async fn worker(state: Arc<AppState>, pipeline: Arc<dyn Pipeline>, id: u64) {
                 continue;
             }
         };
+        let source = job.request["source"].as_str().unwrap_or("").to_string();
         // A task of its own, so that a panic in the pipeline fails only the try.
         let outcome = match tokio::spawn(pipeline.run(job.request)).await {
             Ok(r) => r,
             Err(e) => Err(format!("the pipeline stopped: {e}")),
         };
         let job_id = job.job_id;
+        if let Ok(result) = &outcome {
+            log_outcome(&state, &source, result);
+        }
         if let Err(err) = &outcome {
             tracing::warn!(job_id, attempt = job.attempts, error = %err, "Extraction try failed");
         }
@@ -292,6 +297,55 @@ async fn worker(state: Arc<AppState>, pipeline: Arc<dyn Pipeline>, id: u64) {
             tracing::error!(job_id, error = %e, "state.db: cannot write the job result");
         }
         trim(ex).await;
+    }
+}
+
+/// The usage rows of a finished extraction: the outcome, and the tokens of
+/// each stage that used tokens.
+fn log_outcome(state: &AppState, source: &str, result: &Value) {
+    let Some(u) = &state.usage else {
+        return;
+    };
+    let n = |k: &str| result[k].as_i64().unwrap_or(0);
+    let source = source.to_string();
+    let noop = match result.get("noop_count").filter(|v| !v.is_null()) {
+        Some(v) => v.as_i64().unwrap_or(0),
+        None => result["actions"].as_array().map_or(0, |a| {
+            a.iter().filter(|x| x["action"] == "noop").count() as i64
+        }),
+    };
+    u.log(Row::Outcome {
+        source: source.clone(),
+        extracted: n("extracted_count"),
+        stored: n("stored_count"),
+        updated: n("updated_count"),
+        deleted: n("deleted_count"),
+        noop,
+        conflict: n("conflict_count"),
+        fallback: n("fallback_count"),
+        links_created: result["links_created"]
+            .as_array()
+            .map_or(0, |a| a.len() as i64),
+    });
+    let Some(provider) = &state.extract.provider else {
+        return;
+    };
+    for stage in ["extract", "audn"] {
+        let t = &result["tokens"][stage];
+        let (input, output) = (
+            t["input"].as_i64().unwrap_or(0),
+            t["output"].as_i64().unwrap_or(0),
+        );
+        if input != 0 || output != 0 {
+            u.log(Row::Tokens {
+                provider: provider.name().into(),
+                model: provider.model().into(),
+                stage: stage.into(),
+                input_tokens: input,
+                output_tokens: output,
+                source: source.clone(),
+            });
+        }
     }
 }
 
@@ -596,7 +650,10 @@ pub async fn enqueue(
         ));
     }
 
-    // P5-1 writes the `extract` usage event (`_log_usage_event`) here.
+    crate::search::log(
+        &state,
+        crate::search::Caller::of(&headers).row("extract", &body.source, 1),
+    );
     let mut entry = Entry::from_request(&auth, client.as_ref().map(|c| &c.0), "extract");
     entry.source_prefix = body.source.clone();
     state.audit(entry).await;
@@ -717,17 +774,23 @@ pub async fn get_job(
     Ok(Json(job))
 }
 
-pub async fn status(State(state): State<Arc<AppState>>) -> Result<Json<Value>, Response> {
+/// The queue fields of `/extract/status`, also the `extract` part of `/metrics`.
+pub async fn queue_fields(state: &AppState) -> Result<Value, Response> {
     let ex = &state.extract;
     let s = stats(ex).await?;
-    let mut body = json!({
+    Ok(json!({
         "queue_depth": s.depth,
         "queue_max": ex.cfg.queue_max,
         "queue_remaining": ex.cfg.queue_max.saturating_sub(s.depth),
         "workers": ex.cfg.workers,
         "jobs_tracked": s.tracked,
-        "fallback_add_enabled": ex.cfg.fallback_add,
-    });
+    }))
+}
+
+pub async fn status(State(state): State<Arc<AppState>>) -> Result<Json<Value>, Response> {
+    let ex = &state.extract;
+    let mut body = queue_fields(&state).await?;
+    body["fallback_add_enabled"] = json!(ex.cfg.fallback_add);
     let Some(provider) = &ex.provider else {
         body["enabled"] = json!(false);
         return Ok(Json(body));

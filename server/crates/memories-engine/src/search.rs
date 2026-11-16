@@ -34,6 +34,8 @@ pub struct SearchArgs {
     pub since: Option<String>,
     pub until: Option<String>,
     pub scope: Scope,
+    /// Net feedback score of each memory (`get_feedback_scores`), or `None`.
+    pub feedback: Option<Vec<(i64, f64)>>,
 }
 
 impl Default for SearchArgs {
@@ -51,6 +53,7 @@ impl Default for SearchArgs {
             since: None,
             until: None,
             scope: Scope::default(),
+            feedback: None,
         }
     }
 }
@@ -287,8 +290,7 @@ impl Engine {
                 until: args.until.as_deref(),
                 vector: &vector_ranked,
                 keyword: &keyword_ranked,
-                // shortcut: no feedback scores until usage.db is ported (task P5-1).
-                feedback: None,
+                feedback: args.feedback.as_deref(),
                 record: &record,
                 visible: scope
                     .limits_visibility()
