@@ -46,9 +46,9 @@ reinforcement, as the Python server shows its in-memory value.
   or from a record that the key cannot read is not in the reply.
 - `created_at` and `last_updated` of `/stats` come from the `meta` table of
   `state.db`. If the table has no value, they come from the `config.json` of
-  the Python install in `DATA_DIR`, else null. The write routes of task
-  P3-1 do not set `last_updated` in the `meta` table yet. Until a write task
-  sets it, `last_updated` stays at its value before the first Rust write.
+  the Python install in `DATA_DIR`, else null. Since task P3-3, the writer
+  sets `last_updated` where Python v5.19.0 sets it: after an add, after a
+  delete, and after a PATCH that changes only the source.
 
 ## Contract differences
 

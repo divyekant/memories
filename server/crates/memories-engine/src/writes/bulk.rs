@@ -152,7 +152,7 @@ pub fn duplicate_pairs(
 
 impl Writer {
     /// The records of `ids` from the store, in pages.
-    async fn records(&self, ids: &[u64]) -> Result<Vec<Record>> {
+    pub(super) async fn records(&self, ids: &[u64]) -> Result<Vec<Record>> {
         let mut out = Vec::with_capacity(ids.len());
         for page in ids.chunks(PAGE) {
             out.extend(self.e().store.get_many(page).await?);
@@ -342,9 +342,16 @@ impl Writer {
             source: source.to_owned(),
             metadata: None,
         };
-        let new_id = self
-            .add_locked(vec![item], false, trusted, vec![extra])
-            .await?[0] as i64;
+        let unique: Vec<u64> = ids.iter().map(|&i| i as u64).collect();
+        let reserved = self.e().state.reserve_ids(1)?;
+        let new_id = reserved.start as i64;
+        // A repeated ID has no second step, so it needs no journal entry.
+        let op = match duplicate {
+            None => Some(self.begin(json!({"op": "merge", "ids": unique, "new": new_id}))?),
+            Some(_) => None,
+        };
+        self.put_new(vec![item], trusted, vec![extra], reserved)
+            .await?;
         for l in &links {
             self.linked(new_id, l.to_id, "supersedes", source);
         }
@@ -352,14 +359,10 @@ impl Writer {
             let to = m.split("--> ").nth(1).unwrap_or_default().to_owned();
             return Err(invalid(format!("Link {new_id} --supersedes--> {to}")));
         }
-        let unique: Vec<u64> = ids.iter().map(|&i| i as u64).collect();
-        let mut fields = Map::new();
-        fields.insert("archived".into(), json!(true));
-        self.e().store.set_payload(&unique, fields).await?;
-        for mut r in self.records(&unique).await? {
-            r.archived = Some(true);
-            r.extra.remove("archived");
-            self.e().catalog_mut().put(&r);
+        let records = self.records(&unique).await?;
+        self.archive(records, None).await?;
+        if let Some(op) = op {
+            self.end(op)?;
         }
         Ok(json!({"id": new_id, "archived": ids}))
     }

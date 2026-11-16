@@ -21,5 +21,10 @@ qdrant-client.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 tokio.workspace = true
 
+[[bench]]
+name = "write_load"
+path = "../../benches/write_load.rs"
+harness = false
+
 [lints]
 workspace = true

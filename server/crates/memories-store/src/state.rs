@@ -1,5 +1,6 @@
-//! `state.db`: the SQLite file of the Rust server. It holds the ID counter
-//! and named values (`meta`), for example the state of the migration.
+//! `state.db`: the SQLite file of the Rust server. It holds the ID counter,
+//! named values (`meta`), for example the state of the migration, and the
+//! journal of the writes of two steps (`pending_ops`).
 //!
 //! The counter only goes up. An ID that the counter gave out is not given out
 //! again: not after a restart, not after a delete of the highest ID, and not
@@ -46,6 +47,10 @@ impl StateDb {
              CREATE TABLE IF NOT EXISTS meta (
                  name TEXT PRIMARY KEY,
                  value TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS pending_ops (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 op TEXT NOT NULL
              )",
         )?;
         Ok(Self {
@@ -174,6 +179,29 @@ impl StateDb {
         ])
     }
 
+    /// Journal a write of two steps before its first step. The entry is on disk
+    /// before the call returns.
+    pub fn begin_op(&self, op: &str) -> Result<i64, StateError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("INSERT INTO pending_ops (op) VALUES (?1)", [op])?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Remove a journal entry after the last step of its write.
+    pub fn end_op(&self, id: i64) -> Result<(), StateError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("DELETE FROM pending_ops WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// The journal entries that have no end, oldest first.
+    pub fn pending_ops(&self) -> Result<Vec<(i64, String)>, StateError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare("SELECT id, op FROM pending_ops ORDER BY id")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// Write all `values` in one transaction.
     pub fn set_meta(&self, values: &[(&str, &str)]) -> Result<(), StateError> {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -226,6 +254,21 @@ mod tests {
         let db = StateDb::open(&dir.db()).unwrap();
         assert_eq!(db.next_id().unwrap(), 4);
         assert_eq!(db.reserve_ids(2).unwrap(), 4..6);
+    }
+
+    #[test]
+    fn pending_ops_stay_until_their_end() {
+        let dir = TempDir::new("ops");
+        let db = StateDb::open(&dir.db()).unwrap();
+        let a = db.begin_op("a").unwrap();
+        let b = db.begin_op("b").unwrap();
+        db.end_op(a).unwrap();
+        drop(db);
+        let db = StateDb::open(&dir.db()).unwrap();
+        assert_eq!(db.pending_ops().unwrap(), vec![(b, "b".to_owned())]);
+        db.end_op(b).unwrap();
+        assert!(db.pending_ops().unwrap().is_empty());
+        assert!(db.begin_op("c").unwrap() > b, "an entry ID is not given again");
     }
 
     #[test]
