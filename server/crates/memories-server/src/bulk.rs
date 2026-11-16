@@ -23,6 +23,7 @@ use crate::{
     auth::AuthContext,
     error::{BodyResult, JsonBody, int_parsing, missing, py_int},
     model::{Bounds, Model},
+    search::{Caller, log},
     shell::{Client, internal_error},
     validate::{Fields, finish, int},
     writes::{
@@ -136,6 +137,7 @@ pub async fn delete_by_prefix(
 pub async fn delete_memories(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
     Query(q): Query<Vec<(String, String)>>,
 ) -> Reply {
     let mut errors = Vec::new();
@@ -161,6 +163,8 @@ pub async fn delete_memories(
         .delete_by_prefix(&source, false, false)
         .await
         .map_err(|e| failed(e, false))?;
+    let count = r["deleted_count"].as_i64().unwrap_or(0);
+    log(&state, Caller::of(&headers).row("delete", &source, count));
     Ok(Json(json!({"count": r["deleted_count"]})))
 }
 
@@ -249,6 +253,10 @@ pub async fn supersede_by_id(
         Value::Number(n) if n.as_i64() != Some(0) => n.to_string(),
         _ => String::new(),
     };
+    log(
+        &state,
+        Caller::of(&headers).row("supersede", &old_source, 1),
+    );
     audit(
         &state,
         &auth,

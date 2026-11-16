@@ -101,9 +101,9 @@ impl Catalog {
         self.entries.get(&u64::try_from(id).ok()?)
     }
 
-    /// Each record ID and entry, in ID order.
+    /// The records in ID order.
     pub fn iter(&self) -> impl Iterator<Item = (u64, &Entry)> {
-        self.entries.iter().map(|(&id, e)| (id, e))
+        self.entries.iter().map(|(id, e)| (*id, e))
     }
 
     /// The records with a link to `id`, in ID order.

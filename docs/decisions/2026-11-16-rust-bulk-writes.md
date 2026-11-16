@@ -35,6 +35,7 @@ The code is `memories_engine::writes::bulk` (the engine part) and
 | Deduplicate | The similarity comes from the stored dense vectors. Python embeds each text again; the two vectors are equal to 0.9999997 cosine (gate G2). Only records of the same source compare, and only the 5 most similar records of each record. If two similarities are equal, the order can be different from Python. Before the delete, the server makes the Qdrant snapshot `pre_dedup`. |
 | Missed counts | `missed_count` counts the calls for each source since the server started, as in Python. |
 | Audit | The same actions as `_audit` in `app.py`. |
+| Usage rows | `POST /memory/{memory_id}/supersede` and `DELETE /memories` write the usage row of `_log_usage_event`, as Python does. |
 | Errors | Where Python raises an error that no handler catches, the reply is the plain-text 500 of Starlette. Where Python raises an `HTTPException` inside `except Exception`, the reply is the JSON 500. |
 
 ## Kept Python defects
@@ -58,7 +59,6 @@ these replies of v5.19.0:
 |---|---|---|---|
 | Backup before a bulk delete (`_backup`) | A copy of `metadata.json`. | No copy. | The Rust server has no `metadata.json`. |
 | Deduplicate scan | All pairs of all records (one matrix of N x N). | All pairs inside each source. | Same result with less memory. A source with very many records is slow; a filtered Qdrant search for each record is the upgrade. |
-| Usage events (`_log_usage_event`) | Written. | Not written. | Task P5-1 adds them. |
 
 ## Check
 

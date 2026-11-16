@@ -25,6 +25,7 @@ use crate::{
     audit::Entry,
     auth::AuthContext,
     error::{ApiError, BodyResult, JsonBody, int_parsing, py_int},
+    search::{Caller, log},
     shell::Client,
     validate::{Fields, finish, int, model},
 };
@@ -224,6 +225,7 @@ pub async fn add(
         let resource = id_or_empty(&r["id"])
             .or_else(|| id_or_empty(&r["blocked_by"]))
             .unwrap_or_default();
+        log(&state, Caller::of(&headers).row("add", &b.source, 1));
         audit(&state, &auth, &client, action, resource, &b.source).await;
         r["success"] = json!(true);
         return Ok(Json(r));
@@ -232,6 +234,7 @@ pub async fn add(
         .add_memories(vec![item], b.deduplicate, trusted.as_ref())
         .await
         .map_err(|e| failed(e, false))?;
+    log(&state, Caller::of(&headers).row("add", &b.source, 1));
     let id = ids.first().copied();
     let mut out = json!({
         "success": true,
@@ -286,6 +289,7 @@ pub async fn add_batch(
     }
     let trusted = trusted(&auth, &headers);
     let w = writer(&state)?;
+    let count = items.len() as i64;
     // Python v5.19.0 fails with 500 on a batch that mixes items with and
     // without metadata. This server keeps the metadata of each item.
     let items = items
@@ -300,6 +304,7 @@ pub async fn add_batch(
         .add_memories(items, deduplicate, trusted.as_ref())
         .await
         .map_err(|e| failed(e, false))?;
+    log(&state, Caller::of(&headers).row("add", "", count));
     Ok(Json(json!({
         "success": true, "ids": ids, "count": ids.len(),
         "message": format!("Added {} memories", ids.len()),
@@ -457,6 +462,7 @@ pub async fn delete(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
     client: Option<Extension<Client>>,
+    headers: HeaderMap,
     Path(raw): Path<String>,
     Query(q): Query<Vec<(String, String)>>,
 ) -> Result<Json<Value>, Response> {
@@ -486,6 +492,7 @@ pub async fn delete(
         .delete_memory(id, force)
         .await
         .map_err(|e| failed(e, true))?;
+    log(&state, Caller::of(&headers).row("delete", &source, 1));
     audit(
         &state,
         &auth,
@@ -502,6 +509,7 @@ pub async fn delete(
 pub async fn delete_batch(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
     JsonBody(map): JsonBody,
 ) -> Result<Json<Value>, Response> {
     let ids = parse(map, |m, loc, errors| {
@@ -522,6 +530,10 @@ pub async fn delete_batch(
         .delete_memories(&ids)
         .await
         .map_err(|e| failed(e, false))?;
+    log(
+        &state,
+        Caller::of(&headers).row("delete", "", ids.len() as i64),
+    );
     r["success"] = json!(true);
     Ok(Json(r))
 }
