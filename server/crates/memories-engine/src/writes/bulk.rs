@@ -342,25 +342,32 @@ impl Writer {
             source: source.to_owned(),
             metadata: None,
         };
-        let new_id = self
-            .add_locked(vec![item], false, trusted, vec![extra])
-            .await?[0] as i64;
-        for l in &links {
-            self.linked(new_id, l.to_id, "supersedes", source);
-        }
+        let unique: Vec<u64> = ids.iter().map(|&i| i as u64).collect();
+        let reserved = self.e().state.reserve_ids(1)?;
+        let new_id = reserved.start as i64;
+        // A repeated ID has no second step, so it needs no journal entry.
         if let Some(WriteError::Invalid(m)) = duplicate {
+            self.put_new(vec![item], trusted, vec![extra], reserved)
+                .await?;
+            for l in &links {
+                self.linked(new_id, l.to_id, "supersedes", source);
+            }
             let to = m.split("--> ").nth(1).unwrap_or_default().to_owned();
             return Err(invalid(format!("Link {new_id} --supersedes--> {to}")));
         }
-        let unique: Vec<u64> = ids.iter().map(|&i| i as u64).collect();
-        let mut fields = Map::new();
-        fields.insert("archived".into(), json!(true));
-        self.e().store.set_payload(&unique, fields).await?;
-        for mut r in self.records(&unique).await? {
-            r.archived = Some(true);
-            r.extra.remove("archived");
-            self.e().catalog_mut().put(&r);
-        }
+        let op = json!({"op": "merge", "ids": unique, "new": new_id});
+        let entry = self.begin(&op)?;
+        let steps = async {
+            self.put_new(vec![item], trusted, vec![extra], reserved)
+                .await?;
+            for l in &links {
+                self.linked(new_id, l.to_id, "supersedes", source);
+            }
+            let records = self.records(&unique).await?;
+            self.archive(records, None).await
+        };
+        let done = steps.await;
+        self.close(entry, &op, done).await?;
         Ok(json!({"id": new_id, "archived": ids}))
     }
 

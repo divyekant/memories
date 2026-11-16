@@ -5,9 +5,12 @@
 //! Each write changes only the Qdrant points of the records that it affects.
 //! It also updates the catalog, the document length sums of `state.db` and
 //! the event bus. One lock puts the writes in sequence (Python has a write
-//! lock and a lock for each source).
+//! lock and a lock for each source). A write of two steps has a journal entry
+//! in `state.db` until its last step (`journal`), so a start after a forced
+//! stop completes it.
 
 use std::collections::{BTreeSet, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -34,6 +37,7 @@ use crate::scope::Scope;
 use crate::search::SearchArgs;
 
 mod bulk;
+mod journal;
 pub mod maintenance;
 
 /// The duplicate threshold of `/memory/add` (dedupe and doctrine).
@@ -203,13 +207,15 @@ impl Writer {
         // A crash between a point write and the sum update can leave the sums
         // wrong, so count them again at each start (one scroll).
         recount(&engine).await?;
-        Ok(Self {
+        let writer = Self {
             engine,
             events: Arc::default(),
             lock: Mutex::new(()),
             identical_threshold,
             data_dir,
-        })
+        };
+        writer.repair().await?;
+        Ok(writer)
     }
 
     fn e(&self) -> &Engine {
@@ -332,13 +338,24 @@ impl Writer {
                 return Ok(Vec::new());
             }
         }
+        let ids = self.e().state.reserve_ids(items.len() as u64)?;
+        self.put_new(items, trusted, extra, ids).await
+    }
+
+    /// Stores new records with the reserved `ids` (one ID for each item).
+    async fn put_new(
+        &self,
+        items: Vec<NewMemory>,
+        trusted: Option<&TrustedAuthorship>,
+        extra: Vec<Map<String, Value>>,
+        ids: Range<u64>,
+    ) -> Result<Vec<u64>> {
         let texts: Vec<String> = items.iter().map(|m| m.text.clone()).collect();
         let dense = self.e().embedder.embed(texts, TextKind::Document).await?;
         let lens: Vec<i64> = items.iter().map(|m| doc_len(&m.text)).collect();
         let (sum, count) = self.e().state.doc_lengths()?;
         let added: i64 = lens.iter().sum();
         let avg = avgdl(sum as i64 + added, count as i64 + items.len() as i64);
-        let ids = self.e().state.reserve_ids(items.len() as u64)?;
         let reserved = [
             "id",
             "text",
@@ -404,6 +421,7 @@ impl Writer {
             self.e().state.add_doc_lengths(len, chunk.len() as i64)?;
             rest = tail;
         }
+        self.touch()?;
         for r in &records {
             let text = text_of(r).unwrap_or_default();
             self.events.emit(
@@ -484,7 +502,7 @@ impl Writer {
         metadata: Option<Map<String, Value>>,
         trusted: Option<&TrustedAuthorship>,
     ) -> Result<Value> {
-        let Some(mut old) = self.record(old_id).await? else {
+        let Some(old) = self.record(old_id).await? else {
             return Err(WriteError::NotFound(format!("Memory {old_id} not found")));
         };
         let old_source = source_of(&old);
@@ -517,23 +535,20 @@ impl Writer {
             source: use_source.clone(),
             metadata,
         };
-        let ids = self
-            .add_locked(vec![item], false, trusted, vec![extra])
-            .await?;
-        let new_id = ids[0];
-        self.events.emit(
-            "memory.linked",
-            json!({"from_id": new_id, "to_id": old_id, "type": "supersedes", "source": use_source}),
-        );
-        let mut fields = Map::new();
-        fields.insert("archived".into(), json!(true));
-        fields.insert("superseded_by".into(), json!(new_id));
-        self.e().store.set_payload(&[old.id], fields).await?;
-        old.archived = Some(true);
-        old.extra.remove("archived");
-        old.superseded_by = Some(new_id as i64);
-        old.extra.remove("superseded_by");
-        self.e().catalog_mut().put(&old);
+        let ids = self.e().state.reserve_ids(1)?;
+        let new_id = ids.start;
+        let op = json!({"op": "supersede", "old": old_id, "new": new_id});
+        let entry = self.begin(&op)?;
+        let steps = async {
+            self.put_new(vec![item], trusted, vec![extra], ids).await?;
+            self.events.emit(
+                "memory.linked",
+                json!({"from_id": new_id, "to_id": old_id, "type": "supersedes", "source": use_source}),
+            );
+            self.archive(vec![old], Some(new_id)).await
+        };
+        let done = steps.await;
+        self.close(entry, &op, done).await?;
         Ok(json!({"old_id": old_id, "new_id": new_id,
                   "previous_text": previous_text, "archived_old": true}))
     }
@@ -611,6 +626,7 @@ impl Writer {
             let r = Record::from_payload(current.id, p);
             self.e().store.replace_payload(&r).await?;
             self.e().catalog_mut().put(&r);
+            self.touch()?;
             return Ok(json!({"id": id, "updated_fields": ["source"]}));
         }
 
@@ -688,6 +704,7 @@ impl Writer {
                 self.e().catalog_mut().put(&r);
             }
         }
+        self.touch()?;
         let source = source_of(&r);
         self.events.emit(
             "memory.updated",
@@ -796,6 +813,20 @@ impl Writer {
                 "Memory ID {id} is pinned; pass force=true to delete it"
             )));
         }
+        let op = json!({"op": "delete", "id": id});
+        let entry = self.begin(&op)?;
+        let done = self.delete_steps(id, Some(&rec)).await;
+        self.close(entry, &op, done).await?;
+        let text = text_of(&rec).unwrap_or_default();
+        self.events.emit(
+            "memory.deleted",
+            json!({"id": id, "source": source_of(&rec)}),
+        );
+        Ok(json!({"deleted_id": id, "deleted_text": chars(&text, 100)}))
+    }
+
+    /// The steps of `delete_memory`: remove the links to `id`, then the record.
+    async fn delete_steps(&self, id: i64, rec: Option<&Record>) -> Result<()> {
         let linking: Vec<u64> = {
             let c = self.e().catalog();
             c.ids_linking_to(id)
@@ -811,13 +842,36 @@ impl Writer {
             self.e().store.replace_payload(&r).await?;
             self.e().catalog_mut().put(&r);
         }
-        self.remove(std::slice::from_ref(&rec)).await?;
-        let text = text_of(&rec).unwrap_or_default();
-        self.events.emit(
-            "memory.deleted",
-            json!({"id": id, "source": source_of(&rec)}),
-        );
-        Ok(json!({"deleted_id": id, "deleted_text": chars(&text, 100)}))
+        if let Some(rec) = rec {
+            self.remove(std::slice::from_ref(rec)).await?;
+        }
+        Ok(())
+    }
+
+    /// Sets `archived` (and `superseded_by`) on the stored records with one
+    /// payload call, then updates the catalog.
+    async fn archive(&self, records: Vec<Record>, superseded_by: Option<u64>) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<u64> = records.iter().map(|r| r.id).collect();
+        let mut fields = Map::new();
+        fields.insert("archived".into(), json!(true));
+        if let Some(n) = superseded_by {
+            fields.insert("superseded_by".into(), json!(n));
+        }
+        self.e().store.set_payload(&ids, fields).await?;
+        let mut c = self.e().catalog_mut();
+        for mut r in records {
+            r.archived = Some(true);
+            r.extra.remove("archived");
+            if let Some(n) = superseded_by {
+                r.superseded_by = Some(n as i64);
+                r.extra.remove("superseded_by");
+            }
+            c.put(&r);
+        }
+        Ok(())
     }
 
     /// Deletes the points, then updates the catalog, the reinforcement buffer
@@ -837,7 +891,13 @@ impl Writer {
         self.e()
             .state
             .add_doc_lengths(-len, -(records.len() as i64))?;
-        Ok(())
+        self.touch()
+    }
+
+    /// `config["last_updated"]` of Python: set by each add, delete and update,
+    /// as in v5.19.0. `/stats` reads it.
+    fn touch(&self) -> Result<()> {
+        Ok(self.e().state.set_meta(&[("last_updated", &now())])?)
     }
 
     /// `delete_memories`: pinned records stay. More than 10 IDs make a Qdrant
