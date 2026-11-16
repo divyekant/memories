@@ -20,7 +20,30 @@ The Rust code must follow these rules:
 | Query weight | The count of the token in the query. rank_bm25 also adds a repeated query term two times. |
 | IDF | Qdrant calculates it (modifier `idf`) over the full collection. rank_bm25 also uses all records, archived records included. |
 | Order | Sort the Qdrant hits by score (high first), then by record ID (low first). Qdrant gives tied hits in a different order on each run. Python gives them in corpus order. |
-| `avgdl` | Keep the sum of the document lengths and the record count in `state.db`. An add adds the length, a delete subtracts it, and an update replaces the old length with the new one. Write each document vector with the current average at that time. Write all the vectors again in a background job when all of these are true: the store has 1,000 records or more, the current average is more than 25% from the value of the last full pass, and the last full pass was 1 hour ago or more. |
+| `avgdl` | Keep the sum of the document lengths and the record count in `state.db`. An add adds the length, a delete subtracts it, and an update replaces the old length with the new one. Write each document vector with the current average at that time. Write all the vectors again in a background job when all of these are true: the store has 1,000 records or more, the current average is more than 25% from the value of the last full pass, and the last full pass was 1 hour ago or more. Also start the job, with no time limit, when the current average is more than 2 times or less than half of the value of the last pass (task P3-4). |
+
+## The full pass (task P3-4)
+
+The job is `Writer::refresh_keywords` in
+`server/crates/memories-engine/src/writes/refresh.rs`. The server checks the
+rule each 60 seconds.
+
+| Item | Rule |
+|---|---|
+| Start | The rule of `avgdl` above. If no pass is recorded, a store of 1,000 records or more starts a pass. A pass that did not complete always continues. |
+| Time limit, 2 times rule | Gate G3 finding 2: with the 1 hour limit only, a store that grows fast (for example, an import of long records into a store of short records) keeps a stale average for up to 1 hour. When the average is more than 2 times or less than half of the last value, the overlap with rank_bm25 is 0.90 or less (results of P0-2), so the pass starts at once. |
+| Batches | 100 records in ID order. The job holds the write lock for one batch: it reads the records, writes their keyword vectors (Qdrant `update_vectors`) and moves the cursor. An add waits for one batch at most. |
+| Average | The current average at each batch. The average of the last batch is the value of the pass. If the average at the last batch is more than 25% from the average at the first batch (a large import during the pass), the pass starts again from the first record. |
+| What changes | Only the keyword vector of each point. The dense vector and the payload stay. |
+| State | `state.db`, table `meta`: `keyword_pass_avgdl`, `keyword_pass_at` (Unix seconds) and `keyword_pass_cursor` (the next record ID of a pass that runs). |
+| Forced stop | Each record keeps a correct vector of the old or of the new average. The next start continues from the cursor. A stop between a batch write and the cursor write makes the next pass write that batch again, with no harm. |
+| One pass at a time | A second call returns at once. |
+| Migration | `migrate` writes each vector with the exact average, so it records a pass. |
+| Restore | A restore clears the value of the last pass and stops a running pass. The next check starts a new pass if the store has 1,000 records or more. |
+
+Two environment variables are for tests only:
+`MEMORIES_KEYWORD_REFRESH_CHECK_SEC` (default 60) and
+`MEMORIES_KEYWORD_REFRESH_MIN_GAP_SEC` (default 3600, the 1 hour limit).
 
 The reference code of these rules is `parity/keyword_index/bm25_sparse.py`.
 `tests/test_keyword_index.py` checks it against `memory_engine.py` and against

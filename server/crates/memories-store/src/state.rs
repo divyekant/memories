@@ -19,6 +19,20 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 const COUNTER: &str = "memory_id";
 const DOC_LEN_SUM: &str = "doc_len_sum";
 const DOC_COUNT: &str = "doc_count";
+const KW_PASS_AVGDL: &str = "keyword_pass_avgdl";
+const KW_PASS_AT: &str = "keyword_pass_at";
+const KW_PASS_CURSOR: &str = "keyword_pass_cursor";
+
+/// The state of the full pass of the keyword vectors (task P3-4).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct KeywordPass {
+    /// The average document length of the last completed pass.
+    pub avgdl: Option<f64>,
+    /// The end time of the last completed pass, in Unix seconds.
+    pub at: Option<u64>,
+    /// The next record ID of a pass that did not complete.
+    pub cursor: Option<u64>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -182,6 +196,34 @@ impl StateDb {
             (DOC_LEN_SUM, &sum.to_string()),
             (DOC_COUNT, &count.to_string()),
         ])
+    }
+
+    pub fn keyword_pass(&self) -> Result<KeywordPass, StateError> {
+        Ok(KeywordPass {
+            avgdl: self.get_meta(KW_PASS_AVGDL)?.and_then(|v| v.parse().ok()),
+            at: self.get_meta(KW_PASS_AT)?.and_then(|v| v.parse().ok()),
+            cursor: self.get_meta(KW_PASS_CURSOR)?.and_then(|v| v.parse().ok()),
+        })
+    }
+
+    /// Record the progress of a pass: the next record ID.
+    pub fn set_keyword_cursor(&self, next: u64) -> Result<(), StateError> {
+        self.set_meta(&[(KW_PASS_CURSOR, &next.to_string())])
+    }
+
+    /// Record a completed pass (or a migration that wrote all the vectors).
+    pub fn finish_keyword_pass(&self, avgdl: f64, at: u64) -> Result<(), StateError> {
+        self.set_meta(&[
+            (KW_PASS_AVGDL, &avgdl.to_string()),
+            (KW_PASS_AT, &at.to_string()),
+            (KW_PASS_CURSOR, ""),
+        ])
+    }
+
+    /// Forget the last pass and stop a running pass, after the collection
+    /// changed outside the write flow. The next check starts a new pass.
+    pub fn clear_keyword_pass(&self) -> Result<(), StateError> {
+        self.set_meta(&[(KW_PASS_AVGDL, ""), (KW_PASS_CURSOR, "")])
     }
 
     /// Journal a write of two steps before its first step. The entry is on disk

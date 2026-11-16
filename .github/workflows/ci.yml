@@ -193,6 +193,12 @@ jobs:
           ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: cargo test --locked -p memories-engine --test write_safety -- --ignored --nocapture
 
+      - name: Keyword vector pass against Qdrant 1.15.4 and the embedder (task P3-4)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: cargo test --locked -p memories-engine --test keyword_refresh -- --ignored --nocapture
+
       - name: 100 forced stops during writes (exit check of task P3-3)
         env:
           QDRANT_TEST_URL: http://127.0.0.1:6333
