@@ -10,6 +10,7 @@ pub mod healthcheck;
 pub mod keys;
 pub mod migrate;
 pub mod model;
+pub mod rollback;
 pub mod search;
 pub mod shell;
 pub mod usage;

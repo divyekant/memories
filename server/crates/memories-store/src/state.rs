@@ -7,6 +7,7 @@
 //! The Python server took `max(id) + 1` at each load, so a delete of the
 //! highest ID gave that ID again.
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Mutex;
@@ -46,6 +47,10 @@ impl StateDb {
              CREATE TABLE IF NOT EXISTS meta (
                  name TEXT PRIMARY KEY,
                  value TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS legacy_base (
+                 id INTEGER PRIMARY KEY,
+                 sha256 TEXT NOT NULL
              )",
         )?;
         Ok(Self {
@@ -174,6 +179,41 @@ impl StateDb {
         ])
     }
 
+    /// The record hashes of `metadata.json` at the last migration, export or
+    /// merge: the common base of `migrate --merge`. Empty if no run wrote it.
+    pub fn legacy_base(&self) -> Result<HashMap<u64, String>, StateError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare("SELECT id, sha256 FROM legacy_base")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Replace the base with `base` and write `values`, in one transaction.
+    pub fn set_legacy_base(
+        &self,
+        base: &[(u64, String)],
+        values: &[(&str, &str)],
+    ) -> Result<(), StateError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM legacy_base", [])?;
+        {
+            let mut insert = tx.prepare("INSERT INTO legacy_base (id, sha256) VALUES (?1, ?2)")?;
+            for (id, sha) in base {
+                insert.execute(rusqlite::params![*id as i64, sha])?;
+            }
+        }
+        for (name, value) in values {
+            tx.execute(
+                "INSERT INTO meta (name, value) VALUES (?1, ?2)
+                 ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+                [name, value],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Write all `values` in one transaction.
     pub fn set_meta(&self, values: &[(&str, &str)]) -> Result<(), StateError> {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -248,6 +288,23 @@ mod tests {
             (0, 0),
             "no value below 0"
         );
+    }
+
+    #[test]
+    fn the_legacy_base_is_replaced_with_its_meta_values() {
+        let dir = TempDir::new("base");
+        let db = StateDb::open(&dir.db()).unwrap();
+        assert!(db.legacy_base().unwrap().is_empty());
+        db.set_legacy_base(&[(1, "a".into()), (2, "b".into())], &[("k", "1")])
+            .unwrap();
+        db.set_legacy_base(&[(2, "c".into()), (7, "d".into())], &[("k", "2")])
+            .unwrap();
+        drop(db);
+        let db = StateDb::open(&dir.db()).unwrap();
+        let base = db.legacy_base().unwrap();
+        assert_eq!(base.len(), 2);
+        assert_eq!((base[&2].as_str(), base[&7].as_str()), ("c", "d"));
+        assert_eq!(db.get_meta("k").unwrap().as_deref(), Some("2"));
     }
 
     #[test]

@@ -471,3 +471,216 @@ async fn with_no_signature_old_vectors_of_another_model_are_not_copied() {
     let _ = t.new.delete_collection().await;
     let _ = t.old.delete_collection().await;
 }
+
+// ---- Task P7-1: export-legacy and migrate --merge ---------------------------
+
+use memories_server::rollback;
+use memories_store::{JobQueue, NewPoint};
+
+fn point(record: Record) -> NewPoint {
+    let text = record.text.clone().unwrap_or_default();
+    NewPoint {
+        dense: fake_vector(&text),
+        keyword: memories_engine::keyword::doc_vector(&text, 4.0),
+        record,
+    }
+}
+
+fn record(id: u64, text: &str) -> Record {
+    Record::from_json(json!({"id": id, "text": text, "source": "p71/test", "created_at": "2026-11-16T00:00:00+00:00"})).unwrap()
+}
+
+fn metadata_records(t: &Setup) -> BTreeMap<u64, Value> {
+    let bytes = std::fs::read(migrate::metadata_path(&t.dir)).unwrap();
+    let entries: Vec<Value> = serde_json::from_slice(&bytes).unwrap();
+    entries
+        .into_iter()
+        .map(|e| (e["id"].as_u64().unwrap(), e))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Qdrant server: set QDRANT_TEST_URL"]
+async fn export_writes_each_change_back_and_a_python_write_stops_the_next_export() {
+    let t = setup("export").await;
+    t.migrate(&all()).await.unwrap();
+    let ids: Vec<u64> = t.new.ids().await.unwrap();
+    let (deleted, changed) = (ids[0], ids[1]);
+    let added = t.state.reserve_ids(1).unwrap().start;
+    t.new.delete(&[deleted]).await.unwrap();
+    t.new
+        .upsert(
+            vec![
+                point(record(changed, "changed by rust")),
+                point(record(added, "added by rust")),
+            ],
+            DIM as u64,
+        )
+        .await
+        .unwrap();
+    let queue = JobQueue::open(&t.dir.join("state.db")).unwrap();
+    queue
+        .enqueue(
+            "job1",
+            &json!({"job_id": "job1", "status": "queued"}),
+            &json!({"messages": "m", "source": "s"}),
+            10,
+        )
+        .unwrap();
+
+    let report = rollback::export_legacy(&t.dir, &t.stores(), "now")
+        .await
+        .unwrap();
+    assert_eq!(report["status"], "exported", "{report}");
+    assert_eq!(report["extract_jobs"], 1);
+    let v2 = t.snapshot().await;
+    assert_eq!(report["records"].as_u64().unwrap(), v2.len() as u64);
+
+    // metadata.json and the old collection hold each record of memories_v2.
+    let file = metadata_records(&t);
+    assert_eq!(file.len(), v2.len());
+    for (id, (json, vectors)) in &v2 {
+        assert_eq!(&file[id], json, "record {id}");
+        let old = t.old.vectors(&[*id]).await.unwrap();
+        assert_eq!(old[id].dense, vectors.dense, "vector {id}");
+    }
+    assert!(!file.contains_key(&deleted));
+    assert_eq!(t.old.count(None).await.unwrap(), v2.len() as u64);
+    let old_rec = t.old.get(changed).await.unwrap().unwrap();
+    assert_eq!(old_rec.text.as_deref(), Some("changed by rust"));
+    assert!(t.dir.join("metadata.json.bak").exists());
+
+    // The waiting job is in the file and no longer in the queue.
+    let jobs_file = t.dir.join(rollback::EXTRACT_JOBS_FILE);
+    let lines = std::fs::read_to_string(&jobs_file).unwrap();
+    assert_eq!(lines.lines().count(), 1);
+    let job: Value = serde_json::from_str(lines.lines().next().unwrap()).unwrap();
+    assert_eq!(job["job_id"], "job1");
+    assert_eq!(job["request"]["messages"], "m");
+    assert!(queue.waiting().unwrap().is_empty());
+
+    // The Rust server starts again with no merge, and a second export gives the same file.
+    assert_eq!(
+        migrate::start_action(&t.dir, &t.state).unwrap(),
+        migrate::StartAction::Serve
+    );
+    let sha = t.metadata_sha();
+    let again = rollback::export_legacy(&t.dir, &t.stores(), "now")
+        .await
+        .unwrap();
+    assert_eq!(
+        (again["status"].as_str(), again["extract_jobs"].as_u64()),
+        (Some("exported"), Some(0))
+    );
+    assert_eq!(t.metadata_sha(), sha);
+    assert_eq!(std::fs::read_to_string(&jobs_file).unwrap(), lines);
+
+    // A Python write: the export does not replace it.
+    let mut entries: Vec<Value> = file.into_values().collect();
+    entries.push(json!({"id": added + 1, "text": "written by python"}));
+    std::fs::write(
+        migrate::metadata_path(&t.dir),
+        serde_json::to_vec(&entries).unwrap(),
+    )
+    .unwrap();
+    let python_sha = t.metadata_sha();
+    let skipped = rollback::export_legacy(&t.dir, &t.stores(), "now")
+        .await
+        .unwrap();
+    assert_eq!(skipped["status"], "skipped", "{skipped}");
+    assert_eq!(t.metadata_sha(), python_sha);
+    let _ = t.new.delete_collection().await;
+    let _ = t.old.delete_collection().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Qdrant server: set QDRANT_TEST_URL"]
+async fn merge_keeps_the_records_of_the_two_sides() {
+    let t = setup("merge").await;
+    t.migrate(&all()).await.unwrap();
+    let ids: Vec<u64> = t.new.ids().await.unwrap();
+    let (rust_changed, rust_deleted, py_changed, py_deleted) = (ids[0], ids[1], ids[2], ids[3]);
+    // The Rust server: a new record, a change and a delete.
+    let clash = t.state.reserve_ids(1).unwrap().start;
+    t.new.delete(&[rust_deleted]).await.unwrap();
+    t.new
+        .upsert(
+            vec![
+                point(record(rust_changed, "rust change")),
+                point(record(clash, "rust new")),
+            ],
+            DIM as u64,
+        )
+        .await
+        .unwrap();
+    // A Python server on the old data: the same new ID, a record that links
+    // to it, a change and a delete.
+    let mut entries: Vec<Value> =
+        serde_json::from_slice(&std::fs::read(migrate::metadata_path(&t.dir)).unwrap()).unwrap();
+    entries.retain(|e| e["id"] != json!(py_deleted));
+    for e in &mut entries {
+        if e["id"] == json!(py_changed) {
+            e["text"] = json!("python change");
+        }
+    }
+    entries.push(json!({"id": clash, "text": "python new", "source": "p71/test"}));
+    entries.push(
+        json!({"id": clash + 1, "text": "python link", "source": "p71/test",
+        "links": [{"to_id": clash, "type": "related_to"}]}),
+    );
+    std::fs::write(
+        migrate::metadata_path(&t.dir),
+        serde_json::to_vec(&entries).unwrap(),
+    )
+    .unwrap();
+    let client = Qdrant::from_url(&settings().grpc_url).build().unwrap();
+    client
+        .upsert_points(
+            UpsertPointsBuilder::new(
+                t.old.collection(),
+                vec![PointStruct::new(clash, old_vector(clash), Map::new())],
+            )
+            .wait(true),
+        )
+        .await
+        .unwrap();
+    let err = migrate::start_action(&t.dir, &t.state).unwrap_err();
+    assert!(err.contains("migrate --merge"), "{err}");
+
+    let report = rollback::merge(&t.dir, &t.stores(), &Fake, &all())
+        .await
+        .unwrap();
+    assert_eq!(report["status"], "merged", "{report}");
+    let new_id = report["renumbered_ids"][0][1].as_u64().unwrap();
+    assert_eq!(report["renumbered_ids"][0][0], clash);
+    assert!(new_id > clash + 1, "{report}");
+    let text = |id| {
+        let new = &t.new;
+        async move { new.get(id).await.unwrap().and_then(|r| r.text) }
+    };
+    assert_eq!(text(clash).await.as_deref(), Some("rust new"));
+    assert_eq!(text(new_id).await.as_deref(), Some("python new"));
+    assert_eq!(text(rust_changed).await.as_deref(), Some("rust change"));
+    assert_eq!(text(py_changed).await.as_deref(), Some("python change"));
+    assert_eq!(text(rust_deleted).await, None);
+    assert_eq!(text(py_deleted).await, None);
+    let link = t.new.get(clash + 1).await.unwrap().unwrap();
+    assert_eq!(link.links.unwrap()[0].to_id, new_id as i64);
+    let v = t.new.vectors(&[new_id]).await.unwrap();
+    assert_eq!(
+        v[&new_id].dense.as_deref(),
+        Some(&old_vector(clash)[..]),
+        "copied from the old collection"
+    );
+    assert!(t.state.next_id().unwrap() > new_id);
+    assert_eq!(
+        migrate::start_action(&t.dir, &t.state).unwrap(),
+        migrate::StartAction::Serve
+    );
+    let again = rollback::merge(&t.dir, &t.stores(), &Fake, &all())
+        .await
+        .unwrap();
+    assert_eq!(again["status"], "up_to_date");
+    let _ = t.new.delete_collection().await;
+    let _ = t.old.delete_collection().await;
+}
