@@ -25,6 +25,10 @@ SEED = 20261116
 CORPUS_SIZE = 2000
 QUERIES = 600
 PREFIXES = ["claude-code/voltis", "codex/voltis", "learning/voltis", "wip/voltis", "eval/graph/synth"]
+# The corpus queries search only the corpus. In the full run the store also
+# holds about 23,000 LongMemEval chunks, and an unscoped search then goes
+# through the HNSW index, which is approximate on each server (see G3.md).
+CORPUS_PREFIX = "g3/"
 GRAPH_PREFIX = "eval/graph/scenarios"
 LME_PREFIX = "eval/longmemeval"
 STOPWORDS = frozenset(
@@ -87,7 +91,7 @@ def corpus():
             continue
         seen.add(m["text"])
         tail = m["source"].split("eval/graph/synth/", 1)[-1].strip("/") or "misc"
-        out.append({"text": m["text"], "source": f"g3/{rnd.choice(PREFIXES)}/{tail}"})
+        out.append({"text": m["text"], "source": f"{CORPUS_PREFIX}{rnd.choice(PREFIXES)}/{tail}"})
     return out[:CORPUS_SIZE]
 
 
@@ -221,8 +225,8 @@ def compare_corpus(servers, queries):
     lists = {name: {"vector": [], "hybrid": []} for name in servers}
     for q in queries:
         for name, http in servers.items():
-            lists[name]["vector"].append(search(http, {"query": q, "k": 10, "hybrid": False}))
-            lists[name]["hybrid"].append(search(http, {"query": q, "k": 10, "hybrid": True}))
+            lists[name]["vector"].append(search(http, {"query": q, "k": 10, "hybrid": False, "source_prefix": CORPUS_PREFIX}))
+            lists[name]["hybrid"].append(search(http, {"query": q, "k": 10, "hybrid": True, "source_prefix": CORPUS_PREFIX}))
     py, rs = lists["python"], lists["rust"]
     tie_top1 = []
     for p, r in zip(py["hybrid"], rs["hybrid"]):

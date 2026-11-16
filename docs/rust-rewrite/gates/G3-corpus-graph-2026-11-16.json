@@ -4,12 +4,12 @@
       "keyword": {
         "queries": 300,
         "hybrid_top1_same": 0.9533,
-        "hybrid_top5_overlap": 0.9347
+        "hybrid_top5_overlap": 0.9367
       },
       "record_start": {
         "queries": 300,
         "hybrid_top1_same": 0.9567,
-        "hybrid_top5_overlap": 0.9627
+        "hybrid_top5_overlap": 0.9647
       }
     },
     "vector_differences": [],
@@ -19,8 +19,8 @@
     "vector_top10_same_order": 1.0,
     "hybrid_top1_same": 0.955,
     "hybrid_top1_same_tie_aware": 0.9567,
-    "hybrid_top5_overlap": 0.9487,
-    "hybrid_top10_overlap": 0.9535
+    "hybrid_top5_overlap": 0.9507,
+    "hybrid_top10_overlap": 0.954
   },
   "graph": {
     "python": {
@@ -36,7 +36,7 @@
     "graph_on_top5_overlap": 1.0,
     "graph_on_match_types_same": 1.0
   },
-  "seconds": 100,
+  "seconds": 85,
   "verdict": {
     "pass": "partial",
     "checks": {
