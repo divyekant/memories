@@ -52,6 +52,17 @@
   counter does not give an ID again, also after the delete of the highest ID.
   CI runs the tests against Qdrant 1.15.4. No change to the Python server or
   to a client. Details: `docs/decisions/2026-11-16-rust-record-store.md`.
+- **Rust `migrate` and `verify` commands (rewrite task P1-4).**
+  `memories-server migrate` copies the records of `metadata.json` into
+  `memories_v2`. It copies each vector from the old collection and embeds the
+  text again only when the vector is not there. It then runs `verify`, which
+  compares the count, each field of each record and a sample of the vectors.
+  The commands do not change `metadata.json`, `config.json` or the old
+  collection. At the first start, `serve` runs the migration and answers only
+  `GET /health` until it is done. If `metadata.json` changes after the
+  migration, the server does not start and names `migrate --merge`. No change
+  to the Python server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-migrate-verify.md`.
 - **Rank core of the Rust server (rewrite task P2-1).** The crate
   `memories-engine` has the rank rules of the search as pure functions: the
   fusion of the vector and keyword ranks, the weights, the threshold, the

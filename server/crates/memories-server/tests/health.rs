@@ -34,6 +34,9 @@ async fn health_returns_minimal_body_as_json() {
             "status": "ok",
             "service": "memories",
             "version": env!("CARGO_PKG_VERSION"),
+            // API_KEY is empty, so each caller gets the full body.
+            "extract_queue_depth": 0,
+            "extract_oldest_job_age_sec": null,
         })
     );
 }
