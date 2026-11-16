@@ -94,6 +94,20 @@ async fn list_is_empty_and_checks_the_query() {
         .0,
         StatusCode::OK
     );
+    // pydantic truncates the digits after the microseconds.
+    for v in [
+        "2026-01-01T10:00:00.123456789Z",
+        "2026-01-01%2010:00:00.1234567",
+        "1700000000.1234567",
+    ] {
+        assert_eq!(
+            send(&st, "GET", &format!("/promotions?since={v}"), None)
+                .await
+                .0,
+            StatusCode::OK,
+            "{v}"
+        );
+    }
     assert_eq!(
         send(&st, "GET", "/promotions?state=nope", None).await,
         (
@@ -134,6 +148,7 @@ async fn list_is_empty_and_checks_the_query() {
         ),
         ("2026-02-30", "day value is outside expected range"),
         ("%202026-01-01", "invalid character in year"),
+        ("1.5e9", "input is too short"),
     ] {
         let shown = input.replace("%20", " ");
         assert_eq!(

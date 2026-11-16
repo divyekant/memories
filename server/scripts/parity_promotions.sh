@@ -48,6 +48,8 @@ PYTHON=.venv/bin/python parity/run_python_server.sh "$work/data" "$py_port" > "$
 pid=$!
 wait_up "$py_port"
 .venv/bin/python "$ab" seed "http://127.0.0.1:$py_port" "$key"
+# One promotion.failed audit row for promotion_error_count of GET /metrics.
+.venv/bin/python -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute("INSERT INTO audit_log (action) VALUES (?)", ("promotion.failed",)); c.commit()' "$work/data/audit.db"
 .venv/bin/python "$ab" probe "http://127.0.0.1:$py_port" "$key" "$work/python.json"
 kill "$pid"
 wait "$pid" || true
@@ -73,7 +75,7 @@ status=0
 # 4. The Rust server refuses a promotion mode that it does not have.
 if PROJECT_PROMOTION_MODE=shadow API_KEY="$key" DATA_DIR="$work/data" \
   QDRANT_URL="$qdrant_url" QDRANT_COLLECTION="$collection" \
-  timeout 20 "$rust_bin" serve --port "$rs_port" > "$work/refuse.log" 2>&1; then
+  timeout 20 "$rust_bin" serve --port 18133 > "$work/refuse.log" 2>&1; then
   echo "FAIL: the Rust server started with PROJECT_PROMOTION_MODE=shadow" >&2
   status=1
 elif ! grep -q "PROJECT_PROMOTION_MODE=shadow is not supported" "$work/refuse.log"; then

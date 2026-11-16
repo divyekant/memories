@@ -52,17 +52,28 @@ modes) is a task after the cutover, if a host needs it.
   server gives them in name order, because `serde_json` keeps no key order
   (the same as the other Rust routes).
 - `speedate` 0.18.0 is newer than the copy in pydantic-core 2.23.2. The
-  exit check found no difference for the tested values.
+  server truncates digits after the microseconds and refuses an exponent
+  (`1.5e9`), as pydantic-core 2.23.2 does. One known text difference stays:
+  a Unix time before the year 1600 gives `dates before 0000` in place of
+  `dates before 1600` in the 422 text.
+- An `offset` above 2^63-1 comes back as 9223372036854775807. Python gives
+  the exact value.
+- The `state` value in the 422 text escapes control characters only. Python
+  `repr` also escapes other characters that it does not print (for example
+  U+200B and U+0085).
+- A JSON `null` body gives `model_attributes_type`. Python gives `missing`.
+  The shared body code of all Rust routes has this difference.
 
 ## Exit check
 
 `server/scripts/parity_promotions.sh <rust binary>`:
 
 1. The Python server gets project records through a managed key with a
-   principal, and one archived project record. Then it gets 32 promotion
-   requests (`server/scripts/parity_promotions_ab.py`).
+   principal, and one archived project record. Then it gets 36 promotion
+   requests (`server/scripts/parity_promotions_ab.py`). The script also
+   adds one `promotion.failed` audit row.
 2. `memories-server migrate` copies `metadata.json` into the Rust collection.
 3. The Rust server replays the four golden promotion cases (0 differ) and
-   gets the same 32 requests (0 differ, `promotion` part of `GET /metrics`
+   gets the same 36 requests (0 differ, `promotion` part of `GET /metrics`
    included).
 4. The Rust server with `PROJECT_PROMOTION_MODE=shadow` does not start.

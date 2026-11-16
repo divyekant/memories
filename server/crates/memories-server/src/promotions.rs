@@ -80,7 +80,19 @@ fn slug_query(q: &[(String, String)], name: &str, errors: &mut Vec<Value>) {
 /// time), else a date. A failure gives the error of the date parse.
 fn datetime_query(q: &[(String, String)], name: &str, errors: &mut Vec<Value>) {
     let Some(v) = last(q, name) else { return };
-    if speedate::DateTime::parse_bytes(v.as_bytes()).is_ok() {
+    // pydantic truncates digits after the microseconds. The speedate of
+    // pydantic-core 2.23 reads no exponent ("1.5e9"); speedate 0.18 does.
+    let cfg = speedate::DateTimeConfig {
+        time_config: speedate::TimeConfig {
+            microseconds_precision_overflow_behavior:
+                speedate::MicrosecondsPrecisionOverflowBehavior::Truncate,
+            unix_timestamp_offset: Some(0),
+        },
+        ..Default::default()
+    };
+    if !v.contains(['e', 'E'])
+        && speedate::DateTime::parse_bytes_with_config(v.as_bytes(), &cfg).is_ok()
+    {
         return;
     }
     if let Err(e) = speedate::Date::parse_bytes(v.as_bytes()) {

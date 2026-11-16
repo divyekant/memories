@@ -9,7 +9,7 @@
   `off` mode, the mode of production. `GET /metrics` has the `promotion`
   part. `PROJECT_PROMOTION_MODE=shadow` or `auto` stops the start with a
   clear message. `server/scripts/parity_promotions.sh` replays the four golden
-  cases (0 differ) and sends 32 requests to a Python and a Rust server (0
+  cases (0 differ) and sends 36 requests to a Python and a Rust server (0
   differ). No change to the Python server or to a client. Details:
   `docs/decisions/2026-11-16-rust-promotions-off.md`.
 - **Rust extraction pipeline (rewrite task P4-3).** The Rust server runs the
