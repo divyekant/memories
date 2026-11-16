@@ -213,12 +213,24 @@ class NotEmptyError(RuntimeError):
     pass
 
 
-def run(cases, base_url, admin_key=ADMIN_KEY_DEFAULT, timeout=120.0, log=None, allow_nonempty=False):
+def select(cases, names):
+    """The cases with these names, in file order. `None` keeps all. An unknown name is an error."""
+    if names is None:
+        return cases
+    unknown = set(names) - {c.get("name") for c in cases}
+    if unknown:
+        raise ValueError(f"no case with the name(s): {', '.join(sorted(unknown))}")
+    return [c for c in cases if c.get("name") in names]
+
+
+def run(cases, base_url, admin_key=ADMIN_KEY_DEFAULT, timeout=120.0, log=None, allow_nonempty=False,
+        extra_vars=None):
     """Send each case in order. Return capture records with normalized replies.
 
     The scenario deletes records, so a server that holds records is refused unless allow_nonempty is set.
+    `extra_vars` sets variables that a case before the selected cases would save.
     """
-    vars_ = {"key:admin": admin_key}
+    vars_ = {"key:admin": admin_key, **(extra_vars or {})}
     out = []
     with httpx.Client(base_url=base_url, timeout=timeout) as client:
         if not allow_nonempty:
