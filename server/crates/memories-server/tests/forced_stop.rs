@@ -17,7 +17,7 @@ fn free_port() -> u16 {
         .port()
 }
 
-fn start(data: &std::path::Path, port: u16, ollama_url: &str) -> Child {
+fn start(data: &std::path::Path, port: u16, ollama_url: &str, workers: u32) -> Child {
     Command::new(env!("CARGO_BIN_EXE_memories-server"))
         .args(["serve", "--port", &port.to_string()])
         .env_clear()
@@ -26,7 +26,7 @@ fn start(data: &std::path::Path, port: u16, ollama_url: &str) -> Child {
         .env("EXTRACT_PROVIDER", "ollama")
         .env("EXTRACT_MODEL", "gemma3:4b")
         .env("OLLAMA_URL", ollama_url)
-        .env("EXTRACT_MAX_INFLIGHT", "1")
+        .env("EXTRACT_MAX_INFLIGHT", workers.to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -58,7 +58,7 @@ async fn a_kill_with_100_queued_jobs_loses_no_job() {
     let hole_url = format!("http://{}", black_hole.local_addr().unwrap());
     let port = free_port();
     let base = format!("http://127.0.0.1:{port}");
-    let mut child = start(&data, port, &hole_url);
+    let mut child = start(&data, port, &hole_url, 1);
     wait_up(&http, &base).await;
 
     let mut ids = Vec::new();
@@ -81,10 +81,12 @@ async fn a_kill_with_100_queued_jobs_loses_no_job() {
     child.wait().unwrap();
 
     // Restart with a provider on a closed port: each job ends as in Python (rule W7).
+    // Each provider call on a closed port takes about 1.5 s (two retries), so
+    // more workers run the 101 jobs.
     let closed = format!("http://127.0.0.1:{}", free_port());
     let port = free_port();
     let base = format!("http://127.0.0.1:{port}");
-    let mut child = start(&data, port, &closed);
+    let mut child = start(&data, port, &closed, 16);
     wait_up(&http, &base).await;
     let deadline = Instant::now() + Duration::from_secs(120);
     for id in &ids {

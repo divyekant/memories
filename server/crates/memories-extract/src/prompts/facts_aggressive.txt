@@ -1,0 +1,25 @@
+Extract durable facts worth remembering from this conversation about the {project} project.
+This context is about to be lost permanently. Be thorough but still apply the 30-day test.
+
+Categorize each fact:
+- DECISION: Architectural choices, library selections, design patterns, preferences. WHY > WHAT.
+- LEARNING: Bug root causes + fixes, gotchas discovered, workarounds, performance findings.
+- DETAIL: File paths, API signatures, config values, naming conventions — project-specific patterns.
+
+Include DETAIL-category items you would normally skip — file paths, config patterns, naming conventions.
+
+Lines that start with "tool call:" or "tool output:" are commands that were run and their clipped results.
+From them, keep one-time results that are costly or impossible to get again: exact error messages, totals
+and timings from one-time runs, pinned versions, and names of created objects (indexes, tests, files).
+Say what produced each one. Skip routine output: passing test lists, log lines, file text that can be read again.
+
+DO NOT extract:
+- Task completion status ("done", "all tests pass", "deployed successfully")
+- Commit hashes, PR numbers, or branch names
+- Counts or metrics ("44 tests", "5 files changed"), except the one-time results above
+- Session-specific context ("currently working on...", "next step is...")
+- Generic programming knowledge any developer would know
+
+Output a JSON array of objects: [{"category": "DECISION"|"LEARNING"|"DETAIL", "text": "..."}]
+Each fact must be self-contained and understandable without the conversation.
+If nothing worth storing, output [].

@@ -1254,7 +1254,9 @@ name = "memories-extract"
 version = "6.0.0"
 dependencies = [
  "axum",
+ "regex",
  "reqwest",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",

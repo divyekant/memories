@@ -10,6 +10,7 @@ pub mod healthcheck;
 pub mod keys;
 pub mod migrate;
 pub mod model;
+pub mod pipeline;
 pub mod reads;
 pub mod search;
 pub mod shell;
@@ -215,8 +216,13 @@ const SERVED: &[(&str, &str)] = &[
     ("POST", "/search/evidence"),
     ("POST", "/memory/is-novel"),
     ("POST", "/memory/extract"),
+    ("POST", "/memory/extract/commit"),
     ("GET", "/memory/extract/{job_id}"),
     ("GET", "/extract/status"),
+    ("GET", "/extraction/profiles"),
+    ("GET", "/extraction/profiles/{*prefix}"),
+    ("PUT", "/extraction/profiles/{*prefix}"),
+    ("DELETE", "/extraction/profiles/{*prefix}"),
     ("GET", "/usage"),
     ("GET", "/metrics"),
     ("GET", "/metrics/search-quality"),
@@ -293,7 +299,15 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/memory/is-novel", post(search::is_novel))
         .route("/memory/extract", post(extract::enqueue))
         .route("/memory/extract/{job_id}", get(extract::get_job))
-        .route("/extract/status", get(extract::status));
+        .route("/memory/extract/commit", post(extract::commit))
+        .route("/extract/status", get(extract::status))
+        .route("/extraction/profiles", get(extract::list_profiles))
+        .route(
+            "/extraction/profiles/{*prefix}",
+            get(extract::get_profile)
+                .put(extract::put_profile)
+                .delete(extract::delete_profile),
+        );
     let protected = usage_routes::routes(protected);
     let protected =
         stubs(protected, false).route_layer(from_fn_with_state(state.clone(), auth::require_key));
