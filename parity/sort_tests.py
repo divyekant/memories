@@ -109,11 +109,11 @@ def _requests(fn):
             continue
         f = node.func
         if isinstance(f, ast.Name):
-            calls.add(f.id)
+            calls.add(("name", f.id))
         if not isinstance(f, ast.Attribute):
             continue
         if isinstance(f.value, ast.Name) and f.value.id == "self":
-            calls.add(f.attr)
+            calls.add(("self", f.attr))
         method, args = f.attr.lower(), node.args
         if method == "request" and len(args) >= 2 and isinstance(args[0], ast.Constant):
             method, args = str(args[0].value).lower(), args[1:]
@@ -168,18 +168,37 @@ def _imports(tree):
 
 def sort_file(path, table):
     tree = ast.parse(path.read_text())
-    funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-    info = {name: _requests(fn) for name, fn in funcs.items()}
+    # Functions by (class name or "", function name): two classes can have methods of the same name.
+    funcs = {}
+    for top in tree.body:
+        scope_defs = [("", top)] if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)) else (
+            [(top.name, m) for m in top.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            if isinstance(top, ast.ClassDef) else [])
+        for scope, fn in scope_defs:
+            funcs[(scope, fn.name)] = fn
+            for inner in ast.walk(fn):  # nested helpers: in the same scope, if the name is free
+                if inner is not fn and isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    funcs.setdefault((scope, inner.name), inner)
+    info = {key: _requests(fn) for key, fn in funcs.items()}
     modules = _imports(tree)
+
+    def resolve(scope, call):
+        kind, name = call
+        order = [(scope, name), ("", name)] if kind == "self" else [("", name), (scope, name)]
+        return next((k for k in order if k in funcs), None)
+
     rows = []
     for cls_name, fn in _tests(tree):
-        reqs, seen, todo = list(info[fn.name][0]), {fn.name}, list(info[fn.name][1])
+        start = (cls_name, fn.name)
+        reqs, seen = list(info[start][0]), {start}
+        todo = [(cls_name, c) for c in info[start][1]]
         while todo:  # helpers of the same file, at any depth
-            name = todo.pop()
-            if name in funcs and name not in seen:
-                seen.add(name)
-                reqs += info[name][0]
-                todo += info[name][1]
+            scope, call = todo.pop()
+            key = resolve(scope, call)
+            if key and key not in seen:
+                seen.add(key)
+                reqs += info[key][0]
+                todo += [(key[0], c) for c in info[key][1]]
         test_id = f"{path.name}::{cls_name + '::' if cls_name else ''}{fn.name}"
         found = sorted({r for r in (_match(m, p, table) for m, p in reqs) if r})
         unknown = sorted({f"{m} {p}" for m, p in reqs if not _match(m, p, table)})
@@ -246,7 +265,8 @@ def build():
                     else:
                         notes.append(f"{' | '.join(keys)}: NO CHECK")
                         missing.append((row["test"], " | ".join(keys)))
-                row["reason"] = f"golden cases and probes: {cases}" + ("; " + "; ".join(notes) if notes else "")
+                row["reason"] = ("route only (no status assertion); " if not row["statuses"] else "") + \
+                    f"golden cases and probes: {cases}" + ("; " + "; ".join(notes) if notes else "")
             rows.append(row)
     return rows, missing
 

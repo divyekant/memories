@@ -44,7 +44,8 @@ async function call(step, tool, args) {
 
 function firstId(text) {
   const m = text.match(/"id":\s*(\d+)/) || text.match(/\bid[:= #]+(\d+)/i) || text.match(/#(\d+)/);
-  return m ? Number(m[1]) : 0;
+  if (!m) throw new Error(`no memory ID in: ${text.slice(0, 200)}`);
+  return Number(m[1]);
 }
 
 try {

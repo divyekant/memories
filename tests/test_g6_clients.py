@@ -77,3 +77,26 @@ def test_sort_matches_path_routes():
 def test_each_probe_name_holds_its_status():
     for name, *_ in clients.PROBES:
         assert sort_tests.re.search(r"-\d{3}(-|$)", name), name
+
+
+def test_known_difference_accepts_only_its_own_keys():
+    ref = [rec("health", {"data": {"status": "ok", "version": "5.19.0"}})]
+    new = [rec("health", {"data": {"status": "down", "version": "6.0.0"}})]
+    assert verdicts(ref, new) == ({"health": "FAIL"}, 1)
+    new = [rec("health", {"data": {"status": "ok", "version": "6.0.0"}}, rc=1)]
+    assert verdicts(ref, new)[1] == 1
+
+
+def test_sort_keeps_methods_of_two_classes_apart(tmp_path):
+    f = tmp_path / "test_x.py"
+    f.write_text(
+        "class TestA:\n"
+        "    def test_same(self, tc):\n"
+        "        assert tc.patch('/memory/1').status_code == 200\n"
+        "class TestB:\n"
+        "    def test_same(self, engine):\n"
+        "        engine.merge()\n"
+    )
+    rows = sort_tests.sort_file(f, sort_tests.routes())
+    assert [(r["test"], r["group"]) for r in rows] == [
+        ("test_x.py::TestA::test_same", "http"), ("test_x.py::TestB::test_same", "internals")]

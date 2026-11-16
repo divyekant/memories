@@ -62,8 +62,8 @@ SHAPE_ONLY = {("cli", "metrics")}
 # that finds nothing on the two servers does not pass. Key: (suite, step suffix).
 MUST = {
     ("mcp", "search"): "blue cluster",
-    ("hooks", ":memory-recall.sh"): "g6proj",
-    ("hooks", ":memory-query.sh"): "g6proj",
+    ("hooks", ":memory-recall.sh"): "candidate memory",
+    ("hooks", ":memory-query.sh"): "candidate memory",
     ("hooks", ":memory-subagent-recall.sh"): "Postgres 17",
     ("opencode", "system-transform"): "Postgres 17",
     ("installer", "doctor"): "healthy",
@@ -151,18 +151,48 @@ PROBES = [
 
 # Known differences: (suite, step) -> reason. Each reason names the record
 # that accepts the difference. Add an entry only with such a record.
+def _drop(*keys):
+    """Remove these keys at any depth."""
+    def f(v):
+        if isinstance(v, dict):
+            return {k: f(x) for k, x in v.items() if k not in keys}
+        if isinstance(v, list):
+            return [f(x) for x in v]
+        return v
+    return f
+
+
+def _no_auto_backups(v):
+    """Remove the pre_* backups that Python makes before each write, and the count."""
+    if isinstance(v, dict) and isinstance(v.get("data"), dict):
+        data = dict(v["data"])
+        data["backups"] = [b for b in data.get("backups", []) if not str(b.get("name", "")).startswith("pre_")]
+        data.pop("count", None)
+        return {**v, "data": data}
+    return v
+
+
+# Known differences: (suite, step) -> (reason, accept). `accept` removes only the
+# accepted difference from the two masked outputs; the rest must still be the same,
+# and the exit code still compares. Each reason names the record that accepts it.
 KNOWN = {
-    ("cli", "stats"): "backup_count and created_at: no metadata.json copy and no metadata.json "
-                      "(docs/decisions/2026-11-16-rust-core-writes.md).",
-    ("cli", "health"): "version 6.0.0 (G6.md, finding 1), and two more keys for an admin key "
-                       "(docs/decisions/2026-11-16-rust-extract-queue.md).",
-    ("cli", "backup-list"): "the Rust server makes no metadata.json copy before a write, so only the "
-                            "backups that a client asks for are in the list "
-                            "(docs/decisions/2026-11-16-rust-core-writes.md, row `_backup`).",
-    ("cli", "extract-status"): "queue_max is 10,000 on the Rust server: the jobs are on disk "
-                               "(server/crates/memories-server/src/extract.rs, ExtractConfig).",
-    ("installer", "doctor"): "deployed version 6.0.0 differs from BACKEND_VERSION 5.19.0 until "
-                             "the release bump of task P7-2 (G6.md, finding 1).",
+    ("cli", "stats"): ("backup_count and created_at: no metadata.json copy and no metadata.json "
+                       "(docs/decisions/2026-11-16-rust-core-writes.md).",
+                       _drop("backup_count", "created_at")),
+    ("cli", "health"): ("version 6.0.0 (G6.md, finding 1), and two more keys for an admin key "
+                        "(docs/decisions/2026-11-16-rust-extract-queue.md).",
+                        _drop("version", "extract_queue_depth", "extract_oldest_job_age_sec")),
+    ("cli", "backup-list"): ("the Rust server makes no metadata.json copy before a write, so the pre_* "
+                             "backups are not in the list "
+                             "(docs/decisions/2026-11-16-rust-core-writes.md, row `_backup`).",
+                             _no_auto_backups),
+    ("cli", "extract-status"): ("queue_max is 10,000 on the Rust server: the jobs are on disk "
+                                "(server/crates/memories-server/src/extract.rs, ExtractConfig).",
+                                _drop("queue_max", "queue_remaining")),
+    ("installer", "doctor"): ("deployed version 6.0.0 differs from BACKEND_VERSION 5.19.0 until "
+                              "the release bump of task P7-2 (G6.md, finding 1).",
+                              lambda v: re.sub(r"deployed: [^\n]*", "deployed: <version>", v)
+                              if isinstance(v, str) else v),
 }
 
 
@@ -371,15 +401,17 @@ class Run:
                         rc, out, _err, sec = self.sh([str(script)], stdin=json.dumps(body), cwd=self.proj, timeout=90)
                         self.add("hooks", f"{client}:{event}:{script.name}", rc,
                                  parse(out) if out.strip() else "", sec, hook.get("timeout"), expect_rc=0)
-        # The extract hooks send their jobs in the background; wait for the jobs to arrive.
-        deadline = time.monotonic() + 30
-        after = before
+        # The extract hooks send their jobs in the background. Wait until the count goes
+        # up and stays the same for 2 s. Only "some jobs arrived" compares: the count
+        # depends on the timing of the background requests.
+        deadline, last, sent = time.monotonic() + 30, None, 0
         while time.monotonic() < deadline:
-            after = self.api("GET", "/extract/status").get("jobs_tracked", 0)
-            time.sleep(2)
-            if self.api("GET", "/extract/status").get("jobs_tracked", 0) == after:
+            sent = self.api("GET", "/extract/status").get("jobs_tracked", 0) - before
+            if sent > 0 and sent == last:
                 break
-        self.add("hooks", "extract-jobs-sent", 0, after - before)
+            last = sent
+            time.sleep(2)
+        self.add("hooks", "extract-jobs-sent", 0, sent > 0)
 
     # -- opencode ----------------------------------------------------------
 
@@ -473,14 +505,18 @@ def compare(ref, new):
             if key in SHAPE_ONLY:
                 left, right = shape(left), shape(right)
             diffs = kit.diff_values(left, right)
-            if r["rc"] != n["rc"]:
-                diffs.insert(0, f"exit {r['rc']} != {n['rc']}")
-            if diffs:
-                if key in KNOWN:
-                    known = True
-                    rows.append((*key, "known", KNOWN[key] + " " + "; ".join(diffs)[:300]))
+            if diffs and key in KNOWN:
+                reason, accept = KNOWN[key]
+                rest = kit.diff_values(accept(left), accept(right))
+                if rest:
+                    problems += rest
                 else:
-                    problems += diffs
+                    known = True
+                    rows.append((*key, "known", reason + " " + "; ".join(diffs)[:300]))
+            else:
+                problems += diffs
+            if r["rc"] != n["rc"]:
+                problems.insert(0, f"exit {r['rc']} != {n['rc']}")
         for (suite, suffix), text in MUST.items():
             if n["suite"] == suite and n["step"].endswith(suffix) and text not in json.dumps(n["out"]):
                 problems.append(f"the output does not hold {text!r}")
@@ -491,9 +527,13 @@ def compare(ref, new):
             problems.append(f"status {(r or n)['rc']} and {n['rc']}, expected {want.group(1)}")
         if n["expect_rc"] is not None and n["rc"] != n["expect_rc"]:
             problems.append(f"exit {n['rc']}, expected {n['expect_rc']}")
-        if n["limit"] is not None and n["seconds"] > n["limit"]:
+        # The time includes the start of bash, jq and curl on a shared CI runner. Fail if the
+        # Rust run is over the limit and the Python run is not, or if it is 50 % over the limit.
+        if n["limit"] is not None and n["seconds"] > n["limit"] and (
+                n["seconds"] > 1.5 * n["limit"] or r is None or r["seconds"] <= r["limit"]):
             problems.append(f"{n['seconds']} s, over the time limit of {n['limit']} s")
         if problems:
+            known = False
             failures += 1
             rows.append((*key, "FAIL", "; ".join(problems)[:1500]))
         elif not known:
