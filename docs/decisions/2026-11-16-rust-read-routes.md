@@ -55,7 +55,8 @@ reinforcement, as the Python server shows its in-memory value.
 ## Tests
 
 - `server/scripts/parity_reads.sh`: the Python server runs the golden cases
-  up to `stats`, a loader copies `metadata.json` into the Rust collection,
+  up to `stats`, the loader of task P2-2 (`load_metadata`) copies
+  `metadata.json` into the Rust collection,
   and the Rust server replays the 21 read cases. Then the Python server
   starts again on the same data, and `server/scripts/parity_reads_ab.py`
   sends 257 more read requests to both servers (links in each direction,
@@ -70,5 +71,3 @@ reinforcement, as the Python server shows its in-memory value.
 - Unit tests for the pydantic parse rules of the query values and the batch
   IDs, the folders, the `pinned` compare and the backup count. A Qdrant test
   for the page of the store.
-- `server/scripts/load_v2.py` is a parity helper until `memories-server
-  migrate` (task P1-4) is on `rust-rewrite`.

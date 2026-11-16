@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### Added
+- **Rust search routes (rewrite task P2-2).** The Rust server answers
+  `POST /search`, `/search/batch`, `/search/explain`, `/search/evidence` and
+  `/memory/is-novel` with the replies of the Python server (hybrid false). The
+  engine has a catalog of sources and links, a BM25 keyword query and a
+  reinforcement buffer that it writes to Qdrant each 2 s.
+  `server/scripts/parity_search.sh` replays 25 golden cases (0 differ) and
+  gives the search p95. No change to the Python server or to a client.
+  Details: `docs/rust-rewrite/search-routes.md`.
 - **Parity kit for the Rust rewrite (`parity/`).** The kit sends a fixed set
   of requests to a server, records the replies, and compares the replies of
   two servers. It has 225 cases: a seed corpus, each of the 93 routes, and
