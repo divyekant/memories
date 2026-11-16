@@ -100,6 +100,13 @@ memories-server migrate --merge    # bring the writes of a Python server into me
 
 - `export-legacy` exports only when `memories_v2` is the canonical store. If
   a Python server changed `metadata.json`, the command skips the export.
+- `export-legacy` refuses an export that deletes most of the old data, for
+  example after the loss of the Qdrant volume. If `memories_v2` is correct,
+  run `memories-server export-legacy --force`.
+- If `export-legacy` stops, run it again. The Rust server does not start on
+  the data of a stopped export.
+- A job of a scoped key keeps its scope in the resend script. If its source
+  is not in the allowed prefixes of the key, the script does not send it.
 - `export-legacy` moves each waiting extract job to
   `$DATA_DIR/rollback-extract-jobs.ndjson`. After the Python server starts,
   send the jobs with

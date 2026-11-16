@@ -214,6 +214,9 @@ pub fn start_action(data_dir: &Path, state: &StateDb) -> Result<StartAction, Str
     }
     let meta = |k| state.get_meta(k).map_err(|e| e.to_string());
     let sha = file_sha256(&path)?;
+    if meta(crate::rollback::EXPORT_PENDING)?.as_deref() == Some(sha.as_str()) {
+        return Err(crate::rollback::unfinished_export_message());
+    }
     match meta(DONE_HASH)? {
         Some(done) if done == sha => Ok(StartAction::Serve),
         Some(_) => Err(changed_message(&path)),
@@ -678,6 +681,12 @@ mod tests {
         std::fs::write(metadata_path(&d), r#"[{"id": 0, "text": "b"}]"#).unwrap();
         let err = start_action(&d, &state).unwrap_err();
         assert!(err.contains("migrate --merge"), "{err}");
+        let sha = file_sha256(&metadata_path(&d)).unwrap();
+        state
+            .set_meta(&[(crate::rollback::EXPORT_PENDING, &sha)])
+            .unwrap();
+        let err = start_action(&d, &state).unwrap_err();
+        assert!(err.contains("export-legacy"), "{err}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -9,7 +9,8 @@ Commands (URL is a server, QDRANT is the Qdrant REST address):
   check-python URL EXPECTED        Each record of EXPECTED is in the Python server, and
                                    no other record. Each read case answers 2xx.
   diff A B                         The two search capture files are equal.
-  python-writes URL TOUCHED OUT    Case 2: writes on the Python server; write them to OUT.
+  python-writes URL TOUCHED RUST OUT
+                                   Case 2: writes on the Python server; write them to OUT.
   check-merge QDRANT NAME RUST PY  Case 2: each record of the two sides is in NAME.
 """
 
@@ -209,14 +210,23 @@ def cmd_check_python(url, expected_path):
     print(f"python has each of the {len(want)} records; {len(out)} read checks pass")
 
 
-def cmd_python_writes(url, touched_path, out_path):
+def cmd_python_writes(url, touched_path, rust_path, out_path):
     """Case 2: writes on the Python server after a return through an old image
     tag. The change and the delete go to records that the Rust server did not
-    touch, so the merge must take them."""
+    touch, so the merge must take them. The pin goes to a record that the Rust
+    server changed, so the merge must keep the two changes. The searches write
+    last_reinforced_at, which is not a change."""
     rnd = random.Random(7)
     touched = set(json.loads(Path(touched_path).read_text()))
+    rust = {int(k): v for k, v in json.loads(Path(rust_path).read_text()).items()}
     with client(url) as cl:
+        for q in QUERIES:
+            ok(cl.post("/search", json={"query": q, "k": 8, "hybrid": False}))
+        before = python_records(url)
         ids = [i for i in ids_of(cl) if i not in touched]
+        both = [i for i in sorted(touched) if i in before and i in rust and not before[i].get("pinned")]
+        pinned = next((i for i in both if before[i].get("text") != rust[i].get("text")), both[0])
+        ok(cl.patch(f"/memory/{pinned}", json={"pinned": True}))
         added = [ok(cl.post("/memory/add", json={"text": text(rnd, f"py{i}"), "source": "codex/drill/python"}))["id"]
                  for i in range(5)]
         patched = ids[3]
@@ -225,17 +235,18 @@ def cmd_python_writes(url, touched_path, out_path):
         ok(cl.delete(f"/memory/{deleted}"))
         final = python_records(url)
     Path(out_path).write_text(json.dumps({"added": added, "patched": patched, "deleted": deleted,
-                                          "records": final}))
+                                          "pinned": pinned, "records": final}))
 
 
 def cmd_check_merge(qdrant, name, rust_path, py_path):
     """Case 2: after `migrate --merge`, memories_v2 holds each record that the
     Rust server wrote, each record that the Python server added (maybe with a
-    new ID), the Python change and the Python delete."""
+    new ID) one time, the Python change, the Python pin and the Python delete,
+    and no other record."""
     rust = json.loads(Path(rust_path).read_text())
     py = json.loads(Path(py_path).read_text())
     got = qdrant_records(qdrant, name)
-    texts = {r.get("text") for r in got.values()}
+    texts = [r.get("text") for r in got.values()]
     errors = []
     for i, r in rust.items():
         if int(i) in (py["deleted"], py["patched"]):
@@ -243,12 +254,19 @@ def cmd_check_merge(qdrant, name, rust_path, py_path):
         if got.get(int(i), {}).get("text") != r.get("text"):
             errors.append(f"rust record {i} lost or changed")
     for i in py["added"]:
-        if py["records"][str(i)]["text"] not in texts:
-            errors.append(f"python record {i} lost")
+        n = texts.count(py["records"][str(i)]["text"])
+        if n != 1:
+            errors.append(f"python record {i} is in memories_v2 {n} times")
     if got.get(py["patched"], {}).get("text") != "Changed by the Python server in case 2.":
         errors.append(f"python change of {py['patched']} lost")
+    pin = got.get(py["pinned"], {})
+    if pin.get("pinned") is not True or pin.get("text") != rust[str(py["pinned"])].get("text"):
+        errors.append(f"record {py['pinned']}: want the python pin and the rust text, got {pin}")
     if py["deleted"] in got:
         errors.append(f"python delete of {py['deleted']} lost")
+    want = len(rust) - 1 + len(py["added"])
+    if len(got) != want:
+        errors.append(f"memories_v2 has {len(got)} records, want {want}")
     if errors:
         raise SystemExit("\n".join(errors))
     print(f"merge kept the records of the two sides: {len(got)} records")

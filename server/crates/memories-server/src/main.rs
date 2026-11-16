@@ -55,7 +55,12 @@ enum Command {
     /// Write the records of memories_v2 to metadata.json and to the old
     /// collection, for a return to the Python server. Also moves the waiting
     /// extract jobs to rollback-extract-jobs.ndjson. Stop the servers first.
-    ExportLegacy,
+    ExportLegacy {
+        /// Export also if memories_v2 holds less than half of the records
+        /// of the last base, or if it is empty.
+        #[arg(long)]
+        force: bool,
+    },
     /// Compare memories_v2 with metadata.json. Exit code 1 on a difference.
     Verify {
         #[arg(long, default_value_t = 1000)]
@@ -117,7 +122,9 @@ fn main() -> std::process::ExitCode {
             };
             return run_command(&cfg, opts, Job::Verify);
         }
-        Command::ExportLegacy => return run_command(&cfg, Default::default(), Job::ExportLegacy),
+        Command::ExportLegacy { force } => {
+            return run_command(&cfg, Default::default(), Job::ExportLegacy(force));
+        }
     };
     for name in config::set_but_not_used(|n| std::env::var(n).ok()) {
         tracing::info!("{name} is set, but this server version does not use it");
@@ -238,7 +245,8 @@ enum Job {
     Migrate,
     Verify,
     Merge,
-    ExportLegacy,
+    /// The value is `--force`.
+    ExportLegacy(bool),
 }
 
 /// True if the server must migrate before it serves. An error stops the start.
@@ -277,7 +285,7 @@ async fn load_embedder() -> Result<Embedder, String> {
 /// stores (and for the first three, the embedder) of the environment.
 /// Returns the report.
 async fn run_migration(cfg: &Config, opts: &migrate::Options, job: Job) -> Result<Value, String> {
-    if job == Job::ExportLegacy {
+    if matches!(job, Job::ExportLegacy(_)) {
         // The rollback image runs the export at each start, also on an
         // install that the Rust server never used.
         let reason = if !cfg.data_dir.join("state.db").exists() {
@@ -292,12 +300,13 @@ async fn run_migration(cfg: &Config, opts: &migrate::Options, job: Job) -> Resul
         }
     }
     let settings = QdrantSettings::from_env().map_err(|e| e.to_string())?;
-    let old_name = if job == Job::ExportLegacy && !migrate::metadata_path(&cfg.data_dir).exists() {
-        None
-    } else {
-        migrate::Legacy::read(&cfg.data_dir)?.old_collection
-    }
-    .unwrap_or_else(|| settings.collection.clone());
+    let old_name =
+        if matches!(job, Job::ExportLegacy(_)) && !migrate::metadata_path(&cfg.data_dir).exists() {
+            None
+        } else {
+            migrate::Legacy::read(&cfg.data_dir)?.old_collection
+        }
+        .unwrap_or_else(|| settings.collection.clone());
     let new = QdrantStore::new(&settings, &settings.v2_collection()).map_err(|e| e.to_string())?;
     let old = QdrantStore::new(&settings, &old_name).map_err(|e| e.to_string())?;
     let state = open_state(cfg)?;
@@ -308,12 +317,12 @@ async fn run_migration(cfg: &Config, opts: &migrate::Options, job: Job) -> Resul
     };
     // The two commands that write must not run beside a server on DATA_DIR.
     let _lock = match job {
-        Job::Merge | Job::ExportLegacy => Some(lock_data_dir(&cfg.data_dir)?),
+        Job::Merge | Job::ExportLegacy(_) => Some(lock_data_dir(&cfg.data_dir)?),
         Job::Migrate | Job::Verify => None,
     };
-    if job == Job::ExportLegacy {
+    if let Job::ExportLegacy(force) = job {
         let now = memories_server::keys::utc_now_iso();
-        return memories_server::rollback::export_legacy(&cfg.data_dir, &stores, &now).await;
+        return memories_server::rollback::export_legacy(&cfg.data_dir, &stores, &now, force).await;
     }
     let embed = load_embedder().await?;
     match job {

@@ -48,9 +48,9 @@ impl StateDb {
                  name TEXT PRIMARY KEY,
                  value TEXT NOT NULL
              );
-             CREATE TABLE IF NOT EXISTS legacy_base (
+             CREATE TABLE IF NOT EXISTS legacy_base_records (
                  id INTEGER PRIMARY KEY,
-                 sha256 TEXT NOT NULL
+                 record TEXT NOT NULL
              )",
         )?;
         Ok(Self {
@@ -179,11 +179,12 @@ impl StateDb {
         ])
     }
 
-    /// The record hashes of `metadata.json` at the last migration, export or
-    /// merge: the common base of `migrate --merge`. Empty if no run wrote it.
+    /// The records (JSON text) of `metadata.json` at the last migration,
+    /// export or merge: the common base of `migrate --merge`. Empty if no run
+    /// wrote it.
     pub fn legacy_base(&self) -> Result<HashMap<u64, String>, StateError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare("SELECT id, sha256 FROM legacy_base")?;
+        let mut stmt = conn.prepare("SELECT id, record FROM legacy_base_records")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -196,9 +197,10 @@ impl StateDb {
     ) -> Result<(), StateError> {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute("DELETE FROM legacy_base", [])?;
+        tx.execute("DELETE FROM legacy_base_records", [])?;
         {
-            let mut insert = tx.prepare("INSERT INTO legacy_base (id, sha256) VALUES (?1, ?2)")?;
+            let mut insert =
+                tx.prepare("INSERT INTO legacy_base_records (id, record) VALUES (?1, ?2)")?;
             for (id, sha) in base {
                 insert.execute(rusqlite::params![*id as i64, sha])?;
             }

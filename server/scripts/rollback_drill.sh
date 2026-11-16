@@ -27,11 +27,13 @@ key="parity-admin-key"
 py_port=18120
 rs_port=18121
 pid=""
+blackhole=""
 collections=()
 drill() { .venv/bin/python server/scripts/rollback_drill.py "$@"; }
 cleanup() {
   local rc=$?
   [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  [ -n "$blackhole" ] && kill "$blackhole" 2>/dev/null || true
   if [ "$rc" -ne 0 ]; then
     for log in "$work"/*.log; do echo "== $log"; tail -n 60 "$log"; done >&2
   fi
@@ -61,11 +63,11 @@ wait_up() {
   echo "The server on port $1 did not start" >&2
   return 1
 }
-# The Rust server answers 503 until the first-start migration ends.
+# The Rust server answers 503 until the first-start migration ends. A search
+# here would write last_reinforced_at of a record, so the probe is a read.
 wait_ready() {
   for _ in $(seq 1 240); do
-    code="$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: $key" -H 'Content-Type: application/json' \
-      -d '{"query":"ready","k":1}' "http://127.0.0.1:$rs_port/search")"
+    code="$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: $key" "http://127.0.0.1:$rs_port/health/ready")"
     [ "$code" = 200 ] && return 0
     kill -0 "$pid" 2>/dev/null || { echo "The Rust server stopped" >&2; return 1; }
     sleep 1
@@ -125,6 +127,7 @@ sleep 3
 drill search "$rs" "$work/search-rust.ndjson"
 stop
 kill "$blackhole"
+blackhole=""
 drill collection "$QDRANT_URL" "drill_case1_$$_v2" "$work/expected1.json"
 start_rollback_image case1
 grep -q '"status": "exported"' "$work/rollback-case1.log"
@@ -151,10 +154,14 @@ drill seed "$py"
 stop
 start_rust case2
 drill changes "$rs" 200 2 "$work/touched2.json" "$QDRANT_URL" "drill_case2_$$_v2"
+# Searches on the two sides write last_reinforced_at; the merge must not count
+# that as a change.
+drill search "$rs" "$work/search-rust2.ndjson"
+sleep 3
 stop
 drill collection "$QDRANT_URL" "drill_case2_$$_v2" "$work/rust2.json"
 start_python case2
-drill python-writes "$py" "$work/touched2.json" "$work/python2.json"
+drill python-writes "$py" "$work/touched2.json" "$work/rust2.json" "$work/python2.json"
 stop
 if run_rust case2 serve --port "$rs_port" > "$work/refused.log" 2>&1; then
   echo "The Rust server started on changed Python data" >&2

@@ -7,8 +7,10 @@
   P7-1).** `memories-server export-legacy` writes the records of
   `memories_v2` back to `metadata.json` and to the old collection, and moves
   the waiting extract jobs to a file. It skips the export if a Python server
-  changed `metadata.json`. `memories-server migrate --merge` brings the
-  writes of a Python server into `memories_v2` with a three-way merge. The
+  changed `metadata.json`, and it refuses an export that deletes most of the
+  old data unless `--force` is given. `memories-server migrate --merge` brings
+  the writes of a Python server into `memories_v2` with a three-way merge,
+  field by field. The
   rollback image (`server/rollback/`) runs the export, then the Python
   server. `server/scripts/rollback_drill.sh` runs the two return cases in CI.
   No change to the Python server or to a client. Details:

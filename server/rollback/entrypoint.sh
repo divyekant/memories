@@ -7,7 +7,8 @@ set -eu
 bin="${MEMORIES_SERVER_BIN:-memories-server}"
 if ! "$bin" export-legacy; then
   echo "memories-rollback: export-legacy failed, so the Python server does not start." >&2
-  echo "memories-rollback: metadata.json did not change. Run 'memories-server export-legacy' again, or restore the backup of the cutover." >&2
+  echo "memories-rollback: read the error above. Do not start the Python server without this image until the export finishes: the old collection can be partly written." >&2
+  echo "memories-rollback: Correct the cause, then start the image again: the export runs again and finishes a stopped export." >&2
   exit 1
 fi
 exec "$@"

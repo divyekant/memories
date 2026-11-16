@@ -22,8 +22,20 @@ TRIES = 5
 
 
 def body_of(request):
-    """The body of POST /memory/extract: the stored request without null values."""
-    return {k: request[k] for k in FIELDS if request.get(k) is not None}
+    """The body of POST /memory/extract: the stored request without null values.
+
+    The script sends with the admin key. A job of a scoped key keeps its scope:
+    its source must be in the allowed prefixes of that key, and it loses
+    promotion_context. Raises ValueError for a job that cannot keep its scope.
+    """
+    body = {k: request[k] for k in FIELDS if request.get(k) is not None}
+    prefixes = request.get("allowed_prefixes")
+    if prefixes is not None:
+        source = body.get("source") or ""
+        if not source or not any(source.startswith(p) for p in prefixes):
+            raise ValueError(f"the job of a scoped key has the source {source!r}, not in {prefixes}")
+        body.pop("promotion_context", None)
+    return body
 
 
 def read_jobs(path):
@@ -51,7 +63,11 @@ def send(base_url, key, body, sleep=time.sleep):
         )
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
-                return json.loads(r.read() or b"{}")
+                raw = r.read()
+            try:
+                return json.loads(raw or b"{}")
+            except ValueError:
+                return {}  # The server accepted the job; the reply text is not needed.
         except urllib.error.HTTPError as e:
             if e.code not in (429, 503) or attempt == TRIES - 1:
                 raise
@@ -76,7 +92,7 @@ def main(argv=None):
         for job in jobs:
             try:
                 reply = send(args.base_url, key, body_of(job["request"]))
-            except (urllib.error.URLError, OSError) as e:
+            except (urllib.error.URLError, OSError, ValueError) as e:
                 failed += 1
                 print(f"{job['job_id']}: not sent ({e})", file=sys.stderr)
                 continue

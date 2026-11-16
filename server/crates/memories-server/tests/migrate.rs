@@ -528,7 +528,7 @@ async fn export_writes_each_change_back_and_a_python_write_stops_the_next_export
         )
         .unwrap();
 
-    let report = rollback::export_legacy(&t.dir, &t.stores(), "now")
+    let report = rollback::export_legacy(&t.dir, &t.stores(), "now", false)
         .await
         .unwrap();
     assert_eq!(report["status"], "exported", "{report}");
@@ -565,7 +565,7 @@ async fn export_writes_each_change_back_and_a_python_write_stops_the_next_export
         migrate::StartAction::Serve
     );
     let sha = t.metadata_sha();
-    let again = rollback::export_legacy(&t.dir, &t.stores(), "now")
+    let again = rollback::export_legacy(&t.dir, &t.stores(), "now", false)
         .await
         .unwrap();
     assert_eq!(
@@ -584,7 +584,7 @@ async fn export_writes_each_change_back_and_a_python_write_stops_the_next_export
     )
     .unwrap();
     let python_sha = t.metadata_sha();
-    let skipped = rollback::export_legacy(&t.dir, &t.stores(), "now")
+    let skipped = rollback::export_legacy(&t.dir, &t.stores(), "now", false)
         .await
         .unwrap();
     assert_eq!(skipped["status"], "skipped", "{skipped}");
@@ -647,6 +647,17 @@ async fn merge_keeps_the_records_of_the_two_sides() {
     let err = migrate::start_action(&t.dir, &t.state).unwrap_err();
     assert!(err.contains("migrate --merge"), "{err}");
 
+    // A merge that stops before its writes, then a second run: the second run
+    // uses the same new IDs, so no record comes in two times.
+    let stop = Options {
+        stop_after_batches: Some(0),
+        ..all()
+    };
+    assert!(
+        rollback::merge(&t.dir, &t.stores(), &Fake, &stop)
+            .await
+            .is_err()
+    );
     let report = rollback::merge(&t.dir, &t.stores(), &Fake, &all())
         .await
         .unwrap();
@@ -673,6 +684,11 @@ async fn merge_keeps_the_records_of_the_two_sides() {
         "copied from the old collection"
     );
     assert!(t.state.next_id().unwrap() > new_id);
+    let mut python_new = 0;
+    for id in t.new.ids().await.unwrap() {
+        python_new += usize::from(text(id).await.as_deref() == Some("python new"));
+    }
+    assert_eq!(python_new, 1);
     assert_eq!(
         migrate::start_action(&t.dir, &t.state).unwrap(),
         migrate::StartAction::Serve

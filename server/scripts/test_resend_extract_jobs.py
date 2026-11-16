@@ -53,5 +53,16 @@ class ResendTest(unittest.TestCase):
                                                   "debug": False, "dry_run": False}))
 
 
+class ScopeTest(unittest.TestCase):
+    def test_a_scoped_job_keeps_its_scope(self):
+        req = {"messages": "m", "source": "a/b", "allowed_prefixes": ["a/"], "promotion_context": {"x": 1}}
+        self.assertEqual(r.body_of(req), {"messages": "m", "source": "a/b"})
+        unscoped = dict(req, allowed_prefixes=None)
+        self.assertEqual(r.body_of(unscoped)["promotion_context"], {"x": 1})
+        for source in (None, "", "c/d"):
+            with self.assertRaises(ValueError):
+                r.body_of(dict(req, source=source))
+
+
 if __name__ == "__main__":
     unittest.main()

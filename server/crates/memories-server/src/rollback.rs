@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use memories_engine::keyword;
 use memories_store::JobQueue;
 use memories_types::Record;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::migrate::{
@@ -31,14 +31,17 @@ pub const EXTRACT_JOBS_FILE: &str = "rollback-extract-jobs.ndjson";
 /// The IDs that a report names, at most.
 const REPORT_IDS: usize = 20;
 
-/// The SHA-256 of the record JSON. The keys are in sorted order, so equal
-/// records give equal hashes.
-pub fn record_sha(r: &Record) -> String {
-    hex(&Sha256::digest(r.to_json().to_string().as_bytes()))
-}
+/// The `state.db` value with the SHA-256 of the `metadata.json` that an
+/// unfinished `export-legacy` writes. Empty when no export is unfinished.
+pub const EXPORT_PENDING: &str = "export_pending_sha256";
+/// The `state.db` value with the ID numbers of an unfinished merge (JSON).
+const MERGE_PENDING: &str = "merge_pending";
+/// A search writes this field on each side. The merge takes the later value.
+const REINFORCED: &str = "last_reinforced_at";
 
+/// The base rows for `state.db`: each record as JSON text.
 pub fn base_of<'a>(records: impl Iterator<Item = &'a Record>) -> Vec<(u64, String)> {
-    records.map(|r| (r.id, record_sha(r))).collect()
+    records.map(|r| (r.id, r.to_json().to_string())).collect()
 }
 
 fn first(ids: &[u64]) -> Vec<u64> {
@@ -52,12 +55,13 @@ pub enum ExportAction {
 }
 
 /// Export only when `memories_v2` is the canonical store: no `metadata.json`,
-/// or a `metadata.json` that did not change after the last migration, export
-/// or merge. Else a Python server wrote to it, and an export would replace
-/// those writes.
+/// a `metadata.json` that did not change after the last migration, export or
+/// merge, or the file of an unfinished export (`pending`). Else a Python
+/// server wrote to it, and an export would replace those writes.
 pub fn export_action(
     metadata_sha: Option<&str>,
     done: Option<&str>,
+    pending: Option<&str>,
     mode: Option<&str>,
 ) -> ExportAction {
     match (metadata_sha, done) {
@@ -65,6 +69,7 @@ pub fn export_action(
             "the migration ran in shadow mode, so metadata.json is the canonical store".into(),
         ),
         (None, _) => ExportAction::Export,
+        (Some(m), _) if pending == Some(m) => ExportAction::Export,
         (Some(_), None) => ExportAction::Skip(
             "no migration finished, so metadata.json is the canonical store".into(),
         ),
@@ -73,6 +78,37 @@ pub fn export_action(
         ),
         _ => ExportAction::Export,
     }
+}
+
+/// Refuse an export that would delete most of the old data: the guard for a
+/// lost or new Qdrant volume, where `memories_v2` is empty. `--force` skips it.
+pub fn check_export_size(
+    records: usize,
+    base: usize,
+    old_file_entries: usize,
+    old_points_with_no_file: u64,
+) -> Result<(), String> {
+    let refuse = |why: String| {
+        Err(format!(
+            "{why}. The export would delete the old data, so it did not start. If memories_v2 is correct, run `memories-server export-legacy --force`"
+        ))
+    };
+    if records == 0 && old_file_entries > 0 {
+        return refuse(format!(
+            "memories_v2 is empty and metadata.json has {old_file_entries} records"
+        ));
+    }
+    if records * 2 < base {
+        return refuse(format!(
+            "memories_v2 has {records} records, less than half of the {base} records of the last migration, export or merge"
+        ));
+    }
+    if old_points_with_no_file > 0 {
+        return refuse(format!(
+            "there is no metadata.json, but the old collection has {old_points_with_no_file} points"
+        ));
+    }
+    Ok(())
 }
 
 /// The order of the records in the new `metadata.json`: the order of the old
@@ -181,12 +217,13 @@ fn export_jobs(data_dir: &Path, now_iso: &str) -> Result<(usize, PathBuf), Strin
 
 /// Write the records of `memories_v2` to `metadata.json` (Python format) and
 /// to the old collection, so that the count check of the Python server
-/// passes. Then move the waiting extract jobs to a file. The command runs
+/// passes, and move the waiting extract jobs to a file. The command runs
 /// again with the same result. A skip is a report with status `skipped`.
 pub async fn export_legacy(
     data_dir: &Path,
     stores: &Stores<'_>,
     now_iso: &str,
+    force: bool,
 ) -> Result<Value, String> {
     let started = std::time::Instant::now();
     let path = metadata_path(data_dir);
@@ -195,12 +232,21 @@ pub async fn export_legacy(
     } else {
         None
     };
-    let meta = |k| stores.state.get_meta(k).map_err(|e| e.to_string());
-    let (done, mode) = (meta(DONE_HASH)?, meta(DONE_MODE)?);
+    let meta = |k| {
+        stores
+            .state
+            .get_meta(k)
+            .map(|v| v.filter(|v| !v.is_empty()))
+            .map_err(|e| e.to_string())
+    };
+    let (done, mode, pending) = (meta(DONE_HASH)?, meta(DONE_MODE)?, meta(EXPORT_PENDING)?);
     let skip = |reason: String| Ok(json!({"status": "skipped", "reason": reason}));
-    if let ExportAction::Skip(reason) =
-        export_action(metadata_sha.as_deref(), done.as_deref(), mode.as_deref())
-    {
+    if let ExportAction::Skip(reason) = export_action(
+        metadata_sha.as_deref(),
+        done.as_deref(),
+        pending.as_deref(),
+        mode.as_deref(),
+    ) {
         return skip(reason);
     }
     if !stores.new.exists().await.map_err(|e| e.to_string())? {
@@ -211,9 +257,20 @@ pub async fn export_legacy(
     }
 
     let records = v2_records(stores).await?;
+    let old_ids = old_file_ids(&path);
+    if !force {
+        let base = stores.state.legacy_base().map_err(|e| e.to_string())?.len();
+        let foreign =
+            if metadata_sha.is_none() && stores.old.exists().await.map_err(|e| e.to_string())? {
+                stores.old.count(None).await.map_err(|e| e.to_string())?
+            } else {
+                0
+            };
+        check_export_size(records.len(), base, old_ids.len(), foreign)?;
+    }
     let ids: Vec<u64> = records.keys().copied().collect();
-    // The old collection first: if a step fails, metadata.json is unchanged,
-    // and the Python server refuses to start on the count check.
+    // The old collection first: until the rename of metadata.json, the old
+    // file stays, and the Python server refuses to start on its count check.
     let (mut created, mut dim) = (false, 0);
     for (i, chunk) in ids.chunks(BATCH).enumerate() {
         let mut vectors = stores.new.vectors(chunk).await.map_err(|e| e.to_string())?;
@@ -262,13 +319,27 @@ pub async fn export_legacy(
             ));
         }
     }
+    let (jobs, jobs_path) = export_jobs(data_dir, now_iso)?;
 
-    let order = legacy_order(&old_file_ids(&path), &records);
+    let order = legacy_order(&old_ids, &records);
     let entries: Vec<Value> = order.iter().map(|id| records[id].to_json()).collect();
     let bytes = serde_json::to_vec(&entries).map_err(|e| e.to_string())?;
-    write_atomic(&path, &bytes)?;
     let sha = hex(&Sha256::digest(&bytes));
-    let (jobs, jobs_path) = export_jobs(data_dir, now_iso)?;
+    if let Some(old_sha) = &metadata_sha {
+        // A copy that no later save replaces, unlike metadata.json.bak.
+        let keep = path.with_file_name(format!("metadata.json.pre-export-{}", &old_sha[..12]));
+        if !keep.exists() {
+            std::fs::copy(&path, &keep)
+                .map_err(|e| format!("cannot copy metadata.json to {}: {e}", keep.display()))?;
+        }
+    }
+    // Mark the export before the rename: if the process stops after the
+    // rename, the next export (or start) knows the file as its own.
+    stores
+        .state
+        .set_meta(&[(EXPORT_PENDING, &sha)])
+        .map_err(|e| e.to_string())?;
+    write_atomic(&path, &bytes)?;
     stores
         .state
         .set_legacy_base(
@@ -276,6 +347,7 @@ pub async fn export_legacy(
             &[
                 (DONE_HASH, &sha),
                 (DONE_MODE, mode.as_deref().unwrap_or("normal")),
+                (EXPORT_PENDING, ""),
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -300,12 +372,13 @@ pub struct MergePlan {
     /// with its ID in `memories_v2`).
     pub upserts: Vec<(u64, Record)>,
     pub deletes: Vec<u64>,
-    /// IDs that the two sides changed to the same text: the record with the
-    /// later `updated_at` stays, with the later `last_reinforced_at`.
+    /// IDs where the two sides changed the same field (not `text`) to
+    /// different values: a time field takes the later value, another field
+    /// the value of `memories_v2`.
     pub resolved: Vec<u64>,
-    /// IDs that the two sides changed to different texts, or that the two
-    /// sides used for different new records: the record of `metadata.json`
-    /// gets a new ID.
+    /// IDs where the two sides changed `text` to different values, or that
+    /// the Rust server gave out before: the record of `metadata.json` gets a
+    /// new ID.
     pub renumbered: Vec<(u64, u64)>,
     /// IDs that `memories_v2` changed and `metadata.json` deleted: they stay.
     pub kept: Vec<u64>,
@@ -313,37 +386,45 @@ pub struct MergePlan {
     pub restored: Vec<u64>,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Side {
-    Same,
-    Changed,
-    Deleted,
-    New,
+type Fields = Map<String, Value>;
+
+fn without_reinforced(m: &Fields) -> Fields {
+    let mut m = m.clone();
+    m.remove(REINFORCED);
+    m
 }
 
-fn side(base: Option<&String>, record: Option<&Record>) -> Side {
-    match (base, record) {
-        (_, None) => Side::Deleted,
-        (None, Some(_)) => Side::New,
-        (Some(b), Some(r)) if *b == record_sha(r) => Side::Same,
-        _ => Side::Changed,
+fn later<'a>(a: Option<&'a Value>, b: Option<&'a Value>) -> Option<&'a Value> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(if x.as_str() > y.as_str() { x } else { y }),
+        _ => a.or(b),
     }
 }
 
-/// The record that stays when the two sides changed a record to the same
-/// text: the later `updated_at` (a tie keeps `v2`), with the later
-/// `last_reinforced_at` of the two.
-fn resolve(py: &Record, v2: &Record) -> Record {
-    let mut out = if py.updated_at > v2.updated_at {
-        py.clone()
-    } else {
-        v2.clone()
-    };
-    out.last_reinforced_at = py
-        .last_reinforced_at
-        .clone()
-        .max(v2.last_reinforced_at.clone());
-    out
+/// Merge each field against the base: a field that one side changed takes
+/// that change. Returns the merged fields and the fields that the two sides
+/// changed to different values.
+fn merge_fields(base: &Fields, py: &Fields, v2: &Fields) -> (Fields, Vec<String>) {
+    let keys: std::collections::BTreeSet<&String> =
+        base.keys().chain(py.keys()).chain(v2.keys()).collect();
+    let (mut out, mut conflicts) = (Fields::new(), Vec::new());
+    for key in keys {
+        let (b, p, v) = (base.get(key), py.get(key), v2.get(key));
+        let pick = if key == REINFORCED {
+            later(p, v)
+        } else if p == b || p == v {
+            v
+        } else if v == b {
+            p
+        } else {
+            conflicts.push(key.clone());
+            if key.ends_with("_at") { later(p, v) } else { v }
+        };
+        if let Some(x) = pick {
+            out.insert(key.clone(), x.clone());
+        }
+    }
+    (out, conflicts)
 }
 
 fn remap(r: &mut Record, ids: &HashMap<u64, u64>) {
@@ -363,11 +444,20 @@ fn remap(r: &mut Record, ids: &HashMap<u64, u64>) {
     for link in r.links.iter_mut().flatten() {
         link.to_id = map(link.to_id);
     }
+    if let Some(Value::Array(list)) = r.extra.get_mut("source_memory_ids") {
+        for v in list.iter_mut() {
+            if let Some(n) = v.as_i64() {
+                *v = json!(map(n));
+            }
+        }
+    }
 }
 
 /// The three-way merge of `py` (`metadata.json`) and `v2` (`memories_v2`)
-/// against `base`. The Rust server gave out each ID below `rust_next`, so a
-/// new record of `metadata.json` with such an ID gets a new ID, from
+/// against `base` (record JSON text by ID), field by field. A search on
+/// either side only writes `last_reinforced_at`, which takes the later value
+/// and is not a change. The Rust server gave out each ID below `rust_next`, so
+/// a new record of `metadata.json` with such an ID gets a new ID, from
 /// `first_new_id` up. With an empty base, each ID is new on the two sides, so
 /// no delete comes through.
 pub fn plan_merge(
@@ -394,39 +484,47 @@ pub fn plan_merge(
         .copied()
         .collect();
     for id in all {
-        let (p, v) = (py.get(&id), v2.get(&id));
-        let (ps, vs) = (side(base.get(&id), p), side(base.get(&id), v));
-        match (ps, vs) {
-            // memories_v2 keeps its change, its delete or its new record.
-            (Side::Same, _) | (Side::Deleted, Side::Deleted | Side::New) => {}
-            (Side::Deleted, Side::Same) => plan.deletes.push(id),
-            (Side::Deleted, Side::Changed) => plan.kept.push(id),
+        let b: Option<Fields> = base.get(&id).and_then(|t| {
+            let Ok(Value::Object(mut m)) = serde_json::from_str(t) else {
+                return None;
+            };
+            m.remove("id");
+            Some(m)
+        });
+        let fields = |r: Option<&Record>| r.map(Record::to_payload);
+        let (pr, vr) = (py.get(&id), v2.get(&id));
+        match (b, fields(pr), fields(vr)) {
+            (_, None, None) | (None, None, Some(_)) => {}
+            (Some(b), None, Some(v)) => {
+                if without_reinforced(&v) == without_reinforced(&b) {
+                    plan.deletes.push(id);
+                } else {
+                    plan.kept.push(id);
+                }
+            }
+            (Some(b), Some(p), None) => {
+                if without_reinforced(&p) != without_reinforced(&b) {
+                    plan.restored.push(id);
+                    take.push((id, pr.expect("present").clone()));
+                }
+            }
             // An ID that the Rust server gave out, then deleted: links of
             // memories_v2 can still point to it.
-            (Side::New, Side::Deleted) if id < rust_next => {
-                renumber(&mut plan, &mut take, p.expect("not deleted"));
+            (None, Some(_), None) if id < rust_next => {
+                renumber(&mut plan, &mut take, pr.expect("present"));
             }
-            (Side::Changed, Side::Same) | (Side::New, Side::Deleted) => {
-                take.push((id, p.expect("not deleted").clone()));
-            }
-            (Side::Changed, Side::Deleted) => {
-                plan.restored.push(id);
-                take.push((id, p.expect("not deleted").clone()));
-            }
-            // Changed on the two sides, or a new record on the two sides.
-            (Side::Changed | Side::New, Side::Changed | Side::New | Side::Same) => {
-                let (p, v) = (p.expect("not deleted"), v.expect("not deleted"));
-                if record_sha(p) == record_sha(v) {
+            (None, Some(_), None) => take.push((id, pr.expect("present").clone())),
+            (b, Some(p), Some(v)) => {
+                let (merged, conflicts) = merge_fields(&b.unwrap_or_default(), &p, &v);
+                if conflicts.iter().any(|k| k == "text") {
+                    renumber(&mut plan, &mut take, pr.expect("present"));
                     continue;
                 }
-                if p.text == v.text {
+                if !conflicts.is_empty() {
                     plan.resolved.push(id);
-                    let r = resolve(p, v);
-                    if r != *v {
-                        take.push((id, r));
-                    }
-                } else {
-                    renumber(&mut plan, &mut take, p);
+                }
+                if merged != v {
+                    take.push((id, Record::from_payload(id, merged)));
                 }
             }
         }
@@ -443,7 +541,8 @@ pub fn plan_merge(
 
 /// Bring the writes that a Python server made after the last migration,
 /// export or merge into `memories_v2`. The command does not change
-/// `metadata.json` or the old collection.
+/// `metadata.json` or the old collection. A run that stops can run again: it
+/// uses the same new IDs.
 pub async fn merge(
     data_dir: &Path,
     stores: &Stores<'_>,
@@ -452,7 +551,16 @@ pub async fn merge(
 ) -> Result<Value, String> {
     let started = std::time::Instant::now();
     let legacy = Legacy::read(data_dir)?;
-    let meta = |k| stores.state.get_meta(k).map_err(|e| e.to_string());
+    let meta = |k| {
+        stores
+            .state
+            .get_meta(k)
+            .map(|v| v.filter(|v| !v.is_empty()))
+            .map_err(|e| e.to_string())
+    };
+    if meta(EXPORT_PENDING)?.as_deref() == Some(legacy.sha256.as_str()) {
+        return Err(unfinished_export_message());
+    }
     match meta(DONE_HASH)? {
         None => return Err("no migration finished: run `memories-server migrate`".into()),
         Some(h) if h == legacy.sha256 => {
@@ -467,24 +575,37 @@ pub async fn merge(
     }
     let base = stores.state.legacy_base().map_err(|e| e.to_string())?;
     let v2 = v2_records(stores).await?;
-    let rust_next = stores.state.next_id().map_err(|e| e.to_string())?;
-    let max_id = legacy
-        .records
-        .keys()
-        .chain(v2.keys())
-        .max()
-        .map_or(0, |m| m + 1);
-    let first_new = stores
-        .state
-        .raise_id_floor(max_id)
-        .map_err(|e| e.to_string())?;
+    // The ID numbers of an unfinished merge of the same file, else new ones.
+    let pending: Option<Value> = meta(MERGE_PENDING)?
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .filter(|p: &Value| p["sha"] == json!(legacy.sha256));
+    let (rust_next, first_new) = match pending {
+        Some(p) => (
+            p["rust_next"].as_u64().unwrap_or(0),
+            p["first_new"].as_u64().unwrap_or(0),
+        ),
+        None => {
+            let rust_next = stores.state.next_id().map_err(|e| e.to_string())?;
+            let max_id = legacy
+                .records
+                .keys()
+                .chain(v2.keys())
+                .max()
+                .map_or(0, |m| m + 1);
+            let first_new = rust_next.max(max_id);
+            let p = json!({"sha": legacy.sha256, "rust_next": rust_next, "first_new": first_new});
+            stores
+                .state
+                .set_meta(&[(MERGE_PENDING, &p.to_string())])
+                .map_err(|e| e.to_string())?;
+            (rust_next, first_new)
+        }
+    };
     let plan = plan_merge(&base, &legacy.records, &v2, rust_next, first_new);
-    if !plan.renumbered.is_empty() {
-        stores
-            .state
-            .reserve_ids(plan.renumbered.len() as u64)
-            .map_err(|e| e.to_string())?;
-    }
+    stores
+        .state
+        .raise_id_floor(first_new + plan.renumbered.len() as u64)
+        .map_err(|e| e.to_string())?;
 
     let mut after = v2.clone();
     for id in &plan.deletes {
@@ -529,7 +650,7 @@ pub async fn merge(
         .state
         .set_legacy_base(
             &base_of(legacy.records.values()),
-            &[(DONE_HASH, &legacy.sha256)],
+            &[(DONE_HASH, &legacy.sha256), (MERGE_PENDING, "")],
         )
         .map_err(|e| e.to_string())?;
     let ids = |v: &[(u64, Record)]| v.iter().map(|(o, _)| *o).collect::<Vec<_>>();
@@ -558,6 +679,10 @@ pub async fn merge(
     }))
 }
 
+pub fn unfinished_export_message() -> String {
+    "an export-legacy run stopped after it wrote metadata.json. Run `memories-server export-legacy` again to finish it".into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,11 +705,19 @@ mod tests {
     fn export_runs_only_when_memories_v2_is_the_canonical_store() {
         use ExportAction::*;
         assert_eq!(
-            export_action(None, None, None),
+            export_action(None, None, None, None),
             Export,
             "a new Rust install"
         );
-        assert_eq!(export_action(Some("a"), Some("a"), Some("normal")), Export);
+        assert_eq!(
+            export_action(Some("a"), Some("a"), None, Some("normal")),
+            Export
+        );
+        assert_eq!(
+            export_action(Some("b"), Some("a"), Some("b"), None),
+            Export,
+            "an export that stopped after the rename runs again"
+        );
         for (m, d, mode) in [
             (Some("a"), None, None),
             (Some("b"), Some("a"), Some("normal")),
@@ -592,14 +725,25 @@ mod tests {
             (None, Some("a"), Some("shadow")),
         ] {
             assert!(
-                matches!(export_action(m, d, mode), Skip(_)),
+                matches!(export_action(m, d, None, mode), Skip(_)),
                 "{m:?} {d:?} {mode:?}"
             );
         }
-        let Skip(reason) = export_action(Some("b"), Some("a"), None) else {
+        let Skip(reason) = export_action(Some("b"), Some("a"), Some("c"), None) else {
             panic!()
         };
         assert!(reason.contains("migrate --merge"), "{reason}");
+    }
+
+    #[test]
+    fn an_export_that_deletes_most_of_the_data_needs_force() {
+        assert!(check_export_size(100, 120, 120, 0).is_ok());
+        assert!(check_export_size(0, 0, 0, 0).is_ok(), "a new install");
+        for (records, base, entries, old_points) in [(0, 0, 5, 0), (49, 100, 100, 0), (10, 0, 0, 3)]
+        {
+            let err = check_export_size(records, base, entries, old_points).unwrap_err();
+            assert!(err.contains("--force"), "{err}");
+        }
     }
 
     #[test]
@@ -702,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn the_same_text_on_the_two_sides_keeps_the_later_update() {
+    fn a_field_conflict_keeps_the_later_time_and_no_field_change_is_lost() {
         let base: HashMap<u64, String> = base_of([rec(1, "a", "t0"), rec(2, "b", "t0")].iter())
             .into_iter()
             .collect();
@@ -710,19 +854,60 @@ mod tests {
         p1.last_reinforced_at = Some("r1".into());
         let mut v1 = rec(1, "a", "t1");
         v1.last_reinforced_at = Some("r3".into());
-        let mut p2 = rec(2, "b", "t1");
+        // Python pins 2; Rust only reinforces 2.
+        let mut p2 = rec(2, "b", "t0");
         p2.pinned = Some(true);
-        let mut v2_2 = rec(2, "b", "t1");
+        let mut v2_2 = rec(2, "b", "t0");
         v2_2.last_reinforced_at = Some("r9".into());
-        let plan = plan_merge(&base, &map(&[p1.clone(), p2]), &map(&[v1, v2_2]), 0, 9);
-        assert_eq!(plan.resolved, [1, 2]);
-        let mut want = p1;
-        want.last_reinforced_at = Some("r3".into());
-        assert_eq!(
-            plan.upserts,
-            [(1, want)],
-            "2: a tie keeps memories_v2, so no write"
+        let plan = plan_merge(
+            &base,
+            &map(&[p1.clone(), p2.clone()]),
+            &map(&[v1, v2_2]),
+            0,
+            9,
         );
+        assert_eq!(plan.resolved, [1], "only 1 has a conflict (updated_at)");
+        let mut want1 = p1;
+        want1.last_reinforced_at = Some("r3".into());
+        let mut want2 = p2;
+        want2.last_reinforced_at = Some("r9".into());
+        assert_eq!(plan.upserts, [(1, want1), (2, want2)]);
+    }
+
+    #[test]
+    fn a_reinforcement_is_not_a_change() {
+        let base: HashMap<u64, String> =
+            base_of([rec(1, "a", "t0"), rec(2, "b", "t0"), rec(3, "c", "t0")].iter())
+                .into_iter()
+                .collect();
+        let reinforced = |r: Record| Record {
+            last_reinforced_at: Some("r5".into()),
+            ..r
+        };
+        // 1: only Rust reinforced. 2: only Python reinforced. 3: Python
+        // deleted, Rust only reinforced.
+        let py = map(&[rec(1, "a", "t0"), reinforced(rec(2, "b", "t0"))]);
+        let v2 = map(&[
+            reinforced(rec(1, "a", "t0")),
+            rec(2, "b", "t0"),
+            reinforced(rec(3, "c", "t0")),
+        ]);
+        let plan = plan_merge(&base, &py, &v2, 0, 9);
+        assert_eq!(plan.upserts, [(2, reinforced(rec(2, "b", "t0")))]);
+        assert_eq!(plan.deletes, [3]);
+        assert!(plan.kept.is_empty() && plan.resolved.is_empty());
+    }
+
+    #[test]
+    fn source_memory_ids_point_to_the_renumbered_record() {
+        let mut p = rec(3, "summary", "t1");
+        p.extra.insert("source_memory_ids".into(), json!([2, 1]));
+        let py = map(&[rec(2, "py two", "t1"), p]);
+        let v2 = map(&[rec(2, "rust two", "t1")]);
+        let plan = plan_merge(&HashMap::new(), &py, &v2, 0, 20);
+        assert_eq!(plan.renumbered, [(2, 20)]);
+        let three = &plan.upserts.iter().find(|(o, _)| *o == 3).unwrap().1;
+        assert_eq!(three.extra["source_memory_ids"], json!([20, 1]));
     }
 
     #[test]
