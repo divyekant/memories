@@ -6,7 +6,8 @@
 // other origins (for example the web fonts) are not checked.
 //
 // Usage: node server/scripts/webui_check.cjs <base url> <admin key>
-// Needs the `playwright` package (NODE_PATH) and its Chromium.
+// Needs the `playwright` package (NODE_PATH), and its Chromium or a Chrome
+// at CHROME_PATH.
 const { chromium } = require("playwright");
 
 const PAGES = ["dashboard", "memories", "extractions", "keys", "health", "settings"];
@@ -18,7 +19,8 @@ async function main() {
     process.exit(2);
   }
   const origin = new URL(base).origin;
-  const browser = await chromium.launch();
+  const exe = process.env.CHROME_PATH;
+  const browser = await chromium.launch(exe ? { executablePath: exe } : {});
   let failed = false;
   for (const name of PAGES) {
     const context = await browser.newContext();

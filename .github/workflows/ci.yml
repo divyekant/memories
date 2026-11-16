@@ -283,6 +283,7 @@ jobs:
           QDRANT_URL=http://127.0.0.1:6333 \
           ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
             server/scripts/parity_usage.sh server/target/debug/memories-server
+
       - name: P3-2 bulk writes and relation writes (golden replay and a live Python run)
         env:
           QDRANT_URL: http://127.0.0.1:6333
@@ -319,6 +320,20 @@ jobs:
           ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_pipeline.sh server/target/debug/memories-server --check extract_corpus
 
+      - name: P5-5 event, webhook and web UI routes, and the browser check of each page
+        # Playwright has no Chromium build for this runner OS, so the check
+        # uses the Chrome of the runner image.
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw"
+          npm install --prefix "$RUNNER_TEMP/pw" --no-save --ignore-scripts playwright@1.56.1
+          CHROME_PATH="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          echo "Chrome: $CHROME_PATH"
+          CHROME_PATH="$CHROME_PATH" NODE_PATH="$RUNNER_TEMP/pw/node_modules" \
+            server/scripts/parity_events.sh server/target/debug/memories-server
+
       - name: P2-4 gate G3, corpus and graph parts (synthetic data)
         # The steps before leave memories_v2 in the throwaway Qdrant service.
         run: |
@@ -353,21 +368,6 @@ jobs:
       - name: Container log
         if: failure()
         run: docker logs rollback || true
-
-      - name: Install Playwright and Chromium for the web UI check
-        run: |
-          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
-          npm init -y > /dev/null
-          npm install --no-save --ignore-scripts playwright@1.56.1
-          npx playwright install --with-deps chromium
-
-      - name: P5-5 event, webhook and web UI routes, and the browser check of each page
-        # Uses the ONNX Runtime that the P2-2 step unpacked.
-        run: |
-          QDRANT_URL=http://127.0.0.1:6333 \
-          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
-          NODE_PATH="$RUNNER_TEMP/pw/node_modules" \
-            server/scripts/parity_events.sh server/target/debug/memories-server
 
   rust-image:
     # Build the Rust image on each architecture. Then start the bundled compose
