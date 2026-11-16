@@ -427,13 +427,25 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
         let st = state.clone();
         let task = tokio::spawn(async move {
             tracing::info!("first start: migrating metadata.json to memories_v2");
-            let opts = migrate::Options {
-                sample: 1000,
-                ..Default::default()
-            };
-            match run_migration(&cfg, &opts, Job::Migrate).await {
-                Ok(report) => {
-                    tracing::info!(%report, "migration done");
+            // A child process: in this process, the allocator kept about 900 MB
+            // of the migration until the stop (gate G5). The child gets the same env.
+            let child = tokio::task::spawn_blocking(|| {
+                let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+                let status = std::process::Command::new(exe)
+                    .args(["migrate", "--sample", "1000"])
+                    .status()
+                    .map_err(|e| format!("cannot start the migrate process: {e}"))?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("the migrate process stopped with {status}"))
+                }
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            match child {
+                Ok(()) => {
+                    tracing::info!("migration done");
                     match open_writer(&cfg, &st).await {
                         Ok(Some(w)) => {
                             let _ = st.engine.set(w.engine.clone());
