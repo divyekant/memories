@@ -17,25 +17,7 @@ use crate::{AppState, error::ApiError, shell::Client};
 
 const FAIL_WINDOW: Duration = Duration::from_secs(60);
 
-/// `auth_context.source_matches_prefixes`. `None` is unrestricted. A prefix
-/// matches its exact source and each source under it, never `prefix-other`.
-pub fn source_matches_prefixes(source: &str, prefixes: Option<&[String]>) -> bool {
-    let Some(prefixes) = prefixes else {
-        return true;
-    };
-    if source.split('/').any(|part| part == "..") {
-        return false;
-    }
-    prefixes.iter().any(|p| {
-        // Python: pfx.rstrip("/").removesuffix("/*").rstrip("/")
-        let p = p.trim_end_matches('/');
-        let base = p.strip_suffix("/*").unwrap_or(p).trim_end_matches('/');
-        source == base
-            || source
-                .strip_prefix(base)
-                .is_some_and(|rest| rest.starts_with('/'))
-    })
-}
+pub use memories_engine::scope::source_matches_prefixes;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuthContext {

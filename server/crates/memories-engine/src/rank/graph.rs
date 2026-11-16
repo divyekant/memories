@@ -110,7 +110,7 @@ pub fn trace_top_contributors(
 }
 
 /// Python `sorted(..., key=..., reverse=True)`: stable, high to low.
-pub(crate) fn sort_desc<T>(items: &mut [T], key: impl Fn(&T) -> f64) {
+pub fn sort_desc<T>(items: &mut [T], key: impl Fn(&T) -> f64) {
     items.sort_by(|a, b| {
         key(b)
             .partial_cmp(&key(a))

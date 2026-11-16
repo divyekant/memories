@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use memories_engine::Engine;
 use std::sync::atomic::Ordering;
 
 use memories_embed::{EmbedConfig, Embedder, prepare_cache_dir};
@@ -54,6 +55,8 @@ enum Command {
 
 /// The interval for writing `last_used_at` and `usage_count` of the API keys.
 const KEY_USAGE_FLUSH: Duration = Duration::from_secs(5);
+/// The interval for writing the `last_reinforced_at` values of searches.
+const REINFORCE_FLUSH: Duration = Duration::from_secs(2);
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -187,10 +190,21 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let state = AppState::with_extract(&cfg, keys, audit, extract);
-    tokio::runtime::Runtime::new()
-        .expect("tokio runtime")
-        .block_on(serve(port, state, migrate_first.then_some(cfg)));
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    // After a first-start migration, the engine opens when the migration ends.
+    let engine = if migrate_first {
+        None
+    } else {
+        match runtime.block_on(open_engine(&cfg)) {
+            Ok(e) => e,
+            Err(msg) => {
+                tracing::error!("cannot start: {msg}");
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+    };
+    let state = AppState::with_extract(&cfg, keys, audit, extract, engine);
+    runtime.block_on(serve(port, state, migrate_first.then_some(cfg)));
     std::process::ExitCode::SUCCESS
 }
 
@@ -274,6 +288,33 @@ fn run_command(cfg: &Config, opts: migrate::Options, verify_only: bool) -> std::
     }
 }
 
+/// The engine, when `QDRANT_URL` is set. With no `QDRANT_URL`, the server
+/// starts without it and the routes that need it answer 503.
+async fn open_engine(cfg: &Config) -> Result<Option<Arc<Engine>>, String> {
+    if std::env::var("QDRANT_URL").map_or(true, |u| u.trim().is_empty()) {
+        tracing::warn!("QDRANT_URL is not set: the memory routes answer 503");
+        return Ok(None);
+    }
+    let settings = QdrantSettings::from_env().map_err(|e| e.to_string())?;
+    let graph = memories_engine::engine::graph_params(|n| std::env::var(n).ok())
+        .map_err(|e| e.to_string())?;
+    let cache = memories_embed::prepare_cache_dir(
+        &config::string("MODEL_CACHE_DIR", ""),
+        &config::string("PRELOADED_MODEL_CACHE_DIR", ""),
+    )
+    .map_err(|e| format!("model cache: {e}"))?;
+    let embed = memories_embed::EmbedConfig::from_env(cache).map_err(|e| e.to_string())?;
+    let engine = Engine::open(&settings, &cfg.data_dir, embed, graph)
+        .await
+        .map_err(|e| e.to_string())?;
+    tracing::info!(
+        collection = engine.store.collection(),
+        records = engine.count(),
+        "engine ready"
+    );
+    Ok(Some(Arc::new(engine)))
+}
+
 async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .await
@@ -295,6 +336,16 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
             match run_migration(&cfg, &opts, false).await {
                 Ok(report) => {
                     tracing::info!(%report, "migration done");
+                    match open_engine(&cfg).await {
+                        Ok(Some(e)) => {
+                            let _ = st.engine.set(e);
+                        }
+                        Ok(None) => {}
+                        Err(msg) => {
+                            tracing::error!("cannot open the engine, the server stops: {msg}");
+                            std::process::exit(1);
+                        }
+                    }
                     st.migrating.store(false, Ordering::Release);
                 }
                 Err(msg) => {
@@ -314,6 +365,7 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
         });
     }
     let flusher = tokio::spawn(flush_key_usage_forever(state.clone()));
+    let reinforcer = tokio::spawn(flush_reinforcements_forever(state.clone()));
     // A running job stays `running` in state.db at a stop; the next start puts it back.
     let workers = memories_server::extract::spawn_workers(&state);
     axum::serve(
@@ -324,8 +376,26 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     .await
     .expect("server error");
     flusher.abort();
+    reinforcer.abort();
     workers.iter().for_each(|w| w.abort());
     flush_key_usage(&state).await;
+    flush_reinforcements(&state).await;
+}
+
+async fn flush_reinforcements_forever(state: Arc<AppState>) {
+    let mut tick = tokio::time::interval(REINFORCE_FLUSH);
+    loop {
+        tick.tick().await;
+        flush_reinforcements(&state).await;
+    }
+}
+
+async fn flush_reinforcements(state: &Arc<AppState>) {
+    if let Some(engine) = state.engine.get()
+        && let Err(e) = engine.flush_reinforcements().await
+    {
+        tracing::warn!(error = %e, "reinforcement write failed; will try again");
+    }
 }
 
 async fn flush_key_usage_forever(state: Arc<AppState>) {

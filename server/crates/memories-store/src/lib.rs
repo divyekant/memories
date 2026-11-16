@@ -1,6 +1,6 @@
 //! Qdrant store, SQLite stores, ID counter, extract job queue and migration.
 
-mod qdrant;
+pub mod qdrant;
 mod queue;
 mod settings;
 mod state;

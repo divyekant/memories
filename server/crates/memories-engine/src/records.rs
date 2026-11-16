@@ -10,7 +10,8 @@ use crate::rank::{PyDateTime, RecordFields};
 /// which fails. A string that does not parse gives the same result.
 const NOT_A_DATE: &str = "not a date";
 
-fn truthy(v: &Value) -> bool {
+/// Python `bool(v)` of a JSON value.
+pub fn truthy(v: &Value) -> bool {
     match v {
         Value::Null => false,
         Value::Bool(b) => *b,
@@ -19,6 +20,48 @@ fn truthy(v: &Value) -> bool {
         Value::Array(a) => !a.is_empty(),
         Value::Object(o) => !o.is_empty(),
     }
+}
+
+/// Python `str(v)` of a JSON value that is not a string.
+// shortcut: lists and maps use the JSON text, not the Python repr; a source of
+// that type is not known in the field.
+pub fn py_str(v: &Value) -> String {
+    match v {
+        Value::Null => "None".into(),
+        Value::Bool(true) => "True".into(),
+        Value::Bool(false) => "False".into(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Python `float(text)`: white space, `_` between digits, `inf` and `nan`.
+pub fn py_float(text: &str) -> Option<f64> {
+    let t = text.trim();
+    let b = t.as_bytes();
+    for (i, &c) in b.iter().enumerate() {
+        if c == b'_' {
+            let ok =
+                i > 0 && i + 1 < b.len() && b[i - 1].is_ascii_digit() && b[i + 1].is_ascii_digit();
+            if !ok {
+                return None;
+            }
+        }
+    }
+    let t = t.replace('_', "");
+    let lower = t.to_ascii_lowercase();
+    let body = lower.trim_start_matches(['+', '-']);
+    if matches!(body, "inf" | "infinity" | "nan") {
+        return lower.parse().ok();
+    }
+    if body.is_empty()
+        || !body
+            .bytes()
+            .all(|c| c.is_ascii_digit() || matches!(c, b'.' | b'e' | b'+' | b'-'))
+    {
+        return None;
+    }
+    t.parse().ok()
 }
 
 /// A typed date field, or a stand-in for a truthy value of another type.
@@ -130,5 +173,20 @@ mod tests {
         let mut want = value;
         want["confidence"] = json!(1.0);
         assert_eq!(with_confidence(&r, None, &now()), want);
+    }
+}
+
+#[cfg(test)]
+mod py_float_tests {
+    use super::py_float;
+
+    #[test]
+    fn py_float_follows_python() {
+        assert_eq!(py_float(" 0.6 "), Some(0.6));
+        assert_eq!(py_float("1_0"), Some(10.0));
+        assert_eq!(py_float("x"), None);
+        assert_eq!(py_float("1__0"), None);
+        assert_eq!(py_float("0x1"), None);
+        assert!(py_float("-inf").is_some_and(f64::is_infinite));
     }
 }

@@ -79,6 +79,24 @@ pub fn checked_ord(year: i64, month: i64, day: i64) -> Option<i64> {
 }
 
 impl PyDateTime {
+    /// `datetime.now(timezone.utc)`.
+    pub fn now_utc() -> Self {
+        let us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_micros() as i64);
+        Self::from_unix_us(us)
+    }
+
+    /// The aware UTC value `us` microseconds after 1970-01-01.
+    pub fn from_unix_us(us: i64) -> Self {
+        let us = us + (ymd_to_ord(1970, 1, 1) - 1) * DAY_US;
+        Self {
+            ordinal: us.div_euclid(DAY_US) + 1,
+            day_us: us.rem_euclid(DAY_US),
+            offset_us: Some(0),
+        }
+    }
+
     pub fn fields(&self) -> [i64; 7] {
         let (y, m, d) = ord_to_ymd(self.ordinal);
         let s = self.day_us / 1_000_000;
@@ -379,4 +397,21 @@ fn parse_time(b: &[u8]) -> Option<Time> {
     }
     t.tz = Some((sign * (z[0] * 3600 + z[1] * 60 + z[2]), sign * z[3]));
     Some(t)
+}
+
+#[cfg(test)]
+mod now_tests {
+    use super::*;
+
+    #[test]
+    fn from_unix_us_gives_isoformat() {
+        assert_eq!(
+            PyDateTime::from_unix_us(1_794_821_600_000_001).isoformat_utc(),
+            "2026-11-16T09:33:20.000001+00:00"
+        );
+        assert_eq!(
+            PyDateTime::from_unix_us(0).isoformat_utc(),
+            "1970-01-01T00:00:00+00:00"
+        );
+    }
 }

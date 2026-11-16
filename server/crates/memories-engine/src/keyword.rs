@@ -39,6 +39,16 @@ pub fn doc_vector(text: &str, avgdl: f64) -> Vec<(u32, f32)> {
     out.into_iter().map(|(i, w)| (i, w as f32)).collect()
 }
 
+/// The query vector: the count of each query token (`_bm25_query_tokens`),
+/// in index order. Two tokens with the same hash share one index.
+pub fn query_vector(query: &str) -> Vec<(u32, f32)> {
+    let mut out: BTreeMap<u32, f64> = BTreeMap::new();
+    for t in crate::rank::scores::query_tokens(query) {
+        *out.entry(token_id(&t)).or_default() += 1.0;
+    }
+    out.into_iter().map(|(i, w)| (i, w as f32)).collect()
+}
+
 /// The average token count of `texts`, as rank_bm25 calculates it. An empty
 /// corpus gives 1.0, so that a later division is safe.
 pub fn avgdl<'a>(texts: impl IntoIterator<Item = &'a str>) -> f64 {
@@ -86,6 +96,15 @@ mod tests {
             let want: Vec<(u32, f32)> = want.iter().map(|&(i, w)| (i, w as f32)).collect();
             assert_eq!(got, want, "{text:?}");
         }
+    }
+
+    #[test]
+    fn query_vector_counts_tokens_without_stopwords() {
+        let mut want = vec![(token_id("rate"), 2.0), (token_id("limit"), 1.0)];
+        want.sort_by_key(|p| p.0);
+        assert_eq!(query_vector("What is the rate limit? rate"), want);
+        // Only stopwords: all the words stay.
+        assert_eq!(query_vector("what is").len(), 2);
     }
 
     #[test]

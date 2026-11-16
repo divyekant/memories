@@ -8,11 +8,13 @@ pub mod extract;
 pub mod healthcheck;
 pub mod keys;
 pub mod migrate;
+pub mod model;
+pub mod search;
 pub mod shell;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use axum::{
     Extension, Json, Router,
@@ -22,6 +24,7 @@ use axum::{
     middleware::from_fn_with_state,
     routing::{MethodFilter, get, on, patch, post},
 };
+use memories_engine::Engine;
 use memories_types::config;
 use serde_json::{Value, json};
 use tower_http::catch_panic::CatchPanicLayer;
@@ -82,6 +85,10 @@ pub struct AppState {
     pub failures: Failures,
     pub metrics: Metrics,
     pub trusted: TrustedProxies,
+    /// The store, embedder and catalog. Not set when `QDRANT_URL` is not set
+    /// (the routes that need them answer 503), or until the first-start
+    /// migration ends.
+    pub engine: OnceLock<Arc<Engine>>,
     /// True while the first-start migration runs: only `/health` answers.
     pub migrating: AtomicBool,
     pub extract: Extract,
@@ -93,7 +100,7 @@ impl AppState {
     pub fn new(cfg: &Config, keys: KeyStore, audit: Option<AuditLog>) -> Arc<Self> {
         let extract = Extract::open(&cfg.data_dir, ExtractConfig::default(), None, None)
             .expect("cannot open state.db");
-        Self::with_extract(cfg, keys, audit, extract)
+        Self::with_extract(cfg, keys, audit, extract, None)
     }
 
     pub fn with_extract(
@@ -101,6 +108,7 @@ impl AppState {
         keys: KeyStore,
         audit: Option<AuditLog>,
         extract: Extract,
+        engine: Option<Arc<Engine>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             api_key: cfg.api_key.clone(),
@@ -110,6 +118,7 @@ impl AppState {
             failures: Failures::default(),
             metrics: Metrics::new(cfg.metrics_latency_samples),
             trusted: TrustedProxies::parse(&cfg.forwarded_allow_ips),
+            engine: engine.map(OnceLock::from).unwrap_or_default(),
             migrating: AtomicBool::new(false),
             extract,
         })
@@ -128,6 +137,11 @@ const SERVED: &[(&str, &str)] = &[
     ("DELETE", "/api/keys/{key_id}"),
     ("GET", "/audit"),
     ("POST", "/audit/purge"),
+    ("POST", "/search"),
+    ("POST", "/search/batch"),
+    ("POST", "/search/explain"),
+    ("POST", "/search/evidence"),
+    ("POST", "/memory/is-novel"),
     ("POST", "/memory/extract"),
     ("GET", "/memory/extract/{job_id}"),
     ("GET", "/extract/status"),
@@ -153,6 +167,11 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/audit", get(admin::get_audit))
         .route("/audit/purge", post(admin::purge_audit))
+        .route("/search", post(search::search))
+        .route("/search/batch", post(search::search_batch))
+        .route("/search/explain", post(search::search_explain))
+        .route("/search/evidence", post(search::search_evidence))
+        .route("/memory/is-novel", post(search::is_novel))
         .route("/memory/extract", post(extract::enqueue))
         .route("/memory/extract/{job_id}", get(extract::get_job))
         .route("/extract/status", get(extract::status));

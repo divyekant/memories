@@ -116,6 +116,7 @@ fn state_with(
         KeyStore::open(&cfg.data_dir.join("keys.db")).unwrap(),
         audit,
         extract,
+        None,
     )
 }
 

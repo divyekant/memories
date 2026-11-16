@@ -1238,9 +1238,12 @@ dependencies = [
 name = "memories-engine"
 version = "6.0.0"
 dependencies = [
+ "memories-embed",
+ "memories-store",
  "memories-types",
  "regex",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
