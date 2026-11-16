@@ -219,7 +219,7 @@ def cmd_diff(a, b, mode="exact"):
         for d in diffs:
             pair = cases.get(d["name"])
             other = len(set(ids(pair[0])) ^ set(ids(pair[1]))) // 2 if pair else None
-            if pair and len(ids(pair[0])) == len(ids(pair[1])) and other is not None and other <= 1 \
+            if pair and ids(pair[0]) and len(ids(pair[0])) == len(ids(pair[1])) and other <= 1 \
                     and same_shared(*pair):
                 print(f"{d['name']}: {other} other ID (HNSW tolerance): {ids(pair[0])} / {ids(pair[1])}")
             else:
