@@ -52,6 +52,17 @@
   counter does not give an ID again, also after the delete of the highest ID.
   CI runs the tests against Qdrant 1.15.4. No change to the Python server or
   to a client. Details: `docs/decisions/2026-11-16-rust-record-store.md`.
+- **Rust `migrate` and `verify` commands (rewrite task P1-4).**
+  `memories-server migrate` copies the records of `metadata.json` into
+  `memories_v2`. It copies each vector from the old collection and embeds the
+  text again only when the vector is not there. It then runs `verify`, which
+  compares the count, each field of each record and a sample of the vectors.
+  The commands do not change `metadata.json`, `config.json` or the old
+  collection. At the first start, `serve` runs the migration and answers only
+  `GET /health` until it is done. If `metadata.json` changes after the
+  migration, the server does not start and names `migrate --merge`. No change
+  to the Python server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-migrate-verify.md`.
 - **Rank core of the Rust server (rewrite task P2-1).** The crate
   `memories-engine` has the rank rules of the search as pure functions: the
   fusion of the vector and keyword ranks, the weights, the threshold, the
@@ -65,7 +76,7 @@
   of `GET /health` for a request with the `API_KEY` value. Each route reads
   Qdrant with a get, a page, a count or a scroll, and the counts come from the
   source map of the engine. No route reads all records into memory. The parity
-  kit replays the 21 golden cases of these routes and sends 370 more read
+  kit replays the 20 golden cases of these routes and sends 371 more read
   requests to the Python server and the Rust server on the same data: all
   replies are equal. With 300,000 records, the memory of the process does not
   increase after 1,000 list requests. `python -m parity replay` gets

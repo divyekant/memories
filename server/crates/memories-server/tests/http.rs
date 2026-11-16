@@ -369,3 +369,27 @@ async fn head_is_405_except_on_starlette_routes() {
         StatusCode::OK
     );
 }
+
+#[tokio::test]
+async fn only_health_answers_while_the_server_migrates() {
+    let state = admin_state();
+    state
+        .migrating
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert_eq!(
+        send(&state, get("/health", None)).await.status,
+        StatusCode::OK
+    );
+    for path in ["/health/ready", "/api/keys/me", "/search"] {
+        let r = send(&state, get(path, Some(ADMIN))).await;
+        assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert!(r.json()["detail"].as_str().unwrap().contains("migrating"));
+    }
+    state
+        .migrating
+        .store(false, std::sync::atomic::Ordering::Release);
+    assert_eq!(
+        send(&state, get("/api/keys/me", Some(ADMIN))).await.status,
+        StatusCode::OK
+    );
+}

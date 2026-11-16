@@ -359,7 +359,7 @@ fn truthy(r: &Record, key: &str) -> bool {
 
 /// The reader of the engine, or the 503 reply of a server with no store.
 fn reader(state: &AppState) -> Result<Reader<'_>, Response> {
-    match state.engine.as_deref() {
+    match state.engine.get().map(|e| &**e) {
         Some(engine) => Ok(Reader::new(engine)),
         None => Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -565,7 +565,7 @@ fn store_times(engine: &Engine, data_dir: &FsPath) -> (Value, Value) {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or(Value::Null);
-    let get = |key: &str| match engine.state.meta(key) {
+    let get = |key: &str| match engine.state.get_meta(key) {
         Ok(Some(v)) => Value::String(v),
         _ => python.get(key).cloned().unwrap_or(Value::Null),
     };

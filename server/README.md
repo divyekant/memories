@@ -41,6 +41,13 @@ QDRANT_TEST_URL=http://127.0.0.1:6333 \
   cargo test --locked -p memories-store --test qdrant_store -- --ignored
 ```
 
+The migration tests (task P1-4) use the same Qdrant server:
+
+```bash
+QDRANT_TEST_URL=http://127.0.0.1:6333 \
+  cargo test --locked -p memories-server --test migrate -- --ignored
+```
+
 ## Run the server
 
 ```bash
@@ -50,6 +57,32 @@ curl http://localhost:8000/health
 
 The server reads the port from `--port` or from the environment variable
 `PORT`. The default is 8000.
+
+## Migrate the data of the Python server
+
+The server reads the records of the Python server from
+`$DATA_DIR/metadata.json` and writes them to the collection
+`<QDRANT_COLLECTION>_v2`. It never changes `metadata.json`, `config.json` or
+the old collection.
+
+- At the first start, `serve` runs the migration if `metadata.json` exists and
+  no migration has finished. During the migration, only `GET /health`
+  answers. The other routes give HTTP 503.
+- If the migration or the check fails, the server stops with a message.
+- If `metadata.json` changed after the migration, the server does not start.
+  The message names the command `memories-server migrate --merge`.
+
+To run the steps by hand:
+
+```bash
+memories-server migrate            # copy the records, then verify
+memories-server migrate --shadow   # also replace changed and delete removed records
+memories-server verify --sample 1000
+```
+
+Each command writes a JSON report. `verify` gives exit code 1 if a count, a
+field or a sampled vector is different. Keep `state.db` on the data volume:
+it records the finished migration.
 
 ## Configuration
 

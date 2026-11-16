@@ -16,14 +16,14 @@ server v5.19.0:
 
 1. A Python server runs the golden cases before `usage-headers-search`, and
    `usage-headers-add`. This writes the seed corpus.
-2. The test loader `memories-server/examples/load_metadata.rs` copies
+2. `memories-server migrate` (task P1-4) copies
    `metadata.json` into Qdrant. The dense vectors come from the Rust embedder.
 3. The Rust server replays the 25 cases of `parity/golden/search/routes.ndjson`.
 
 Result on 2026-11-16: 0 of 25 cases differ.
 
 Search p95 on the seed corpus (246 records, 200 searches, `k` = 10, hybrid
-false, debug build, local Qdrant 1.15.4): p50 5.9 ms, p95 8.9 ms.
+false, debug build, local Qdrant 1.15.4): p50 5.9 ms, p95 8.9 ms and 10.6 ms in two runs.
 
 Two more golden files check parts of the routes in `cargo test`:
 

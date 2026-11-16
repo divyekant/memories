@@ -160,7 +160,9 @@ impl Engine {
             ) {
                 continue;
             }
-            let similarity = f64::from(score);
+            // Python reads the score from the REST JSON, which holds the
+            // shortest f32 text (0.88, not 0.8799999952316284).
+            let similarity: f64 = score.to_string().parse().unwrap_or(f64::from(score));
             if args.threshold.is_some_and(|t| similarity < t) {
                 continue;
             }
@@ -210,6 +212,11 @@ impl Engine {
             .into_iter()
             .map(|(r, s)| (r, f64::from(s)))
             .collect();
+        // Same rule as the vector hits: a point with no catalog entry is not shown.
+        {
+            let catalog = self.catalog();
+            hits.retain(|h| catalog.contains(as_id(&h.0)));
+        }
         hits.sort_by_key(|h| h.0.id);
         Ok(hits)
     }

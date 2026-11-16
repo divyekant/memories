@@ -64,14 +64,16 @@ reinforcement, as the Python server shows its in-memory value.
 ## Tests
 
 - `server/scripts/parity_reads.sh`: the Python server runs the golden cases
-  up to `stats`, the loader of task P2-2 (`load_metadata`) copies
-  `metadata.json` into the Rust collection,
-  and the Rust server replays the 21 read cases. Then the Python server
-  starts again on the same data, and `server/scripts/parity_reads_ab.py`
-  sends 370 more read requests to both servers (links in each direction,
-  four keys with a managed admin key, path ID forms, pages, filters, the 422
-  replies). Zero differences is the pass
-  condition. A changed link type rule in the Rust code makes the check fail.
+  up to `stats`, `memories-server migrate` (task P1-4) copies
+  `metadata.json` into the Rust collection, and the Rust server replays 20
+  read cases. The case `health-full` is left out, because task P4-1 adds the
+  extract queue fields to the full body. Then the Python server starts again
+  on the same data, and `server/scripts/parity_reads_ab.py` sends 371 more
+  read requests to both servers (links in each direction, four keys with a
+  managed admin key, path ID forms, pages, filters, the 422 replies, and the
+  full `/health` body without the extract queue fields). Zero differences is
+  the pass condition. A changed link type rule or key scope rule in the Rust
+  code makes the check fail.
 - `server/scripts/list_memory_check.sh`: 300,000 synthetic records, 200
   warm-up list requests, then 1,000 list requests with random offsets, limits
   up to 5,000 and source filters. The check fails if the resident memory of

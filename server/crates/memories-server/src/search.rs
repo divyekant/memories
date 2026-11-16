@@ -229,7 +229,7 @@ impl SearchBody {
 }
 
 fn engine(state: &AppState) -> Result<&Arc<Engine>, Response> {
-    state.engine.as_ref().ok_or_else(|| {
+    state.engine.get().ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "Memory engine not available: QDRANT_URL is not set",
@@ -291,8 +291,17 @@ async fn search_one(
 ) -> Result<Value, Response> {
     tracing::info!(query = %body.query.chars().take(80).collect::<String>(), k = body.k, hybrid = body.hybrid, "search");
     body.apply_intent()?;
+    search_body(state, auth, &body).await
+}
+
+/// The part of `/search` after the intent step.
+async fn search_body(
+    state: &AppState,
+    auth: &AuthContext,
+    body: &SearchBody,
+) -> Result<Value, Response> {
     let engine = engine(state)?;
-    let results = filter_and_annotate(auth, run_search(engine, &body, "search").await?);
+    let results = filter_and_annotate(auth, run_search(engine, body, "search").await?);
     // shortcut: usage.db rows (retrievals, graph and temporal counts) come with task P5-1.
     Ok(json!({"query": body.query, "count": results.len(), "results": results}))
 }
@@ -421,21 +430,38 @@ pub async fn search_batch(
     for b in &bodies {
         b.check_scope(&auth).map_err(IntoResponse::into_response)?;
     }
+    // Python order: each item takes a permit, then runs its intent step at
+    // once, then waits on its search. The reply carries the first error in
+    // time, so the results come back over a channel as each search ends.
     let limit = Arc::new(Semaphore::new(BATCH_LIMIT));
-    let tasks: Vec<_> = bodies
-        .into_iter()
-        .map(|b| {
-            let (state, auth, limit) = (state.clone(), auth.clone(), limit.clone());
-            tokio::spawn(async move {
-                let _permit = limit.acquire_owned().await.expect("semaphore");
-                search_one(&state, &auth, b).await
-            })
-        })
-        .collect();
-    let mut outputs = Vec::with_capacity(tasks.len());
-    for t in tasks {
-        outputs.push(t.await.map_err(|_| internal_error())??);
+    let total = bodies.len();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut outputs: Vec<Option<Value>> = vec![None; total];
+    let mut take = |(i, r): (usize, Result<Value, Response>)| -> Result<(), Response> {
+        outputs[i] = Some(r?);
+        Ok(())
+    };
+    for (i, mut b) in bodies.into_iter().enumerate() {
+        let permit = limit.clone().acquire_owned().await.expect("semaphore");
+        while let Ok(done) = rx.try_recv() {
+            take(done)?;
+        }
+        b.apply_intent()?;
+        let (state, auth, tx) = (state.clone(), auth.clone(), tx.clone());
+        tokio::spawn(async move {
+            let r = search_body(&state, &auth, &b).await;
+            drop(permit);
+            let _ = tx.send((i, r));
+        });
     }
+    drop(tx);
+    while let Some(done) = rx.recv().await {
+        take(done)?;
+    }
+    let outputs: Vec<Value> = outputs
+        .into_iter()
+        .map(|o| o.ok_or_else(internal_error))
+        .collect::<Result<_, _>>()?;
     Ok(Json(json!({"count": outputs.len(), "results": outputs})))
 }
 

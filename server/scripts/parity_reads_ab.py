@@ -62,6 +62,7 @@ def requests(records, keys):
         ]
     out.append(("GET", "/health", None, None))
     out.append(("GET", "/health", ro, None))
+    out.append(("GET", "/health", admin, None))
     return out
 
 
@@ -88,7 +89,9 @@ def main(meta_path, vars_path, py_url, rs_url):
                 r = c.request(method, path, headers=headers, json=body)
                 b = r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text
                 if path == "/health" or path == "/stats":
-                    b = {k: v for k, v in b.items() if k != "version"} if isinstance(b, dict) else b
+                    # The extract queue fields of /health are a Rust addition (task P4-1).
+                    drop = {"version", "extract_queue_depth", "extract_oldest_job_age_sec"}
+                    b = {k: v for k, v in b.items() if k not in drop} if isinstance(b, dict) else b
                 replies.append((r.status_code, kit.normalize(b)))
             problems = kit.diff_values(replies[0], replies[1])
             if problems:

@@ -4,20 +4,21 @@
 #
 # 1. The Python server runs the golden cases before `stats` (the seed corpus,
 #    the keys and the usage cases) and saves the variables of the run.
-# 2. The loader of task P2-2 (example load_metadata) copies metadata.json of
+# 2. `memories-server migrate` (task P1-4) copies metadata.json of
 #    the Python server into the collection of the Rust server.
 # 3. The Rust server opens the same DATA_DIR (keys.db, config.json) and runs
 #    the read cases.
+#    The case health-full is left out: task P4-1 adds the extract queue
+#    fields. parity_reads_ab.py compares the other fields of the full body.
 # 4. The Python server starts again on the same data. Both servers get more
 #    read requests (parity_reads_ab.py), and the replies must be equal.
 #
 # Usage, from the repository root:
-#   server/scripts/parity_reads.sh <rust binary> <load_metadata binary>
+#   server/scripts/parity_reads.sh <rust binary>
 # Needs the Python environment in .venv (uv sync --frozen) and a Qdrant server
 # at QDRANT_URL (default http://127.0.0.1:6333).
 set -euo pipefail
 rust_bin="$(realpath "$1")"
-loader="$(realpath "$2")"
 cd "$(dirname "$0")/../.."
 work="$(mktemp -d)"
 key="parity-admin-key"
@@ -48,7 +49,7 @@ wait_up() {
   return 1
 }
 
-cases="memory-404,stats,health-full,count-all,count-source,count-boundary,count-ro-scope,list-page,list-source"
+cases="memory-404,stats,count-all,count-source,count-boundary,count-ro-scope,list-page,list-source"
 cases="$cases,list-pinned,list-ro-scope,list-422,folders,folders-ro,memory-get,memory-get-ro-403"
 cases="$cases,memory-get-batch-string-ids,memory-get-batch-str,links-out,links-in,conflicts"
 
@@ -74,7 +75,8 @@ wait "$pid" || true
 pid=""
 
 # 2. metadata.json into the collection of the Rust server.
-QDRANT_URL="$qdrant_url" QDRANT_COLLECTION="$collection" "$loader" "$work/data/metadata.json" > "$work/loader.log" 2>&1
+QDRANT_URL="$qdrant_url" QDRANT_COLLECTION="$collection" DATA_DIR="$work/data" \
+  "$rust_bin" migrate > "$work/migrate.log" 2>&1
 
 # 3. The read cases on the Rust server.
 API_KEY="$key" DATA_DIR="$work/data" AUDIT_LOG=true USAGE_TRACKING=true \

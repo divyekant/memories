@@ -4,19 +4,18 @@
 #
 # 1. The Python server runs the golden cases before `usage-headers-search`,
 #    and `usage-headers-add`. This writes the seed corpus to metadata.json.
-# 2. The test loader copies metadata.json into Qdrant (dense vectors from the
-#    Rust embedder, and keyword vectors).
+# 2. `memories-server migrate` copies metadata.json into memories_v2 (dense
+#    vectors from the Rust embedder, and keyword vectors).
 # 3. The Rust server opens the same DATA_DIR and Qdrant, and replays
 #    parity/golden/search/routes.ndjson.
 # 4. The script prints the p95 of POST /search on the seed corpus.
 #
 # Usage, from the repository root:
-#   QDRANT_URL=http://127.0.0.1:6333 server/scripts/parity_search.sh <rust binary> <load_metadata binary>
+#   QDRANT_URL=http://127.0.0.1:6333 server/scripts/parity_search.sh <rust binary>
 # Needs the Python environment in .venv (uv sync --frozen), a Qdrant server
-# and ORT_DYLIB_PATH. The loader deletes the collection memories_v2 first.
+# with no collection memories_v2, and ORT_DYLIB_PATH.
 set -euo pipefail
 rust_bin="$(realpath "$1")"
-loader_bin="$(realpath "$2")"
 : "${QDRANT_URL:?set QDRANT_URL}"
 cd "$(dirname "$0")/../.."
 work="$(mktemp -d)"
@@ -65,7 +64,7 @@ wait "$pid" || true
 pid=""
 
 # 2. The records into Qdrant.
-"$loader_bin" "$work/data/metadata.json" > "$work/loader.log" 2>&1
+DATA_DIR="$work/data" "$rust_bin" migrate > "$work/migrate.log" 2>&1
 
 # 3. The search cases on the Rust server.
 API_KEY="$key" DATA_DIR="$work/data" "$rust_bin" serve --port "$rs_port" >> "$work/rust.log" 2>&1 &

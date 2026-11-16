@@ -1,5 +1,5 @@
-//! `state.db`: the SQLite file of the Rust server. It holds the ID counter and
-//! the `meta` values (for example `created_at` and `last_updated` of `/stats`).
+//! `state.db`: the SQLite file of the Rust server. It holds the ID counter
+//! and named values (`meta`), for example the state of the migration.
 //!
 //! The counter only goes up. An ID that the counter gave out is not given out
 //! again: not after a restart, not after a delete of the highest ID, and not
@@ -15,11 +15,15 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 const COUNTER: &str = "memory_id";
+const DOC_LEN_SUM: &str = "doc_len_sum";
+const DOC_COUNT: &str = "doc_count";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
     #[error("state.db: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("state.db task failed: {0}")]
+    Task(String),
     #[error("the ID counter cannot give {count} more IDs after {next}")]
     Exhausted { next: u64, count: u64 },
 }
@@ -40,7 +44,7 @@ impl StateDb {
                  next INTEGER NOT NULL CHECK (next >= 0)
              );
              CREATE TABLE IF NOT EXISTS meta (
-                 key TEXT PRIMARY KEY,
+                 name TEXT PRIMARY KEY,
                  value TEXT NOT NULL
              )",
         )?;
@@ -101,23 +105,6 @@ impl StateDb {
         })
     }
 
-    pub fn meta(&self, key: &str) -> Result<Option<String>, StateError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
-            .optional()?)
-    }
-
-    pub fn set_meta(&self, key: &str, value: &str) -> Result<(), StateError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2)
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [key, value],
-        )?;
-        Ok(())
-    }
-
     /// The next ID that `reserve_ids` gives.
     pub fn next_id(&self) -> Result<u64, StateError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -129,6 +116,46 @@ impl StateDb {
             )
             .optional()?;
         Ok(next.unwrap_or(0) as u64)
+    }
+
+    pub fn get_meta(&self, name: &str) -> Result<Option<String>, StateError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(conn
+            .query_row("SELECT value FROM meta WHERE name = ?1", [name], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    /// The sum of the keyword document lengths and the record count (decision
+    /// P0-2). (0, 0) before the first write.
+    pub fn doc_lengths(&self) -> Result<(u64, u64), StateError> {
+        let get = |n| -> Result<u64, StateError> {
+            Ok(self.get_meta(n)?.and_then(|v| v.parse().ok()).unwrap_or(0))
+        };
+        Ok((get(DOC_LEN_SUM)?, get(DOC_COUNT)?))
+    }
+
+    pub fn set_doc_lengths(&self, sum: u64, count: u64) -> Result<(), StateError> {
+        self.set_meta(&[
+            (DOC_LEN_SUM, &sum.to_string()),
+            (DOC_COUNT, &count.to_string()),
+        ])
+    }
+
+    /// Write all `values` in one transaction.
+    pub fn set_meta(&self, values: &[(&str, &str)]) -> Result<(), StateError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for (name, value) in values {
+            tx.execute(
+                "INSERT INTO meta (name, value) VALUES (?1, ?2)
+                 ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+                [name, value],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 }
 
@@ -174,17 +201,16 @@ mod tests {
     fn meta_values_stay_after_a_restart() {
         let dir = TempDir::new("meta");
         let db = StateDb::open(&dir.db()).unwrap();
-        assert_eq!(db.meta("last_updated").unwrap(), None);
-        db.set_meta("last_updated", "2026-11-16T00:00:00+00:00")
-            .unwrap();
-        db.set_meta("last_updated", "2026-11-17T00:00:00+00:00")
-            .unwrap();
+        assert_eq!(db.get_meta("a").unwrap(), None);
+        db.set_meta(&[("a", "1"), ("b", "2")]).unwrap();
+        db.set_meta(&[("a", "3")]).unwrap();
         drop(db);
         let db = StateDb::open(&dir.db()).unwrap();
-        assert_eq!(
-            db.meta("last_updated").unwrap().as_deref(),
-            Some("2026-11-17T00:00:00+00:00")
-        );
+        assert_eq!(db.get_meta("a").unwrap().as_deref(), Some("3"));
+        assert_eq!(db.get_meta("b").unwrap().as_deref(), Some("2"));
+        assert_eq!(db.doc_lengths().unwrap(), (0, 0));
+        db.set_doc_lengths(30, 4).unwrap();
+        assert_eq!(db.doc_lengths().unwrap(), (30, 4));
     }
 
     #[test]
