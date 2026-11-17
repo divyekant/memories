@@ -268,8 +268,8 @@ impl Engine {
             } else {
                 Default::default()
             };
-            let filtered = (graph && args.scope.hides_only_archived())
-                .then(|| catalog.unarchived_adjacency());
+            let filtered =
+                (graph && args.scope.hides_only_archived()).then(|| catalog.unarchived_adjacency());
             let record = |id: i64| -> Option<RecordFields<'_>> {
                 match records.get(&id) {
                     Some(r) => Some(rank_fields(r, None)),

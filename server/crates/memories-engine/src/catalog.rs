@@ -277,7 +277,9 @@ mod tests {
     fn kept_graphs_match_a_fresh_build() {
         let mut seed: u64 = 7;
         let mut next = |n: u64| {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (seed >> 33) % n
         };
         let mut c = Catalog::default();
@@ -288,18 +290,28 @@ mod tests {
             } else {
                 let links: Vec<_> = (0..next(3))
                     .map(|_| {
-                        let kind = if next(4) == 0 { "supersedes" } else { "related_to" };
+                        let kind = if next(4) == 0 {
+                            "supersedes"
+                        } else {
+                            "related_to"
+                        };
                         json!({"to_id": 1 + next(45), "type": kind})
                     })
                     .collect();
-                c.put(&record(json!({"id": id, "text": "t", "archived": next(4) == 0, "links": links})));
+                c.put(&record(
+                    json!({"id": id, "text": "t", "archived": next(4) == 0, "links": links}),
+                ));
             }
             if next(3) == 0 {
                 continue; // no read: the next write starts from a kept graph or none
             }
             let links: Vec<(i64, i64, String)> = c
                 .iter()
-                .flat_map(|(from, e)| e.links.iter().map(move |(to, k)| (from as i64, *to, k.clone())))
+                .flat_map(|(from, e)| {
+                    e.links
+                        .iter()
+                        .map(move |(to, k)| (from as i64, *to, k.clone()))
+                })
                 .collect();
             let fresh = build_adjacency(links.iter().map(|(a, b, k)| (*a, *b, k.as_str())), |id| {
                 c.contains(id)
