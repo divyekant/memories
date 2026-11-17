@@ -154,6 +154,7 @@ pub fn graph_expand(
     graph_weight: f64,
     full_adj: &Adjacency,
     visible: Option<&dyn Fn(i64) -> bool>,
+    filtered: Option<&Adjacency>,
     params: &GraphParams,
 ) -> (OrderedMap<GraphCandidate>, GraphInfo) {
     let mut info = GraphInfo {
@@ -168,7 +169,10 @@ pub fn graph_expand(
     if direct.is_empty() {
         return (candidates, info);
     }
-    let adj = filter_adjacency(full_adj, visible);
+    let adj = match filtered {
+        Some(f) => Cow::Borrowed(f),
+        None => filter_adjacency(full_adj, visible),
+    };
     let edges = |a: &Adjacency| a.iter().map(|(_, n)| n.len()).sum::<usize>() / 2;
     let unfiltered = edges(full_adj);
     info.neighbors_found = unfiltered;

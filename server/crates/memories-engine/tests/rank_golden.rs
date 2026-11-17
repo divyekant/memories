@@ -382,6 +382,7 @@ fn hybrid_case(c: &Value) -> Result<(), String> {
             None
         },
         adjacency: &adjacency,
+        filtered_adjacency: None,
         graph_params,
         now: PyDateTime::fromisoformat(now_text).unwrap(),
     };
