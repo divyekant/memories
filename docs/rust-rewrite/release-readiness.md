@@ -17,6 +17,7 @@ image, no marketplace pin.
 | Compose files build the Rust server | `docker-compose.yml`, `docker-compose.snippet.yml` |
 | Image workflow | `.github/workflows/publish-image.yml` |
 | Release notes | `CHANGELOG.md`, section `[6.0.0]` |
+| Extract keeps a fact whose AUDN target belongs to another source | PR #165, merged into `rust-rewrite`. Production runs it only after a deploy of an image that includes it. |
 | Upgrade, rollback and release runbook | `docs/rust-rewrite/cutover-runbook.md` |
 | Configuration reference | `docs/rust-rewrite/configuration.md` |
 | README, Getting Started, deployment, architecture, `server/README.md`, `CLAUDE.md` | Updated for v6 |
@@ -49,6 +50,5 @@ image, no marketplace pin.
 | `EXTRACT_TRAINING_DATA_DIR` is not used | No training pairs while on Rust. Port only if fine-tuning restarts. |
 | No latency view in the web UI | Pending: a separate thread builds a latency and health dashboard. `GET /metrics` already has avg, p95 and max latency for each route. |
 | No cloud sync, no OpenAI embedder, no `chatgpt-subscription` provider | Port only if an install needs one. |
-| Extract drops a fact whose AUDN target belongs to another source | Pending: PR #165 (cross-source ADD fix). Same rule as v5, so not a regression. |
 | The new `publish-image.yml` has not run | It can run only after it is on `main`. The first run is release step 1. |
 | Droplet allocator variables | The `.rust` override removes `MALLOC_MMAP_THRESHOLD_` and `MALLOC_TRIM_THRESHOLD_` in its entrypoint. At the release, remove them from `.env` too. |

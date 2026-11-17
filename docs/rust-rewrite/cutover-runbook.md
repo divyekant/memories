@@ -149,7 +149,6 @@ If v6.0.0 fails after the release, withdraw it:
 | No training data | `EXTRACT_TRAINING_DATA_DIR` is not used. | None. |
 | Project promotion only in the `off` mode | `PROJECT_PROMOTION_MODE=shadow` or `auto` stops the start. | Production uses `off`. |
 | No `/docs` page | FastAPI served Swagger UI at `/docs`. Rust serves only `/openapi.json`. | Open `/openapi.json` in an OpenAPI viewer. |
-| Extract drops a fact whose AUDN target belongs to another source | The log says "old_id not authorized". Python has the same rule. | None. Not a regression. |
 | Many nonstop writers | With 10 or more nonstop writers, the add p95 is 0.8 to 1.4 s. All writes use one write lock, and the ONNX embedder uses most of the CPU. | Real traffic is a few requests each second. |
 
 ## 5. Production droplet record
