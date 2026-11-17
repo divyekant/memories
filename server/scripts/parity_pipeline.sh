@@ -41,7 +41,8 @@ trap cleanup EXIT
 export API_KEY="parity-admin-key" DATA_DIR="$work/data" AUDIT_LOG=true \
   EXTRACT_PROVIDER=openai OPENAI_API_KEY=sk-parity \
   OPENAI_BASE_URL="http://127.0.0.1:$provider_port/v1" EXTRACT_MODEL=gpt-4o-mini \
-  EXTRACT_MAX_INFLIGHT=1 EXTRACT_FALLBACK_ADD=true MEMORIES_PERSIST_DELAY_SEC=0
+  EXTRACT_MAX_INFLIGHT=1 EXTRACT_FALLBACK_ADD=true MEMORIES_PERSIST_DELAY_SEC=0 \
+  EXTRACT_FOREIGN_TARGET_ADD=false
 mkdir -p "$DATA_DIR"
 if [ "$target" = python ]; then
   QDRANT_URL="" WORKSPACE_DIR="$PWD/parity/workspace" MAINTENANCE_ENABLED=false \

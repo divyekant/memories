@@ -1046,6 +1046,8 @@ pub async fn commit(
         document_at: None,
         gate: false,
         threshold: 0.0,
+        // The caller approved each action: keep the Python error.
+        foreign_add: false,
     };
     match exec.run(&approved, &facts).await {
         Ok(r) => Ok(Json(r)),

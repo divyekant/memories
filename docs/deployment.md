@@ -55,6 +55,7 @@ The recommended deployment uses Docker Compose with OrbStack or Docker Desktop.
 | `EMBEDDER_AUTO_RELOAD_ENABLED` | `true` | Auto-reload embedder on model change |
 | `MAX_EXTRACT_MESSAGE_CHARS` | `120000` | Max chars accepted for extraction |
 | `EXTRACT_MAX_INFLIGHT` | `2` | Max concurrent extraction jobs |
+| `EXTRACT_FOREIGN_TARGET_ADD` | `true` (Rust server only) | If an extract decision updates or conflicts with a memory of another source, add the fact as a new memory (`fallback_add`, with `foreign_old_id`). Set `false` to get the error action of the Python server |
 | `EXTRACT_NOVELTY_GATE` | `1` (on) | Gate extraction ADDs through an explicit novelty check; near-duplicates become noops. Set `0` to disable |
 | `EXTRACT_NOVELTY_THRESHOLD` | `0.85` | Cosine similarity above which an extraction ADD is gated as a near-duplicate |
 | `AUDIT_LOG` | — | Path to audit log file (optional) |
