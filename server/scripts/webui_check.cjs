@@ -10,7 +10,7 @@
 // at CHROME_PATH.
 const { chromium } = require("playwright");
 
-const PAGES = ["dashboard", "memories", "extractions", "keys", "health", "settings"];
+const PAGES = ["dashboard", "memories", "extractions", "keys", "health", "performance", "settings"];
 
 async function main() {
   const [base, key] = process.argv.slice(2);

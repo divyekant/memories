@@ -28,6 +28,8 @@ pub fn config(api_key: &str, rate_limit: i64) -> Config {
         usage_tracking: false,
         metrics_trend_samples: 120,
         ui_dir: "/nonexistent-ui".into(),
+        metrics_history_sec: 60,
+        metrics_history_days: 14,
     }
 }
 

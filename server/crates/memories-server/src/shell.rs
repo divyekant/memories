@@ -115,6 +115,22 @@ struct Bucket {
     max_latency_ms: f64,
     last_status_code: u16,
     samples: VecDeque<f64>,
+    /// The requests since the last [`Metrics::take_window`] (the history sampler).
+    win_count: u64,
+    win_errors: u64,
+    win: Vec<f64>,
+}
+
+/// The latencies that one window keeps for each route.
+const WINDOW_MAX: usize = 2048;
+
+/// The requests of one route in one window of the history sampler.
+pub struct Window {
+    pub route: String,
+    pub count: u64,
+    pub errors: u64,
+    /// Sorted latencies in ms; at most [`WINDOW_MAX`].
+    pub latencies: Vec<f64>,
 }
 
 /// Request counts and latency for each `METHOD /path` (`_record_request_metric`).
@@ -141,7 +157,15 @@ pub fn normalize_metrics_path(path: &str) -> String {
         .join("/")
 }
 
-fn round2(v: f64) -> f64 {
+/// The nearest-rank percentile of sorted values (`_latency_percentile`); 0 for none.
+pub fn percentile(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    sorted[((q * sorted.len() as f64).ceil() as usize).max(1) - 1]
+}
+
+pub fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
@@ -168,6 +192,40 @@ impl Metrics {
             b.samples.pop_front();
         }
         b.samples.push_back(latency_ms);
+        b.win_count += 1;
+        if status >= 400 {
+            b.win_errors += 1;
+        }
+        // shortcut: past WINDOW_MAX requests in one window, new samples overwrite
+        // slots in turn, so percentiles are approximate; use a reservoir if that matters.
+        if b.win.len() < WINDOW_MAX {
+            b.win.push(latency_ms);
+        } else {
+            let i = (b.win_count as usize) % WINDOW_MAX;
+            b.win[i] = latency_ms;
+        }
+    }
+
+    /// The requests of each route since the last call, and a new window.
+    pub fn take_window(&self) -> Vec<Window> {
+        let mut routes = self.routes.lock().unwrap();
+        routes
+            .iter_mut()
+            .filter(|(_, b)| b.win_count > 0)
+            .map(|(k, b)| {
+                let mut latencies = std::mem::take(&mut b.win);
+                latencies.sort_by(f64::total_cmp);
+                let w = Window {
+                    route: k.clone(),
+                    count: b.win_count,
+                    errors: b.win_errors,
+                    latencies,
+                };
+                b.win_count = 0;
+                b.win_errors = 0;
+                w
+            })
+            .collect()
     }
 
     /// The `requests` and `routes` parts of the `GET /metrics` body.
@@ -180,11 +238,7 @@ impl Metrics {
             errors += b.error_count;
             let mut s: Vec<f64> = b.samples.iter().copied().collect();
             s.sort_by(f64::total_cmp);
-            let p95 = if s.is_empty() {
-                0.0
-            } else {
-                s[((0.95 * s.len() as f64).ceil() as usize).max(1) - 1]
-            };
+            let p95 = percentile(&s, 0.95);
             let pct = |e: u64, c: u64| {
                 if c == 0 {
                     0.0
@@ -562,6 +616,24 @@ mod tests {
         assert_eq!(r["max_latency_ms"], 30.0);
         assert_eq!(r["last_status_code"], 200);
         assert_eq!(s["requests"]["total_count"], 3);
+    }
+
+    #[test]
+    fn metrics_window() {
+        let m = Metrics::new(2);
+        m.record("GET /x", 30.0, 500);
+        m.record("GET /x", 10.0, 200);
+        m.record("GET /y", 5.0, 200);
+        let mut w = m.take_window();
+        w.sort_by(|a, b| a.route.cmp(&b.route));
+        assert_eq!(w.len(), 2);
+        assert_eq!((w[0].count, w[0].errors), (2, 1));
+        assert_eq!(w[0].latencies, [10.0, 30.0]);
+        assert!(m.take_window().is_empty()); // a new window
+        m.record("GET /x", 7.0, 200);
+        let w = m.take_window();
+        assert_eq!((w.len(), w[0].count, w[0].errors), (1, 1, 0));
+        assert_eq!(m.snapshot()["routes"]["GET /x"]["count"], 3); // totals stay
     }
 
     #[test]

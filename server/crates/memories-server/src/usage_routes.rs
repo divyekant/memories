@@ -34,6 +34,7 @@ pub fn routes(r: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     r.route("/usage", get(usage))
         .route("/metrics", get(metrics))
         .route("/metrics/prometheus", get(prometheus))
+        .route("/metrics/history", get(history))
         .route("/metrics/search-quality", get(search_quality))
         .route("/metrics/extraction-quality", get(extraction_quality))
         .route("/metrics/quality-summary", get(quality_summary))
@@ -401,7 +402,7 @@ async fn stale_memories(
 // ---- /metrics --------------------------------------------------------------------
 
 /// `_read_process_memory_kb`: fields of `/proc/self/status`, 0 if not there.
-fn process_memory_kb() -> Value {
+pub(crate) fn process_memory_kb() -> Value {
     let fields = [
         ("VmRSS", "rss_kb"),
         ("RssAnon", "rss_anon_kb"),
@@ -504,6 +505,50 @@ async fn metrics(
 ) -> Reply {
     admin(&auth)?;
     snapshot(&state, true).await.map(Json)
+}
+
+/// `GET /metrics/history?hours=24` (new route, admin only): the samples of
+/// `metrics.db` for the last `hours` (1 to 24 * `METRICS_HISTORY_DAYS`).
+async fn history(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Query(q): Q,
+) -> Reply {
+    admin(&auth)?;
+    let started_at = crate::history::now_sec() - state.started.elapsed().as_secs() as i64;
+    let Some(h) = &state.history else {
+        return Ok(Json(json!({
+            "enabled": false,
+            "version": crate::VERSION,
+            "started_at": started_at,
+        })));
+    };
+    let mut errors = Vec::new();
+    let hours = query_int(
+        &q,
+        "hours",
+        24,
+        1,
+        Some(24 * h.retain_days as i64),
+        &mut errors,
+    );
+    checked(errors)?;
+    let to = crate::history::now_sec() + 1;
+    let st = state.clone();
+    let mut body = tokio::task::spawn_blocking(move || {
+        st.history.as_ref().unwrap().query(to - hours * 3600, to)
+    })
+    .await
+    .map_err(|_| internal_error())?
+    .map_err(|e| {
+        tracing::error!(error = %e, "metrics history read failed");
+        internal_error()
+    })?;
+    body["enabled"] = json!(true);
+    body["version"] = json!(crate::VERSION);
+    body["started_at"] = json!(started_at);
+    body["retain_days"] = json!(h.retain_days);
+    Ok(Json(body))
 }
 
 /// A Prometheus label value: `\`, `"` and line ends need an escape.

@@ -148,6 +148,7 @@ async fn admin_routes_refuse_a_read_only_key() {
         "/usage",
         "/metrics",
         "/metrics/prometheus",
+        "/metrics/history",
         "/metrics/extraction-quality",
         "/metrics/quality-summary",
         "/metrics/failures",
@@ -344,4 +345,41 @@ async fn prometheus_text() {
         let v = line.rsplit(' ').next().unwrap();
         assert!(v.parse::<f64>().is_ok(), "{line}");
     }
+}
+
+#[tokio::test]
+async fn metrics_history_reads_the_samples() {
+    let st = state(false, false);
+    get(&st, "/usage", ADMIN).await;
+    let h = st.history.as_ref().unwrap();
+    let now = memories_server::history::now_sec();
+    let w = st.metrics.take_window();
+    let p = memories_server::history::Process {
+        rss_kb: 1000,
+        active: 0,
+        extract_depth: 0,
+        memories: 0,
+    };
+    h.write(now - 30, &p, &w).unwrap();
+    let (s, v) = get(&st, "/metrics/history?hours=1", ADMIN).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["enabled"], true);
+    assert_eq!(v["version"], memories_server::VERSION);
+    assert_eq!(v["process"][0]["rss_kb"], 1000);
+    assert_eq!(v["routes"]["GET /usage"]["count"], 1);
+    let (s, _) = get(&st, "/metrics/history?hours=0", ADMIN).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _) = get(&st, "/metrics/history?hours=337", ADMIN).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn metrics_history_off() {
+    let mut cfg = common::config(ADMIN, 50);
+    cfg.metrics_history_sec = 0;
+    let st = common::state(&cfg);
+    let (s, v) = get(&st, "/metrics/history", ADMIN).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["enabled"], false);
+    assert!(!cfg.data_dir.join("metrics.db").exists());
 }

@@ -76,6 +76,16 @@ Python v5.19.0 against Rust 6.0.0:
 ### Rewrite task log
 
 #### Added
+- **Performance page and metrics history (Rust server).** The web UI has a
+  new page, Performance. It shows latency (p50, p95, max) for each route,
+  requests per minute, error rate, process memory (RSS), uptime, server
+  starts, in-flight requests and the extract queue, for 1 hour to 14 days.
+  The Rust server writes a sample each minute to `metrics.db`, so the
+  history continues after a restart. New admin route:
+  `GET /metrics/history?hours=N`. New settings:
+  `METRICS_HISTORY_INTERVAL_SEC` (default 60, 0 is off) and
+  `METRICS_HISTORY_DAYS` (default 14). `GET /metrics` does not change.
+  Details: `docs/rust-rewrite/usage-metrics.md`.
 - **Rust extract jobs keep facts that Python loses.** If the model decides to
   update a memory of another source, or to mark a conflict with one, the
   Python server refuses the write and drops the fact. The Rust server adds the
