@@ -144,6 +144,8 @@ pub struct HybridInput<'a, 'r> {
     /// The scope test; `None` when no scope applies.
     pub visible: Option<&'a dyn Fn(i64) -> bool>,
     pub adjacency: &'a Adjacency,
+    /// `adjacency` already filtered by `visible`, when the caller keeps one.
+    pub filtered_adjacency: Option<&'a Adjacency>,
     pub graph_params: GraphParams,
     pub now: PyDateTime,
 }
@@ -261,6 +263,7 @@ pub fn hybrid_rank(input: &HybridInput) -> Ranking {
         w.graph,
         input.adjacency,
         input.visible,
+        input.filtered_adjacency,
         &input.graph_params,
     );
     Ranking {

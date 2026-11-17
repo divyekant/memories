@@ -105,6 +105,14 @@ impl Scope {
             || !self.include_archived
     }
 
+    /// `visible` is `!archived`: the scope hides archived records and nothing else.
+    pub fn hides_only_archived(&self) -> bool {
+        self.source_exact.is_none()
+            && self.prefix().is_none()
+            && self.allowed_prefixes.is_none()
+            && !self.include_archived
+    }
+
     /// `hybrid_search._visible` and the test of `_filter_adjacency`.
     pub fn visible(&self, source: &str, archived: bool) -> bool {
         self.source_exact.as_deref().is_none_or(|e| source == e)
