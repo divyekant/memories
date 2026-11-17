@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use memories_embed::EmbedConfig;
 use memories_engine::Engine;
+use memories_engine::policy::TrustedAuthorship;
 use memories_engine::rank::GraphParams;
 use memories_engine::writes::{NewMemory, Writer};
 use memories_server::pipeline::Exec;
@@ -130,7 +131,8 @@ async fn a_foreign_target_keeps_the_fact_as_a_new_memory() {
     );
     assert_eq!(
         (r["stored_count"].clone(), r["fallback_count"].clone()),
-        (json!(2), json!(2))
+        (json!(2), json!(0)),
+        "fallback_count stays the count of AUDN failures"
     );
     assert_eq!(r["updated_count"], 1);
     let old = w.get(other).await.unwrap();
@@ -139,6 +141,32 @@ async fn a_foreign_target_keeps_the_fact_as_a_new_memory() {
         Some("The other project deploys on Fridays.")
     );
     assert!(old.field("archived").is_none_or(|v| v != json!(true)));
+
+    // A project job: the policy check reads the fact text that the fallback
+    // writes, not a `new_text` with a credential of the other source.
+    let secret = add(&w, "The CI key is AKIAABCDEFGHIJKLMNOP.", "other/ci").await;
+    let author = TrustedAuthorship::principal("dk", "claude-code").unwrap();
+    let facts = vec![json!({"text": "CI keys rotate each month.", "category": "decision"})];
+    let decisions = actions(
+        json!([{"action": "UPDATE", "fact_index": 0, "old_id": secret,
+        "new_text": "The CI key is AKIAABCDEFGHIJKLMNOP. CI keys rotate each month."}]),
+    );
+    let project = |foreign_add| Exec {
+        source: "project/a/decisions",
+        trusted: Some(&author),
+        ..exec(foreign_add)
+    };
+    assert!(project(false).run(&decisions, &facts).await.is_err());
+    let r = project(true).run(&decisions, &facts).await.unwrap();
+    let a = &r["actions"][0];
+    assert_eq!(
+        (&a["action"], &a["foreign_old_id"]),
+        (&json!("fallback_add"), &json!(secret)),
+        "{r}"
+    );
+    let rec = w.get(a["id"].as_i64().unwrap()).await.unwrap();
+    assert_eq!(rec.text.as_deref(), Some("CI keys rotate each month."));
+    assert_eq!(rec.source.as_deref(), Some("project/a/decisions"));
 
     let _ = engine.store.delete_collection().await;
     let _ = std::fs::remove_dir_all(&dir);

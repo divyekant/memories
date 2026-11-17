@@ -384,19 +384,19 @@ impl Exec<'_> {
         Ok(Some(src))
     }
 
-    /// `old_id` is a record that [`Self::existing`] refuses for its source.
-    async fn foreign(&self, old_id: &Value) -> bool {
+    /// With [`Self::foreign_add`]: an UPDATE or CONFLICT whose `old_id` has
+    /// another source, which [`Self::existing`] refuses.
+    async fn foreign(&self, act: &str, old_id: &Value) -> bool {
+        if !self.foreign_add || !matches!(act, "UPDATE" | "CONFLICT") {
+            return false;
+        }
         let Some(id) = record_id(old_id) else {
             return false;
         };
-        match self.writer.get(id).await {
-            Ok(rec) => {
-                let src = source_of(&rec);
-                src != self.source
-                    || (self.allowed.is_some() && !source_matches_prefixes(&src, self.allowed))
-            }
-            Err(_) => false,
-        }
+        self.writer
+            .get(id)
+            .await
+            .is_ok_and(|rec| source_of(&rec) != self.source)
     }
 
     fn source_denied(&self, what: &str) -> Option<WriteError> {
@@ -416,8 +416,7 @@ impl Exec<'_> {
     ) -> Result<(), WriteError> {
         let old_id = get(action, "old_id");
         // Keep the fact text: `new_text` can hold the words of the other source.
-        let foreign =
-            self.foreign_add && matches!(act, "UPDATE" | "CONFLICT") && self.foreign(old_id).await;
+        let foreign = self.foreign(act, old_id).await;
         let act = if foreign { "FALLBACK_ADD" } else { act };
         match act {
             "ADD" | "FALLBACK_ADD" => {
@@ -451,7 +450,8 @@ impl Exec<'_> {
                 }
                 out.actions.push(a);
                 out.stored += 1;
-                if act == "FALLBACK_ADD" {
+                // `fallback_count` stays the count of AUDN failures.
+                if act == "FALLBACK_ADD" && !foreign {
                     out.fallback += 1;
                 }
             }
@@ -565,8 +565,11 @@ impl Exec<'_> {
                 Some(f) => py_str(f),
                 None => String::new(),
             };
+            // A foreign target writes the fact text, never `new_text`.
             let candidate = match (act.as_str(), action.get("new_text")) {
-                ("UPDATE", Some(t)) => as_text(t),
+                ("UPDATE", Some(t)) if !self.foreign(&act, get(action, "old_id")).await => {
+                    as_text(t)
+                }
                 _ => fact_text,
             };
             validate_project_write(&candidate, self.source, self.trusted)

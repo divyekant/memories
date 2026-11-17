@@ -1520,6 +1520,7 @@ Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough 
 | `EXTRACT_FALLBACK_MIN_FACT_CHARS` | `24` | Minimum candidate fact length for fallback |
 | `EXTRACT_FALLBACK_MAX_FACT_CHARS` | `280` | Maximum candidate fact length for fallback |
 | `EXTRACT_FALLBACK_NOVELTY_THRESHOLD` | `0.88` | Novelty threshold used by fallback add mode |
+| `EXTRACT_FOREIGN_TARGET_ADD` | `true` (Rust server only) | If an extract decision updates or conflicts with a memory of another source, add the fact as a new memory (`fallback_add`, with `foreign_old_id`). Set `false` to get the error action of the Python server |
 | `EXTRACT_QUEUE_MAX` | `EXTRACT_MAX_INFLIGHT * 20` | Maximum queued extraction jobs before backpressure (`429`) |
 | `EXTRACT_JOB_RETENTION_SEC` | `300` | How long completed/failed extraction jobs stay queryable |
 | `EXTRACT_JOBS_MAX` | `200` | Hard cap on stored extraction job records (finished jobs evicted first) |

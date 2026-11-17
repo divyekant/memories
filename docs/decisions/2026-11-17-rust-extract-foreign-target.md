@@ -18,7 +18,11 @@ as FALLBACK_ADD:
   `new_text`, because `new_text` can hold words of the other source.
 - The novelty gate applies, as for each add.
 - The result action is `fallback_add` with `foreign_old_id`. It counts in
-  `stored_count` and `fallback_count`.
+  `stored_count`, not in `fallback_count`. `fallback_count` stays the count
+  of AUDN failures, which the usage tables report as a quality signal.
+- The policy pre-check of the job reads the fact text for such a decision,
+  not `new_text`. A credential of the other source in `new_text` does not
+  stop the job.
 - The other memory does not change.
 
 Not changed:
