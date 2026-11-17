@@ -80,6 +80,12 @@ fn main() -> std::process::ExitCode {
     if argv0.is_some_and(|n| n.to_string_lossy().starts_with("python")) {
         return (memories_server::healthcheck::run(&args) as u8).into();
     }
+    if args.get(1).is_some_and(|a| a == "healthcheck") {
+        let url = args
+            .get(2)
+            .map_or(memories_server::healthcheck::DEFAULT_URL, String::as_str);
+        return (memories_server::healthcheck::check(url) as u8).into();
+    }
 
     tracing_subscriber::fmt()
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))

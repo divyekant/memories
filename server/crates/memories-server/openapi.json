@@ -2,7 +2,7 @@
  "openapi": "3.1.0",
  "info": {
   "title": "Memories API",
-  "version": "5.19.0"
+  "version": "6.0.0"
  },
  "paths": {
   "/events/stream": {

@@ -526,8 +526,9 @@ test_container_config.py::test_dockerfile_uses_first_run_model_cache_defaults	to
 test_container_config.py::test_dockerfile_copies_web_ui_assets	tool			tests a tool that stays after the cutover
 test_container_config.py::test_dockerfile_copies_evidence_packet_module	tool			tests a tool that stays after the cutover
 test_container_config.py::test_dockerfile_copies_project_memory_policy_module	tool			tests a tool that stays after the cutover
-test_container_config.py::test_compose_healthchecks_use_python_probe	tool			tests a tool that stays after the cutover
-test_container_config.py::test_compose_defaults_to_core_target	tool			tests a tool that stays after the cutover
+test_container_config.py::test_compose_healthchecks_use_rust_probe	tool			tests a tool that stays after the cutover
+test_container_config.py::test_standalone_compose_probe_works_on_both_images	tool			tests a tool that stays after the cutover
+test_container_config.py::test_compose_builds_rust_server	tool			tests a tool that stays after the cutover
 test_container_config.py::test_compose_sets_memory_and_allocator_guardrails	tool			tests a tool that stays after the cutover
 test_container_config.py::test_compose_supports_extraction_env_passthrough	tool			tests a tool that stays after the cutover
 test_deferred_persist.py::test_many_writes_make_few_saves	internals			calls Python code with no HTTP request: memory_engine.py

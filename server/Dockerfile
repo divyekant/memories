@@ -41,7 +41,7 @@ RUN --mount=from=ort,source=/ort.tgz,target=/tmp/ort.tgz \
 COPY --from=build /memories-server /usr/local/bin/memories-server
 # The web UI files, from the build context "webui" (docker build --build-context webui=webui server).
 COPY --from=webui . /app/webui
-# The compose files of current installs run "python -c ..." for the health check.
+# The compose files of older installs run "python -c ..." for the health check.
 RUN ln -s memories-server /usr/local/bin/python && \
     ln -s memories-server /usr/local/bin/python3
 
@@ -61,7 +61,7 @@ WORKDIR /data
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
-    CMD python -c "import sys,urllib.request; sys.exit(0 if 200 <= urllib.request.urlopen('http://localhost:8000/health', timeout=3).getcode() < 400 else 1)"
+    CMD ["memories-server", "healthcheck"]
 
 ENTRYPOINT ["memories-server"]
 CMD ["serve"]

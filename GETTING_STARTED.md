@@ -43,7 +43,9 @@ cd memories
 docker compose up -d
 ```
 
-(`docker-compose.yml` brings up Qdrant + the Memories service. `docker-compose.snippet.yml` is NOT standalone — it is a snippet to merge into an existing compose file.)
+(`docker-compose.yml` brings up Qdrant + the Memories service. The first start builds the v6 Rust server from `server/`; the build takes several minutes. `docker-compose.snippet.yml` is NOT standalone — it is a snippet to merge into an existing compose file.)
+
+If the data folder holds v5 data (`metadata.json`), the first start migrates it into the collection `memories_v2`. Only `/health` answers during the migration (about 1 minute for 93,000 memories). Read [the upgrade runbook](docs/rust-rewrite/cutover-runbook.md) before you upgrade a v5 install.
 
 #### Optional: Start with a vector cluster (N nodes)
 
@@ -80,7 +82,7 @@ docker compose up -d --build memories
 | Retrieval only (`EXTRACT_PROVIDER` unset) | Free | Recalls existing memories, does not learn new ones automatically |
 | Retrieval + fallback add (`EXTRACT_FALLBACK_ADD=true`) | Free | Recalls existing memories and stores a tiny set of high-confidence facts (add-only, no AUDN updates/deletes) when extraction is disabled or provider calls fail at runtime |
 | Ollama extraction (`EXTRACT_PROVIDER=ollama`) | Free | Full AUDN (`ADD/UPDATE/DELETE/NOOP`) via JSON-constrained local models |
-| ChatGPT Subscription (`EXTRACT_PROVIDER=chatgpt-subscription`) | Free (uses your subscription) | Full AUDN — requires one-time OAuth setup: `python -m memories auth chatgpt` |
+| ChatGPT Subscription (`EXTRACT_PROVIDER=chatgpt-subscription`) | Free (uses your subscription) | v5 only. The v6 server refuses this provider |
 | Anthropic/OpenAI extraction | Small API cost (~$0.001/turn typical) | Full AUDN (`ADD/UPDATE/DELETE/NOOP`) and better long-term memory quality |
 
 ## 4) Install integrations (recommended)
@@ -327,16 +329,13 @@ Expected:
 - `enabled: true` when extraction is configured
 - selected `provider` and `model`
 
-### Optional: verify embedder auto-reload guardrails
+### Optional: read the request latency
 
 ```bash
-curl -s http://localhost:8900/metrics | jq '.embedder_reload'
+curl -s -H "X-API-Key: $API_KEY" http://localhost:8900/metrics | jq '.routes'
 ```
 
-Expected (when enabled in compose env):
-- `enabled: true`
-- policy values under `policy`
-- runtime counters under `auto` and `manual`
+Each route shows `count`, `avg_latency_ms` and `max_latency_ms` since the last restart, and `p95_latency_ms` over the last `METRICS_LATENCY_SAMPLES` requests (default 200).
 
 ## 9) First memory smoke test
 

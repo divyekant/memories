@@ -189,8 +189,8 @@ KNOWN = {
     ("cli", "extract-status"): (("queue_max is 10,000 on the Rust server: the jobs are on disk "
                                 "(server/crates/memories-server/src/extract.rs, ExtractConfig)."),
                                 _drop("queue_max", "queue_remaining")),
-    ("installer", "doctor"): (("deployed version 6.0.0 differs from BACKEND_VERSION 5.19.0 until "
-                              "the release bump of task P7-2 (G6.md, finding 1)."),
+    ("installer", "doctor"): (("the deployed version is 5.19.0 on Python and 6.0.0 on Rust, "
+                              "and BACKEND_VERSION is 6.0.0 (G6.md, finding 1)."),
                               lambda v: re.sub(r"deployed: [^\n]*", "deployed: <version>", v)
                               if isinstance(v, str) else v),
 }

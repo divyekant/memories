@@ -71,6 +71,27 @@ async fn python_shim_passes_on_live_server_and_fails_on_closed_port() {
     );
 }
 
+#[tokio::test]
+async fn healthcheck_command_passes_on_live_server_and_fails_on_closed_port() {
+    let url = spawn_server().await;
+    let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let run = |u: String| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_memories-server"))
+            .args(["healthcheck", &u])
+            .status()
+            .unwrap()
+            .code()
+    };
+    let (live, dead) = tokio::task::spawn_blocking(move || {
+        (run(url), run(format!("http://127.0.0.1:{port}/health")))
+    })
+    .await
+    .unwrap();
+    assert_eq!((live, dead), (Some(0), Some(1)));
+}
+
 #[test]
 fn shim_reads_url_from_python_command_or_uses_default() {
     let compose_cmd = "import sys,urllib.request; sys.exit(0 if 200 <= urllib.request.urlopen('http://localhost:8000/health', timeout=3).getcode() < 400 else 1)";
