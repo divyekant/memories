@@ -186,7 +186,7 @@ At the release, the droplet changes from a local image tag to
 the entrypoint that removes the two allocator variables, or remove the two
 variables from `.env`.
 
-The scheduled backup (`dk-memories-backup.timer`) needs the Rust version of
-`/opt/dk-services/config/maintenance/memories-backup.sh`. The old script
-runs `python` in the container and snapshots the old collection. See
-`docs/rust-rewrite/release-readiness.md`.
+The scheduled backup (`dk-memories-backup.timer`) runs the Rust version of
+`/opt/dk-services/config/maintenance/memories-backup.sh` since 2026-11-17
+04:38 UTC. Retention: all backups for 24 h, then 7 daily. Google Drive: every
+6 h for 7 days, then weekly for 8 weeks.
