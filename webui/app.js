@@ -3994,6 +3994,13 @@ function lineChart({ title, series, markers = [], from, to, fmt }) {
   );
 }
 
+function refreshIcon() {
+  const svg = svgEl("svg", { viewBox: "0 0 24 24", width: "16", height: "16", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" });
+  svg.appendChild(svgEl("path", { d: "M21 12a9 9 0 1 1-2.64-6.36" }));
+  svg.appendChild(svgEl("path", { d: "M21 3v6h-6" }));
+  return svg;
+}
+
 registerPage("performance", async (container) => {
   const RANGES = [["1", "Last hour"], ["6", "Last 6 hours"], ["24", "Last 24 hours"], ["168", "Last 7 days"], ["336", "Last 14 days"]];
   let hours = "24";
@@ -4021,7 +4028,7 @@ registerPage("performance", async (container) => {
       ),
       h("div", { className: "perf-controls" },
         rangeSel,
-        h("button", { className: "btn btn-sm", onClick: load }, "Refresh")
+        h("button", { className: "perf-refresh", onClick: load, "aria-label": "Refresh", title: "Refresh" }, refreshIcon())
       )
     ));
 

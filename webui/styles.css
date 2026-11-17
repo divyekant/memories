@@ -1875,7 +1875,31 @@ body,
 .perf-controls {
   display: flex;
   gap: 8px;
+  align-items: stretch;
+}
+
+.perf-refresh {
+  width: 32px;
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
+  background: var(--color-bg-surface);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.perf-refresh:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.perf-refresh:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 
 .perf-sub {
