@@ -39,7 +39,7 @@ jobs:
           [ "$(cat mcp-server/assets/backend/BACKEND_VERSION)" = "$V" ] || { echo "::error::BACKEND_VERSION is not $V"; exit 1; }
       - name: Log in to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Build and push
+      - name: Build
         # The web UI files come from the build context "webui". Without it, the build fails.
         run: |
           docker buildx build --platform linux/${{ matrix.arch }} \
@@ -47,7 +47,7 @@ jobs:
             --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
             --label org.opencontainers.image.version="$V" \
             --label org.opencontainers.image.revision="${{ github.sha }}" \
-            --push -t "$IMAGE:$V-${{ matrix.arch }}" server
+            --load -t "$IMAGE:$V-${{ matrix.arch }}" server
       - name: Health check of the image
         run: |
           docker run -d --name probe -e QDRANT_URL= "$IMAGE:$V-${{ matrix.arch }}"
@@ -56,6 +56,8 @@ jobs:
             sleep 2
           done
           docker logs probe; exit 1
+      - name: Push
+        run: docker push "$IMAGE:$V-${{ matrix.arch }}"
   manifest:
     needs: build
     if: ${{ !cancelled() && !failure() }}

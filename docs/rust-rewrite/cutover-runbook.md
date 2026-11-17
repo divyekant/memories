@@ -141,7 +141,7 @@ If v6.0.0 fails after the release, withdraw it:
 
 | Gap | Effect | Workaround |
 |---|---|---|
-| Backups do not copy `state.db` | `POST /backup` and `POST /restore` skip the webhooks, the extract job queue, the write journal and the migration record. | Copy `state.db` with the data folder. |
+| A restore does not put back the SQLite files | `POST /restore` restores only the Qdrant snapshot. The keys, audit log, usage, webhooks, extract job queue, write journal and migration record stay as they are. | Stop the server and copy the `*.db` files of the backup folder into `DATA_DIR` by hand. |
 | A Rust restore cannot read a Python backup folder | `POST /restore` of a Python backup gives 404 "Backup '<name>' is incomplete". | Restore a Python backup with the Python image. |
 | `POST /memory/conflicts/resolve` has no write journal entry | A forced stop in the middle of a resolve can leave the two records half changed. | Run the resolve again. |
 | An encoded slash (`%2F`) in a path parameter | Python decodes the path before it routes and gives 404. Rust routes on the raw path and gives the reply of the route. This applies to each route with a path parameter (`docs/decisions/2026-11-16-rust-sync-off.md`). | Do not send `%2F` in a path parameter. |

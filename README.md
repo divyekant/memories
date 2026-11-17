@@ -1200,7 +1200,7 @@ The Rust server reads the variables of the v5 Python server, with the same names
 |----------|---------|-------------|
 | `DATA_DIR` | `/data` | Persistent storage path |
 | `API_KEY` | (empty) | API key for auth. Empty = no auth. |
-| `QDRANT_URL` | (unset; compose sets `http://qdrant:6333`) | Qdrant server. Without it, the write routes give 503. |
+| `QDRANT_URL` | (unset; compose sets `http://qdrant:6333`) | Qdrant server. Without it, the memory routes (search, reads and writes) give 503. |
 | `QDRANT_COLLECTION` | `memories` | Base name. v6 stores records in `<name>_v2`. |
 | `EMBED_PROVIDER` | `onnx` | Only `onnx` on v6. Other values stop the start. |
 | `MODEL_NAME` / `EMBED_MODEL` | `all-MiniLM-L6-v2` / (unset) | ONNX embedding model |
@@ -1523,9 +1523,9 @@ Memories has three layers of backup protection:
 
 ### 1. Auto-backup (built-in)
 
-`POST /backup` writes a backup folder under `data/backups/`: a Qdrant snapshot of the `memories_v2` collection and copies of the SQLite files. The server keeps the `MAX_BACKUPS` (default 10) most recent folders. v6 makes no automatic backup before each write, as v5 did.
+`POST /backup` writes a backup folder under `data/backups/`: a Qdrant snapshot of the `memories_v2` collection and copies of the SQLite files. The server keeps the `MAX_BACKUPS` (default 10) newest folders, plus the 2 newest of each prefix and the 7 newest `scheduled_*` folders. The server makes one `scheduled_*` backup each day. v6 makes no automatic backup before each write, as v5 did.
 
-Known gaps of v6: a backup does not copy `state.db` (webhooks, the extract job queue, the write journal and the migration record), and `POST /restore` cannot read a v5 backup folder. Restore a v5 backup with the v5 image.
+Known gaps of v6: `POST /restore` restores only the Qdrant snapshot. It does not put back the SQLite files (`keys.db`, `audit.db`, `usage.db`, `state.db`). Their copies in the backup folder are for a manual recovery. `POST /restore` also cannot read a v5 backup folder. Restore a v5 backup with the v5 image.
 
 ```bash
 # List backups

@@ -41,7 +41,7 @@ image, no marketplace pin.
 
 | Gap | Plan |
 |---|---|
-| Backups do not copy `state.db` (webhooks, extract queue, write journal, migration record) | Fix in a later 6.0.x. Documented in the runbook, part 4. |
+| A restore does not put back the SQLite files (the backup copies them) | Documented in the runbook, part 4. Decide if a later 6.0.x restores them. |
 | A Rust restore cannot read a v5 backup folder | Documented. Restore a v5 backup with the v5 image. |
 | `POST /memory/conflicts/resolve` has no write journal entry | Fix in a later 6.0.x. |
 | `%2F` in a path parameter routes differently | Documented. |

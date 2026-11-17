@@ -335,7 +335,7 @@ Expected:
 curl -s -H "X-API-Key: $API_KEY" http://localhost:8900/metrics | jq '.routes'
 ```
 
-Each route shows `count`, `avg_latency_ms`, `p95_latency_ms` and `max_latency_ms` since the last restart.
+Each route shows `count`, `avg_latency_ms` and `max_latency_ms` since the last restart, and `p95_latency_ms` over the last `METRICS_LATENCY_SAMPLES` requests (default 200).
 
 ## 9) First memory smoke test
 

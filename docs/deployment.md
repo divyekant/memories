@@ -88,7 +88,8 @@ The volume name is `<compose project>_qdrant-storage`. Read it with
 `docker volume ls`.
 
 For a backup with no stop, use the API. It writes a Qdrant snapshot and copies
-of the SQLite files under `data/backups/`. It does not copy `state.db`.
+of the SQLite files under `data/backups/`. `POST /restore` restores only the
+Qdrant snapshot. Copy the SQLite files back by hand, with the server stopped.
 
 ```bash
 curl -X POST -H "X-API-Key: $API_KEY" "http://localhost:8900/backup?prefix=manual"

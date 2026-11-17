@@ -49,7 +49,8 @@ Python v5.19.0 against Rust 6.0.0:
 - Remove `MALLOC_MMAP_THRESHOLD_` and `MALLOC_TRIM_THRESHOLD_`. They make the
   Rust search slower.
 - `/docs` (Swagger UI) is gone. `/openapi.json` stays.
-- Known gaps: backups do not copy `state.db`; a Rust restore cannot read a v5
+- Known gaps: a restore does not put back the SQLite files (`state.db` and the
+  others); a Rust restore cannot read a v5
   backup folder; `POST /memory/conflicts/resolve` has no write journal entry;
   `%2F` in a path parameter routes differently. Details: the runbook, part 4.
 
