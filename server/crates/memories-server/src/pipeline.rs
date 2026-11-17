@@ -39,6 +39,10 @@ pub struct PipelineConfig {
     pub novelty_threshold: f64,
     pub redact: bool,
     pub fallback: FallbackConfig,
+    /// `EXTRACT_FOREIGN_TARGET_ADD` (Rust only, default on): an UPDATE or
+    /// CONFLICT whose target has another source adds the fact as new. Python
+    /// gives an error action, and the fact is lost.
+    pub foreign_add: bool,
 }
 
 impl Default for PipelineConfig {
@@ -89,6 +93,7 @@ impl PipelineConfig {
             redact: var("EXTRACT_REDACT_SECRETS")
                 .is_none_or(|v| !matches!(v.trim().to_lowercase().as_str(), "0" | "false" | "no")),
             fallback: fallback_config(&var),
+            foreign_add: config::parse_bool(var("EXTRACT_FOREIGN_TARGET_ADD").as_deref(), true),
         }
     }
 }
@@ -268,6 +273,8 @@ pub struct Exec<'a> {
     /// `novelty_gate and EXTRACT_NOVELTY_GATE`.
     pub gate: bool,
     pub threshold: f64,
+    /// [`PipelineConfig::foreign_add`].
+    pub foreign_add: bool,
 }
 
 impl Exec<'_> {
@@ -377,6 +384,21 @@ impl Exec<'_> {
         Ok(Some(src))
     }
 
+    /// With [`Self::foreign_add`]: an UPDATE or CONFLICT whose `old_id` has
+    /// another source, which [`Self::existing`] refuses.
+    async fn foreign(&self, act: &str, old_id: &Value) -> bool {
+        if !self.foreign_add || !matches!(act, "UPDATE" | "CONFLICT") {
+            return false;
+        }
+        let Some(id) = record_id(old_id) else {
+            return false;
+        };
+        self.writer
+            .get(id)
+            .await
+            .is_ok_and(|rec| source_of(&rec) != self.source)
+    }
+
     fn source_denied(&self, what: &str) -> Option<WriteError> {
         (!source_matches_prefixes(self.source, self.allowed)).then(|| {
             WriteError::Invalid(format!("source not authorized for {what}: {}", self.source))
@@ -393,6 +415,9 @@ impl Exec<'_> {
         out: &mut Counts,
     ) -> Result<(), WriteError> {
         let old_id = get(action, "old_id");
+        // Keep the fact text: `new_text` can hold the words of the other source.
+        let foreign = self.foreign(act, old_id).await;
+        let act = if foreign { "FALLBACK_ADD" } else { act };
         match act {
             "ADD" | "FALLBACK_ADD" => {
                 if let Some(e) = self.source_denied("add") {
@@ -419,10 +444,14 @@ impl Exec<'_> {
                 } else {
                     "add"
                 };
-                out.actions
-                    .push(json!({"action": name, "text": fact_text, "id": id}));
+                let mut a = json!({"action": name, "text": fact_text, "id": id});
+                if foreign {
+                    a["foreign_old_id"] = old_id.clone();
+                }
+                out.actions.push(a);
                 out.stored += 1;
-                if act == "FALLBACK_ADD" {
+                // `fallback_count` stays the count of AUDN failures.
+                if act == "FALLBACK_ADD" && !foreign {
                     out.fallback += 1;
                 }
             }
@@ -536,8 +565,11 @@ impl Exec<'_> {
                 Some(f) => py_str(f),
                 None => String::new(),
             };
+            // A foreign target writes the fact text, never `new_text`.
             let candidate = match (act.as_str(), action.get("new_text")) {
-                ("UPDATE", Some(t)) => as_text(t),
+                ("UPDATE", Some(t)) if !self.foreign(&act, get(action, "old_id")).await => {
+                    as_text(t)
+                }
                 _ => fact_text,
             };
             validate_project_write(&candidate, self.source, self.trusted)
@@ -930,6 +962,7 @@ impl Job<'_> {
             document_at: self.document_at,
             gate: self.cfg.novelty_gate,
             threshold: self.cfg.novelty_threshold,
+            foreign_add: self.cfg.foreign_add,
         }
     }
 
@@ -1257,7 +1290,7 @@ mod tests {
             (500, 280, 5, 3)
         );
         assert_eq!((c.min_link_score, c.novelty_threshold), (0.005, 0.85));
-        assert!(c.novelty_gate && c.redact && !c.fallback.enabled);
+        assert!(c.novelty_gate && c.redact && !c.fallback.enabled && c.foreign_add);
         let c = PipelineConfig::from_lookup(|n| {
             Some(match n {
                 "EXTRACT_MAX_FACT_CHARS" => "10".into(),
@@ -1268,12 +1301,13 @@ mod tests {
                 "EXTRACT_REDACT_SECRETS" => "NO".into(),
                 "EXTRACT_FALLBACK_ADD" => "on".into(),
                 "EXTRACT_FALLBACK_NOVELTY_THRESHOLD" => "7".into(),
+                "EXTRACT_FOREIGN_TARGET_ADD" => "false".into(),
                 _ => return None,
             })
         });
         assert_eq!((c.max_fact_chars, c.max_links), (40, 0));
         assert_eq!((c.min_link_score, c.novelty_threshold), (0.005, -2.0));
-        assert!(!c.novelty_gate && !c.redact && c.fallback.enabled);
+        assert!(!c.novelty_gate && !c.redact && c.fallback.enabled && !c.foreign_add);
         assert_eq!(c.fallback.novelty_threshold, 1.0);
         let c =
             PipelineConfig::from_lookup(|n| (n == "EXTRACT_REDACT_SECRETS").then(|| "off".into()));
