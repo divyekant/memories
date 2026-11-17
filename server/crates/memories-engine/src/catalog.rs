@@ -6,6 +6,7 @@
 //! Each write must call [`Catalog::put`] or [`Catalog::remove`].
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, OnceLock};
 
 use memories_types::Record;
 
@@ -73,18 +74,22 @@ impl Entry {
 pub struct Catalog {
     entries: BTreeMap<u64, Entry>,
     sources: BTreeMap<String, u64>,
+    /// The `related_to` graph, built on the first search after a write.
+    adjacency: OnceLock<Arc<Adjacency>>,
 }
 
 impl Catalog {
     pub fn put(&mut self, record: &Record) {
         self.remove(record.id);
         let entry = Entry::of(record);
+        self.adjacency = OnceLock::new();
         *self.sources.entry(entry.source.clone()).or_insert(0) += 1;
         self.entries.insert(record.id, entry);
     }
 
     pub fn remove(&mut self, id: u64) -> Option<Entry> {
         let old = self.entries.remove(&id)?;
+        self.adjacency = OnceLock::new();
         if let Some(n) = self.sources.get_mut(&old.source) {
             *n -= 1;
             if *n == 0 {
@@ -131,15 +136,19 @@ impl Catalog {
 
     /// The `related_to` graph of `_build_adjacency`, from the links in the
     /// order of the stored records.
-    pub fn adjacency(&self) -> Adjacency {
-        // shortcut: builds the graph for each search (Python caches it until a
-        // write); cache it with a write counter if the link count grows large.
-        let links = self.entries.iter().flat_map(|(&from, e)| {
-            e.links
-                .iter()
-                .map(move |(to, kind)| (from as i64, *to, kind.as_str()))
-        });
-        build_adjacency(links, |id| self.contains(id))
+    /// Built once and kept until the next write (as Python does). A build
+    /// for each search cost most of the search CPU on production data.
+    pub fn adjacency(&self) -> Arc<Adjacency> {
+        self.adjacency
+            .get_or_init(|| {
+                let links = self.entries.iter().flat_map(|(&from, e)| {
+                    e.links
+                        .iter()
+                        .map(move |(to, kind)| (from as i64, *to, kind.as_str()))
+                });
+                Arc::new(build_adjacency(links, |id| self.contains(id)))
+            })
+            .clone()
     }
 }
 
@@ -181,5 +190,12 @@ mod tests {
         let adj = c.adjacency();
         assert_eq!(adj.keys().collect::<Vec<_>>(), vec![1, 2]);
         assert!(adj.get(1).unwrap().contains(2));
+        assert!(Arc::ptr_eq(&adj, &c.adjacency()), "kept until a write");
+        // A write drops the kept graph: a new record can be a link target.
+        c.put(&record(json!({"id": 9, "text": "i"})));
+        let adj = c.adjacency();
+        assert!(adj.get(2).unwrap().contains(9));
+        c.remove(9);
+        assert!(!c.adjacency().get(2).is_some_and(|n| n.contains(9)));
     }
 }
