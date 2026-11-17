@@ -9,6 +9,7 @@ pub mod error;
 pub mod events;
 pub mod extract;
 pub mod healthcheck;
+pub mod history;
 pub mod keys;
 pub mod maintenance;
 pub mod migrate;
@@ -76,6 +77,10 @@ pub struct Config {
     pub metrics_trend_samples: usize,
     /// `UI_DIR`: the web UI files that `/ui` and `/ui/static` serve.
     pub ui_dir: PathBuf,
+    /// `METRICS_HISTORY_INTERVAL_SEC`: seconds between history samples; 0 is off.
+    pub metrics_history_sec: u64,
+    /// `METRICS_HISTORY_DAYS`: the days of history that `metrics.db` keeps.
+    pub metrics_history_days: u64,
 }
 
 impl Config {
@@ -107,6 +112,18 @@ impl Config {
             usage_tracking: config::parse_bool(var("USAGE_TRACKING").as_deref(), false),
             metrics_trend_samples: trend as usize,
             ui_dir: config::string("UI_DIR", "/app/webui").into(),
+            metrics_history_sec: config::int_strict(
+                "METRICS_HISTORY_INTERVAL_SEC",
+                var("METRICS_HISTORY_INTERVAL_SEC").as_deref(),
+                60,
+            )?
+            .max(0) as u64,
+            metrics_history_days: config::int_strict(
+                "METRICS_HISTORY_DAYS",
+                var("METRICS_HISTORY_DAYS").as_deref(),
+                14,
+            )?
+            .max(1) as u64,
         })
     }
 }
@@ -152,6 +169,8 @@ pub struct AppState {
     pub jobs: tokio::sync::Mutex<()>,
     /// The `manual` counters of `embedder_reload` in `GET /metrics`.
     pub reload: Mutex<Value>,
+    /// `metrics.db`; `None` when the history is off or the file cannot open.
+    pub history: Option<history::History>,
 }
 
 impl AppState {
@@ -204,6 +223,17 @@ impl AppState {
             stopping: AtomicBool::new(false),
             jobs: tokio::sync::Mutex::new(()),
             reload: Mutex::new(maintenance::reload_counters()),
+            history: (cfg.metrics_history_sec > 0)
+                .then(|| {
+                    history::History::open(
+                        &cfg.data_dir.join("metrics.db"),
+                        cfg.metrics_history_sec,
+                        cfg.metrics_history_days,
+                    )
+                    .inspect_err(|e| tracing::warn!(error = %e, "metrics history is off"))
+                    .ok()
+                })
+                .flatten(),
         })
     }
 }

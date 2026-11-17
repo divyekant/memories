@@ -3,6 +3,16 @@
 ## [Unreleased]
 
 ### Added
+- **Performance page and metrics history (Rust server).** The web UI has a
+  new page, Performance. It shows latency (p50, p95, max) for each route,
+  requests per minute, error rate, process memory (RSS), uptime, server
+  starts, in-flight requests and the extract queue, for 1 hour to 14 days.
+  The Rust server writes a sample each minute to `metrics.db`, so the
+  history continues after a restart. New admin route:
+  `GET /metrics/history?hours=N`. New settings:
+  `METRICS_HISTORY_INTERVAL_SEC` (default 60, 0 is off) and
+  `METRICS_HISTORY_DAYS` (default 14). `GET /metrics` does not change.
+  Details: `docs/rust-rewrite/usage-metrics.md`.
 - **Rust server fixes 10 Python defects that earlier tasks kept for parity.**
   For example, a scoped key that writes out of its scope gets 403, not 500.
   `POST /memory/deduplicate` returns its result and writes the audit row.

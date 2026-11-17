@@ -481,6 +481,7 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     // A running job stays `running` in state.db at a stop; the next start puts it back.
     let workers = memories_server::extract::spawn_workers(&state);
     let webhooks = memories_server::events::spawn_webhooks(state.clone());
+    let history = tokio::spawn(memories_server::history::run(state.clone()));
     // As Python: the scheduler needs MAINTENANCE_ENABLED and an extract provider.
     let maint = match memories_server::maintenance::SchedulerConfig::from_env() {
         Ok(m) => m,
@@ -516,6 +517,7 @@ async fn serve(port: u16, state: Arc<AppState>, migrate_first: Option<Config>) {
     refresher.abort();
     workers.iter().for_each(|w| w.abort());
     webhooks.abort();
+    history.abort();
     if let Some(s) = scheduler {
         // Let a running job stop at a safe point (between clusters), so that a
         // merge does not stop between its add and its delete.

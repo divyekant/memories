@@ -21,6 +21,33 @@ Prometheus text format, version 0.0.4.
 `USAGE_TRACKING=true` turns the tracker on. If the tracker is off, the routes
 give the replies of the Python `NullTracker`.
 
+## Metrics history and the Performance page
+
+The route `GET /metrics/history?hours=24` is new. It is admin only. The web
+UI page `#/performance` reads it with `GET /metrics`.
+
+- A background task writes one sample at each interval to `metrics.db` in
+  `DATA_DIR`. A sample has one process row (RSS, peak in-flight requests,
+  extract queue depth, memory count, requests, errors) and one row for each
+  route with requests (count, errors, p50, p95, max of the interval).
+- The server writes a row to `starts` at each start. The page shows each
+  start as a dashed line, so a restart is visible.
+- `METRICS_HISTORY_INTERVAL_SEC` sets the interval (default 60). Set it to 0
+  to turn the history off. `METRICS_HISTORY_DAYS` sets the retention (default
+  14). Each write deletes the rows older than the retention.
+- `hours` is 1 to 24 times `METRICS_HISTORY_DAYS`. The reply merges samples
+  into buckets, so that a series has at most 360 points. In a bucket, `p50`
+  is the mean of the interval p50 values, weighted by requests. `p95` and
+  `max` are the highest interval values.
+- One interval keeps at most 2,048 latencies for each route. Past that
+  limit, the interval percentiles are approximate.
+- `GET /metrics` does not change. Its numbers still reset at each start.
+- The Python server has no history route. On a Python server, the page
+  shows the values of `GET /metrics` only.
+
+About size: 14 days at 60 s with 15 active routes is about 300,000 route
+rows, about 15 MB.
+
 ## Writer
 
 `memories-server/src/usage.rs` holds the tracker.

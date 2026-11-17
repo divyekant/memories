@@ -200,6 +200,7 @@ function navigate(page) {
     extractions: "Extractions",
     keys: "API Keys",
     health: "Health",
+    performance: "Performance",
     settings: "Settings",
   };
   if (titleEl) {
@@ -3867,6 +3868,305 @@ registerPage("health", async (container) => {
   }
 
   await loadHealthPage();
+});
+
+// ==========================================================================
+//  Performance Page: latency, throughput, errors, memory, restarts
+// ==========================================================================
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+  return el;
+}
+
+function fmtMs(v) {
+  if (v == null || Number.isNaN(v)) return "—";
+  if (v >= 1000) return `${(v / 1000).toFixed(2)} s`;
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ms`;
+}
+
+function fmtMb(kb) {
+  if (!kb) return "—";
+  return `${Math.round(kb / 1024)} MB`;
+}
+
+function fmtDuration(sec) {
+  const d = Math.floor(sec / 86400);
+  const hr = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d) return `${d}d ${hr}h`;
+  if (hr) return `${hr}h ${m}m`;
+  return `${m}m`;
+}
+
+function fmtTime(ts, spanSec) {
+  const d = new Date(ts * 1000);
+  return spanSec > 2 * 86400
+    ? d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * Line chart as inline SVG. series: [{ name, color, values: [[ts, v], ...] }].
+ * markers: timestamps of server starts (dashed lines). Hover shows the values.
+ */
+function lineChart({ title, series, markers = [], from, to, fmt }) {
+  const W = 640, H = 180, L = 52, R = 8, T = 8, B = 22;
+  const all = series.flatMap((s) => s.values.map((p) => p[1]));
+  const maxV = (Math.max(0, ...all) || 1) * 1.1;
+  const x = (ts) => L + ((ts - from) / Math.max(1, to - from)) * (W - L - R);
+  const y = (v) => T + (1 - v / maxV) * (H - T - B);
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "perf-chart", role: "img", "aria-label": title });
+  for (let i = 0; i <= 4; i++) {
+    const v = (maxV / 4) * i;
+    svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), class: "perf-grid" }));
+    const t = svgEl("text", { x: L - 6, y: y(v) + 3, class: "perf-axis", "text-anchor": "end" });
+    t.textContent = fmt(v);
+    svg.appendChild(t);
+  }
+  for (let i = 0; i <= 4; i++) {
+    const ts = from + ((to - from) / 4) * i;
+    const t = svgEl("text", { x: x(ts), y: H - 6, class: "perf-axis", "text-anchor": i === 0 ? "start" : i === 4 ? "end" : "middle" });
+    t.textContent = fmtTime(ts, to - from);
+    svg.appendChild(t);
+  }
+  for (const m of markers) {
+    if (m < from || m > to) continue;
+    const line = svgEl("line", { x1: x(m), x2: x(m), y1: T, y2: H - B, class: "perf-marker" });
+    const tip = svgEl("title", {});
+    tip.textContent = `Server start ${new Date(m * 1000).toLocaleString()}`;
+    line.appendChild(tip);
+    svg.appendChild(line);
+  }
+  for (const s of series) {
+    if (!s.values.length) continue;
+    // Break the line where samples are missing (server down or history off).
+    const gap = 3 * (s.step || 60);
+    let d = "";
+    s.values.forEach(([ts, v], i) => {
+      const jump = i === 0 || ts - s.values[i - 1][0] > gap;
+      d += `${jump ? "M" : "L"}${x(ts).toFixed(1)},${y(v).toFixed(1)}`;
+    });
+    svg.appendChild(svgEl("path", { d, fill: "none", style: `stroke: ${s.color}`, class: "perf-line" }));
+  }
+
+  const guide = svgEl("line", { y1: T, y2: H - B, class: "perf-guide", visibility: "hidden" });
+  svg.appendChild(guide);
+  const readout = h("div", { className: "perf-readout" }, " ");
+  svg.addEventListener("mousemove", (e) => {
+    const r = svg.getBoundingClientRect();
+    const px = ((e.clientX - r.left) / r.width) * W;
+    const ts = from + ((px - L) / (W - L - R)) * (to - from);
+    const parts = [];
+    let gx = null;
+    let when = "";
+    for (const s of series) {
+      let best = null;
+      for (const p of s.values) if (!best || Math.abs(p[0] - ts) < Math.abs(best[0] - ts)) best = p;
+      if (best) {
+        parts.push(`${s.name} ${fmt(best[1])}`);
+        gx = x(best[0]);
+        if (!when) when = fmtTime(best[0], 0);
+      }
+    }
+    if (gx == null) return;
+    guide.setAttribute("x1", gx);
+    guide.setAttribute("x2", gx);
+    guide.setAttribute("visibility", "visible");
+    readout.textContent = `${when}  ·  ${parts.join("  ·  ")}`;
+  });
+  svg.addEventListener("mouseleave", () => {
+    guide.setAttribute("visibility", "hidden");
+    readout.textContent = " ";
+  });
+
+  const legend = h("div", { className: "perf-legend" },
+    ...series.map((s) => h("span", null, h("span", { className: "perf-swatch", style: { background: s.color } }), s.name)),
+    markers.some((m) => m >= from && m <= to) ? h("span", null, h("span", { className: "perf-swatch perf-swatch-marker" }), "server start") : null
+  );
+  return h("div", { className: "perf-panel" },
+    h("div", { className: "perf-panel-title" }, title),
+    svg, legend, readout
+  );
+}
+
+registerPage("performance", async (container) => {
+  const RANGES = [["1", "Last hour"], ["6", "Last 6 hours"], ["24", "Last 24 hours"], ["168", "Last 7 days"], ["336", "Last 14 days"]];
+  let hours = "24";
+  let selectedRoute = null;
+  let timer = null;
+
+  async function load() {
+    invalidateCache("/metrics");
+    invalidateCache(`/metrics/history?hours=${hours}`);
+    const [mRes, hRes] = await Promise.allSettled([api("/metrics"), api(`/metrics/history?hours=${hours}`)]);
+    if (!container.isConnected) return;
+    container.innerHTML = "";
+
+    const rangeSel = h("select", { className: "period-select", "aria-label": "Time range" });
+    for (const [v, label] of RANGES) {
+      const o = h("option", { value: v }, label);
+      if (v === hours) o.selected = true;
+      rangeSel.appendChild(o);
+    }
+    rangeSel.addEventListener("change", (e) => { hours = e.target.value; load(); });
+    container.appendChild(h("div", { className: "perf-header" },
+      h("div", null,
+        h("div", { className: "section-title", style: { marginBottom: "2px" } }, "Performance"),
+        h("div", { className: "perf-sub" }, "Latency, throughput, errors and memory of the server. Updates each minute.")
+      ),
+      h("div", { className: "perf-controls" },
+        rangeSel,
+        h("button", { className: "btn btn-sm", onClick: load }, "Refresh")
+      )
+    ));
+
+    if (mRes.status !== "fulfilled") {
+      container.appendChild(h("div", { className: "empty-state" },
+        h("div", { className: "empty-state-title" }, "Admin key required"),
+        h("div", { className: "empty-state-text" }, `The metrics need an admin key. (${mRes.reason?.message || "error"})`)
+      ));
+      return;
+    }
+    const m = mRes.value;
+    const hist = hRes.status === "fulfilled" && hRes.value.enabled ? hRes.value : null;
+    const now = Math.floor(Date.now() / 1000);
+    const from = now - Number(hours) * 3600;
+    const process = hist ? hist.process : [];
+    const routes = hist ? hist.routes : {};
+    const starts = hist ? hist.starts.map((s) => s.ts) : [];
+
+    // Stat cards
+    const rangeReq = process.reduce((a, p) => a + p.requests, 0);
+    const rangeErr = process.reduce((a, p) => a + p.errors, 0);
+    const lastFull = process.length > 1 ? process[process.length - 2] : process[process.length - 1];
+    const rss = m.memory?.process?.rss_kb || 0;
+    const peakRss = Math.max(rss, ...process.map((p) => p.rss_max_kb));
+    const ex = m.extract || {};
+    const card = (label, value, sub, cls = "") => h("div", { className: "health-stat-card" },
+      h("div", { className: "health-stat-label" }, label),
+      h("div", { className: `health-stat-value ${cls}` }, value),
+      h("div", { className: "health-stat-sub" }, sub)
+    );
+    const errPct = rangeReq ? (rangeErr / rangeReq) * 100 : 0;
+    container.appendChild(h("div", { className: "health-stat-grid perf-stat-grid" },
+      card("Uptime", fmtDuration(m.uptime_sec || 0), hist ? `v${hist.version}` : "since the last start"),
+      card("Server starts", hist ? String(starts.length) : "—", "in this range", starts.length > 1 ? "color-warning" : ""),
+      card("Memory (RSS)", fmtMb(rss), `peak ${fmtMb(peakRss)} in this range`),
+      card("Throughput", lastFull ? `${Math.round(lastFull.requests / (lastFull.samples * hist.interval_sec / 60))}/min` : "—", hist ? `${formatNumber(rangeReq)} requests in this range` : "no history"),
+      card("Error rate", hist ? `${errPct.toFixed(2)}%` : `${m.requests?.error_rate_pct ?? 0}%`, hist ? `${formatNumber(rangeErr)} HTTP 4xx/5xx` : "since the last start", errPct > 5 ? "color-error" : errPct > 1 ? "color-warning" : "color-success"),
+      card("In flight", String(m.requests?.active_http_requests ?? 0), "requests now"),
+      card("Extract queue", `${ex.queue_depth ?? 0} / ${ex.queue_max ?? 0}`, `${ex.workers ?? 0} workers`, (ex.queue_depth || 0) > (ex.queue_max || 1) * 0.8 ? "color-warning" : ""),
+      card("Memories", formatNumber(m.memory?.current_total ?? 0), "in the store")
+    ));
+
+    if (!hist) {
+      const why = hRes.status === "fulfilled"
+        ? "The history is off on this server (METRICS_HISTORY_INTERVAL_SEC=0)."
+        : "This server does not keep a metrics history. The table shows the values since the last start.";
+      container.appendChild(h("div", { className: "perf-note" }, why));
+    }
+
+    // Route list: history totals when there is history, else the live counters.
+    const live = m.routes || {};
+    const rows = Object.keys(hist ? routes : live).map((k) => {
+      const r = routes[k];
+      const l = live[k] || {};
+      if (!r) return { key: k, count: l.count || 0, errors: l.error_count || 0, p50: null, p95: l.p95_latency_ms, max: l.max_latency_ms, avg: l.avg_latency_ms };
+      const pts = r.points;
+      const p50 = pts.reduce((a, p) => a + p.p50 * p.count, 0) / Math.max(1, r.count);
+      return { key: k, count: r.count, errors: r.errors, p50, p95: Math.max(...pts.map((p) => p.p95)), max: Math.max(...pts.map((p) => p.max)), avg: l.avg_latency_ms };
+    }).sort((a, b) => b.count - a.count);
+    if (!selectedRoute || !rows.some((r) => r.key === selectedRoute)) {
+      selectedRoute = (rows.find((r) => r.key === "POST /search") || rows[0] || {}).key || null;
+    }
+
+    if (hist) {
+      const grid = h("div", { className: "perf-chart-grid" });
+      const step = hist.interval_sec;
+      const sel = routes[selectedRoute];
+      if (sel) {
+        grid.appendChild(lineChart({
+          title: `Latency: ${selectedRoute}`,
+          series: [
+            { name: "p50", color: "var(--color-info)", step: hist.bucket_sec, values: sel.points.map((p) => [p.ts, p.p50]) },
+            { name: "p95", color: "var(--color-warning)", step: hist.bucket_sec, values: sel.points.map((p) => [p.ts, p.p95]) },
+          ],
+          markers: starts, from, to: now, fmt: fmtMs,
+        }));
+      }
+      grid.appendChild(lineChart({
+        title: "Requests per minute",
+        series: [
+          { name: "requests", color: "var(--color-info)", step: hist.bucket_sec, values: process.map((p) => [p.ts, p.requests / (p.samples * step / 60 || 1)]) },
+          { name: "errors", color: "var(--color-error)", step: hist.bucket_sec, values: process.map((p) => [p.ts, p.errors / (p.samples * step / 60 || 1)]) },
+        ],
+        markers: starts, from, to: now, fmt: (v) => v.toFixed(v < 10 ? 1 : 0),
+      }));
+      grid.appendChild(lineChart({
+        title: "Memory (RSS)",
+        series: [
+          { name: "average", color: "var(--color-primary)", step: hist.bucket_sec, values: process.map((p) => [p.ts, p.rss_kb]) },
+          { name: "peak", color: "var(--color-text-muted)", step: hist.bucket_sec, values: process.map((p) => [p.ts, p.rss_max_kb]) },
+        ],
+        markers: starts, from, to: now, fmt: fmtMb,
+      }));
+      grid.appendChild(lineChart({
+        title: "Extract queue and in-flight requests (peak)",
+        series: [
+          { name: "extract queue", color: "var(--color-warning)", step: hist.bucket_sec, values: process.map((p) => [p.ts, p.extract_depth_max]) },
+          { name: "in flight", color: "var(--color-info)", step: hist.bucket_sec, values: process.map((p) => [p.ts, p.active_max]) },
+        ],
+        markers: starts, from, to: now, fmt: (v) => v.toFixed(v < 10 ? 1 : 0),
+      }));
+      container.appendChild(grid);
+    }
+
+    // Route table
+    const table = h("table", { className: "data-table perf-table" },
+      h("thead", null, h("tr", null,
+        h("th", null, "Route"),
+        h("th", { className: "num" }, "Requests"),
+        h("th", { className: "num" }, "Errors"),
+        h("th", { className: "num" }, "p50"),
+        h("th", { className: "num", title: hist ? "Highest p95 of one interval in the range" : "Of the recent samples" }, "p95"),
+        h("th", { className: "num" }, "Max"),
+        h("th", { className: "num", title: "Since the last start" }, "Avg since start")
+      )),
+      h("tbody", null, ...rows.map((r) => {
+        const tr = h("tr", {
+          className: r.key === selectedRoute ? "selected" : "",
+          tabindex: hist ? "0" : "-1",
+          onClick: () => { if (hist) { selectedRoute = r.key; load(); } },
+          onKeydown: (e) => { if (hist && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); selectedRoute = r.key; load(); } },
+        },
+          h("td", { className: "perf-route" }, r.key),
+          h("td", { className: "num" }, formatNumber(r.count)),
+          h("td", { className: `num ${r.errors ? "color-error" : ""}` }, r.count ? `${((r.errors / r.count) * 100).toFixed(1)}%` : "0%"),
+          h("td", { className: "num" }, fmtMs(r.p50)),
+          h("td", { className: "num" }, fmtMs(r.p95)),
+          h("td", { className: "num" }, fmtMs(r.max)),
+          h("td", { className: "num" }, fmtMs(r.avg))
+        );
+        return tr;
+      }))
+    );
+    container.appendChild(h("div", { className: "perf-panel" },
+      h("div", { className: "perf-panel-title" }, hist ? "Routes in this range (select a row to chart its latency)" : "Routes since the last start"),
+      h("div", { className: "perf-table-wrap" }, rows.length ? table : h("div", { className: "perf-sub" }, "No requests yet."))
+    ));
+  }
+
+  container.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+  await load();
+  timer = setInterval(() => {
+    if (!container.isConnected || state.currentPage !== "performance") { clearInterval(timer); return; }
+    load();
+  }, 60_000);
 });
 
 // -- Mobile Sidebar --------------------------------------------------------
