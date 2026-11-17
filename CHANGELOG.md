@@ -13,6 +13,15 @@
   `METRICS_HISTORY_INTERVAL_SEC` (default 60, 0 is off) and
   `METRICS_HISTORY_DAYS` (default 14). `GET /metrics` does not change.
   Details: `docs/rust-rewrite/usage-metrics.md`.
+- **Rust extract jobs keep facts that Python loses.** If the model decides to
+  update a memory of another source, or to mark a conflict with one, the
+  Python server refuses the write and drops the fact. The Rust server adds the
+  fact as a new memory of the job source (`fallback_add`, with
+  `foreign_old_id`). It uses the fact text, never `new_text`, because
+  `new_text` can hold words of the other source. The other memory does not
+  change. `EXTRACT_FOREIGN_TARGET_ADD=false` gives the Python behavior. The
+  commit route keeps the Python behavior. Details:
+  `docs/decisions/2026-11-17-rust-extract-foreign-target.md`.
 - **Rust server fixes 10 Python defects that earlier tasks kept for parity.**
   For example, a scoped key that writes out of its scope gets 403, not 500.
   `POST /memory/deduplicate` returns its result and writes the audit row.
