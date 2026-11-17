@@ -1,0 +1,73 @@
+name: Publish image
+# Builds the Rust server image for linux/amd64 and linux/arm64 on native
+# runners, and pushes ghcr.io/divyekant/memories:<version>. A second run with
+# "latest" on builds nothing: it points latest at the pushed <version>. Do the
+# second run only after the cutover check (docs/rust-rewrite/cutover-runbook.md).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image tag without the v, for example 6.0.0"
+        required: true
+      latest:
+        description: "Do not build. Point latest at the pushed version"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  packages: write
+concurrency: { group: publish-image, cancel-in-progress: false }
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/memories
+  V: ${{ inputs.version }}
+jobs:
+  build:
+    if: ${{ !inputs.latest }}
+    strategy:
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the version
+        run: |
+          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must be X.Y.Z"; exit 1; }
+          CARGO=$(sed -n 's/^version = "\(.*\)"/\1/p' server/Cargo.toml | head -1)
+          [ "$CARGO" = "$V" ] || { echo "::error::server/Cargo.toml is $CARGO, not $V"; exit 1; }
+          [ "$(cat mcp-server/assets/backend/BACKEND_VERSION)" = "$V" ] || { echo "::error::BACKEND_VERSION is not $V"; exit 1; }
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push
+        # The web UI files come from the build context "webui". Without it, the build fails.
+        run: |
+          docker buildx build --platform linux/${{ matrix.arch }} \
+            --build-context webui=webui \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            --label org.opencontainers.image.version="$V" \
+            --label org.opencontainers.image.revision="${{ github.sha }}" \
+            --push -t "$IMAGE:$V-${{ matrix.arch }}" server
+      - name: Health check of the image
+        run: |
+          docker run -d --name probe -e QDRANT_URL= "$IMAGE:$V-${{ matrix.arch }}"
+          for i in $(seq 1 30); do
+            docker exec probe memories-server healthcheck && exit 0
+            sleep 2
+          done
+          docker logs probe; exit 1
+  manifest:
+    needs: build
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Push the multi-arch tag
+        if: ${{ !inputs.latest }}
+        run: docker buildx imagetools create -t "$IMAGE:$V" "$IMAGE:$V-amd64" "$IMAGE:$V-arm64"
+      - name: Point latest at the version
+        if: ${{ inputs.latest }}
+        run: docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE:$V"
+      - name: Show the result
+        run: docker buildx imagetools inspect "$IMAGE:$V"

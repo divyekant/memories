@@ -18,10 +18,10 @@ The recommended deployment uses Docker Compose with OrbStack or Docker Desktop.
 
 2. Configure environment:
    ```bash
-   cp .env.example .env
+   touch .env
    # Edit .env with your settings:
    # - API_KEY: Your access key (default: generate a random one)
-   # - EXTRACT_PROVIDER: anthropic|openai|ollama (default: anthropic)
+   # - EXTRACT_PROVIDER: anthropic|openai|ollama|omlx (empty: no extraction)
    # - ANTHROPIC_API_KEY or OPENAI_API_KEY: For extraction LLM
    ```
 
@@ -35,52 +35,73 @@ The recommended deployment uses Docker Compose with OrbStack or Docker Desktop.
    curl -s http://localhost:8900/health | jq .
    ```
 
-5. Install Claude Code integration:
+5. Install the client integrations:
    ```bash
-   bash integrations/claude-code/install.sh
+   npx memories-mcp@latest init
    ```
 
 ## Configuration Reference
 
+v6 runs the Rust server. The full list of variables, with the v5 variables
+that v6 does not use, is in `docs/rust-rewrite/configuration.md`.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `API_KEY` | (required) | Access key for the Memories API |
-| `EXTRACT_PROVIDER` | `anthropic` | LLM provider for extraction (anthropic/openai/ollama) |
+| `EXTRACT_PROVIDER` | (none) | LLM provider for extraction (`anthropic`, `openai`, `ollama`, `omlx`) |
 | `ANTHROPIC_API_KEY` | — | Standard Anthropic API key. Set this or `ANTHROPIC_OAUTH_TOKEN` if EXTRACT_PROVIDER=anthropic |
 | `ANTHROPIC_OAUTH_TOKEN` | — | Anthropic subscription OAuth token. Can only call Haiku 4.5 |
 | `ANTHROPIC_AUTH` | API key when set | `api_key` or `oauth`. Selects the Anthropic credential |
 | `ANTHROPIC_WORKSPACE_ID` | (none) | Workspace ID (`wrkspc_…`). Required for an API key that is not scoped to a workspace (for example `sk-ant-usr-`). Sent as the `anthropic-workspace-id` header |
 | `OPENAI_API_KEY` | — | Required if EXTRACT_PROVIDER=openai |
-| `EMBEDDER_MODEL` | `all-MiniLM-L6-v2` | Sentence transformer model for embeddings |
-| `EMBEDDER_AUTO_RELOAD_ENABLED` | `true` | Auto-reload embedder on model change |
+| `MODEL_NAME` | `all-MiniLM-L6-v2` | ONNX embedding model |
 | `MAX_EXTRACT_MESSAGE_CHARS` | `120000` | Max chars accepted for extraction |
-| `EXTRACT_MAX_INFLIGHT` | `2` | Max concurrent extraction jobs |
+| `EXTRACT_MAX_INFLIGHT` | `2` | Extraction workers |
 | `EXTRACT_NOVELTY_GATE` | `1` (on) | Gate extraction ADDs through an explicit novelty check; near-duplicates become noops. Set `0` to disable |
 | `EXTRACT_NOVELTY_THRESHOLD` | `0.85` | Cosine similarity above which an extraction ADD is gated as a near-duplicate |
-| `AUDIT_LOG` | — | Path to audit log file (optional) |
+| `AUDIT_LOG` | `false` | `true` writes the audit trail to `$DATA_DIR/audit.db` |
+
+## Upgrade from v5 (Python) to v6 (Rust)
+
+Follow `docs/rust-rewrite/cutover-runbook.md`, part 1. The first start
+migrates the v5 data. The v5 data stays unchanged, so the rollback image can
+return to v5.
 
 ## Backup & Restore
 
+On v6, the records are in Qdrant (collection `memories_v2`), not in
+`metadata.json`. A backup must hold the data folder and the Qdrant storage.
+
+CAUTION: Stop both services before the copy. A copy of a running Qdrant can be
+inconsistent.
+
 ### Backup
-The data directory contains all persistent state:
 ```bash
-# Stop the service first for consistency
-docker compose stop
-# Backup the data directory
-tar czf memories-backup-$(date +%Y%m%d).tar.gz data/
-# Restart
+docker compose stop -t 120 memories qdrant
+tar czf memories-data-$(date +%Y%m%d).tar.gz data/
+docker run --rm -v memories_qdrant-storage:/q -v "$PWD":/out alpine \
+  tar czf /out/memories-qdrant-$(date +%Y%m%d).tar.gz -C /q .
 docker compose up -d
+```
+
+The volume name is `<compose project>_qdrant-storage`. Read it with
+`docker volume ls`.
+
+For a backup with no stop, use the API. It writes a Qdrant snapshot and copies
+of the SQLite files under `data/backups/`. It does not copy `state.db`.
+
+```bash
+curl -X POST -H "X-API-Key: $API_KEY" "http://localhost:8900/backup?prefix=manual"
 ```
 
 ### Restore
 ```bash
-docker compose stop
-# Remove current data
+docker compose stop -t 120 memories qdrant
 rm -rf data/
-# Restore from backup
-tar xzf memories-backup-YYYYMMDD.tar.gz
+tar xzf memories-data-YYYYMMDD.tar.gz
+docker run --rm -v memories_qdrant-storage:/q -v "$PWD":/in alpine \
+  sh -c 'rm -rf /q/* && tar xzf /in/memories-qdrant-YYYYMMDD.tar.gz -C /q'
 docker compose up -d
-# Verify
 curl -s http://localhost:8900/health -H "X-API-Key: $API_KEY" | jq .total_memories
 ```
 
@@ -88,6 +109,7 @@ curl -s http://localhost:8900/health -H "X-API-Key: $API_KEY" | jq .total_memori
 ```bash
 # Count memories before and after to verify integrity
 curl -s http://localhost:8900/health -H "X-API-Key: $API_KEY" | jq .total_memories
+docker compose exec memories memories-server verify --sample 1000
 ```
 
 ## Troubleshooting
@@ -97,6 +119,15 @@ curl -s http://localhost:8900/health -H "X-API-Key: $API_KEY" | jq .total_memori
 docker compose logs memories
 # Check if port 8900 is available
 lsof -i :8900
+```
+
+### Server stops at start with "metadata.json changed"
+A v5 server wrote to the data after the migration (for example after a
+rollback). Run the merge in the v6 image, then start again:
+```bash
+docker compose stop -t 120 memories
+docker compose run --rm memories migrate --merge
+docker compose up -d memories
 ```
 
 ### Extraction not working

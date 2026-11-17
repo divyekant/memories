@@ -4,6 +4,42 @@ This document describes the runtime architecture of `memories` and the reasoning
 
 ---
 
+## 0) v6: the Rust server
+
+From v6.0.0 the HTTP API runs in the Rust server in `server/`. It has the
+same routes, request bodies and replies as the v5 Python server. Sections 1
+to 12 describe the v5 Python modules. Each Rust crate takes over the
+modules in the table, with the rules of those sections, except where a
+decision record in `docs/decisions/2026-11-16-rust-*.md` says otherwise.
+
+| Crate | v5 modules |
+|---|---|
+| `memories-types` | Request and response models of `app.py`, the environment variables |
+| `memories-embed` | `onnx_embedder.py` (ONNX only) |
+| `memories-store` | `qdrant_store.py`, `key_store.py`, `audit_log.py`, `usage_tracker.py`, the migration |
+| `memories-engine` | `memory_engine.py` (search, rank, writes, links, maintenance), `entity_locks.py` |
+| `memories-extract` | `llm_extract.py`, `llm_provider.py`, `transcript_hygiene.py` |
+| `memories-server` | `app.py` (routes, auth, middleware), `event_bus.py`, the binary |
+
+Main differences from v5:
+
+- **Storage.** The Qdrant collection `<QDRANT_COLLECTION>_v2` is the
+  canonical store. Each point holds the full record, its dense vector and a
+  sparse keyword vector (`docs/decisions/2026-11-16-rust-keyword-index.md`).
+  v6 writes no `metadata.json`. At start, the server loads a catalog of all
+  records into memory from Qdrant.
+- **State.** `state.db` (SQLite) holds the migration record, the extract job
+  queue, the write journal and the webhooks. `keys.db`, `audit.db` and
+  `usage.db` keep the v5 schema, so a key works on both servers.
+- **Concurrency.** Reads take the catalog read lock. All writes go through
+  one write lock. The `related_to` graph and its archive-filtered copy stay
+  in memory until a write changes a link or an archive state (PRs #163 and
+  #164). The ONNX embedder runs on its own thread.
+- **Crash safety.** A write with two steps (for example a supersede) writes a
+  journal entry first. At start, the server completes or drops each entry
+  (`docs/decisions/2026-11-16-rust-write-safety.md`).
+- **Migration and rollback.** See `docs/rust-rewrite/cutover-runbook.md`.
+
 ## 1) System Overview
 
 Memories is a local-first semantic memory service for AI assistants. It exposes:

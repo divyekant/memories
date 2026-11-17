@@ -1,8 +1,9 @@
 # Memories Rust server
 
-This folder holds the Rust server that replaces the Python server of
-Memories. The server has the same HTTP API. The work is in progress. Do not
-use this server in production before release v6.0.0.
+This folder holds the Rust server of Memories v6. It replaces the Python
+server v5.19.0 and has the same HTTP API. The production install runs this
+server since 2026-11-17. The release steps, the upgrade from v5 and the
+rollback are in `docs/rust-rewrite/cutover-runbook.md`.
 
 ## Requirements
 
@@ -54,6 +55,10 @@ QDRANT_TEST_URL=http://127.0.0.1:6333 \
 cargo run --locked --bin memories-server -- serve --port 8000
 curl http://localhost:8000/health
 ```
+
+`memories-server healthcheck [URL]` gives exit code 0 if the URL (default
+`http://localhost:8000/health`) answers with a status from 200 to 399, else
+exit code 1. The image `HEALTHCHECK` uses this command.
 
 The server reads the port from `--port` or from the environment variable
 `PORT`. The default is 8000.
@@ -131,8 +136,9 @@ QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
 ## Configuration
 
 The server reads the environment variables of the Python server, with the
-same names and the same defaults. `crates/memories-types/src/config.rs` lists
-each variable with one of these states:
+same names and the same defaults. `docs/rust-rewrite/configuration.md` gives
+each variable and its state. `crates/memories-types/src/config.rs` is the
+source. Each variable has one of these states:
 
 | State | Effect at start |
 |---|---|
@@ -187,8 +193,9 @@ Events, webhooks and the web UI:
 The rules and the differences from the Python server are in
 `docs/decisions/2026-11-16-rust-events-webhooks-ui.md`.
 
-A Python route that this server does not have yet gives HTTP 501. The route
-table is `ROUTES` in `crates/memories-server/src/shell.rs`.
+The server serves each of the 95 routes of `ROUTES` in
+`crates/memories-server/src/shell.rs`. A route that is in `ROUTES` but not in
+`SERVED` (`src/lib.rs`) gives HTTP 501. In v6.0.0 there is no such route.
 
 ## Parity check
 
@@ -239,6 +246,9 @@ QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so>
 ```bash
 docker build --build-context webui=webui -t ghcr.io/divyekant/memories:rust-local server
 ```
+
+The workflow `.github/workflows/publish-image.yml` builds and pushes the
+release image for amd64 and arm64.
 
 The image copies the web UI files from the build context `webui`. Without
 `--build-context webui=webui`, the build fails.

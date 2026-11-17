@@ -39,3 +39,15 @@
 - Active brand: dark
 - 2 brand palettes configured (dark, light)
 <!-- KALOS:END -->
+
+## Rust server (v6)
+
+The HTTP server is the Rust workspace in `server/`. The Python server (`app.py` and the modules it imports) is v5.19.0, kept unchanged as the rollback reference and the parity reference until task P7-3. The Apollo section above still says Python and pip. The CLI, the eval tools and `parity/` stay in Python (uv).
+
+- Build, test and image commands: `server/README.md`. Toolchain from `server/rust-toolchain.toml`. Use `--locked`. Crate releases must be 2 days old or more.
+- A change to a route keeps the v5 reply, or records the difference in `parity/intended.json` and a decision record in `docs/decisions/`.
+- A route writes the audit row and the usage row where `app.py` does (`AppState::audit`, usage events).
+- Environment variables: a new or newly read variable changes its state in `server/crates/memories-types/src/config.rs` and in `docs/rust-rewrite/configuration.md`.
+- Version: `server/Cargo.toml`, `mcp-server/assets/backend/BACKEND_VERSION`, `mcp-server/package.json` and the two plugin manifests move together. `pyproject.toml` and `app.py` stay at 5.19.0.
+- Image build: `docker build --build-context webui=webui server`. Release image: `.github/workflows/publish-image.yml`.
+- Production runs Rust. Deploy, release and rollback steps: `docs/rust-rewrite/cutover-runbook.md`. Release status: `docs/rust-rewrite/release-readiness.md`.

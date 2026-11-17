@@ -34,6 +34,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OLLAMA_URL=${OLLAMA_URL:-}
       - MALLOC_ARENA_MAX=2
+    # This probe works on the Rust image (6.x, where python is a health check
+    # shim) and on a pinned Python image (5.x).
     healthcheck:
       test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if 200 <= urllib.request.urlopen('http://localhost:8000/health', timeout=3).getcode() < 400 else 1)"]
       interval: 30s
