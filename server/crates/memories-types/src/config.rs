@@ -35,7 +35,7 @@ pub const VARS: &[(&str, Use)] = &[
     ("CLOUD_SYNC_REGION", NotUsed),
     ("CLOUD_SYNC_SECRET_KEY", NotUsed),
     ("DATA_DIR", Supported),
-    ("DOCTRINE_IDENTICAL_THRESHOLD", NotUsed),
+    ("DOCTRINE_IDENTICAL_THRESHOLD", Supported),
     ("EMBEDDER_AUTO_RELOAD_CHECK_SEC", NotUsed),
     ("EMBEDDER_AUTO_RELOAD_ENABLED", NotUsed),
     ("EMBEDDER_AUTO_RELOAD_HIGH_STREAK", NotUsed),
@@ -76,9 +76,9 @@ pub const VARS: &[(&str, Use)] = &[
     ("EXTRACT_SIMILAR_TEXT_CHARS", Supported),
     ("EXTRACT_TRAINING_DATA_DIR", NotUsed),
     ("FORWARDED_ALLOW_IPS", Supported),
-    ("MAINTENANCE_CONFLICT_DRAIN", NotUsed),
-    ("MAINTENANCE_CONFLICT_MAX", NotUsed),
-    ("MAINTENANCE_ENABLED", NotUsed),
+    ("MAINTENANCE_CONFLICT_DRAIN", Supported),
+    ("MAINTENANCE_CONFLICT_MAX", Supported),
+    ("MAINTENANCE_ENABLED", Supported),
     ("MAX_BACKUPS", Supported),
     ("MAX_EXTRACT_MESSAGE_CHARS", Supported),
     ("MEMORIES_PERSIST_DELAY_SEC", NotUsed),
@@ -100,11 +100,11 @@ pub const VARS: &[(&str, Use)] = &[
     ("PROJECT_PROMOTION_AUDIT_FLOOR", NotUsed),
     ("PROJECT_PROMOTION_AUDIT_PERIOD_DAYS", NotUsed),
     ("PROJECT_PROMOTION_CLASSIFIER_VERSION", NotUsed),
-    ("PROJECT_PROMOTION_MODE", NotUsed),
+    ("PROJECT_PROMOTION_MODE", Supported),
     ("PROJECT_PROMOTION_NEAR_DUPLICATE_THRESHOLD", NotUsed),
     ("PROJECT_PROMOTION_RECONCILE_BATCH", NotUsed),
     ("PROJECT_PROMOTION_RECONCILE_BUDGET_SECONDS", NotUsed),
-    ("PROJECT_PROMOTION_REJECTED_RETENTION_DAYS", NotUsed),
+    ("PROJECT_PROMOTION_REJECTED_RETENTION_DAYS", Supported),
     ("PROJECT_PROMOTION_RELEVANCE_THRESHOLD", NotUsed),
     ("PROJECT_PROMOTION_REVIEWER_VERSION", NotUsed),
     ("PROJECT_PROMOTION_REVIEW_MODEL", NotUsed),
@@ -233,7 +233,11 @@ mod tests {
     #[test]
     fn only_set_unused_vars_are_reported() {
         let got = set_but_not_used(|n| {
-            matches!(n, "CLOUD_SYNC_BUCKET" | "API_KEY" | "UNKNOWN").then(String::new)
+            matches!(
+                n,
+                "CLOUD_SYNC_BUCKET" | "API_KEY" | "MAINTENANCE_ENABLED" | "UNKNOWN"
+            )
+            .then(String::new)
         });
         assert_eq!(got, vec!["CLOUD_SYNC_BUCKET"]);
     }

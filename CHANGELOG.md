@@ -2,7 +2,80 @@
 
 ## [Unreleased]
 
-### Added
+## [6.0.0] - Not released (set the date at the release)
+
+Memories 6.0.0 replaces the Python server with a Rust server that has the
+same HTTP API. Clients (MCP server, hooks, CLI, web UI) do not change. The
+Python server v5.19.0 stays in the repository as the rollback reference until
+task P7-3. Upgrade and rollback steps: `docs/rust-rewrite/cutover-runbook.md`.
+
+### Highlights
+
+Measured on the production data (about 93,000 memories, 4 vCPU droplet),
+Python v5.19.0 against Rust 6.0.0:
+
+| Measure | Python v5.19.0 | Rust 6.0.0 |
+|---|---|---|
+| Hybrid search, 1 client, p50 / p95 (copy of production data, gate G5) | 118 / 411 ms | 110 / 143 ms |
+| Search p95, 5 workers (gate G5) | 1,263 ms | 396 ms |
+| Mixed load 5 min, search p95 (gate G5) | 13,949 ms | 284 ms |
+| Mixed load 5 min, add p95 (gate G5) | 19,045 ms | 335 ms |
+| Requests done in the mixed 5 min (gate G5) | 244 | 7,508 |
+| Server memory (RSS) | 1,271 MB (peak 1,434 MB) | 305 to 318 MB on production |
+| Production search, light traffic | 372 to 3,232 ms | 136 to 207 ms |
+| Production, mixed 5 workers, search p50 / add p95 (image `b4d549a`) | not measured | 51 / 197 ms |
+| Production search capacity, 10 search workers | not measured | 66 searches each second |
+| Recall hook probe (6 searches), 5 workers, p50 | not measured | 0.35 s |
+
+- Writes do not block reads. The 2026-11-15 Python fault (false "not
+  reachable" in the hooks during writes) does not occur on Rust.
+- No request failed and no 5xx occurred in the production load test of
+  2026-11-17 (1 to 20 nonstop workers).
+- Sources: `docs/rust-rewrite/gates/G5.md` and the production load test
+  report of 2026-11-17.
+
+### Upgrade notes
+
+- The first start on v5 data migrates `metadata.json` into the new Qdrant
+  collection `<QDRANT_COLLECTION>_v2` (55 s for 93,000 records). Only
+  `GET /health` answers during the migration. The server never changes the v5
+  data, so the rollback image can return to v5 for 7 days.
+- `EMBED_PROVIDER=openai`, `EXTRACT_PROVIDER=chatgpt-subscription` and
+  `PROJECT_PROMOTION_MODE=shadow` or `auto` stop the start.
+- Not used on Rust: `EXTRACT_TRAINING_DATA_DIR` (no training pairs),
+  `CLOUD_SYNC_*`, `EMBED_BASE_URL`, `EMBEDDER_AUTO_RELOAD_*`,
+  `MEMORY_TRIM_*`, `MEMORIES_PERSIST_DELAY_SEC`, `SHADOW_*`. Full list:
+  `docs/rust-rewrite/configuration.md`.
+- Remove `MALLOC_MMAP_THRESHOLD_` and `MALLOC_TRIM_THRESHOLD_`. They make the
+  Rust search slower.
+- `/docs` (Swagger UI) is gone. `/openapi.json` stays.
+- Known gaps: a restore does not put back the SQLite files (`state.db` and the
+  others); a Rust restore cannot read a v5
+  backup folder; `POST /memory/conflicts/resolve` has no write journal entry;
+  `%2F` in a path parameter routes differently. Details: the runbook, part 4.
+
+### Release packaging
+
+- `BACKEND_VERSION`, `mcp-server/package.json` and the plugin manifests are
+  6.0.0. The hooks and `memories doctor` show no "update available" for a
+  6.0.0 server. The Python server still reports 5.19.0.
+- New command `memories-server healthcheck [URL]`. The image `HEALTHCHECK`
+  and the repository compose files use it. The `python -c` probe of v5 compose
+  files keeps working through the shim in the image.
+- `docker-compose.yml` and `docker-compose.snippet.yml` build the Rust server
+  (`server/` with the build context `webui`). The Python-only variables and the
+  two allocator variables are removed.
+- New workflow `publish-image.yml`: builds amd64 and arm64 on native runners,
+  checks each image, pushes `ghcr.io/divyekant/memories:<version>`, and in a
+  second run points `latest` at it.
+- The Rust server no longer logs "not used" for `MAINTENANCE_ENABLED`,
+  `MAINTENANCE_CONFLICT_DRAIN`, `MAINTENANCE_CONFLICT_MAX`,
+  `DOCTRINE_IDENTICAL_THRESHOLD`, `PROJECT_PROMOTION_MODE` and
+  `PROJECT_PROMOTION_REJECTED_RETENTION_DAYS`. It reads all six.
+
+### Rewrite task log
+
+#### Added
 - **Rust extract jobs keep facts that Python loses.** If the model decides to
   update a memory of another source, or to mark a conflict with one, the
   Python server refuses the write and drops the fact. The Rust server adds the
@@ -196,7 +269,7 @@
   server or to a client. Details:
   `docs/decisions/2026-11-16-rust-core-writes.md`.
 
-### Changed
+#### Changed
 - **Client and tool libraries are updated (Rust rewrite task P0-5).** The
   check and each decision are in `docs/rust-rewrite/library-review.md`.
   - MCP server: `@modelcontextprotocol/sdk` 1.32.2, `express` 5.3.0 and

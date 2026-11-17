@@ -6,7 +6,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-const DEFAULT_URL: &str = "http://localhost:8000/health";
+pub const DEFAULT_URL: &str = "http://localhost:8000/health";
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct Response {
@@ -38,7 +38,13 @@ pub fn run(args: &[String]) -> i32 {
         eprintln!("memories image: python is a health check shim only, not a Python interpreter");
         return 127;
     }
-    match get(&url_from_args(args)) {
+    check(&url_from_args(args))
+}
+
+/// `memories-server healthcheck [URL]`: exit code 0 if the URL answers with a
+/// status from 200 to 399, else 1.
+pub fn check(url: &str) -> i32 {
+    match get(url) {
         Ok(r) if (200..400).contains(&r.status) => 0,
         _ => 1,
     }
