@@ -460,10 +460,16 @@ impl QdrantStore {
     }
 
     /// Make a Qdrant snapshot of the collection. Returns its name.
+    /// Over REST: a snapshot can take longer than the 5 s gRPC deadline.
     pub async fn create_snapshot(&self) -> Result<String, StoreError> {
         self.op("create_snapshot");
-        let r = self.client.create_snapshot(&self.collection).await?;
-        Ok(r.snapshot_description.map(|d| d.name).unwrap_or_default())
+        let resp = Self::checked(self.rest(reqwest::Method::POST, "?wait=true")).await?;
+        let body: serde_json::Value = serde_json::from_slice(&resp.bytes().await?)
+            .map_err(|e| StoreError::Rest(e.to_string()))?;
+        body["result"]["name"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| StoreError::Rest(format!("no snapshot name in {body}")))
     }
 
     fn rest(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
