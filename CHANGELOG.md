@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Backups no longer fail when the Qdrant snapshot takes more than 5 seconds. The server makes the snapshot over REST (300 s read limit), not over gRPC (5 s default deadline). Before this fix, about one backup each day failed with `Timeout expired` and left a snapshot file of about 350 MB in Qdrant.
+
 ## [6.0.0] - Not released (set the date at the release)
 
 Memories 6.0.0 replaces the Python server with a Rust server that has the
