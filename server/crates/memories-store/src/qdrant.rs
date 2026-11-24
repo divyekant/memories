@@ -461,8 +461,20 @@ impl QdrantStore {
 
     /// Make a Qdrant snapshot of the collection. Returns its name.
     /// Over REST: a snapshot can take longer than the 5 s gRPC deadline.
+    /// A failed request is tried one more time after 2 s.
     pub async fn create_snapshot(&self) -> Result<String, StoreError> {
         self.op("create_snapshot");
+        match self.create_snapshot_once().await {
+            Ok(name) => Ok(name),
+            Err(e) => {
+                tracing::warn!(error = %e, "Qdrant snapshot failed, trying again in 2 s");
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                self.create_snapshot_once().await
+            }
+        }
+    }
+
+    async fn create_snapshot_once(&self) -> Result<String, StoreError> {
         let resp = Self::checked(self.rest(reqwest::Method::POST, "?wait=true")).await?;
         let body: serde_json::Value = serde_json::from_slice(&resp.bytes().await?)
             .map_err(|e| StoreError::Rest(e.to_string()))?;

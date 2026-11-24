@@ -26,7 +26,14 @@ python3 scripts/check_crate_age.py Cargo.lock --days 2
 ```
 
 The embedding parity test (gate G2) needs ONNX Runtime 1.31.0. It downloads
-the model if the model is not in the Hugging Face cache:
+the model if the model is not in the Hugging Face cache. Get the library from
+the NuGet package, as CI does (`.github/workflows/ci.yml`):
+
+```bash
+curl -sSfLo ort.nupkg https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg
+echo "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b  ort.nupkg" | sha256sum -c -
+unzip -j ort.nupkg runtimes/linux-x64/native/libonnxruntime.so -d /path/to
+```
 
 ```bash
 ORT_DYLIB_PATH=/path/to/libonnxruntime.so \

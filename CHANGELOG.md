@@ -2,11 +2,7 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Backups no longer fail when the Qdrant snapshot takes more than 5 seconds. The server makes the snapshot over REST (300 s read limit), not over gRPC (5 s default deadline). Before this fix, about one backup each day failed with `Timeout expired` and left a snapshot file of about 350 MB in Qdrant.
-
-## [6.0.0] - Not released (set the date at the release)
+## [6.0.0] - 2026-11-24
 
 Memories 6.0.0 replaces the Python server with a Rust server that has the
 same HTTP API. Clients (MCP server, hooks, CLI, web UI) do not change. The
@@ -37,6 +33,17 @@ Python v5.19.0 against Rust 6.0.0:
   2026-11-17 (1 to 20 nonstop workers).
 - Sources: `docs/rust-rewrite/gates/G5.md` and the production load test
   report of 2026-11-17.
+
+### Fixed during the production week
+
+- Backups no longer fail when the Qdrant snapshot takes more than 5 seconds. The server makes the snapshot over REST (300 s read limit), not over gRPC (5 s default deadline), and tries a failed snapshot one more time after 2 s. Before this fix, about one backup each day failed with `Timeout expired` and left a snapshot file of about 350 MB in Qdrant.
+
+### Open source
+
+- Added `LICENSE` (MIT) in the repository and in the npm package. The license was declared in `package.json` and `Cargo.toml`, but the file was missing.
+- `THIRD_PARTY_NOTICES.md` now lists every Rust crate and npm package with its license, and the image components. `scripts/third_party_notices.py` makes the file. CI checks that the file is current and that each license is on the allow list.
+- Added `SECURITY.md` and `CONTRIBUTING.md`.
+- The image and CI get ONNX Runtime 1.31.0 from the NuGet package `Microsoft.ML.OnnxRuntime`, pinned by sha256. The GitHub release downloads return 404 since 2026-11-17. The linux-x64 library is byte-identical to the library of the GitHub archive. Decision record: `docs/decisions/2026-11-24-onnxruntime-from-nuget.md`.
 
 ### Upgrade notes
 

@@ -1,9 +1,19 @@
 # Rust v6.0.0: release readiness
 
-State on 2026-11-17. Production runs Rust 6.0.0 (image `memories:rust-b4d549a`)
-since 00:31 UTC. The monitor week ends on 2026-11-24. Nothing is released:
-no merge to `main`, no tag, no npm package, no GitHub release, no `latest`
-image, no marketplace pin.
+State on 2026-11-24. Production ran Rust 6.0.0 from 2026-11-17 00:31 UTC to
+the end of the monitor week (image `memories:rust-027f254` since 06:03 UTC on
+2026-11-17). dk approved the release on 2026-11-24.
+
+## Monitor week result (2026-11-17 to 2026-11-24)
+
+| Measure | Result |
+|---|---|
+| Restarts | 0 |
+| Failed checks (health, search) | 0 of 2,130 |
+| Search latency | p50 78 ms, p95 268 ms, max 559 ms |
+| Server memory (RSS) | 223 to 388 MB |
+| Count | 93,017 to 95,276. Server count equal to the Qdrant count. |
+| Backup snapshot timeouts | 5. The next backup passed each time. Fixed in 6.0.0 (REST and one retry). |
 
 ## Done
 
@@ -28,13 +38,13 @@ image, no marketplace pin.
 
 | # | Item | Blocks the release | Note |
 |---|---|---|---|
-| 1 | Approve the release after the monitor week (2026-11-24) | Yes | Plan task P7-2. Read the monitor log (`~/rust-monitor/metrics.ndjson`, `errors.log`) first. |
-| 2 | Close gate G7 (shadow run, task P6-2) | Yes | The plan needs G1 to G7 before P7-2. The production deploy of 2026-11-17 took the place of the shadow run. dk decides if the monitor week closes G7. Check G1 and G2 on the tracker. |
-| 3 | Merge `rust-rewrite` into `main` | Yes | A PR with a review and green CI. `develop` is stale at v5.16.2; do not use it. |
-| 4 | Set the release date in `CHANGELOG.md` | Yes | Heading `## [6.0.0] - <date>`. `release.yml` reads this section. |
-| 5 | Run the release steps of the runbook, part 3 | Yes | Image, droplet switch to `ghcr.io/divyekant/memories:6.0.0`, 30 min check, `latest`, `release.yml`, marketplace pin. |
+| 1 | Approve the release after the monitor week (2026-11-24) | Done | dk approved on 2026-11-24. |
+| 2 | Close gate G7 (shadow run, task P6-2) | Done | The production monitor week took the place of the shadow run. The release approval of dk on 2026-11-24 closes G7. |
+| 3 | Merge `rust-rewrite` into `main` | Done at the release | A PR with a review and green CI. `develop` is stale at v5.16.2; do not use it. |
+| 4 | Set the release date in `CHANGELOG.md` | Done | `## [6.0.0] - 2026-11-24`. |
+| 5 | Run the release steps of the runbook, part 3 | In progress (2026-11-24) | Image, droplet switch to `ghcr.io/divyekant/memories:6.0.0`, 30 min check, `latest`, `release.yml`, marketplace pin. |
 | 6 | Mac: update the plugin and the local install | No | `claude plugin marketplace update dk-marketplace`, `claude plugin update memories@dk-marketplace`. The Mac hooks show "Backend Update Available" until then. |
-| 7 | Remove the droplet monitor cron line | No | After the week. |
+| 7 | Remove the droplet monitor cron line | Done | Removed on 2026-11-24. |
 | 8 | Approve task P7-3 (delete of the v5 data and the Python code) | No | After the 7-day rollback window. A rollback is not possible after `prune-legacy`. |
 | 9 | Decide on the mixed-load add p95 | No | G5 passes on production (197 ms at 5 workers). With 10 or more nonstop writers the add p95 is 0.8 to 1.4 s. dk accepted this for now. |
 
@@ -50,5 +60,4 @@ image, no marketplace pin.
 | `EXTRACT_TRAINING_DATA_DIR` is not used | No training pairs while on Rust. Port only if fine-tuning restarts. |
 | No latency view in the web UI | Pending: a separate thread builds a latency and health dashboard. `GET /metrics` already has avg, p95 and max latency for each route. |
 | No cloud sync, no OpenAI embedder, no `chatgpt-subscription` provider | Port only if an install needs one. |
-| The new `publish-image.yml` has not run | It can run only after it is on `main`. The first run is release step 1. |
 | Droplet allocator variables | The `.rust` override removes `MALLOC_MMAP_THRESHOLD_` and `MALLOC_TRIM_THRESHOLD_` in its entrypoint. At the release, remove them from `.env` too. |

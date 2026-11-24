@@ -138,6 +138,10 @@ jobs:
       - name: Format check
         run: cargo fmt --all --check
 
+      - name: Third-party notices are current and every license is allowed
+        working-directory: .
+        run: python3 scripts/third_party_notices.py --check
+
       - name: Lint check
         run: cargo clippy --locked --all-targets -- -D warnings
 
@@ -163,12 +167,12 @@ jobs:
           key: hf-all-MiniLM-L6-v2-1110a243fdf4706b3f48f1d95db1a4f5529b4d41
 
       - name: Embedding parity with Python (gate G2)
-        # Same ONNX Runtime release and hash as server/Dockerfile (stage ort-amd64).
+        # Same ONNX Runtime package and hash as server/Dockerfile (stage ort-nupkg).
         # With no cache, the test downloads the model from the Hub.
         run: |
-          curl -sSfLo "$RUNNER_TEMP/ort.tgz" https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-linux-x64-1.31.0.tgz
-          echo "cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57  $RUNNER_TEMP/ort.tgz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP"
+          curl -sSfLo "$RUNNER_TEMP/ort.nupkg" https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg
+          echo "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b  $RUNNER_TEMP/ort.nupkg" | sha256sum -c -
+          unzip -j -o "$RUNNER_TEMP/ort.nupkg" runtimes/linux-x64/native/libonnxruntime.so -d "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
           ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
             cargo test --locked -p memories-embed --test parity -- --ignored --nocapture
 
@@ -283,11 +287,11 @@ jobs:
           key: hf-all-MiniLM-L6-v2-1110a243fdf4706b3f48f1d95db1a4f5529b4d41
 
       - name: P2-2 search routes with hybrid false, and the search p95
-        # Same ONNX Runtime release and hash as server/Dockerfile (stage ort-amd64).
+        # Same ONNX Runtime package and hash as server/Dockerfile (stage ort-nupkg).
         run: |
-          curl -sSfLo "$RUNNER_TEMP/ort.tgz" https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-linux-x64-1.31.0.tgz
-          echo "cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57  $RUNNER_TEMP/ort.tgz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP"
+          curl -sSfLo "$RUNNER_TEMP/ort.nupkg" https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg
+          echo "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b  $RUNNER_TEMP/ort.nupkg" | sha256sum -c -
+          unzip -j -o "$RUNNER_TEMP/ort.nupkg" runtimes/linux-x64/native/libonnxruntime.so -d "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
           echo "ORT_DYLIB_PATH=$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" >> "$GITHUB_ENV"
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
           QDRANT_URL=http://127.0.0.1:6333 \

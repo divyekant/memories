@@ -1854,3 +1854,12 @@ When changing memory/index behavior: add or update tests, validate backup/restor
 - [ ] Public docs avoid product-specific assumptions unless the file is intentionally integration-specific
 - [ ] Benchmarks describe workload profile and caveats
 - [ ] Versioned behavior changes documented in README
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE). Third-party packages and their licenses:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). To report a security problem,
+read [SECURITY.md](SECURITY.md). To make a change, read
+[CONTRIBUTING.md](CONTRIBUTING.md).
