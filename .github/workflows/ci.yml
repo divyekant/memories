@@ -172,6 +172,7 @@ jobs:
         run: |
           curl -sSfLo "$RUNNER_TEMP/ort.nupkg" https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg
           echo "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b  $RUNNER_TEMP/ort.nupkg" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
           unzip -j -o "$RUNNER_TEMP/ort.nupkg" runtimes/linux-x64/native/libonnxruntime.so -d "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
           ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
             cargo test --locked -p memories-embed --test parity -- --ignored --nocapture
@@ -291,6 +292,7 @@ jobs:
         run: |
           curl -sSfLo "$RUNNER_TEMP/ort.nupkg" https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg
           echo "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b  $RUNNER_TEMP/ort.nupkg" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
           unzip -j -o "$RUNNER_TEMP/ort.nupkg" runtimes/linux-x64/native/libonnxruntime.so -d "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
           echo "ORT_DYLIB_PATH=$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" >> "$GITHUB_ENV"
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
