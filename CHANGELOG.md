@@ -2,6 +2,314 @@
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-11-24
+
+Memories 6.0.0 replaces the Python server with a Rust server that has the
+same HTTP API. Clients (MCP server, hooks, CLI, web UI) do not change. The
+Python server v5.19.0 stays in the repository as the rollback reference until
+task P7-3. Upgrade and rollback steps: `docs/rust-rewrite/cutover-runbook.md`.
+
+### Highlights
+
+Measured on the production data (about 93,000 memories, 4 vCPU droplet),
+Python v5.19.0 against Rust 6.0.0:
+
+| Measure | Python v5.19.0 | Rust 6.0.0 |
+|---|---|---|
+| Hybrid search, 1 client, p50 / p95 (copy of production data, gate G5) | 118 / 411 ms | 110 / 143 ms |
+| Search p95, 5 workers (gate G5) | 1,263 ms | 396 ms |
+| Mixed load 5 min, search p95 (gate G5) | 13,949 ms | 284 ms |
+| Mixed load 5 min, add p95 (gate G5) | 19,045 ms | 335 ms |
+| Requests done in the mixed 5 min (gate G5) | 244 | 7,508 |
+| Server memory (RSS) | 1,271 MB (peak 1,434 MB) | 305 to 318 MB on production |
+| Production search, light traffic | 372 to 3,232 ms | 136 to 207 ms |
+| Production, mixed 5 workers, search p50 / add p95 (image `b4d549a`) | not measured | 51 / 197 ms |
+| Production search capacity, 10 search workers | not measured | 66 searches each second |
+| Recall hook probe (6 searches), 5 workers, p50 | not measured | 0.35 s |
+
+- Writes do not block reads. The 2026-11-15 Python fault (false "not
+  reachable" in the hooks during writes) does not occur on Rust.
+- No request failed and no 5xx occurred in the production load test of
+  2026-11-17 (1 to 20 nonstop workers).
+- Sources: `docs/rust-rewrite/gates/G5.md` and the production load test
+  report of 2026-11-17.
+
+### Fixed during the production week
+
+- Backups no longer fail when the Qdrant snapshot takes more than 5 seconds. The server makes the snapshot over REST (300 s read limit), not over gRPC (5 s default deadline), and tries a failed snapshot one more time after 2 s. Before this fix, about one backup each day failed with `Timeout expired` and left a snapshot file of about 350 MB in Qdrant.
+
+### Open source
+
+- Added `LICENSE` (MIT) in the repository and in the npm package. The license was declared in `package.json` and `Cargo.toml`, but the file was missing.
+- `THIRD_PARTY_NOTICES.md` now lists every Rust crate and npm package with its license, and the image components. `scripts/third_party_notices.py` makes the file. CI checks that the file is current and that each license is on the allow list.
+- Added `SECURITY.md` and `CONTRIBUTING.md`.
+- The server turns off ONNX Runtime telemetry explicitly. The `ort` crate turns it on by default, and the Linux build of ONNX Runtime 1.31.0 contains a Microsoft telemetry client.
+- `url` is 2.5.9 (RUSTSEC-2026-0592).
+- The image and CI get ONNX Runtime 1.31.0 from the NuGet package `Microsoft.ML.OnnxRuntime`, pinned by sha256. The GitHub release downloads return 404 since 2026-11-17. The linux-x64 library is byte-identical to the library of the GitHub archive. Decision record: `docs/decisions/2026-11-24-onnxruntime-from-nuget.md`.
+
+### Upgrade notes
+
+- The first start on v5 data migrates `metadata.json` into the new Qdrant
+  collection `<QDRANT_COLLECTION>_v2` (55 s for 93,000 records). Only
+  `GET /health` answers during the migration. The server never changes the v5
+  data, so the rollback image can return to v5 for 7 days.
+- `EMBED_PROVIDER=openai`, `EXTRACT_PROVIDER=chatgpt-subscription` and
+  `PROJECT_PROMOTION_MODE=shadow` or `auto` stop the start.
+- Not used on Rust: `EXTRACT_TRAINING_DATA_DIR` (no training pairs),
+  `CLOUD_SYNC_*`, `EMBED_BASE_URL`, `EMBEDDER_AUTO_RELOAD_*`,
+  `MEMORY_TRIM_*`, `MEMORIES_PERSIST_DELAY_SEC`, `SHADOW_*`. Full list:
+  `docs/rust-rewrite/configuration.md`.
+- Remove `MALLOC_MMAP_THRESHOLD_` and `MALLOC_TRIM_THRESHOLD_`. They make the
+  Rust search slower.
+- `/docs` (Swagger UI) is gone. `/openapi.json` stays.
+- Known gaps: a restore does not put back the SQLite files (`state.db` and the
+  others); a Rust restore cannot read a v5
+  backup folder; `POST /memory/conflicts/resolve` has no write journal entry;
+  `%2F` in a path parameter routes differently. Details: the runbook, part 4.
+
+### Release packaging
+
+- `BACKEND_VERSION`, `mcp-server/package.json` and the plugin manifests are
+  6.0.0. The hooks and `memories doctor` show no "update available" for a
+  6.0.0 server. The Python server still reports 5.19.0.
+- New command `memories-server healthcheck [URL]`. The image `HEALTHCHECK`
+  and the repository compose files use it. The `python -c` probe of v5 compose
+  files keeps working through the shim in the image.
+- `docker-compose.yml` and `docker-compose.snippet.yml` build the Rust server
+  (`server/` with the build context `webui`). The Python-only variables and the
+  two allocator variables are removed.
+- New workflow `publish-image.yml`: builds amd64 and arm64 on native runners,
+  checks each image, pushes `ghcr.io/divyekant/memories:<version>`, and in a
+  second run points `latest` at it.
+- The Rust server no longer logs "not used" for `MAINTENANCE_ENABLED`,
+  `MAINTENANCE_CONFLICT_DRAIN`, `MAINTENANCE_CONFLICT_MAX`,
+  `DOCTRINE_IDENTICAL_THRESHOLD`, `PROJECT_PROMOTION_MODE` and
+  `PROJECT_PROMOTION_REJECTED_RETENTION_DAYS`. It reads all six.
+
+### Rewrite task log
+
+#### Added
+- **Performance page and metrics history (Rust server).** The web UI has a
+  new page, Performance. It shows latency (p50, p95, max) for each route,
+  requests per minute, error rate, process memory (RSS), uptime, server
+  starts, in-flight requests and the extract queue, for 1 hour to 14 days.
+  The Rust server writes a sample each minute to `metrics.db`, so the
+  history continues after a restart. New admin route:
+  `GET /metrics/history?hours=N`. New settings:
+  `METRICS_HISTORY_INTERVAL_SEC` (default 60, 0 is off) and
+  `METRICS_HISTORY_DAYS` (default 14). `GET /metrics` does not change.
+  Details: `docs/rust-rewrite/usage-metrics.md`.
+- **Rust extract jobs keep facts that Python loses.** If the model decides to
+  update a memory of another source, or to mark a conflict with one, the
+  Python server refuses the write and drops the fact. The Rust server adds the
+  fact as a new memory of the job source (`fallback_add`, with
+  `foreign_old_id`). It uses the fact text, never `new_text`, because
+  `new_text` can hold words of the other source. The other memory does not
+  change. `EXTRACT_FOREIGN_TARGET_ADD=false` gives the Python behavior. The
+  commit route keeps the Python behavior. Details:
+  `docs/decisions/2026-11-17-rust-extract-foreign-target.md`.
+- **Rust server fixes 10 Python defects that earlier tasks kept for parity.**
+  For example, a scoped key that writes out of its scope gets 403, not 500.
+  `POST /memory/deduplicate` returns its result and writes the audit row.
+  `POST /memory/merge` with a repeated ID writes nothing. The parity diff reads
+  the fixes from `parity/intended.json`. No change to the Python server or to
+  a client. Details: `docs/decisions/2026-11-16-rust-fixed-python-defects.md`.
+- **Keyword vector pass of the Rust server (rewrite task P3-4).** A background
+  job writes all the keyword vectors again with the current average document
+  length, when the average moves more than 25% from the last pass (at most
+  once an hour), or more than 2 times or less than half (at once). The job
+  holds the write lock for one batch of 100 records only, changes only the
+  keyword vectors, and continues after a forced stop. No change to the Python
+  server or to a client. Details: `docs/rust-rewrite/keyword-refresh.md`.
+- **Rust events, webhooks and web UI routes (rewrite task P5-5).** The Rust
+  server answers `GET /events/recent`, `GET /events/stream`, the three
+  `/webhooks` routes, `GET /ui` and `GET /ui/static/*` with the replies of the
+  Python server. The webhooks stay in `state.db` after a restart, and the
+  server tries each webhook call up to 3 times. The image build needs
+  `--build-context webui=webui`. No change to the Python server or to a
+  client. Details: `docs/decisions/2026-11-16-rust-events-webhooks-ui.md`.
+- **Gate G4 part b live run (rewrite task P4-4).** `parity/extract_live.py`
+  and `server/scripts/gate_g4_live.sh` send 24 dry-run probes to a Python
+  server and a Rust server with the same live model. With `gpt-4o-mini`,
+  Python agrees with Rust on 0.648 of the probes and with itself on 0.639.
+  The 90% condition of the plan is below the model noise; a new condition
+  waits for dk. No change to the Python server or to a client. Details:
+  `docs/rust-rewrite/gates/G4.md`.
+- **Gate G4 part a in CI (rewrite task P4-4).** `parity/extract_corpus.py`
+  sends the 105 transcripts of the extraction evals (the 20 texts of
+  `eval/run_extraction_eval.py` and the scenario memories) through the
+  extraction pipeline of the two servers. A fake LLM gives replies that are a
+  function of the prompt and of the highest record ID so far. The Rust server gives the same prompts, actions,
+  links and stored records as Python v5.19.0 (0 differences). 206 of 207
+  similar lists from hybrid search are equal. The other list differs by the
+  known keyword index design. The live part (24 probes with a real model) waits for
+  approval. No change to the Python server or to a client. Details:
+  `docs/rust-rewrite/gates/G4.md`.
+- **Gate G3 run for the Rust rewrite (task P2-4).** `server/scripts/gate_g3.sh`
+  writes the same records into the Python server and the Rust server, and
+  compares vector search, hybrid search, the graph eval and LongMemEval
+  recall at 5. G3 passes with the Qdrant sparse vector, so the tantivy
+  fallback is not necessary. CI job `rust-parity` runs the corpus and graph
+  parts. `parity/keyword_index/run.py --dataset grow` checks the avgdl rule on
+  a store that grows. No change to the Python server or to a client.
+  Details: `docs/rust-rewrite/gates/G3.md`.
+- **Rust project promotion routes, off mode (rewrite task P5-6).** The Rust
+  server answers `GET /promotions`, `GET /promotions/{candidate_id}` and the
+  approve and reject routes with the replies of the Python server in the
+  `off` mode, the mode of production. `GET /metrics` has the `promotion`
+  part. `PROJECT_PROMOTION_MODE=shadow` or `auto` stops the start with a
+  clear message. `server/scripts/parity_promotions.sh` replays the four golden
+  cases (0 differ) and sends 36 requests to a Python and a Rust server (0
+  differ). No change to the Python server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-promotions-off.md`.
+- **Rollback tool, merge and rollback drill of the Rust server (rewrite task
+  P7-1).** `memories-server export-legacy` writes the records of
+  `memories_v2` back to `metadata.json` and to the old collection, and moves
+  the waiting extract jobs to a file. It skips the export if a Python server
+  changed `metadata.json`, and it refuses an export that deletes most of the
+  old data unless `--force` is given. `memories-server migrate --merge` brings
+  the writes of a Python server into `memories_v2` with a three-way merge,
+  field by field. The
+  rollback image (`server/rollback/`) runs the export, then the Python
+  server. `server/scripts/rollback_drill.sh` runs the two return cases in CI.
+  No change to the Python server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-rollback.md`.
+- **Rust extraction pipeline (rewrite task P4-3).** The Rust server runs the
+  extraction pipeline for each queued job: hygiene, secret redaction, fact
+  extraction, the AUDN decision, the writes, the auto links, the dry run, the
+  debug trace, the single-call profile mode and the regex fallback. It adds
+  `POST /memory/extract/commit` and the four `/extraction/profiles` routes.
+  `server/scripts/parity_pipeline.sh` runs 16 cases with recorded LLM replies
+  against the Python capture: each prompt is equal byte for byte, and each
+  result and stored record is equal (0 differences). No change to the Python
+  server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-extract-pipeline.md`.
+- **Bulk writes and relation writes of the Rust server (rewrite task P3-2).**
+  The Rust server answers the 13 routes for bulk deletes, supersede, merge,
+  archive batch, links, folder rename, conflict resolution, deduplicate and
+  missed captures, with the replies of the Python server. The delete routes
+  keep the Python match rules: `delete-by-source` matches a substring and
+  `delete-by-prefix` a plain prefix. `server/scripts/parity_bulk.sh` replays
+  95 golden cases (0 differ) and runs 122 cases on a Python and a Rust server
+  (0 differ, the same deleted IDs). No change to the Python server or to a
+  client. Details: `docs/decisions/2026-11-16-rust-bulk-writes.md`.
+- **Rust usage, metrics and feedback routes (rewrite task P5-1).** The Rust
+  server keeps `usage.db` with the seven tables of the Python tracker and
+  writes the rows through one writer thread, in batches. It answers
+  `GET /usage`, `GET /metrics`, the eight `/metrics/*` routes and the three
+  feedback routes with the replies of the Python server. The new route
+  `GET /metrics/prometheus` (admin only) gives the Prometheus text format.
+  Hybrid search reads the feedback scores. `server/scripts/parity_usage.sh`
+  runs the two servers on one `usage.db` (0 cases differ). No change to the
+  Python server or to a client. Details: `docs/rust-rewrite/usage-metrics.md`.
+- **Rust search routes (rewrite task P2-2).** The Rust server answers
+  `POST /search`, `/search/batch`, `/search/explain`, `/search/evidence` and
+  `/memory/is-novel` with the replies of the Python server (hybrid false). The
+  engine has a catalog of sources and links, a BM25 keyword query and a
+  reinforcement buffer that it writes to Qdrant each 2 s.
+  `server/scripts/parity_search.sh` replays 25 golden cases (0 differ) and
+  gives the search p95. No change to the Python server or to a client.
+  Details: `docs/rust-rewrite/search-routes.md`.
+- **Parity kit for the Rust rewrite (`parity/`).** The kit sends a fixed set
+  of requests to a server, records the replies, and compares the replies of
+  two servers. It has 225 cases: a seed corpus, each of the 93 routes, and
+  each wire rule of the clients. The golden captures come from the Python
+  server. A new CI job replays them against a second Python server and
+  fails on a difference.
+- **Capture middleware.** If `PARITY_CAPTURE_DIR` is set, the server writes
+  each request and its reply to an NDJSON file in that directory. The default
+  is off. The file holds memory text. Key headers are redacted.
+- **Rust server workspace (rewrite task P0-4).** `server/` holds the cargo
+  workspace of the Rust server, with six crates, a pinned toolchain, a
+  committed `Cargo.lock` and `server/Dockerfile` for amd64 and arm64. The
+  server answers `GET /health` only. CI adds format, lint, test, `cargo deny`
+  and crate age checks, and starts the bundled compose file with the Rust
+  image on each architecture. No change to the Python server or to a client.
+- **Keyword index test for the Rust rewrite (task P0-2).**
+  `parity/keyword_index/` compares the BM25 ranks of the Python server
+  (rank_bm25) with a Qdrant sparse vector on Qdrant 1.15.4 and 1.20.1. The
+  decision record `docs/decisions/2026-11-16-rust-keyword-index.md` gives the
+  numbers and selects the Qdrant sparse vector. No change to the Python server
+  or to a client.
+- **Rust embedder (rewrite task P1-2, gate G2).** The crate `memories-embed`
+  runs `all-MiniLM-L6-v2` with ONNX Runtime 1.31.0 and gives the vectors of
+  the Python embedder (lowest cosine 0.9999997 on 1,000 fixed texts). It reads
+  and fills the same Hugging Face model cache. The ONNX Runtime CPU arena is
+  off, so memory after bulk embedding is 225 MB, not 1.27 GB. CI runs the
+  parity test. Details: `docs/decisions/2026-11-16-rust-embedder.md`.
+- **Rust LLM providers (rewrite task P4-2).** Crate `memories-extract` has
+  the providers `anthropic` (API key and OAuth token modes), `openai`, `omlx`
+  and `ollama`, with a time limit of 120 s for each attempt and at most 2
+  retries. Replay tests check that each Rust request is equal to the Python
+  request. `chatgpt-subscription` is not ported. Details:
+  `docs/decisions/2026-11-16-rust-llm-providers.md`.
+- **Rust record store (rewrite task P1-3).** Crate `memories-types` has the
+  record model: typed known fields and a map for the other fields, so that a
+  write and a read keep each field. Crate `memories-store` writes the
+  collection `memories_v2` (dense vector, keyword sparse vector, full record
+  as payload, 8 payload indexes) and keeps the ID counter in `state.db`. The
+  counter does not give an ID again, also after the delete of the highest ID.
+  CI runs the tests against Qdrant 1.15.4. No change to the Python server or
+  to a client. Details: `docs/decisions/2026-11-16-rust-record-store.md`.
+- **Rust `migrate` and `verify` commands (rewrite task P1-4).**
+  `memories-server migrate` copies the records of `metadata.json` into
+  `memories_v2`. It copies each vector from the old collection and embeds the
+  text again only when the vector is not there. It then runs `verify`, which
+  compares the count, each field of each record and a sample of the vectors.
+  The commands do not change `metadata.json`, `config.json` or the old
+  collection. At the first start, `serve` runs the migration and answers only
+  `GET /health` until it is done. If `metadata.json` changes after the
+  migration, the server does not start and names `migrate --merge`. No change
+  to the Python server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-migrate-verify.md`.
+- **Rank core of the Rust server (rewrite task P2-1).** The crate
+  `memories-engine` has the rank rules of the search as pure functions: the
+  fusion of the vector and keyword ranks, the weights, the threshold, the
+  temporal filter, the graph step and the query intent rules. Golden cases
+  from the Python functions are in `parity/golden/rank/`. CI checks that the
+  golden cases are current. No change to the Python server or to a client.
+- **Read routes of the Rust server (rewrite task P2-3).** The Rust server
+  answers `GET /memory/{memory_id}`, `POST /memory/get-batch`, `GET /memories`,
+  `GET /memories/count`, `GET /folders`, `GET /stats`,
+  `GET /memory/{memory_id}/links`, `GET /memory/conflicts`, and the full body
+  of `GET /health` for a request with the `API_KEY` value. Each route reads
+  Qdrant with a get, a page, a count or a scroll, and the counts come from the
+  source map of the engine. No route reads all records into memory. The parity
+  kit replays the 20 golden cases of these routes and sends 371 more read
+  requests to the Python server and the Rust server on the same data: all
+  replies are equal. With 300,000 records, the memory of the process does not
+  increase after 1,000 list requests. `python -m parity replay` gets
+  `--save-vars` and `--vars-file`. No change to the Python server or to a
+  client. Details: `docs/decisions/2026-11-16-rust-read-routes.md`.
+- **Core writes of the Rust server (rewrite task P3-1).** The Rust server
+  has `POST /memory/add` (with `deduplicate` and `on_duplicate`),
+  `/memory/add-batch`, `/memory/upsert`, `/memory/upsert-batch`, PATCH and
+  DELETE `/memory/{memory_id}` and `/memory/delete-batch`, with the project
+  namespace policy, the events and the audit actions of the Python server.
+  A write changes only the Qdrant points of its records. A PATCH embeds again
+  only when the text changes. CI replays the 49 golden cases of these routes
+  and counts the Qdrant calls at two corpus sizes. No change to the Python
+  server or to a client. Details:
+  `docs/decisions/2026-11-16-rust-core-writes.md`.
+
+#### Changed
+- **Client and tool libraries are updated (Rust rewrite task P0-5).** The
+  check and each decision are in `docs/rust-rewrite/library-review.md`.
+  - MCP server: `@modelcontextprotocol/sdk` 1.32.2, `express` 5.3.0 and
+    `js-yaml` 4.3.2, with exact versions. `zod` 4.6.7 is now a direct
+    dependency. `npm audit` finds 0 issues (11
+    before, 1 of them critical in `proxy-addr`).
+  - Remote MCP server image: `node:26.13.1-alpine`.
+  - CLI and tests: `click` 8.5.1 and `pytest` 9.2.0.
+  - GitHub Actions: `actions/checkout` v7.0.1, `actions/setup-node` v7.1.0
+    and `astral-sh/setup-uv` v10.3.3, pinned to a commit SHA. CI now runs
+    the MCP server tests on Node 26.
+  - The Python server libraries do not change.
+  - The text of an MCP tool input error (-32602) is now a short sentence.
+- **The remote MCP server exits with code 1 when its port is in use.** Express
+  5 gives the listen error to a callback. Without the fix, the server logged
+  "listening" and exited with code 0.
+
 ## [5.19.0] - 2026-11-16
 
 ### Fixed

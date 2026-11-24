@@ -79,6 +79,7 @@ COPY event_bus.py .
 COPY audit_log.py .
 COPY query_intent.py .
 COPY evidence_packet.py .
+COPY parity_capture.py .
 COPY app.py .
 COPY cli/ cli/
 COPY webui ./webui

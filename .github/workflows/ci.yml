@@ -2,27 +2,33 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, rust-rewrite]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, rust-rewrite]
 
 jobs:
   tests:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26 }
 
       - name: MCP server install (pytest's stdio smoke needs node_modules)
         run: |
           cd mcp-server
-          npm ci
+          npm ci --ignore-scripts
           node --check index.js
+
+      - name: MCP server tests
+        run: cd mcp-server && npm test
 
       - name: Run pytest
         run: uv run pytest -q
@@ -33,6 +39,63 @@ jobs:
             bash -n "$f"
           done
 
+  parity:
+    # Parity kit (Rust rewrite, task P0-1): replay the golden captures against a
+    # new Python server. Zero differences is the pass condition.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Self-test of the kit
+        run: uv run pytest -q tests/test_parity_kit.py
+
+      - name: Rank golden cases match the Python functions
+        run: .venv/bin/python -m parity.rank_golden --check
+
+      - name: Search golden files match the Python code (task P2-2)
+        run: .venv/bin/python -m parity.search_golden --check
+
+      - name: Gate G6 test sort is current and each HTTP test has a check (task P6-1)
+        run: .venv/bin/python -m parity.sort_tests --check
+
+      - name: Extract golden file matches the Python code (task P4-3)
+        run: .venv/bin/python -m parity.extract_golden --check
+
+      - name: Extraction pipeline of the Python server against its golden capture (task P4-3)
+        run: server/scripts/parity_pipeline.sh python
+
+      - name: Gate G4 part a, eval corpus of the Python server against its golden capture (task P4-4)
+        run: server/scripts/parity_pipeline.sh python --check extract_corpus
+
+      - name: Start the Python reference server
+        run: |
+          PYTHON=.venv/bin/python parity/run_python_server.sh "$RUNNER_TEMP/parity-data" 18000 > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 1 180); do
+            curl -sf http://127.0.0.1:18000/health > /dev/null && exit 0
+            sleep 1
+          done
+          echo "The server did not start" >&2
+          exit 1
+
+      - name: Replay the golden captures
+        run: .venv/bin/python -m parity replay --base-url http://127.0.0.1:18000 --out "$RUNNER_TEMP/replay.ndjson"
+
+      - name: Diff against the golden captures
+        run: .venv/bin/python -m parity diff parity/golden/golden.ndjson "$RUNNER_TEMP/replay.ndjson"
+
+      - name: Server log
+        if: failure()
+        run: tail -n 200 "$RUNNER_TEMP/server.log"
+
   docker-image:
     # The 5.5.0 release crash-looped because new modules were missing from the
     # Dockerfile COPY list — host pytest can never catch that. Build the image
@@ -40,10 +103,342 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build image
         run: docker build -t memories-ci --target core .
 
       - name: Import app inside image
         run: docker run --rm --entrypoint python memories-ci -c "import app; print('app imports OK')"
+
+  rust:
+    # Rust server (server/): format, lint, tests, supply-chain checks.
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      qdrant:
+        # The minimum Qdrant version of the Rust server.
+        image: qdrant/qdrant:v1.15.4
+        ports:
+          - 6333:6333
+          - 6334:6334
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: server
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Third-party notices are current and every license is allowed
+        working-directory: .
+        run: python3 scripts/third_party_notices.py --check
+
+      - name: Lint check
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Record store against Qdrant 1.15.4 (task P1-3)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+        run: |
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
+          cargo test --locked -p memories-store --test qdrant_store -- --ignored --nocapture
+
+      - name: Migrate and verify against Qdrant 1.15.4 (task P1-4)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+        run: cargo test --locked -p memories-server --test migrate -- --ignored --nocapture
+
+      - name: Cache the embedding model
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-all-MiniLM-L6-v2-1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+
+      - name: Embedding parity with Python (gate G2)
+        # Same ONNX Runtime package and hash as server/Dockerfile (stage ort-nupkg).
+        # With no cache, the test downloads the model from the Hub.
+        run: |
+          curl -sSfLo "$RUNNER_TEMP/ort.nupkg" https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg
+          echo "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b  $RUNNER_TEMP/ort.nupkg" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
+          unzip -j -o "$RUNNER_TEMP/ort.nupkg" runtimes/linux-x64/native/libonnxruntime.so -d "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
+          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
+            cargo test --locked -p memories-embed --test parity -- --ignored --nocapture
+
+      - name: Core writes against Qdrant 1.15.4 and the embedder (task P3-1)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: cargo test --locked -p memories-engine --test writes -- --ignored --nocapture
+
+      - name: Backup, export and import routes against Qdrant 1.15.4 (task P5-4)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: cargo test --locked -p memories-server --test backup -- --ignored --nocapture
+
+      - name: Bulk writes and relation writes against Qdrant 1.15.4 and the embedder (task P3-2)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: cargo test --locked -p memories-engine --test bulk -- --ignored --nocapture
+
+      - name: Write journal and same-key writes against Qdrant 1.15.4 and the embedder (task P3-3)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: cargo test --locked -p memories-engine --test write_safety -- --ignored --nocapture
+
+      - name: Extract decisions with a target of another source against Qdrant 1.15.4 and the embedder
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: cargo test --locked -p memories-server --test extract_foreign -- --ignored --nocapture
+
+      - name: Keyword vector pass against Qdrant 1.15.4 and the embedder (task P3-4)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: cargo test --locked -p memories-engine --test keyword_refresh -- --ignored --nocapture
+
+      - name: 100 forced stops during writes (exit check of task P3-3)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: cargo test --locked -p memories-server --test write_crash -- --ignored --nocapture
+
+      - name: Maintenance jobs against Qdrant 1.15.4 and the embedder (task P5-3)
+        env:
+          QDRANT_TEST_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: cargo test --locked -p memories-engine --test maintenance -- --ignored --nocapture
+
+      - name: Script tests
+        run: python3 -m unittest discover -s scripts -v
+
+      - name: No crate release less than 2 days old
+        run: python3 scripts/check_crate_age.py Cargo.lock --days 2
+
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: server/Cargo.toml
+          arguments: --locked
+          command: check
+
+  rust-parity:
+    # Exit checks of the Rust tasks: replay their golden cases against the Rust server.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      qdrant:
+        # The minimum Qdrant version of the Rust server.
+        image: qdrant/qdrant:v1.15.4
+        ports:
+          - 6333:6333
+          - 6334:6334
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        working-directory: server
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: server
+
+      - name: Build the Rust server
+        working-directory: server
+        run: cargo build --locked
+
+      - name: P1-1 health, keys/me, error and auth rules (keys.db from the Python server)
+        run: server/scripts/parity_auth.sh server/target/debug/memories-server
+
+      - name: P5-2 key admin and audit routes, and keys across the two servers
+        run: server/scripts/parity_keys_audit.sh server/target/debug/memories-server
+
+      - name: P4-1 extract job routes with a provider on a closed port
+        run: server/scripts/parity_extract.sh server/target/debug/memories-server
+
+      - name: Cache the embedding model
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-all-MiniLM-L6-v2-1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+
+      - name: P2-2 search routes with hybrid false, and the search p95
+        # Same ONNX Runtime package and hash as server/Dockerfile (stage ort-nupkg).
+        run: |
+          curl -sSfLo "$RUNNER_TEMP/ort.nupkg" https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg
+          echo "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b  $RUNNER_TEMP/ort.nupkg" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
+          unzip -j -o "$RUNNER_TEMP/ort.nupkg" runtimes/linux-x64/native/libonnxruntime.so -d "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
+          echo "ORT_DYLIB_PATH=$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
+          QDRANT_URL=http://127.0.0.1:6333 \
+          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
+            server/scripts/parity_search.sh server/target/debug/memories-server
+
+      - name: P2-3 read routes (golden cases and more requests to both servers)
+        run: server/scripts/parity_reads.sh server/target/debug/memories-server
+
+      - name: P2-3 memory check, 300,000 records and 1,000 list requests
+        run: |
+          (cd server && cargo build --locked --release -p memories-server)
+          server/scripts/list_memory_check.sh server/target/release/memories-server 300000
+
+      - name: P3-1 core write routes
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: |
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
+          server/scripts/parity_writes.sh server/target/debug/memories-server
+
+      - name: P5-4 export and import across the two servers, backup and restore
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_backup.sh server/target/debug/memories-server
+
+      - name: P5-1 usage, metrics and feedback routes, and usage.db across the two servers
+        # Uses the ONNX Runtime that the P2-2 step unpacked.
+        run: |
+          QDRANT_URL=http://127.0.0.1:6333 \
+          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
+            server/scripts/parity_usage.sh server/target/debug/memories-server
+
+      - name: P3-2 bulk writes and relation writes (golden replay and a live Python run)
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_bulk.sh server/target/debug/memories-server
+
+      - name: P4-3 extraction pipeline with recorded LLM replies
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_pipeline.sh server/target/debug/memories-server
+
+      - name: P5-3 maintenance jobs (live Python run with fixed LLM replies, and the search p95)
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_maintenance.sh server/target/debug/memories-server
+
+      - name: P5-6 promotion routes and the promotion part of metrics (off mode)
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_promotions.sh server/target/debug/memories-server
+
+      - name: P5-7 sync routes and the embedder setting (production configuration)
+        run: server/scripts/parity_sync.sh server/target/debug/memories-server
+
+      - name: P7-1 rollback drill (export-legacy, rollback entrypoint, migrate --merge)
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/rollback_drill.sh server/target/debug/memories-server
+
+      - name: P4-4 gate G4 part a, eval corpus with recorded LLM replies
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: server/scripts/parity_pipeline.sh server/target/debug/memories-server --check extract_corpus
+
+      - name: P5-5 event, webhook and web UI routes, and the browser check of each page
+        # Playwright has no Chromium build for this runner OS, so the check
+        # uses the Chrome of the runner image.
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw"
+          npm install --prefix "$RUNNER_TEMP/pw" --no-save --ignore-scripts playwright@1.56.1
+          CHROME_PATH="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          echo "Chrome: $CHROME_PATH"
+          CHROME_PATH="$CHROME_PATH" NODE_PATH="$RUNNER_TEMP/pw/node_modules" \
+            server/scripts/parity_events.sh server/target/debug/memories-server
+
+      - name: P6-1 gate G6, the real clients against a Python server and the Rust server
+        env:
+          QDRANT_URL: http://127.0.0.1:6333
+          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+        run: |
+          (cd mcp-server && npm ci --ignore-scripts)
+          server/scripts/gate_g6.sh server/target/debug/memories-server
+
+      - name: P2-4 gate G3, corpus and graph parts (synthetic data)
+        # The steps before leave memories_v2 in the throwaway Qdrant service.
+        run: |
+          curl -s -X DELETE http://127.0.0.1:6333/collections/memories_v2 > /dev/null
+          curl -s -X DELETE http://127.0.0.1:6333/collections/memories > /dev/null
+          G3_PARTS=corpus,graph G3_ALLOW_PARTIAL=1 \
+          QDRANT_URL=http://127.0.0.1:6333 \
+          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
+            server/scripts/gate_g3.sh server/target/debug/memories-server
+
+  rollback-image:
+    # The rollback image of task P7-1: the Python image plus memories-server.
+    # The build runs the binary, so a C library that does not agree stops it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the Python image
+        run: docker build -t memories-python --target core .
+
+      - name: Build the rollback image
+        run: docker build -f server/rollback/Dockerfile --build-arg BASE_IMAGE=memories-python -t memories-rollback .
+
+      - name: The entrypoint skips the export on a new data volume and starts the Python server
+        run: |
+          docker run -d --name rollback -p 8000:8000 memories-rollback
+          for i in $(seq 1 90); do curl -sf http://127.0.0.1:8000/health > /dev/null && break; sleep 2; done
+          curl -sf http://127.0.0.1:8000/health
+          docker logs rollback 2>&1 | grep -q '"status": "skipped"'
+
+      - name: Container log
+        if: failure()
+        run: docker logs rollback || true
+
+  rust-image:
+    # Build the Rust image on each architecture. Then start the bundled compose
+    # file with that image, with no change to the file, and wait for healthy.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build image
+        run: docker build --build-context webui=webui -t ghcr.io/divyekant/memories:rust-ci server
+
+      - name: Bundled compose file reports healthy
+        run: server/scripts/compose_health_check.sh rust-ci

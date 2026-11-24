@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Rust server crates. The cooldown keeps out releases less than 2 days old.
+  - package-ecosystem: cargo
+    directory: /server
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 2
+    target-branch: rust-rewrite
+    groups:
+      rust-crates:
+        patterns: ["*"]

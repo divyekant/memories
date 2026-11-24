@@ -58,20 +58,26 @@ def test_dockerfile_copies_project_memory_policy_module() -> None:
     assert "COPY project_memory.py ." in dockerfile
 
 
-def test_compose_healthchecks_use_python_probe() -> None:
+def test_compose_healthchecks_use_rust_probe() -> None:
     for compose_file in ("docker-compose.yml", "docker-compose.snippet.yml"):
         contents = _read(compose_file)
         assert "healthcheck:" in contents
-        assert 'test: ["CMD", "python", "-c", "import sys,urllib.request;' in contents
+        assert 'test: ["CMD", "memories-server", "healthcheck"]' in contents
         assert '"curl"' not in contents
 
 
-def test_compose_defaults_to_core_target() -> None:
+def test_standalone_compose_probe_works_on_both_images() -> None:
+    # The Rust image links python to its health check; old Python tags need the real one.
+    contents = _read("mcp-server/assets/backend/docker-compose.standalone.yml")
+    assert 'test: ["CMD", "python", "-c", "import sys,urllib.request;' in contents
+
+
+def test_compose_builds_rust_server() -> None:
     for compose_file in ("docker-compose.yml", "docker-compose.snippet.yml"):
         contents = _read(compose_file)
-        assert "target: ${MEMORIES_IMAGE_TARGET:-core}" in contents
-        assert "image: memories:${MEMORIES_IMAGE_TARGET:-core}" in contents
-        assert "PRELOAD_MODEL: ${PRELOAD_MODEL:-false}" in contents
+        assert "memories/server" in contents or "context: ./server" in contents
+        assert "webui:" in contents
+        assert "image: memories:rust" in contents
 
 
 def test_compose_sets_memory_and_allocator_guardrails() -> None:
@@ -79,8 +85,8 @@ def test_compose_sets_memory_and_allocator_guardrails() -> None:
         contents = _read(compose_file)
         assert "mem_limit: ${MEMORIES_MEM_LIMIT:-3g}" in contents
         assert "MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}" in contents
-        assert "MALLOC_TRIM_THRESHOLD_=${MALLOC_TRIM_THRESHOLD_:-131072}" in contents
-        assert "MALLOC_MMAP_THRESHOLD_=${MALLOC_MMAP_THRESHOLD_:-131072}" in contents
+        assert "MALLOC_TRIM_THRESHOLD_=" not in contents
+        assert "MALLOC_MMAP_THRESHOLD_=" not in contents
 
 
 def test_compose_supports_extraction_env_passthrough() -> None:

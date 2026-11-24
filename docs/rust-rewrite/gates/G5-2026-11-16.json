@@ -1,0 +1,638 @@
+{
+ "synthetic_1m": {
+  "steps": [
+   "migrate-embed: exit 0, 245 s",
+   "corpus: 1000000 records, 634 MB metadata.json, 203 s",
+   "migrate: exit 0, 523 s",
+   "serve-1: up in 27 s",
+   "load search: search for 60 s",
+   "load add: add for 60 s",
+   "load burst: burst for 60 s",
+   "load extract: extract for 60 s",
+   "add-batch: 5 batches of 64 long texts",
+   "load mixed: mixed for 1800 s",
+   "serve-2: up in 29 s",
+   "kill -9 with this queue: {\"enabled\":true,\"fallback_add_enabled\":false,\"jobs_tracked\":369,\"model\":\"gemma3:4b\",\"provider\":\"ollama\",\"queue_depth\":196,\"queue_max\":10000,\"queue_remaining\":9804,\"status\":\"healthy\",\"workers\":2}",
+   "load crash-mixed: mixed for 60 s",
+   "serve-3: up in 27 s",
+   "jobs-check: {\"jobs\": 200, \"by_status\": {\"completed\": 200}, \"pass\": true}",
+   "verify: exit 1, 43 s",
+   "{\"verify_ok\": false, \"extra\": 16152, \"field_mismatch\": 225, \"fields_in_listed\": [\"last_reinforced_at\"], \"problems\": {}}",
+   "total: 3241 s, rc 0"
+  ],
+  "load-add": {
+   "scenario": "add",
+   "concurrency": 5,
+   "duration_sec": 60.2,
+   "total_requests": 7118,
+   "successful": 7118,
+   "failed": 0,
+   "by_status": {
+    "200": 7118
+   },
+   "rps": 118.2,
+   "latency_ms": {
+    "min": 4.5,
+    "max": 218.3,
+    "avg": 11.8,
+    "p50": 9.7,
+    "p95": 24.4,
+    "p99": 40.3,
+    "count": 7118
+   },
+   "by_operation": {
+    "POST /memory/add": {
+     "min": 4.5,
+     "max": 218.3,
+     "avg": 11.8,
+     "p50": 9.7,
+     "p95": 24.4,
+     "p99": 40.3,
+     "count": 7118
+    }
+   }
+  },
+  "load-burst": {
+   "scenario": "burst",
+   "concurrency": 5,
+   "duration_sec": 60.1,
+   "total_requests": 4665,
+   "successful": 4665,
+   "failed": 0,
+   "by_status": {
+    "200": 4665
+   },
+   "rps": 77.7,
+   "latency_ms": {
+    "min": 16.5,
+    "max": 227.8,
+    "avg": 64.3,
+    "p50": 60.9,
+    "p95": 106.5,
+    "p99": 138.0,
+    "count": 4665
+   },
+   "by_operation": {
+    "POST /search": {
+     "min": 16.5,
+     "max": 227.8,
+     "avg": 64.3,
+     "p50": 60.9,
+     "p95": 106.5,
+     "p99": 138.0,
+     "count": 4665
+    }
+   }
+  },
+  "load-crash-mixed": {
+   "scenario": "mixed",
+   "concurrency": 5,
+   "duration_sec": 60.0,
+   "total_requests": 9652,
+   "successful": 32,
+   "failed": 9620,
+   "by_status": {
+    "0": 9620,
+    "200": 32
+   },
+   "rps": 160.8,
+   "latency_ms": {
+    "min": 0.2,
+    "max": 150.1,
+    "avg": 0.7,
+    "p50": 0.4,
+    "p95": 0.8,
+    "p99": 1.5,
+    "count": 9652
+   },
+   "by_operation": {
+    "POST /search": {
+     "min": 0.2,
+     "max": 120.6,
+     "avg": 0.7,
+     "p50": 0.4,
+     "p95": 0.8,
+     "p99": 1.5,
+     "count": 7744
+    },
+    "POST /memory/add": {
+     "min": 0.2,
+     "max": 122.3,
+     "avg": 0.7,
+     "p50": 0.4,
+     "p95": 0.9,
+     "p99": 1.7,
+     "count": 1902
+    }
+   }
+  },
+  "load-extract": {
+   "scenario": "extract",
+   "concurrency": 5,
+   "duration_sec": 60.0,
+   "total_requests": 8753,
+   "successful": 8753,
+   "failed": 0,
+   "by_status": {
+    "202": 8753
+   },
+   "rps": 145.8,
+   "latency_ms": {
+    "min": 0.9,
+    "max": 56.9,
+    "avg": 3.7,
+    "p50": 2.2,
+    "p95": 9.9,
+    "p99": 16.0,
+    "count": 8753
+   },
+   "by_operation": {
+    "POST /memory/extract": {
+     "min": 0.9,
+     "max": 56.9,
+     "avg": 3.7,
+     "p50": 2.2,
+     "p95": 9.9,
+     "p99": 16.0,
+     "count": 8753
+    }
+   }
+  },
+  "load-mixed": {
+   "scenario": "mixed",
+   "concurrency": 5,
+   "duration_sec": 1800.1,
+   "total_requests": 86504,
+   "successful": 86504,
+   "failed": 0,
+   "by_status": {
+    "200": 86504
+   },
+   "rps": 48.1,
+   "latency_ms": {
+    "min": 5.1,
+    "max": 839.6,
+    "avg": 73.1,
+    "p50": 65.8,
+    "p95": 136.4,
+    "p99": 212.6,
+    "count": 86504
+   },
+   "by_operation": {
+    "POST /search": {
+     "min": 16.7,
+     "max": 280.5,
+     "avg": 68.5,
+     "p50": 64.4,
+     "p95": 115.6,
+     "p99": 144.7,
+     "count": 60307
+    },
+    "POST /memory/add": {
+     "min": 5.1,
+     "max": 839.6,
+     "avg": 73.6,
+     "p50": 60.0,
+     "p95": 172.2,
+     "p99": 273.5,
+     "count": 17341
+    }
+   }
+  },
+  "load-search": {
+   "scenario": "search",
+   "concurrency": 5,
+   "duration_sec": 60.1,
+   "total_requests": 3323,
+   "successful": 3323,
+   "failed": 0,
+   "by_status": {
+    "200": 3323
+   },
+   "rps": 55.3,
+   "latency_ms": {
+    "min": 17.2,
+    "max": 168.4,
+    "avg": 59.7,
+    "p50": 57.3,
+    "p95": 95.4,
+    "p99": 116.8,
+    "count": 3323
+   },
+   "by_operation": {
+    "POST /search": {
+     "min": 17.2,
+     "max": 168.4,
+     "avg": 59.7,
+     "p50": 57.3,
+     "p95": 95.4,
+     "p99": 116.8,
+     "count": 3323
+    }
+   }
+  },
+  "rss-migrate-embed": {
+   "peak_rss_mb": 856,
+   "vmhwm_mb": 877,
+   "last_rss_mb": 244
+  },
+  "rss-migrate": {
+   "peak_rss_mb": 3371,
+   "vmhwm_mb": 3371,
+   "last_rss_mb": 3294
+  },
+  "rss-serve-1": {
+   "peak_rss_mb": 885,
+   "vmhwm_mb": 981,
+   "last_rss_mb": 391
+  },
+  "rss-serve-2": {
+   "peak_rss_mb": 646,
+   "vmhwm_mb": 646,
+   "last_rss_mb": 335
+  },
+  "rss-serve-3": {
+   "peak_rss_mb": 646,
+   "vmhwm_mb": 646,
+   "last_rss_mb": 273
+  },
+  "rss-verify": {
+   "peak_rss_mb": 2849,
+   "vmhwm_mb": 2849,
+   "last_rss_mb": 2222
+  },
+  "add-batch": {
+   "batches": 5,
+   "latency_ms": [
+    2351.9,
+    1527.3,
+    1368.6,
+    1396.3,
+    1431.6
+   ]
+  },
+  "jobs-check": {
+   "jobs": 200,
+   "by_status": {
+    "completed": 200
+   },
+   "pass": true
+  },
+  "migrate": {
+   "already_present": 0,
+   "avgdl": 63.745054,
+   "collection": "g5_v2",
+   "copied_vectors": 1000000,
+   "created_collection": true,
+   "deleted": 0,
+   "embedded_vectors": 0,
+   "metadata_entries": 1000000,
+   "metadata_sha256": "2dbe9441cd53b0ed77d20c9ba95bdb796a13618fa832b16f10aaf98e4e69dfed",
+   "next_id": 1000001,
+   "old_collection": "g5",
+   "records": 1000000,
+   "seconds": 516.511010551,
+   "shadow": false,
+   "status": "migrated",
+   "written": 1000000
+  },
+  "verify": {
+   "collection": "g5_v2",
+   "collection_count": 1016152,
+   "extra_count": 16152,
+   "field_mismatch_count": 225,
+   "lowest_cosine": 0.9999999999999998,
+   "metadata_entries": 1000000,
+   "metadata_sha256": "2dbe9441cd53b0ed77d20c9ba95bdb796a13618fa832b16f10aaf98e4e69dfed",
+   "missing_count": 0,
+   "ok": false,
+   "records": 1000000,
+   "vector_mismatch_count": 0,
+   "vectors_checked": 1000
+  }
+ },
+ "production_copy": {
+  "steps": [
+   "data: 92287 records, 75 MB metadata.json, 0 s",
+   "migrate: exit 0, 35 s",
+   "serve-1: up in 6 s",
+   "load search: search for 60 s",
+   "load add: add for 60 s",
+   "load burst: burst for 60 s",
+   "load extract: extract for 60 s",
+   "add-batch: 5 batches of 64 long texts",
+   "load mixed: mixed for 1800 s",
+   "serve-2: up in 6 s",
+   "kill -9 with this queue: {\"enabled\":true,\"fallback_add_enabled\":false,\"jobs_tracked\":3176,\"model\":\"gemma3:4b\",\"provider\":\"ollama\",\"queue_depth\":2028,\"queue_max\":10000,\"queue_remaining\":7972,\"status\":\"healthy\",\"workers\":2}",
+   "load crash-mixed: mixed for 60 s",
+   "serve-3: up in 6 s",
+   "jobs-check: {\"jobs\": 200, \"by_status\": {\"completed\": 200}, \"pass\": true}",
+   "verify: exit 1, 7 s",
+   "{\"verify_ok\": false, \"extra\": 10982, \"field_mismatch\": 562, \"fields_in_listed\": [\"last_reinforced_at\"], \"problems\": {}}",
+   "total: 2446 s, rc 0"
+  ],
+  "load-add": {
+   "scenario": "add",
+   "concurrency": 5,
+   "duration_sec": 60.1,
+   "total_requests": 6850,
+   "successful": 6850,
+   "failed": 0,
+   "by_status": {
+    "200": 6850
+   },
+   "rps": 114.0,
+   "latency_ms": {
+    "min": 4.6,
+    "max": 277.2,
+    "avg": 13.3,
+    "p50": 11.2,
+    "p95": 27.3,
+    "p99": 42.8,
+    "count": 6850
+   },
+   "by_operation": {
+    "POST /memory/add": {
+     "min": 4.6,
+     "max": 277.2,
+     "avg": 13.3,
+     "p50": 11.2,
+     "p95": 27.3,
+     "p99": 42.8,
+     "count": 6850
+    }
+   }
+  },
+  "load-burst": {
+   "scenario": "burst",
+   "concurrency": 5,
+   "duration_sec": 60.2,
+   "total_requests": 1178,
+   "successful": 1178,
+   "failed": 0,
+   "by_status": {
+    "200": 1178
+   },
+   "rps": 19.6,
+   "latency_ms": {
+    "min": 84.1,
+    "max": 727.9,
+    "avg": 255.2,
+    "p50": 233.0,
+    "p95": 468.0,
+    "p99": 604.2,
+    "count": 1178
+   },
+   "by_operation": {
+    "POST /search": {
+     "min": 84.1,
+     "max": 727.9,
+     "avg": 255.2,
+     "p50": 233.0,
+     "p95": 468.0,
+     "p99": 604.2,
+     "count": 1178
+    }
+   }
+  },
+  "load-crash-mixed": {
+   "scenario": "mixed",
+   "concurrency": 5,
+   "duration_sec": 60.0,
+   "total_requests": 9659,
+   "successful": 18,
+   "failed": 9641,
+   "by_status": {
+    "0": 9641,
+    "200": 18
+   },
+   "rps": 160.9,
+   "latency_ms": {
+    "min": 0.2,
+    "max": 387.7,
+    "avg": 0.9,
+    "p50": 0.4,
+    "p95": 0.8,
+    "p99": 1.2,
+    "count": 9659
+   },
+   "by_operation": {
+    "POST /search": {
+     "min": 0.2,
+     "max": 387.7,
+     "avg": 0.9,
+     "p50": 0.4,
+     "p95": 0.8,
+     "p99": 1.2,
+     "count": 7744
+    },
+    "POST /memory/add": {
+     "min": 0.2,
+     "max": 111.1,
+     "avg": 0.6,
+     "p50": 0.4,
+     "p95": 0.8,
+     "p99": 1.1,
+     "count": 1912
+    },
+    "DELETE /memory/{id}": {
+     "min": 0.3,
+     "max": 0.4,
+     "avg": 0.4,
+     "p50": 0.4,
+     "p95": 0.4,
+     "p99": 0.4,
+     "count": 3
+    }
+   }
+  },
+  "load-extract": {
+   "scenario": "extract",
+   "concurrency": 5,
+   "duration_sec": 60.0,
+   "total_requests": 8650,
+   "successful": 8650,
+   "failed": 0,
+   "by_status": {
+    "202": 8650
+   },
+   "rps": 144.1,
+   "latency_ms": {
+    "min": 1.1,
+    "max": 37.7,
+    "avg": 4.1,
+    "p50": 2.5,
+    "p95": 11.3,
+    "p99": 17.2,
+    "count": 8650
+   },
+   "by_operation": {
+    "POST /memory/extract": {
+     "min": 1.1,
+     "max": 37.7,
+     "avg": 4.1,
+     "p50": 2.5,
+     "p95": 11.3,
+     "p99": 17.2,
+     "count": 8650
+    }
+   }
+  },
+  "load-mixed": {
+   "scenario": "mixed",
+   "concurrency": 5,
+   "duration_sec": 1800.2,
+   "total_requests": 36765,
+   "successful": 36765,
+   "failed": 0,
+   "by_status": {
+    "200": 36765
+   },
+   "rps": 20.4,
+   "latency_ms": {
+    "min": 6.3,
+    "max": 1367.6,
+    "avg": 213.8,
+    "p50": 194.0,
+    "p95": 398.6,
+    "p99": 657.6,
+    "count": 36765
+   },
+   "by_operation": {
+    "POST /search": {
+     "min": 70.3,
+     "max": 833.5,
+     "avg": 203.8,
+     "p50": 193.7,
+     "p95": 339.7,
+     "p99": 426.0,
+     "count": 25901
+    },
+    "POST /memory/add": {
+     "min": 6.3,
+     "max": 1367.6,
+     "avg": 232.2,
+     "p50": 190.7,
+     "p95": 572.6,
+     "p99": 832.9,
+     "count": 7228
+    },
+    "DELETE /memory/{id}": {
+     "min": 7.8,
+     "max": 1338.2,
+     "avg": 247.9,
+     "p50": 205.4,
+     "p95": 605.3,
+     "p99": 837.1,
+     "count": 3636
+    }
+   }
+  },
+  "load-search": {
+   "scenario": "search",
+   "concurrency": 5,
+   "duration_sec": 60.3,
+   "total_requests": 1026,
+   "successful": 1026,
+   "failed": 0,
+   "by_status": {
+    "200": 1026
+   },
+   "rps": 17.0,
+   "latency_ms": {
+    "min": 85.1,
+    "max": 696.1,
+    "avg": 262.4,
+    "p50": 244.5,
+    "p95": 454.6,
+    "p99": 580.7,
+    "count": 1026
+   },
+   "by_operation": {
+    "POST /search": {
+     "min": 85.1,
+     "max": 696.1,
+     "avg": 262.4,
+     "p50": 244.5,
+     "p95": 454.6,
+     "p99": 580.7,
+     "count": 1026
+    }
+   }
+  },
+  "rss-migrate": {
+   "peak_rss_mb": 677,
+   "vmhwm_mb": 677,
+   "last_rss_mb": 574
+  },
+  "rss-serve-1": {
+   "peak_rss_mb": 961,
+   "vmhwm_mb": 994,
+   "last_rss_mb": 316
+  },
+  "rss-serve-2": {
+   "peak_rss_mb": 324,
+   "vmhwm_mb": 324,
+   "last_rss_mb": 324
+  },
+  "rss-serve-3": {
+   "peak_rss_mb": 216,
+   "vmhwm_mb": 216,
+   "last_rss_mb": 145
+  },
+  "rss-verify": {
+   "peak_rss_mb": 678,
+   "vmhwm_mb": 678,
+   "last_rss_mb": 678
+  },
+  "add-batch": {
+   "batches": 5,
+   "latency_ms": [
+    2371.4,
+    1810.2,
+    1763.8,
+    1851.5,
+    1758.8
+   ]
+  },
+  "jobs-check": {
+   "jobs": 200,
+   "by_status": {
+    "completed": 200
+   },
+   "pass": true
+  },
+  "migrate": {
+   "already_present": 0,
+   "avgdl": 37.87705744037622,
+   "collection": "gp_v2",
+   "copied_vectors": 92287,
+   "created_collection": true,
+   "deleted": 0,
+   "embedded_vectors": 0,
+   "metadata_entries": 92287,
+   "metadata_sha256": "4ca99e5033c480bc6b7556fa57393c8fafedd096c25e6c7d0944debc5c9b35ba",
+   "next_id": 118610,
+   "old_collection": "gp",
+   "records": 92287,
+   "seconds": 32.589164493,
+   "shadow": false,
+   "status": "migrated",
+   "written": 92287
+  },
+  "verify": {
+   "collection": "gp_v2",
+   "collection_count": 103269,
+   "extra_count": 10982,
+   "field_mismatch_count": 562,
+   "lowest_cosine": 0.9999999999999998,
+   "metadata_entries": 92287,
+   "metadata_sha256": "4ca99e5033c480bc6b7556fa57393c8fafedd096c25e6c7d0944debc5c9b35ba",
+   "missing_count": 0,
+   "ok": false,
+   "records": 92287,
+   "vector_mismatch_count": 0,
+   "vectors_checked": 1000
+  }
+ }
+}

@@ -77,7 +77,7 @@ body {
 
 .app-layout {
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -1472,7 +1472,7 @@ body {
   }
 
   .app-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .sidebar {
@@ -1860,3 +1860,185 @@ body,
 .problem-query-text { flex: 1; font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .replay-link { font-size: 0.75rem; color: var(--color-primary); cursor: pointer; text-decoration: none; }
 .replay-link:hover { text-decoration: underline; }
+
+/* -- Performance page ------------------------------------------------------ */
+
+.perf-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.perf-controls {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.perf-refresh {
+  width: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-surface);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.perf-refresh:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.perf-refresh:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.perf-sub {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.perf-note {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin-bottom: 20px;
+}
+
+.perf-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.perf-panel {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  min-width: 0;
+}
+
+.perf-panel-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.perf-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.perf-grid {
+  stroke: var(--color-border-subtle);
+  stroke-width: 1;
+}
+
+.perf-axis {
+  fill: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.perf-line {
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.perf-marker {
+  stroke: var(--color-error);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.perf-guide {
+  stroke: var(--color-text-faint);
+  stroke-width: 1;
+}
+
+.perf-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  margin-top: 4px;
+}
+
+.perf-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 4px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.perf-swatch-marker {
+  background: none;
+  border-top: 2px dashed var(--color-error);
+  height: 0;
+}
+
+.perf-readout {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  min-height: 16px;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.perf-table-wrap {
+  overflow-x: auto;
+}
+
+.perf-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.perf-table .perf-route {
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.perf-table tbody tr {
+  cursor: pointer;
+}
+
+.perf-table tbody tr.selected {
+  background: var(--color-primary-dim);
+}
+
+.perf-table tbody tr:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+@media (max-width: 768px) {
+  .perf-chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .perf-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

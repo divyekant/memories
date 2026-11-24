@@ -6,12 +6,11 @@ import json
 import re
 import shutil
 import subprocess
-import tomllib
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PYPROJECT = REPO_ROOT / "pyproject.toml"
+PACKAGE_JSON = REPO_ROOT / "mcp-server" / "package.json"
 PLUGIN_MANIFEST = REPO_ROOT / "plugins" / "memories" / ".codex-plugin" / "plugin.json"
 MARKETPLACE = REPO_ROOT / ".agents" / "plugins" / "marketplace.json"
 MEMORIES_SKILL = REPO_ROOT / "plugins" / "memories" / "skills" / "memories" / "SKILL.md"
@@ -20,12 +19,13 @@ CANONICAL_MEMORIES_SKILL = REPO_ROOT / "mcp-server" / "assets" / "claude-code" /
 
 
 def test_codex_plugin_package_is_wired_for_current_release() -> None:
-    project = tomllib.loads(PYPROJECT.read_text())["project"]
+    # The release version is the npm package version (release.yml checks it).
+    package = json.loads(PACKAGE_JSON.read_text())
     manifest = json.loads(PLUGIN_MANIFEST.read_text())
     marketplace = json.loads(MARKETPLACE.read_text())
 
     assert manifest["name"] == "memories"
-    assert manifest["version"] == project["version"]
+    assert manifest["version"] == package["version"]
     assert manifest["skills"] == "./skills/"
     assert "mcpServers" not in manifest
     assert "hooks" not in manifest

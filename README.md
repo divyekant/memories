@@ -4,7 +4,9 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **OpenCode**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
-**Key capabilities (v5.19.0):**
+**v6.0.0 runs a Rust server.** It has the same HTTP API as the Python server v5, with about 3x faster search under load and a quarter of the memory. Clients do not change. See [the 6.0.0 notes](CHANGELOG.md) and [the upgrade and rollback runbook](docs/rust-rewrite/cutover-runbook.md).
+
+**Key capabilities (v6.0.0):**
 - **Hybrid search** — BM25 + vector + recency + feedback + confidence + graph (6-signal RRF fusion with PPR-scored graph expansion)
 - **Write doctrine** — corrections supersede instead of being dropped: a colliding write replaces the similar memory and archives the old version with a supersedes link (`on_duplicate: supersede|skip|add`); agents update facts via `memory_update`
 - **Secret redaction** — credential-shaped content (API keys, JWTs, tokens, URL credentials) is redacted before any extraction LLM call or storage, with a context guard that spares placeholders and localhost DSNs
@@ -47,7 +49,9 @@ curl -X POST http://localhost:8900/search \
   -d '{"query": "TypeScript config", "k": 3, "hybrid": true}'
 ```
 
-The service runs at **http://localhost:8900**. API docs at http://localhost:8900/docs. Web UI at http://localhost:8900/ui.
+The service runs at **http://localhost:8900**. The OpenAPI document is at http://localhost:8900/openapi.json. Web UI at http://localhost:8900/ui.
+
+The first `docker compose up` builds the Rust server from `server/`. The build takes several minutes.
 
 ### Web UI
 
@@ -261,8 +265,8 @@ AI Client (Claude, Codex, OpenCode, Cursor, ChatGPT, OpenClaw)
 MCP Server (mcp-server/index.js)
     |
     v
-Memories Service (Docker :8900)
-    |-- FastAPI REST API
+Memories Service (Docker :8900, Rust server in server/)
+    |-- HTTP API (axum, same routes as the v5 Python API)
     |-- Hybrid Search (Memories vector + BM25 keyword, RRF fusion)
     |-- Markdown-aware chunking
     |-- Event Bus (SSE stream + webhook delivery)
@@ -272,9 +276,10 @@ Memories Service (Docker :8900)
     |-- Auto-backups
     v
 Persistent Storage (data/)
-    |-- Qdrant vector store (embeddings + metadata)
-    |-- metadata.json (memory text + metadata)
-    |-- backups/ (auto, keeps last 10)
+    |-- Qdrant collection memories_v2 (records, vectors, keyword vectors: the canonical store)
+    |-- keys.db, audit.db, usage.db, state.db (SQLite)
+    |-- metadata.json (v5 data, read once by the first-start migration)
+    |-- backups/ (Qdrant snapshot + SQLite copies, keeps last 10)
 ```
 
 Detailed docs:
@@ -1145,7 +1150,7 @@ POST /maintenance/consolidate      # LLM-powered merge
 GET /audit/log?limit=50&source=prefix
 ```
 
-Full OpenAPI schema at http://localhost:8900/docs.
+Full OpenAPI schema at http://localhost:8900/openapi.json.
 
 ### Future API Candidates (Swarm Scale)
 
@@ -1189,52 +1194,37 @@ When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools
 
 ### Environment Variables
 
+The Rust server reads the variables of the v5 Python server, with the same names and defaults. The full list, with the variables that v6 does not use, is in [docs/rust-rewrite/configuration.md](docs/rust-rewrite/configuration.md).
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATA_DIR` | `/data` | Persistent storage path |
-| `WORKSPACE_DIR` | `/workspace` | Read-only workspace for index rebuilds |
 | `API_KEY` | (empty) | API key for auth. Empty = no auth. |
-| `EMBED_PROVIDER` | `onnx` | Embedding provider: `onnx` (local) or `openai` (OpenAI API or any OpenAI-compatible endpoint) |
-| `EMBED_MODEL` | (unset) | Provider-specific embedding model override |
-| `EMBED_BASE_URL` | (unset) | OpenAI-compatible embeddings endpoint (e.g. oMLX: `http://host.docker.internal:11434/v1`) |
-| `EMBED_API_KEY` | (unset) | API key for `EMBED_BASE_URL` (falls back to `OPENAI_API_KEY`; optional for local endpoints) |
-| `EMBED_DIMENSION` | (unset) | Declared embedding dimension; validated against the loaded model, fails fast on mismatch |
-| `EMBED_QUERY_PREFIX` / `EMBED_DOC_PREFIX` | (unset) | Asymmetric prefixes for prefix-trained models (e.g. nomic-embed `search_query: ` / `search_document: `) |
-| `EMBED_COLLECTION` | (unset) | Pin the exact Qdrant collection name (skips model+dim auto naming) |
-| `EMBED_ALLOW_SPACE_REBIND` | `false` | Allow re-recording a collection under a new embedding signature (requires re-embed) |
-| `MODEL_NAME` | `all-MiniLM-L6-v2` | Default ONNX model used when `EMBED_PROVIDER=onnx` and `EMBED_MODEL` is unset |
-| `MODEL_CACHE_DIR` | (unset; Docker image sets `/data/model-cache`) | Optional writable cache path for downloaded model files |
-| `PRELOADED_MODEL_CACHE_DIR` | (unset; Docker image sets `/opt/model-cache`) | Optional read-only cache to seed `MODEL_CACHE_DIR` when empty |
+| `QDRANT_URL` | (unset; compose sets `http://qdrant:6333`) | Qdrant server. Without it, the memory routes (search, reads and writes) give 503. |
+| `QDRANT_COLLECTION` | `memories` | Base name. v6 stores records in `<name>_v2`. |
+| `EMBED_PROVIDER` | `onnx` | Only `onnx` on v6. Other values stop the start. |
+| `MODEL_NAME` / `EMBED_MODEL` | `all-MiniLM-L6-v2` / (unset) | ONNX embedding model |
+| `EMBED_QUERY_PREFIX` / `EMBED_DOC_PREFIX` | (unset) | Asymmetric prefixes for prefix-trained models |
+| `MODEL_CACHE_DIR` | (image sets `/data/model-cache`) | Writable cache for downloaded model files |
 | `MAX_BACKUPS` | `10` | Number of backups to keep |
-| `MEMORIES_PERSIST_DELAY_SEC` | `2` | Seconds to group writes before one metadata save and one BM25 rebuild. `0` saves and rebuilds on each write |
 | `MAX_EXTRACT_MESSAGE_CHARS` | `120000` | Max characters accepted by `/memory/extract` |
-| `EXTRACT_MAX_INFLIGHT` | `2` | Max concurrent extraction jobs |
-| `MEMORY_TRIM_ENABLED` | `true` | Run post-extract GC/allocator trim |
-| `MEMORY_TRIM_COOLDOWN_SEC` | `15` | Minimum seconds between trim attempts |
-| `MEMORY_TRIM_PERIODIC_SEC` | `5` | Periodic trim probe interval (seconds). Set `0` to disable background trim loop. |
-| `EMBEDDER_AUTO_RELOAD_ENABLED` | `false` | Enable periodic auto-reload of in-process embedder runtime |
-| `EMBEDDER_AUTO_RELOAD_RSS_KB_THRESHOLD` | `1200000` | RSS threshold (KB) required before auto-reload decisions |
-| `EMBEDDER_AUTO_RELOAD_CHECK_SEC` | `15` | Seconds between auto-reload checks |
-| `EMBEDDER_AUTO_RELOAD_HIGH_STREAK` | `3` | Consecutive high-RSS checks required before trigger |
-| `EMBEDDER_AUTO_RELOAD_MIN_INTERVAL_SEC` | `900` | Cooldown between reload attempts |
-| `EMBEDDER_AUTO_RELOAD_WINDOW_SEC` | `3600` | Rolling window size for reload cap |
-| `EMBEDDER_AUTO_RELOAD_MAX_PER_WINDOW` | `2` | Max reloads allowed per rolling window |
-| `EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS` | `2` | Skip reload when active HTTP requests exceed this |
-| `EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH` | `0` | Skip reload when extract queue depth exceeds this |
+| `EXTRACT_MAX_INFLIGHT` | `2` | Extraction workers |
 | `METRICS_LATENCY_SAMPLES` | `200` | Per-route latency sample window for `/metrics` percentiles |
 | `METRICS_TREND_SAMPLES` | `120` | Memory trend sample window exposed by `/metrics` |
-| `AUDIT_LOG` | (none) | Path to audit log file |
-| `CONFIDENCE_DECAY_HALF_LIFE_DAYS` | `90` | Half-life for confidence decay |
+| `AUDIT_LOG` | `false` | `true` writes the audit trail to `$DATA_DIR/audit.db` |
+| `USAGE_TRACKING` | (off) | Opt-in usage analytics in `$DATA_DIR/usage.db` |
+| `MAINTENANCE_ENABLED` | `false` | Scheduled consolidation and pruning (needs an extraction provider) |
 | `PORT` | `8000` | Internal service port |
+
+Not used on v6 (the server logs one line if set): `WORKSPACE_DIR`, `EMBED_BASE_URL`, `EMBED_API_KEY`, `EMBED_COLLECTION`, `EMBED_ALLOW_SPACE_REBIND`, `MEMORIES_PERSIST_DELAY_SEC`, `MEMORY_TRIM_*`, `EMBEDDER_AUTO_RELOAD_*`, `EXTRACT_TRAINING_DATA_DIR`, `CLOUD_SYNC_*`, `SHADOW_*`.
 
 ### Docker Compose guardrails
 
-Default compose files now include:
-- `mem_limit: ${MEMORIES_MEM_LIMIT:-3g}` to bound container memory growth
-- `MALLOC_ARENA_MAX=2` to reduce glibc arena fragmentation in multithreaded workloads
-- `MALLOC_TRIM_THRESHOLD_=131072` and `MALLOC_MMAP_THRESHOLD_=131072` to encourage earlier allocator release
+Default compose files include:
+- `mem_limit: ${MEMORIES_MEM_LIMIT:-3g}` to bound container memory
+- `MALLOC_ARENA_MAX=2`, the allocator setting of the production install. Do not set `MALLOC_TRIM_THRESHOLD_` or `MALLOC_MMAP_THRESHOLD_` for v6: they make search slower (gate G5).
 - extraction env passthrough (`EXTRACT_PROVIDER`, `EXTRACT_MODEL`, provider keys/URL) so deploys keep extraction enabled when set in shell or `.env`
-- embedder auto-reload env passthrough with anti-loop defaults (`EMBEDDER_AUTO_RELOAD_*`)
+- a health check with `memories-server healthcheck`, and a `start_period` of 120 s for the first-start migration
 
 ### MCP Server Environment
 
@@ -1409,8 +1399,8 @@ OpenCode plugin recall defaults to `opencode/{project},claude-code/{project},cod
 |----------|------|------|-------|
 | Anthropic (recommended) | ~$0.001/turn | Full (Add/Update/Delete/Noop/Conflict) | ~1-2s |
 | OpenAI | ~$0.001/turn | Full | ~1-2s |
-| ChatGPT Subscription | Free (uses your subscription) | Full | ~1-2s |
 | Ollama | Free | Full | ~5s |
+| oMLX | Free | Full | Depends on the local model |
 | Skip | Free | None | N/A |
 
 Extraction is optional. Without it, retrieval still works.
@@ -1443,7 +1433,7 @@ Why it matters:
 ### Cost vs quality
 
 - **Anthropic/OpenAI extraction**: small usage cost (typically around ~$0.001/turn), full AUDN quality.
-- **ChatGPT Subscription extraction**: no additional API cost (uses your existing subscription), full AUDN quality.
+- **ChatGPT Subscription extraction** (v5 only): no additional API cost (uses your existing subscription), full AUDN quality. The v6 server refuses this provider.
 - **Ollama extraction**: no API cost, full AUDN quality (with JSON format constraint).
 - **Retrieval only** (`EXTRACT_PROVIDER` unset): no extraction model cost.
 - **Optional fallback writes** (`EXTRACT_FALLBACK_ADD=true`): add-only, heuristic extraction path (no AUDN update/delete) used when extraction is disabled or provider calls fail at runtime.
@@ -1465,85 +1455,52 @@ When extraction is disabled and `EXTRACT_FALLBACK_ADD=true`, `/memory/extract` r
 fallback add path and still returns a job object. When extraction is configured but fails at runtime,
 the queued worker also falls back to add-only mode when `EXTRACT_FALLBACK_ADD=true`.
 
-### Docker image targets (core / extract)
+### Docker image
 
-The Dockerfile publishes two runtime targets:
-
-- `core` (default): search/add/list endpoints, no Anthropic/OpenAI SDKs
-- `extract`: includes Anthropic/OpenAI SDKs for `/memory/extract`
-
-Build both images directly:
+v6 has one image, `ghcr.io/divyekant/memories:<version>`, for linux/amd64 and linux/arm64. It includes extraction for every provider, so the v5 `core` and `extract` targets are gone. To build it from a checkout:
 
 ```bash
-docker build --target core -t memories:core .
-docker build --target extract -t memories:extract .
+docker build --build-context webui=webui -t memories:rust server
 ```
 
-Use compose with either target:
+The image downloads the model weights into `MODEL_CACHE_DIR` (`/data/model-cache`) at the first run. Later restarts reuse the volume cache.
 
-```bash
-# Default (core target)
-docker compose up -d --build memories
-
-# Extraction-ready target
-MEMORIES_IMAGE_TARGET=extract docker compose up -d --build memories
-```
-
-By default, images do **not** bake model weights. On first run, the service downloads them into
-`MODEL_CACHE_DIR` (`/data/model-cache` in Docker), so later restarts reuse the volume cache.
-
-If you want a fully preloaded image (faster first boot, larger pull), set `PRELOAD_MODEL=true`:
-
-```bash
-docker build --target core --build-arg PRELOAD_MODEL=true -t memories:core .
-docker build --target extract --build-arg PRELOAD_MODEL=true -t memories:extract .
-```
-
-Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough for Ollama extraction.
+The root `Dockerfile` still builds the v5 Python server (`--target core` or `--target extract`). It is the rollback reference until the v5 code is removed (task P7-3).
 
 ### Extraction environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `chatgpt-subscription`, `ollama`, or empty to disable |
+| `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `ollama`, `omlx`, or empty to disable. v6 refuses `chatgpt-subscription` |
 | `EXTRACT_MODEL` | (per provider) | Model override |
 | `ANTHROPIC_API_KEY` | (none) | Standard Anthropic API key (`sk-ant-api03-`). An `sk-ant-oat01-` OAuth token here still works |
 | `ANTHROPIC_OAUTH_TOKEN` | (none) | Anthropic subscription OAuth token (`sk-ant-oat01-`). This token can only call Haiku 4.5 |
 | `ANTHROPIC_AUTH` | (API key when set) | `api_key` or `oauth`. Selects the Anthropic credential. The default model follows the credential: Haiku 5.5 for an API key, Haiku 4.5 for an OAuth token |
 | `ANTHROPIC_WORKSPACE_ID` | (none) | Workspace ID (`wrkspc_…`). Required for an API key that is not scoped to a workspace (for example `sk-ant-usr-`). Sent as the `anthropic-workspace-id` header |
 | `OPENAI_API_KEY` | (none) | Required for OpenAI provider |
-| `CHATGPT_REFRESH_TOKEN` | (none) | Required for ChatGPT Subscription provider (from `python -m memories auth chatgpt`) |
-| `CHATGPT_CLIENT_ID` | (none) | Required for ChatGPT Subscription provider |
+| `OMLX_URL` / `OMLX_API_KEY` | (none) | oMLX server URL and key for the `omlx` provider |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
 | `EXTRACT_FALLBACK_ADD` | `false` | Enable add-only fallback writes when extraction is disabled or provider calls fail at runtime |
 | `EXTRACT_FALLBACK_MAX_FACTS` | `1` | Max fallback facts to store per extract request |
 | `EXTRACT_FALLBACK_MIN_FACT_CHARS` | `24` | Minimum candidate fact length for fallback |
 | `EXTRACT_FALLBACK_MAX_FACT_CHARS` | `280` | Maximum candidate fact length for fallback |
 | `EXTRACT_FALLBACK_NOVELTY_THRESHOLD` | `0.88` | Novelty threshold used by fallback add mode |
-| `EXTRACT_QUEUE_MAX` | `EXTRACT_MAX_INFLIGHT * 20` | Maximum queued extraction jobs before backpressure (`429`) |
+| `EXTRACT_FOREIGN_TARGET_ADD` | `true` (Rust server only) | If an extract decision updates or conflicts with a memory of another source, add the fact as a new memory (`fallback_add`, with `foreign_old_id`). Set `false` to get the error action of the Python server |
+| `EXTRACT_QUEUE_MAX` | `10000` (v5: `EXTRACT_MAX_INFLIGHT * 20`) | Maximum queued extraction jobs before backpressure (`429`). v6 keeps the queue on disk |
 | `EXTRACT_JOB_RETENTION_SEC` | `300` | How long completed/failed extraction jobs stay queryable |
 | `EXTRACT_JOBS_MAX` | `200` | Hard cap on stored extraction job records (finished jobs evicted first) |
-| `EXTRACT_MAX_FACTS` | `30` | Maximum facts kept from a single extraction |
 | `EXTRACT_MAX_FACT_CHARS` | `500` | Max length per extracted fact |
 | `EXTRACT_SIMILAR_TEXT_CHARS` | `280` | Max similar-memory text length passed into AUDN |
 | `EXTRACT_SIMILAR_PER_FACT` | `5` | Similar memories included per fact during AUDN |
 
 ### Burst memory behavior
 
-Extraction can create short-lived allocation spikes (large transcripts, large LLM JSON payloads, concurrent requests).
-
-Mitigations built in:
+The v6 server stays at about 300 MB RSS on the production data (93,000 memories), also under 20 nonstop workers. Extraction limits:
 - `/memory/extract` request size limit (`MAX_EXTRACT_MESSAGE_CHARS`)
-- bounded in-flight extraction (`EXTRACT_MAX_INFLIGHT`)
-- post-extract + periodic memory reclamation (`MEMORY_TRIM_ENABLED`, `MEMORY_TRIM_COOLDOWN_SEC`, `MEMORY_TRIM_PERIODIC_SEC`)
-- optional auto-reload controller for the embedder runtime (`EMBEDDER_AUTO_RELOAD_*`)
-- bounded AUDN payload sizes (`EXTRACT_MAX_FACTS`, `EXTRACT_MAX_FACT_CHARS`, `EXTRACT_SIMILAR_TEXT_CHARS`)
+- bounded extraction workers (`EXTRACT_MAX_INFLIGHT`) and an on-disk queue (`EXTRACT_QUEUE_MAX`)
+- bounded AUDN payload sizes (`EXTRACT_MAX_FACT_CHARS`, `EXTRACT_SIMILAR_TEXT_CHARS`)
 
-Observability:
-- `/metrics` includes `embedder_reload.auto` and `embedder_reload.manual` counters/state
-- manual reload endpoint: `POST /maintenance/embedder/reload`
-
-Reference benchmark: `docs/archive/benchmarks/2026-02-17-memory-reclamation.md`
+v6 has no embedder auto-reload and no memory trim loop. `/metrics` still shows the `embedder_reload` part for the clients.
 
 ### Uninstall
 
@@ -1567,7 +1524,9 @@ Memories has three layers of backup protection:
 
 ### 1. Auto-backup (built-in)
 
-The service automatically saves a snapshot after every write operation. The 10 most recent auto-backups are kept in the Docker volume under `data/backups/`.
+`POST /backup` writes a backup folder under `data/backups/`: a Qdrant snapshot of the `memories_v2` collection and copies of the SQLite files. The server keeps the `MAX_BACKUPS` (default 10) newest folders, plus the 2 newest of each prefix and the 7 newest `scheduled_*` folders. The server makes one `scheduled_*` backup each day. v6 makes no automatic backup before each write, as v5 did.
+
+Known gaps of v6: `POST /restore` restores only the Qdrant snapshot. It does not put back the SQLite files (`keys.db`, `audit.db`, `usage.db`, `state.db`). Their copies in the backup folder are for a manual recovery. `POST /restore` also cannot read a v5 backup folder. Restore a v5 backup with the v5 image.
 
 ```bash
 # List backups
@@ -1583,6 +1542,8 @@ curl -X POST -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/restore \
 ```
 
 ### 2. Scheduled local snapshots (cron)
+
+CAUTION: On v6, `scripts/backup.sh` still copies the v5 files (`metadata.json`, `config.json`), which v6 does not update. The v6 snapshot is the folder that the API call makes under `data/backups/` (about 0.75 GB for 93,000 memories). Do not use the local copies of this script as a v6 backup until the script is updated.
 
 A cron job creates timestamped copies of the Memories index every 30 minutes. Snapshots are stored outside the Docker volume (default: `~/backups/memories/`) with 30-day retention.
 
@@ -1665,7 +1626,13 @@ See [CLOUD_SYNC_README.md](CLOUD_SYNC_README.md) for configuration details.
 
 ```
 memories/
-  app.py                  # FastAPI REST API
+  server/                 # v6 Rust server (Cargo workspace; see server/README.md)
+    crates/               # memories-types, -embed, -store, -engine, -extract, -server
+    rollback/             # Rollback image: Python v5 plus export-legacy at start
+    scripts/              # Parity, gate and drill scripts
+  parity/                 # Parity kit: Python v5 against Rust v6
+  # The Python files below are the v5 server, kept as the rollback reference until task P7-3.
+  app.py                  # FastAPI REST API (v5)
   memory_engine.py        # Memories engine (search, chunking, BM25, backups)
   onnx_embedder.py        # ONNX Runtime embedder (replaces PyTorch)
   llm_provider.py         # LLM provider abstraction (Anthropic/OpenAI/ChatGPT Subscription/Ollama)
@@ -1887,3 +1854,12 @@ When changing memory/index behavior: add or update tests, validate backup/restor
 - [ ] Public docs avoid product-specific assumptions unless the file is intentionally integration-specific
 - [ ] Benchmarks describe workload profile and caveats
 - [ ] Versioned behavior changes documented in README
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE). Third-party packages and their licenses:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). To report a security problem,
+read [SECURITY.md](SECURITY.md). To make a change, read
+[CONTRIBUTING.md](CONTRIBUTING.md).

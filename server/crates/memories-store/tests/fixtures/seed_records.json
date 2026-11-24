@@ -1,0 +1,2211 @@
+[
+ {
+  "id": 0,
+  "text": "analytics-pipeline uses TimescaleDB with pool size 20. Config in scripts/analytics_pipeline.sh. Health check interval 10s.",
+  "source": "codex/voltis/config/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:11.626961+00:00",
+  "updated_at": "2026-11-16T09:04:11.626961+00:00",
+  "timestamp": "2026-11-16T09:04:11.626961+00:00"
+ },
+ {
+  "id": 1,
+  "text": "Environment variable ROUTE_OPTIMIZER_PORT=5772 controls the route-optimizer listener. Documented in terraform/modules/route_optimizer/main.tf.",
+  "source": "codex/voltis/config/route-optimizer",
+  "created_at": "2026-11-16T09:04:11.627025+00:00",
+  "updated_at": "2026-11-16T09:04:11.627025+00:00",
+  "timestamp": "2026-11-16T09:04:11.627025+00:00"
+ },
+ {
+  "id": 2,
+  "text": "charging-manager retry policy: 1 attempts with exponential backoff starting at 1000ms. Dead letter after exhaustion.",
+  "source": "wip/voltis/config/charging-manager",
+  "created_at": "2026-11-16T09:04:11.627065+00:00",
+  "updated_at": "2026-11-16T09:04:11.627065+00:00",
+  "timestamp": "2026-11-16T09:04:11.627065+00:00",
+  "links": [
+   {
+    "to_id": 228,
+    "type": "caused_by",
+    "created_at": "2026-11-16T09:04:12.617988+00:00"
+   }
+  ]
+ },
+ {
+  "id": 3,
+  "text": "geofence-engine Stripe connection string stored in Vault at secret/geofence-engine/stripe. Pool max 50, idle timeout 30s.",
+  "source": "learning/voltis/config/geofence-engine",
+  "created_at": "2026-11-16T09:04:11.627097+00:00",
+  "updated_at": "2026-11-16T09:04:12.878001+00:00",
+  "timestamp": "2026-11-16T09:04:11.627097+00:00",
+  "pinned": true
+ },
+ {
+  "id": 4,
+  "text": "admin-dashboard uses TaxJar with pool size 10. Config in docker/admin_dashboard.Dockerfile. Health check interval 10s.",
+  "source": "eval/graph/synth/config/admin-dashboard",
+  "created_at": "2026-11-16T09:04:11.627117+00:00",
+  "updated_at": "2026-11-16T09:04:11.627117+00:00",
+  "timestamp": "2026-11-16T09:04:11.627117+00:00"
+ },
+ {
+  "id": 5,
+  "text": "admin-dashboard configuration at src/config/admin_dashboard.ts. Listens on port 9271. Connection timeout 5s. Max retries 5.",
+  "source": "learning/voltis/config/admin-dashboard",
+  "created_at": "2026-11-16T09:04:11.627138+00:00",
+  "updated_at": "2026-11-16T09:04:11.627138+00:00",
+  "timestamp": "2026-11-16T09:04:11.627138+00:00"
+ },
+ {
+  "id": 6,
+  "text": "trip-recorder log level configurable via TRIP_RECORDER_LOG_LEVEL env var. Default: info. Valid: debug, info, warn, error.",
+  "source": "eval/graph/synth/config/trip-recorder",
+  "created_at": "2026-11-16T09:04:11.627161+00:00",
+  "updated_at": "2026-11-16T09:04:11.627161+00:00",
+  "timestamp": "2026-11-16T09:04:11.627161+00:00"
+ },
+ {
+  "id": 7,
+  "text": "Environment variable GEOFENCE_ENGINE_PORT=9133 controls the geofence-engine listener. Documented in scripts/geofence_engine.sh.",
+  "source": "claude-code/voltis/config/geofence-engine",
+  "created_at": "2026-11-16T09:04:11.627183+00:00",
+  "updated_at": "2026-11-16T09:04:11.627183+00:00",
+  "timestamp": "2026-11-16T09:04:11.627183+00:00"
+ },
+ {
+  "id": 8,
+  "text": "Rate limit for billing-engine: 50 requests/minute. Configured in src/config/billing_engine.ts. Burst allowed up to 100.",
+  "source": "eval/graph/synth/config/billing-engine",
+  "created_at": "2026-11-16T09:04:11.627202+00:00",
+  "updated_at": "2026-11-16T09:04:11.627202+00:00",
+  "timestamp": "2026-11-16T09:04:11.627202+00:00",
+  "last_reinforced_at": "2026-11-16T09:04:13.222548+00:00"
+ },
+ {
+  "id": 9,
+  "text": "compliance-reporter configuration at src/config/compliance_reporter.ts. Listens on port 5977. Connection timeout 5s. Max retries 3.",
+  "source": "codex/voltis/config/compliance-reporter",
+  "created_at": "2026-11-16T09:04:11.627215+00:00",
+  "updated_at": "2026-11-16T09:04:11.627215+00:00",
+  "timestamp": "2026-11-16T09:04:11.627215+00:00"
+ },
+ {
+  "id": 10,
+  "text": "Rate limit for vehicle-telemetry: 50 requests/minute. Configured in scripts/vehicle_telemetry.sh. Burst allowed up to 100.",
+  "source": "claude-code/voltis/config/vehicle-telemetry",
+  "created_at": "2026-11-16T09:04:11.627227+00:00",
+  "updated_at": "2026-11-16T09:04:11.627227+00:00",
+  "timestamp": "2026-11-16T09:04:11.627227+00:00",
+  "last_reinforced_at": "2026-11-16T09:04:13.223516+00:00"
+ },
+ {
+  "id": 11,
+  "text": "Rate limit for maintenance-scheduler: 200 requests/minute. Configured in charts/maintenance_scheduler/values.yaml. Burst allowed up to 400.",
+  "source": "eval/graph/synth/config/maintenance-scheduler",
+  "created_at": "2026-11-16T09:04:11.627238+00:00",
+  "updated_at": "2026-11-16T09:04:11.627238+00:00",
+  "timestamp": "2026-11-16T09:04:11.627238+00:00",
+  "last_reinforced_at": "2026-11-16T09:04:13.222527+00:00"
+ },
+ {
+  "id": 12,
+  "text": "Environment variable ANALYTICS_PIPELINE_PORT=7231 controls the analytics-pipeline listener. Documented in src/services/analytics_pipeline/config.ts.",
+  "source": "eval/graph/synth/config/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:11.627249+00:00",
+  "updated_at": "2026-11-16T09:04:11.627249+00:00",
+  "timestamp": "2026-11-16T09:04:11.627249+00:00"
+ },
+ {
+  "id": 13,
+  "text": "route-optimizer retry policy: 1 attempts with exponential backoff starting at 500ms. Dead letter after exhaustion.",
+  "source": "eval/graph/synth/config/route-optimizer",
+  "created_at": "2026-11-16T09:04:11.627259+00:00",
+  "updated_at": "2026-11-16T09:04:11.627259+00:00",
+  "timestamp": "2026-11-16T09:04:11.627259+00:00"
+ },
+ {
+  "id": 14,
+  "text": "analytics-pipeline Stripe connection string stored in Vault at secret/analytics-pipeline/stripe. Pool max 100, idle timeout 10s.",
+  "source": "learning/voltis/config/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:11.627297+00:00",
+  "updated_at": "2026-11-16T09:04:11.627297+00:00",
+  "timestamp": "2026-11-16T09:04:11.627297+00:00"
+ },
+ {
+  "id": 15,
+  "text": "route-optimizer log level configurable via ROUTE_OPTIMIZER_LOG_LEVEL env var. Default: info. Valid: debug, info, warn, error.",
+  "source": "eval/graph/synth/config/route-optimizer",
+  "created_at": "2026-11-16T09:04:11.627322+00:00",
+  "updated_at": "2026-11-16T09:04:11.627322+00:00",
+  "timestamp": "2026-11-16T09:04:11.627322+00:00"
+ },
+ {
+  "id": 16,
+  "text": "Feature flag fleet_api_v2_enabled controls new TimescaleDB integration. Managed in Unleash. Default: off in prod.",
+  "source": "codex/voltis/config/fleet-api",
+  "created_at": "2026-11-16T09:04:11.627343+00:00",
+  "updated_at": "2026-11-16T09:04:11.627343+00:00",
+  "timestamp": "2026-11-16T09:04:11.627343+00:00"
+ },
+ {
+  "id": 17,
+  "text": "fleet-api log level configurable via FLEET_API_LOG_LEVEL env var. Default: info. Valid: debug, info, warn, error.",
+  "source": "eval/graph/synth/config/fleet-api",
+  "created_at": "2026-11-16T09:04:11.627360+00:00",
+  "updated_at": "2026-11-16T09:04:11.627360+00:00",
+  "timestamp": "2026-11-16T09:04:11.627360+00:00"
+ },
+ {
+  "id": 18,
+  "text": "charging-manager uses TaxJar with pool size 100. Config in src/services/charging_manager/config.ts. Health check interval 10s.",
+  "source": "eval/graph/synth/config/charging-manager",
+  "created_at": "2026-11-16T09:04:11.627373+00:00",
+  "updated_at": "2026-11-16T09:04:11.627373+00:00",
+  "timestamp": "2026-11-16T09:04:11.627373+00:00",
+  "links": [
+   {
+    "to_id": 145,
+    "type": "reinforces",
+    "created_at": "2026-11-16T09:04:12.738728+00:00"
+   }
+  ]
+ },
+ {
+  "id": 19,
+  "text": "compliance-reporter uses GCS with pool size 50. Config in docker/compliance_reporter.Dockerfile. Health check interval 10s.",
+  "source": "wip/voltis/config/compliance-reporter",
+  "created_at": "2026-11-16T09:04:11.627384+00:00",
+  "updated_at": "2026-11-16T09:04:11.627384+00:00",
+  "timestamp": "2026-11-16T09:04:11.627384+00:00"
+ },
+ {
+  "id": 20,
+  "text": "auth-service GraphQL connection string stored in Vault at secret/auth-service/graphql. Pool max 50, idle timeout 120s.",
+  "source": "eval/graph/synth/config/auth-service",
+  "created_at": "2026-11-16T09:04:11.627395+00:00",
+  "updated_at": "2026-11-16T09:04:11.627395+00:00",
+  "timestamp": "2026-11-16T09:04:11.627395+00:00"
+ },
+ {
+  "id": 21,
+  "text": "Environment variable BILLING_ENGINE_PORT=5982 controls the billing-engine listener. Documented in deploy/values/billing_engine.yaml.",
+  "source": "learning/voltis/config/billing-engine",
+  "created_at": "2026-11-16T09:04:11.627410+00:00",
+  "updated_at": "2026-11-16T09:04:11.627410+00:00",
+  "timestamp": "2026-11-16T09:04:11.627410+00:00"
+ },
+ {
+  "id": 22,
+  "text": "geofence-engine uses Twilio with pool size 5. Config in src/services/geofence_engine/config.ts. Health check interval 10s.",
+  "source": "eval/graph/synth/config/geofence-engine",
+  "created_at": "2026-11-16T09:04:11.627419+00:00",
+  "updated_at": "2026-11-16T09:04:11.627419+00:00",
+  "timestamp": "2026-11-16T09:04:11.627419+00:00"
+ },
+ {
+  "id": 23,
+  "text": "Rate limit for auth-service: 100 requests/minute. Configured in config/auth_service.yaml. Burst allowed up to 200.",
+  "source": "learning/voltis/config/auth-service",
+  "created_at": "2026-11-16T09:04:11.627428+00:00",
+  "updated_at": "2026-11-16T09:04:11.627428+00:00",
+  "timestamp": "2026-11-16T09:04:11.627428+00:00"
+ },
+ {
+  "id": 24,
+  "text": "trip-recorder uses EMQX with pool size 100. Config in src/services/trip_recorder/config.ts. Health check interval 10s.",
+  "source": "claude-code/voltis/config/trip-recorder",
+  "created_at": "2026-11-16T09:04:11.627436+00:00",
+  "updated_at": "2026-11-16T09:04:11.627436+00:00",
+  "timestamp": "2026-11-16T09:04:11.627436+00:00",
+  "links": [
+   {
+    "to_id": 32,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.690943+00:00"
+   }
+  ]
+ },
+ {
+  "id": 25,
+  "text": "notification-hub log level configurable via NOTIFICATION_HUB_LOG_LEVEL env var. Default: info. Valid: debug, info, warn, error.",
+  "source": "codex/voltis/config/notification-hub",
+  "created_at": "2026-11-16T09:04:11.627446+00:00",
+  "updated_at": "2026-11-16T09:04:11.627446+00:00",
+  "timestamp": "2026-11-16T09:04:11.627446+00:00"
+ },
+ {
+  "id": 26,
+  "text": "Environment variable NOTIFICATION_HUB_PORT=9922 controls the notification-hub listener. Documented in k8s/notification_hub/deployment.yaml.",
+  "source": "eval/graph/synth/config/notification-hub",
+  "created_at": "2026-11-16T09:04:11.627455+00:00",
+  "updated_at": "2026-11-16T09:04:11.627455+00:00",
+  "timestamp": "2026-11-16T09:04:11.627455+00:00"
+ },
+ {
+  "id": 27,
+  "text": "Feature flag auth_service_v2_enabled controls new Kafka integration. Managed in Unleash. Default: off in prod.",
+  "source": "wip/voltis/config/auth-service",
+  "created_at": "2026-11-16T09:04:11.627464+00:00",
+  "updated_at": "2026-11-16T09:04:11.627464+00:00",
+  "timestamp": "2026-11-16T09:04:11.627464+00:00"
+ },
+ {
+  "id": 28,
+  "text": "trip-recorder uses GCS with pool size 10. Config in .github/workflows/trip_recorder.yml. Health check interval 10s.",
+  "source": "wip/voltis/config/trip-recorder",
+  "created_at": "2026-11-16T09:04:11.627473+00:00",
+  "updated_at": "2026-11-16T09:04:11.627473+00:00",
+  "timestamp": "2026-11-16T09:04:11.627473+00:00"
+ },
+ {
+  "id": 29,
+  "text": "geofence-engine uses Helm with pool size 20. Config in k8s/geofence_engine/deployment.yaml. Health check interval 10s.",
+  "source": "wip/voltis/config/geofence-engine",
+  "created_at": "2026-11-16T09:04:11.627482+00:00",
+  "updated_at": "2026-11-16T09:04:11.627482+00:00",
+  "timestamp": "2026-11-16T09:04:11.627482+00:00",
+  "links": [
+   {
+    "to_id": 186,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.763458+00:00"
+   }
+  ]
+ },
+ {
+  "id": 30,
+  "text": "fuel-card-integrator uses ArgoCD with pool size 5. Config in docker/fuel_card_integrator.Dockerfile. Health check interval 10s.",
+  "source": "claude-code/voltis/config/fuel-card-integrator",
+  "created_at": "2026-11-16T09:04:11.627491+00:00",
+  "updated_at": "2026-11-16T09:04:11.627491+00:00",
+  "timestamp": "2026-11-16T09:04:11.627491+00:00",
+  "links": [
+   {
+    "to_id": 33,
+    "type": "blocked_by",
+    "created_at": "2026-11-16T09:04:12.704626+00:00"
+   }
+  ]
+ },
+ {
+  "id": 31,
+  "text": "maintenance-scheduler uses Expo with pool size 5. Config in k8s/maintenance_scheduler/deployment.yaml. Health check interval 10s.",
+  "source": "wip/voltis/config/maintenance-scheduler",
+  "created_at": "2026-11-16T09:04:11.627499+00:00",
+  "updated_at": "2026-11-16T09:04:11.627499+00:00",
+  "timestamp": "2026-11-16T09:04:11.627499+00:00"
+ },
+ {
+  "id": 32,
+  "text": "Environment variable BILLING_ENGINE_PORT=7324 controls the billing-engine listener. Documented in deploy/values/billing_engine.yaml.",
+  "source": "codex/voltis/config/billing-engine",
+  "created_at": "2026-11-16T09:04:11.627508+00:00",
+  "updated_at": "2026-11-16T09:04:11.627508+00:00",
+  "timestamp": "2026-11-16T09:04:11.627508+00:00",
+  "links": [
+   {
+    "to_id": 77,
+    "type": "caused_by",
+    "created_at": "2026-11-16T09:04:12.644701+00:00"
+   }
+  ]
+ },
+ {
+  "id": 33,
+  "text": "auth-service Auth0 connection string stored in Vault at secret/auth-service/auth0. Pool max 10, idle timeout 30s.",
+  "source": "codex/voltis/config/auth-service",
+  "created_at": "2026-11-16T09:04:11.627517+00:00",
+  "updated_at": "2026-11-16T09:04:11.627517+00:00",
+  "timestamp": "2026-11-16T09:04:11.627517+00:00"
+ },
+ {
+  "id": 34,
+  "text": "maintenance-scheduler retry policy: 3 attempts with exponential backoff starting at 6000ms. Dead letter after exhaustion.",
+  "source": "codex/voltis/config/maintenance-scheduler",
+  "created_at": "2026-11-16T09:04:11.627525+00:00",
+  "updated_at": "2026-11-16T09:04:11.627525+00:00",
+  "timestamp": "2026-11-16T09:04:11.627525+00:00"
+ },
+ {
+  "id": 35,
+  "text": "Rate limit for vehicle-telemetry: 100 requests/minute. Configured in k8s/vehicle_telemetry/deployment.yaml. Burst allowed up to 200.",
+  "source": "eval/graph/synth/config/vehicle-telemetry",
+  "created_at": "2026-11-16T09:04:11.627535+00:00",
+  "updated_at": "2026-11-16T09:04:11.627535+00:00",
+  "timestamp": "2026-11-16T09:04:11.627535+00:00"
+ },
+ {
+  "id": 36,
+  "text": "Marcus Lee (platform lead) is the primary owner of fleet-api. Slack: @marcus.lee. Timezone: US Pacific.",
+  "source": "claude-code/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627544+00:00",
+  "updated_at": "2026-11-16T09:04:11.627544+00:00",
+  "timestamp": "2026-11-16T09:04:11.627544+00:00"
+ },
+ {
+  "id": 37,
+  "text": "For billing-engine escalations, contact Priya Sharma (@priya.sharma). Backup: James Park.",
+  "source": "claude-code/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627552+00:00",
+  "updated_at": "2026-11-16T09:04:11.627552+00:00",
+  "timestamp": "2026-11-16T09:04:11.627552+00:00"
+ },
+ {
+  "id": 38,
+  "text": "James Park leads the Thursday architecture review. Focus areas: ArgoCD performance and maintenance-scheduler reliability.",
+  "source": "codex/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627560+00:00",
+  "updated_at": "2026-11-16T09:04:11.627560+00:00",
+  "timestamp": "2026-11-16T09:04:11.627560+00:00"
+ },
+ {
+  "id": 39,
+  "text": "1:1 with Lisa Chen: discussed route-optimizer tech debt. Action items in Linear under route-optimizer-240.",
+  "source": "wip/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627569+00:00",
+  "updated_at": "2026-11-16T09:04:11.627569+00:00",
+  "timestamp": "2026-11-16T09:04:11.627569+00:00"
+ },
+ {
+  "id": 40,
+  "text": "Chen Wei's OKR Q4: improve fuel-card-integrator cache hit rate by 38%.",
+  "source": "wip/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627585+00:00",
+  "updated_at": "2026-11-16T09:04:11.627585+00:00",
+  "timestamp": "2026-11-16T09:04:11.627585+00:00"
+ },
+ {
+  "id": 41,
+  "text": "1:1 with Ana Rodriguez: discussed billing-engine tech debt. Action items in Linear under billing-engine-375.",
+  "source": "codex/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627596+00:00",
+  "updated_at": "2026-11-16T09:04:11.627596+00:00",
+  "timestamp": "2026-11-16T09:04:11.627596+00:00"
+ },
+ {
+  "id": 42,
+  "text": "Omar Hassan is on-call this week for compliance-reporter. PagerDuty schedule: edge engineer-rotation.",
+  "source": "codex/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627605+00:00",
+  "updated_at": "2026-11-16T09:04:11.627605+00:00",
+  "timestamp": "2026-11-16T09:04:11.627605+00:00"
+ },
+ {
+  "id": 43,
+  "text": "Sofia Martinez specializes in Elasticsearch. Joined the team in 2025. Previously at Tesla.",
+  "source": "codex/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627614+00:00",
+  "updated_at": "2026-11-16T09:04:11.627614+00:00",
+  "timestamp": "2026-11-16T09:04:11.627614+00:00"
+ },
+ {
+  "id": 44,
+  "text": "Raj Patel (route engineer) is the primary owner of billing-engine. Slack: @raj.patel. Timezone: US Pacific.",
+  "source": "codex/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627622+00:00",
+  "updated_at": "2026-11-16T09:04:11.627622+00:00",
+  "timestamp": "2026-11-16T09:04:11.627622+00:00",
+  "links": [
+   {
+    "to_id": 30,
+    "type": "blocked_by",
+    "created_at": "2026-11-16T09:04:12.712437+00:00"
+   }
+  ]
+ },
+ {
+  "id": 45,
+  "text": "Emma Thompson leads the Friday architecture review. Focus areas: Kubernetes performance and auth-service reliability.",
+  "source": "eval/graph/synth/team",
+  "created_at": "2026-11-16T09:04:11.627631+00:00",
+  "updated_at": "2026-11-16T09:04:11.627631+00:00",
+  "timestamp": "2026-11-16T09:04:11.627631+00:00"
+ },
+ {
+  "id": 46,
+  "text": "Jake Wilson leads the Wednesday architecture review. Focus areas: EMQX performance and fleet-api reliability.",
+  "source": "eval/graph/synth/team",
+  "created_at": "2026-11-16T09:04:11.627641+00:00",
+  "updated_at": "2026-11-16T09:04:11.627641+00:00",
+  "timestamp": "2026-11-16T09:04:11.627641+00:00"
+ },
+ {
+  "id": 47,
+  "text": "Yuki Tanaka specializes in Redis. Joined the team in 2025. Previously at Lyft.",
+  "source": "codex/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627650+00:00",
+  "updated_at": "2026-11-16T09:04:11.627650+00:00",
+  "timestamp": "2026-11-16T09:04:11.627650+00:00"
+ },
+ {
+  "id": 48,
+  "text": "Alex Rivera leads the Wednesday architecture review. Focus areas: Stripe performance and fuel-card-integrator reliability.",
+  "source": "wip/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627659+00:00",
+  "updated_at": "2026-11-16T09:04:12.942021+00:00",
+  "timestamp": "2026-11-16T09:04:11.627659+00:00",
+  "archived": true
+ },
+ {
+  "id": 49,
+  "text": "David Kim leads the Tuesday architecture review. Focus areas: BigQuery performance and compliance-reporter reliability.",
+  "source": "claude-code/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627668+00:00",
+  "updated_at": "2026-11-16T09:04:11.627668+00:00",
+  "timestamp": "2026-11-16T09:04:11.627668+00:00"
+ },
+ {
+  "id": 50,
+  "text": "1:1 with Maria Santos: discussed trip-recorder tech debt. Action items in Linear under trip-recorder-888.",
+  "source": "codex/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627676+00:00",
+  "updated_at": "2026-11-16T09:04:11.627676+00:00",
+  "timestamp": "2026-11-16T09:04:11.627676+00:00"
+ },
+ {
+  "id": 51,
+  "text": "Tom Anderson specializes in REST. Joined the team in 2025. Previously at Tesla.",
+  "source": "eval/graph/synth/team",
+  "created_at": "2026-11-16T09:04:11.627685+00:00",
+  "updated_at": "2026-11-16T09:04:11.627685+00:00",
+  "timestamp": "2026-11-16T09:04:11.627685+00:00"
+ },
+ {
+  "id": 52,
+  "text": "Lily Zhang wrote the fleet-api design doc (ADR-020). Key decision: chose Terraform over Istio.",
+  "source": "claude-code/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627693+00:00",
+  "updated_at": "2026-11-16T09:04:12.793594+00:00",
+  "timestamp": "2026-11-16T09:04:11.627693+00:00",
+  "pinned": true
+ },
+ {
+  "id": 53,
+  "text": "Ben Crawford's OKR Q3: improve route-optimizer cache hit rate by 12%.",
+  "source": "codex/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627703+00:00",
+  "updated_at": "2026-11-16T09:04:11.627703+00:00",
+  "timestamp": "2026-11-16T09:04:11.627703+00:00"
+ },
+ {
+  "id": 54,
+  "text": "1:1 with Nina Patel: discussed fuel-card-integrator tech debt. Action items in Linear under fuel-card-integrator-361.",
+  "source": "wip/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627711+00:00",
+  "updated_at": "2026-11-16T09:04:11.627711+00:00",
+  "timestamp": "2026-11-16T09:04:11.627711+00:00"
+ },
+ {
+  "id": 55,
+  "text": "Sam O'Brien (SRE) is the primary owner of auth-service. Slack: @sam.obrien. Timezone: US Pacific.",
+  "source": "codex/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627719+00:00",
+  "updated_at": "2026-11-16T09:04:11.627719+00:00",
+  "timestamp": "2026-11-16T09:04:11.627719+00:00"
+ },
+ {
+  "id": 56,
+  "text": "Marcus Lee wrote the fuel-card-integrator design doc (ADR-034). Key decision: chose Kafka over BigQuery.",
+  "source": "wip/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627728+00:00",
+  "updated_at": "2026-11-16T09:04:11.627728+00:00",
+  "timestamp": "2026-11-16T09:04:11.627728+00:00"
+ },
+ {
+  "id": 57,
+  "text": "Priya Sharma specializes in Prometheus. Joined the team in 2020. Previously at Lyft.",
+  "source": "claude-code/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627739+00:00",
+  "updated_at": "2026-11-16T09:04:11.627739+00:00",
+  "timestamp": "2026-11-16T09:04:11.627739+00:00"
+ },
+ {
+  "id": 58,
+  "text": "James Park wrote the vehicle-telemetry design doc (ADR-049). Key decision: chose EMQX over GraphQL.",
+  "source": "wip/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627812+00:00",
+  "updated_at": "2026-11-16T09:04:11.627812+00:00",
+  "timestamp": "2026-11-16T09:04:11.627812+00:00"
+ },
+ {
+  "id": 59,
+  "text": "Lisa Chen specializes in REST. Joined the team in 2025. Previously at Uber.",
+  "source": "claude-code/voltis/team",
+  "created_at": "2026-11-16T09:04:11.627866+00:00",
+  "updated_at": "2026-11-16T09:04:11.627866+00:00",
+  "timestamp": "2026-11-16T09:04:11.627866+00:00",
+  "links": [
+   {
+    "to_id": 51,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.600137+00:00"
+   }
+  ]
+ },
+ {
+  "id": 60,
+  "text": "Bug in driver-portal: race condition in driver-portal when concurrent Redis requests arrive. Discovered during load test. Fix: fixed race condition.",
+  "source": "codex/voltis/incidents/driver-portal",
+  "created_at": "2026-11-16T09:04:11.627921+00:00",
+  "updated_at": "2026-11-16T09:04:11.627921+00:00",
+  "timestamp": "2026-11-16T09:04:11.627921+00:00"
+ },
+ {
+  "id": 61,
+  "text": "Bug in charging-manager: null pointer in charging-manager when GraphQL returns empty response. Discovered during load test. Fix: added timeout.",
+  "source": "eval/graph/synth/incidents/charging-manager",
+  "created_at": "2026-11-16T09:04:11.627976+00:00",
+  "updated_at": "2026-11-16T09:04:11.627976+00:00",
+  "timestamp": "2026-11-16T09:04:11.627976+00:00"
+ },
+ {
+  "id": 62,
+  "text": "Postmortem 2026-08-14: geofence-engine outage lasted 5 minutes. Impact: 6398 requests failed. Action items: add SendGrid monitoring, improve geofence-engine alerting.",
+  "source": "learning/voltis/incidents/geofence-engine",
+  "created_at": "2026-11-16T09:04:11.628048+00:00",
+  "updated_at": "2026-11-16T09:04:11.628048+00:00",
+  "timestamp": "2026-11-16T09:04:11.628048+00:00"
+ },
+ {
+  "id": 63,
+  "text": "Performance regression in maintenance-scheduler after TaxJar upgrade. network bandwidth degraded by 34%. Mitigated by increasing CPU.",
+  "source": "learning/voltis/incidents/maintenance-scheduler",
+  "created_at": "2026-11-16T09:04:11.628122+00:00",
+  "updated_at": "2026-11-16T09:04:11.628122+00:00",
+  "timestamp": "2026-11-16T09:04:11.628122+00:00"
+ },
+ {
+  "id": 64,
+  "text": "Debugging session with Yuki Tanaka: traced notification-hub slowness to BigQuery query taking 8s. Solution: added index on status column.",
+  "source": "wip/voltis/incidents/notification-hub",
+  "created_at": "2026-11-16T09:04:11.628177+00:00",
+  "updated_at": "2026-11-16T09:04:11.628177+00:00",
+  "timestamp": "2026-11-16T09:04:11.628177+00:00",
+  "links": [
+   {
+    "to_id": 124,
+    "type": "supersedes",
+    "created_at": "2026-11-16T09:04:12.757365+00:00"
+   }
+  ]
+ },
+ {
+  "id": 65,
+  "text": "Incident P2-838 (2025-06-26): analytics-pipeline p99 latency spiked to 243% of baseline. Root cause: Docker deadlock. Fixed by Priya Sharma.",
+  "source": "codex/voltis/incidents/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:11.628233+00:00",
+  "updated_at": "2026-11-16T09:04:11.628233+00:00",
+  "timestamp": "2026-11-16T09:04:11.628233+00:00"
+ },
+ {
+  "id": 66,
+  "text": "Incident P3-764 (2025-04-23): geofence-engine connection pool size spiked to 333% of baseline. Root cause: dbt timeout. Fixed by Marcus Lee.",
+  "source": "wip/voltis/incidents/geofence-engine",
+  "created_at": "2026-11-16T09:04:11.628300+00:00",
+  "updated_at": "2026-11-16T09:04:11.628300+00:00",
+  "timestamp": "2026-11-16T09:04:11.628300+00:00"
+ },
+ {
+  "id": 67,
+  "text": "Rollback of vehicle-telemetry deploy 2025-04-14. Error: ERR_429 in Helm integration. Reverted to previous version. Sam O'Brien investigating.",
+  "source": "wip/voltis/incidents/vehicle-telemetry",
+  "created_at": "2026-11-16T09:04:11.628356+00:00",
+  "updated_at": "2026-11-16T09:04:11.628356+00:00",
+  "timestamp": "2026-11-16T09:04:11.628356+00:00"
+ },
+ {
+  "id": 68,
+  "text": "Incident P2-813 (2025-07-06): route-optimizer error rate spiked to 578% of baseline. Root cause: SendGrid OOM. Fixed by Lisa Chen.",
+  "source": "claude-code/voltis/incidents/route-optimizer",
+  "created_at": "2026-11-16T09:04:11.628409+00:00",
+  "updated_at": "2026-11-16T09:04:11.628409+00:00",
+  "timestamp": "2026-11-16T09:04:11.628409+00:00"
+ },
+ {
+  "id": 69,
+  "text": "Debugging session with Marcus Lee: traced compliance-reporter slowness to Helm query taking 7s. Solution: added index on user_id column.",
+  "source": "wip/voltis/incidents/compliance-reporter",
+  "created_at": "2026-11-16T09:04:11.628464+00:00",
+  "updated_at": "2026-11-16T09:04:11.628464+00:00",
+  "timestamp": "2026-11-16T09:04:11.628464+00:00"
+ },
+ {
+  "id": 70,
+  "text": "Rollback of billing-engine deploy 2026-10-03. Error: ERR_642 in ArgoCD integration. Reverted to previous version. Priya Sharma investigating.",
+  "source": "eval/graph/synth/incidents/billing-engine",
+  "created_at": "2026-11-16T09:04:11.628533+00:00",
+  "updated_at": "2026-11-16T09:04:11.628533+00:00",
+  "timestamp": "2026-11-16T09:04:11.628533+00:00"
+ },
+ {
+  "id": 71,
+  "text": "Postmortem 2025-04-04: analytics-pipeline outage lasted 25 minutes. Impact: 806 requests failed. Action items: add Jaeger monitoring, improve analytics-pipeline alerting.",
+  "source": "claude-code/voltis/incidents/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:11.628590+00:00",
+  "updated_at": "2026-11-16T09:04:11.628590+00:00",
+  "timestamp": "2026-11-16T09:04:11.628590+00:00"
+ },
+ {
+  "id": 72,
+  "text": "Bug in admin-dashboard: off-by-one in admin-dashboard pagination causing MQTT to be skipped. Discovered during load test. Fix: added timeout.",
+  "source": "learning/voltis/incidents/admin-dashboard",
+  "created_at": "2026-11-16T09:04:11.628660+00:00",
+  "updated_at": "2026-11-16T09:04:11.628660+00:00",
+  "timestamp": "2026-11-16T09:04:11.628660+00:00"
+ },
+ {
+  "id": 73,
+  "text": "Bug in geofence-engine: infinite loop in geofence-engine triggered by Twilio edge case input. Discovered during load test. Fix: increased pool size.",
+  "source": "wip/voltis/incidents/geofence-engine",
+  "created_at": "2026-11-16T09:04:11.628716+00:00",
+  "updated_at": "2026-11-16T09:04:11.628716+00:00",
+  "timestamp": "2026-11-16T09:04:11.628716+00:00"
+ },
+ {
+  "id": 74,
+  "text": "Incident P3-837 (2026-03-15): compliance-reporter connection pool size spiked to 398% of baseline. Root cause: MQTT crash. Fixed by Ana Rodriguez.",
+  "source": "wip/voltis/incidents/compliance-reporter",
+  "created_at": "2026-11-16T09:04:11.628772+00:00",
+  "updated_at": "2026-11-16T09:04:11.628772+00:00",
+  "timestamp": "2026-11-16T09:04:11.628772+00:00"
+ },
+ {
+  "id": 75,
+  "text": "Bug in fuel-card-integrator: timezone bug in fuel-card-integrator converting Kubernetes timestamps incorrectly. Discovered during load test. Fix: added circuit breaker.",
+  "source": "eval/graph/synth/incidents/fuel-card-integrator",
+  "created_at": "2026-11-16T09:04:11.628866+00:00",
+  "updated_at": "2026-11-16T09:04:11.628866+00:00",
+  "timestamp": "2026-11-16T09:04:11.628866+00:00",
+  "links": [
+   {
+    "to_id": 183,
+    "type": "reinforces",
+    "created_at": "2026-11-16T09:04:12.720722+00:00"
+   }
+  ]
+ },
+ {
+  "id": 76,
+  "text": "Incident P0-352 (2026-12-28): charging-manager connection pool size spiked to 453% of baseline. Root cause: Istio crash. Fixed by Raj Patel.",
+  "source": "eval/graph/synth/incidents/charging-manager",
+  "created_at": "2026-11-16T09:04:11.628921+00:00",
+  "updated_at": "2026-11-16T09:04:11.628921+00:00",
+  "timestamp": "2026-11-16T09:04:11.628921+00:00"
+ },
+ {
+  "id": 77,
+  "text": "Postmortem 2026-12-27: auth-service outage lasted 76 minutes. Impact: 303 requests failed. Action items: add Kong monitoring, improve auth-service alerting.",
+  "source": "codex/voltis/incidents/auth-service",
+  "created_at": "2026-11-16T09:04:11.628977+00:00",
+  "updated_at": "2026-11-16T09:04:11.628977+00:00",
+  "timestamp": "2026-11-16T09:04:11.628977+00:00",
+  "links": [
+   {
+    "to_id": 84,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.732211+00:00"
+   }
+  ]
+ },
+ {
+  "id": 78,
+  "text": "Performance regression in billing-engine after GraphQL upgrade. error rate degraded by 57%. Mitigated by increasing connection pool.",
+  "source": "wip/voltis/incidents/billing-engine",
+  "created_at": "2026-11-16T09:04:11.629044+00:00",
+  "updated_at": "2026-11-16T09:04:11.629044+00:00",
+  "timestamp": "2026-11-16T09:04:11.629044+00:00"
+ },
+ {
+  "id": 79,
+  "text": "Rollback of maintenance-scheduler deploy 2026-09-02. Error: ERR_735 in PostgreSQL integration. Reverted to previous version. James Park investigating.",
+  "source": "codex/voltis/incidents/maintenance-scheduler",
+  "created_at": "2026-11-16T09:04:11.629102+00:00",
+  "updated_at": "2026-11-16T09:04:11.629102+00:00",
+  "timestamp": "2026-11-16T09:04:11.629102+00:00"
+ },
+ {
+  "id": 80,
+  "text": "Rollback of compliance-reporter deploy 2026-08-20. Error: ERR_241 in React Native integration. Reverted to previous version. Lisa Chen investigating.",
+  "source": "claude-code/voltis/incidents/compliance-reporter",
+  "created_at": "2026-11-16T09:04:12.056081+00:00",
+  "updated_at": "2026-11-16T09:04:12.056081+00:00",
+  "timestamp": "2026-11-16T09:04:12.056081+00:00"
+ },
+ {
+  "id": 81,
+  "text": "Debugging session with Nina Patel: traced vehicle-telemetry slowness to GraphQL query taking 12s. Solution: added index on status column.",
+  "source": "claude-code/voltis/incidents/vehicle-telemetry",
+  "created_at": "2026-11-16T09:04:12.056136+00:00",
+  "updated_at": "2026-11-16T09:04:12.056136+00:00",
+  "timestamp": "2026-11-16T09:04:12.056136+00:00"
+ },
+ {
+  "id": 82,
+  "text": "Bug in geofence-engine: data corruption in geofence-engine from GKE encoding mismatch. Discovered during load test. Fix: fixed race condition.",
+  "source": "claude-code/voltis/incidents/geofence-engine",
+  "created_at": "2026-11-16T09:04:12.056150+00:00",
+  "updated_at": "2026-11-16T09:04:12.056150+00:00",
+  "timestamp": "2026-11-16T09:04:12.056150+00:00"
+ },
+ {
+  "id": 83,
+  "text": "Bug in driver-portal: infinite loop in driver-portal triggered by Flink edge case input. Discovered during load test. Fix: added circuit breaker.",
+  "source": "wip/voltis/incidents/driver-portal",
+  "created_at": "2026-11-16T09:04:12.056166+00:00",
+  "updated_at": "2026-11-16T09:04:12.056166+00:00",
+  "timestamp": "2026-11-16T09:04:12.056166+00:00"
+ },
+ {
+  "id": 84,
+  "text": "vehicle-telemetry deployment: 9 replicas. Resource limits: 1465m CPU, 2983Mi memory. HPA target 72% CPU.",
+  "source": "codex/voltis/arch/vehicle-telemetry",
+  "created_at": "2026-11-16T09:04:12.056179+00:00",
+  "updated_at": "2026-11-16T09:04:12.056179+00:00",
+  "timestamp": "2026-11-16T09:04:12.056179+00:00"
+ },
+ {
+  "id": 85,
+  "text": "billing-engine communicates with route-optimizer via WebSocket. Protocol buffers in proto/billing_engine.proto.",
+  "source": "claude-code/voltis/arch/billing-engine",
+  "created_at": "2026-11-16T09:04:12.056190+00:00",
+  "updated_at": "2026-11-16T09:04:12.056190+00:00",
+  "timestamp": "2026-11-16T09:04:12.056190+00:00"
+ },
+ {
+  "id": 86,
+  "text": "vehicle-telemetry observability: custom cache hit rate dashboard in Grafana. Alert: memory usage > 112ms triggers P2 page.",
+  "source": "codex/voltis/arch/vehicle-telemetry",
+  "created_at": "2026-11-16T09:04:12.056201+00:00",
+  "updated_at": "2026-11-16T09:04:12.056201+00:00",
+  "timestamp": "2026-11-16T09:04:12.056201+00:00"
+ },
+ {
+  "id": 87,
+  "text": "ADR-020: trip-recorder uses dbt for data storage. Considered Kubernetes but rejected due to vendor lock-in.",
+  "source": "claude-code/voltis/arch/trip-recorder",
+  "created_at": "2026-11-16T09:04:12.056210+00:00",
+  "updated_at": "2026-11-16T09:04:12.813481+00:00",
+  "timestamp": "2026-11-16T09:04:12.056210+00:00",
+  "links": [
+   {
+    "to_id": 76,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.606456+00:00"
+   }
+  ],
+  "pinned": true
+ },
+ {
+  "id": 88,
+  "text": "route-optimizer architecture: request-response with Cloud SQL. Internal API on port 3354.",
+  "source": "eval/graph/synth/arch/route-optimizer",
+  "created_at": "2026-11-16T09:04:12.056220+00:00",
+  "updated_at": "2026-11-16T09:04:12.056220+00:00",
+  "timestamp": "2026-11-16T09:04:12.056220+00:00",
+  "links": [
+   {
+    "to_id": 119,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.612637+00:00"
+   }
+  ]
+ },
+ {
+  "id": 89,
+  "text": "analytics-pipeline deployment: 4 replicas. Resource limits: 1716m CPU, 3753Mi memory. HPA target 63% CPU.",
+  "source": "codex/voltis/arch/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:12.056230+00:00",
+  "updated_at": "2026-11-16T09:04:12.056230+00:00",
+  "timestamp": "2026-11-16T09:04:12.056230+00:00"
+ },
+ {
+  "id": 90,
+  "text": "auth-service architecture: saga pattern with Cloud SQL. Internal API on port 8661.",
+  "source": "learning/voltis/arch/auth-service",
+  "created_at": "2026-11-16T09:04:12.056239+00:00",
+  "updated_at": "2026-11-16T09:04:13.005690+00:00",
+  "timestamp": "2026-11-16T09:04:12.056239+00:00",
+  "links": [
+   {
+    "to_id": 75,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.624054+00:00"
+   }
+  ],
+  "archived": true
+ },
+ {
+  "id": 91,
+  "text": "compliance-reporter observability: custom cache hit rate dashboard in Grafana. Alert: connection pool size > 71% triggers P2 page.",
+  "source": "learning/voltis/arch/compliance-reporter",
+  "created_at": "2026-11-16T09:04:12.056249+00:00",
+  "updated_at": "2026-11-16T09:04:12.056249+00:00",
+  "timestamp": "2026-11-16T09:04:12.056249+00:00"
+ },
+ {
+  "id": 92,
+  "text": "analytics-pipeline observability: custom error rate dashboard in Grafana. Alert: memory usage > 302ms triggers P2 page.",
+  "source": "codex/voltis/arch/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:12.056257+00:00",
+  "updated_at": "2026-11-16T09:04:12.056257+00:00",
+  "timestamp": "2026-11-16T09:04:12.056257+00:00"
+ },
+ {
+  "id": 93,
+  "text": "charging-manager deployment: 4 replicas. Resource limits: 1441m CPU, 495Mi memory. HPA target 54% CPU.",
+  "source": "learning/voltis/arch/charging-manager",
+  "created_at": "2026-11-16T09:04:12.056309+00:00",
+  "updated_at": "2026-11-16T09:04:12.056309+00:00",
+  "timestamp": "2026-11-16T09:04:12.056309+00:00"
+ },
+ {
+  "id": 94,
+  "text": "admin-dashboard architecture: choreography with React Query. Internal API on port 6076.",
+  "source": "eval/graph/synth/arch/admin-dashboard",
+  "created_at": "2026-11-16T09:04:12.056322+00:00",
+  "updated_at": "2026-11-16T09:04:12.926198+00:00",
+  "timestamp": "2026-11-16T09:04:12.056322+00:00",
+  "archived": true
+ },
+ {
+  "id": 95,
+  "text": "analytics-pipeline API contract: GraphQL schema spec at docs/api/analytics-pipeline.yaml. Breaking changes require ADR.",
+  "source": "claude-code/voltis/arch/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:12.056333+00:00",
+  "updated_at": "2026-11-16T09:04:12.056333+00:00",
+  "timestamp": "2026-11-16T09:04:12.056333+00:00"
+ },
+ {
+  "id": 96,
+  "text": "auth-service communicates with fuel-card-integrator via GraphQL. Protocol buffers in proto/auth_service.proto.",
+  "source": "wip/voltis/arch/auth-service",
+  "created_at": "2026-11-16T09:04:12.056343+00:00",
+  "updated_at": "2026-11-16T09:04:12.056343+00:00",
+  "timestamp": "2026-11-16T09:04:12.056343+00:00"
+ },
+ {
+  "id": 97,
+  "text": "ADR-011: driver-portal uses Airflow for search. Considered Grafana but rejected due to cost.",
+  "source": "eval/graph/synth/arch/driver-portal",
+  "created_at": "2026-11-16T09:04:12.056353+00:00",
+  "updated_at": "2026-11-16T09:04:12.056353+00:00",
+  "timestamp": "2026-11-16T09:04:12.056353+00:00"
+ },
+ {
+  "id": 98,
+  "text": "trip-recorder communicates with vehicle-telemetry via REST. Protocol buffers in proto/trip_recorder.proto.",
+  "source": "learning/voltis/arch/trip-recorder",
+  "created_at": "2026-11-16T09:04:12.056362+00:00",
+  "updated_at": "2026-11-16T09:04:12.910819+00:00",
+  "timestamp": "2026-11-16T09:04:12.056362+00:00",
+  "pinned": true
+ },
+ {
+  "id": 99,
+  "text": "geofence-engine API contract: AsyncAPI spec at docs/api/geofence-engine.yaml. Breaking changes require ADR.",
+  "source": "wip/voltis/arch/geofence-engine",
+  "created_at": "2026-11-16T09:04:12.056370+00:00",
+  "updated_at": "2026-11-16T09:04:12.056370+00:00",
+  "timestamp": "2026-11-16T09:04:12.056370+00:00"
+ },
+ {
+  "id": 100,
+  "text": "billing-engine observability: custom disk I/O dashboard in Grafana. Alert: connection pool size > 109% triggers P2 page.",
+  "source": "wip/voltis/arch/billing-engine",
+  "created_at": "2026-11-16T09:04:12.056379+00:00",
+  "updated_at": "2026-11-16T09:04:12.056379+00:00",
+  "timestamp": "2026-11-16T09:04:12.056379+00:00",
+  "links": [
+   {
+    "to_id": 153,
+    "type": "blocked_by",
+    "created_at": "2026-11-16T09:04:12.769784+00:00"
+   }
+  ]
+ },
+ {
+  "id": 101,
+  "text": "charging-manager architecture: saga pattern with TaxJar. Internal API on port 8481.",
+  "source": "claude-code/voltis/arch/charging-manager",
+  "created_at": "2026-11-16T09:04:12.056394+00:00",
+  "updated_at": "2026-11-16T09:04:12.056394+00:00",
+  "timestamp": "2026-11-16T09:04:12.056394+00:00"
+ },
+ {
+  "id": 102,
+  "text": "route-optimizer API contract: AsyncAPI spec at docs/api/route-optimizer.yaml. Breaking changes require ADR.",
+  "source": "claude-code/voltis/arch/route-optimizer",
+  "created_at": "2026-11-16T09:04:12.056403+00:00",
+  "updated_at": "2026-11-16T09:04:12.056403+00:00",
+  "timestamp": "2026-11-16T09:04:12.056403+00:00",
+  "links": [
+   {
+    "to_id": 120,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.640344+00:00"
+   }
+  ]
+ },
+ {
+  "id": 103,
+  "text": "admin-dashboard observability: custom p99 latency dashboard in Grafana. Alert: error rate > 427ms triggers P1 page.",
+  "source": "eval/graph/synth/arch/admin-dashboard",
+  "created_at": "2026-11-16T09:04:12.056411+00:00",
+  "updated_at": "2026-11-16T09:04:12.056411+00:00",
+  "timestamp": "2026-11-16T09:04:12.056411+00:00"
+ },
+ {
+  "id": 104,
+  "text": "maintenance-scheduler deployment: 3 replicas. Resource limits: 1603m CPU, 3334Mi memory. HPA target 66% CPU.",
+  "source": "learning/voltis/arch/maintenance-scheduler",
+  "created_at": "2026-11-16T09:04:12.056420+00:00",
+  "updated_at": "2026-11-16T09:04:12.056420+00:00",
+  "timestamp": "2026-11-16T09:04:12.056420+00:00"
+ },
+ {
+  "id": 105,
+  "text": "analytics-pipeline deployment: 9 replicas. Resource limits: 1191m CPU, 403Mi memory. HPA target 51% CPU.",
+  "source": "claude-code/voltis/arch/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:12.056429+00:00",
+  "updated_at": "2026-11-16T09:04:12.056429+00:00",
+  "timestamp": "2026-11-16T09:04:12.056429+00:00"
+ },
+ {
+  "id": 106,
+  "text": "Service boundary: geofence-engine owns the billing domain. No direct DB access from other services.",
+  "source": "eval/graph/synth/arch/geofence-engine",
+  "created_at": "2026-11-16T09:04:12.056439+00:00",
+  "updated_at": "2026-11-16T09:04:12.056439+00:00",
+  "timestamp": "2026-11-16T09:04:12.056439+00:00"
+ },
+ {
+  "id": 107,
+  "text": "Service boundary: trip-recorder owns the notification domain. No direct DB access from other services.",
+  "source": "claude-code/voltis/arch/trip-recorder",
+  "created_at": "2026-11-16T09:04:12.056447+00:00",
+  "updated_at": "2026-11-16T09:04:12.056447+00:00",
+  "timestamp": "2026-11-16T09:04:12.056447+00:00"
+ },
+ {
+  "id": 108,
+  "text": "fleet-api deployment: 3 replicas. Resource limits: 941m CPU, 951Mi memory. HPA target 50% CPU.",
+  "source": "claude-code/voltis/arch/fleet-api",
+  "created_at": "2026-11-16T09:04:12.056455+00:00",
+  "updated_at": "2026-11-16T09:04:13.041139+00:00",
+  "timestamp": "2026-11-16T09:04:12.056455+00:00",
+  "archived": true
+ },
+ {
+  "id": 109,
+  "text": "Service boundary: fleet-api owns the notification domain. No direct DB access from other services.",
+  "source": "eval/graph/synth/arch/fleet-api",
+  "created_at": "2026-11-16T09:04:12.056497+00:00",
+  "updated_at": "2026-11-16T09:04:12.056497+00:00",
+  "timestamp": "2026-11-16T09:04:12.056497+00:00"
+ },
+ {
+  "id": 110,
+  "text": "notification-hub API contract: OpenAPI 3.1 spec at docs/api/notification-hub.yaml. Breaking changes require ADR.",
+  "source": "claude-code/voltis/arch/notification-hub",
+  "created_at": "2026-11-16T09:04:12.056506+00:00",
+  "updated_at": "2026-11-16T09:04:12.056506+00:00",
+  "timestamp": "2026-11-16T09:04:12.056506+00:00"
+ },
+ {
+  "id": 111,
+  "text": "billing-engine observability: custom p99 latency dashboard in Grafana. Alert: consumer lag > 410req/s triggers P1 page.",
+  "source": "eval/graph/synth/arch/billing-engine",
+  "created_at": "2026-11-16T09:04:12.056515+00:00",
+  "updated_at": "2026-11-16T09:04:12.988735+00:00",
+  "timestamp": "2026-11-16T09:04:12.056515+00:00",
+  "archived": true
+ },
+ {
+  "id": 112,
+  "text": "billing-engine API contract: GraphQL schema spec at docs/api/billing-engine.yaml. Breaking changes require ADR.",
+  "source": "wip/voltis/arch/billing-engine",
+  "created_at": "2026-11-16T09:04:12.056524+00:00",
+  "updated_at": "2026-11-16T09:04:12.056524+00:00",
+  "timestamp": "2026-11-16T09:04:12.056524+00:00"
+ },
+ {
+  "id": 113,
+  "text": "admin-dashboard observability: custom p99 latency dashboard in Grafana. Alert: CPU utilization > 458% triggers P2 page.",
+  "source": "claude-code/voltis/arch/admin-dashboard",
+  "created_at": "2026-11-16T09:04:12.056532+00:00",
+  "updated_at": "2026-11-16T09:04:12.056532+00:00",
+  "timestamp": "2026-11-16T09:04:12.056532+00:00"
+ },
+ {
+  "id": 114,
+  "text": "analytics-pipeline deployment: 10 replicas. Resource limits: 610m CPU, 2895Mi memory. HPA target 77% CPU.",
+  "source": "eval/graph/synth/arch/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:12.056541+00:00",
+  "updated_at": "2026-11-16T09:04:12.056541+00:00",
+  "timestamp": "2026-11-16T09:04:12.056541+00:00"
+ },
+ {
+  "id": 115,
+  "text": "Service boundary: fuel-card-integrator owns the telemetry domain. No direct DB access from other services.",
+  "source": "eval/graph/synth/arch/fuel-card-integrator",
+  "created_at": "2026-11-16T09:04:12.056551+00:00",
+  "updated_at": "2026-11-16T09:04:13.063612+00:00",
+  "timestamp": "2026-11-16T09:04:12.056551+00:00",
+  "archived": true
+ },
+ {
+  "id": 116,
+  "text": "fuel-card-integrator API contract: AsyncAPI spec at docs/api/fuel-card-integrator.yaml. Breaking changes require ADR.",
+  "source": "wip/voltis/arch/fuel-card-integrator",
+  "created_at": "2026-11-16T09:04:12.056559+00:00",
+  "updated_at": "2026-11-16T09:04:12.056559+00:00",
+  "timestamp": "2026-11-16T09:04:12.056559+00:00"
+ },
+ {
+  "id": 117,
+  "text": "auth-service architecture: CQRS with Loki. Internal API on port 9560.",
+  "source": "eval/graph/synth/arch/auth-service",
+  "created_at": "2026-11-16T09:04:12.056567+00:00",
+  "updated_at": "2026-11-16T09:04:12.056567+00:00",
+  "timestamp": "2026-11-16T09:04:12.056567+00:00"
+ },
+ {
+  "id": 118,
+  "text": "analytics-pipeline observability: custom p99 latency dashboard in Grafana. Alert: memory usage > 493ms triggers P2 page.",
+  "source": "claude-code/voltis/arch/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:12.056575+00:00",
+  "updated_at": "2026-11-16T09:04:12.056575+00:00",
+  "timestamp": "2026-11-16T09:04:12.056575+00:00"
+ },
+ {
+  "id": 119,
+  "text": "geofence-engine data model: normalized relational in React Query. Schema version 23.",
+  "source": "claude-code/voltis/arch/geofence-engine",
+  "created_at": "2026-11-16T09:04:12.056583+00:00",
+  "updated_at": "2026-11-16T09:04:12.056583+00:00",
+  "timestamp": "2026-11-16T09:04:12.056583+00:00"
+ },
+ {
+  "id": 120,
+  "text": "fleet-api deployment: 8 replicas. Resource limits: 1873m CPU, 1564Mi memory. HPA target 64% CPU.",
+  "source": "eval/graph/synth/arch/fleet-api",
+  "created_at": "2026-11-16T09:04:12.056592+00:00",
+  "updated_at": "2026-11-16T09:04:12.056592+00:00",
+  "timestamp": "2026-11-16T09:04:12.056592+00:00",
+  "last_reinforced_at": "2026-11-16T09:04:13.222329+00:00"
+ },
+ {
+  "id": 121,
+  "text": "billing-engine data model: document-oriented in Elasticsearch. Schema version 2.",
+  "source": "wip/voltis/arch/billing-engine",
+  "created_at": "2026-11-16T09:04:12.056601+00:00",
+  "updated_at": "2026-11-16T09:04:12.056601+00:00",
+  "timestamp": "2026-11-16T09:04:12.056601+00:00"
+ },
+ {
+  "id": 122,
+  "text": "vehicle-telemetry communicates with auth-service via gRPC. Protocol buffers in proto/vehicle_telemetry.proto.",
+  "source": "wip/voltis/arch/vehicle-telemetry",
+  "created_at": "2026-11-16T09:04:12.056609+00:00",
+  "updated_at": "2026-11-16T09:04:12.056609+00:00",
+  "timestamp": "2026-11-16T09:04:12.056609+00:00"
+ },
+ {
+  "id": 123,
+  "text": "charging-manager communicates with driver-portal via REST. Protocol buffers in proto/charging_manager.proto.",
+  "source": "codex/voltis/arch/charging-manager",
+  "created_at": "2026-11-16T09:04:12.056618+00:00",
+  "updated_at": "2026-11-16T09:04:12.056618+00:00",
+  "timestamp": "2026-11-16T09:04:12.056618+00:00",
+  "links": [
+   {
+    "to_id": 180,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.629784+00:00"
+   }
+  ]
+ },
+ {
+  "id": 124,
+  "text": "geofence-engine API contract: OpenAPI 3.1 spec at docs/api/geofence-engine.yaml. Breaking changes require ADR.",
+  "source": "eval/graph/synth/arch/geofence-engine",
+  "created_at": "2026-11-16T09:04:12.056629+00:00",
+  "updated_at": "2026-11-16T09:04:12.056629+00:00",
+  "timestamp": "2026-11-16T09:04:12.056629+00:00"
+ },
+ {
+  "id": 125,
+  "text": "maintenance-scheduler observability: custom memory usage dashboard in Grafana. Alert: error rate > 210ms triggers P1 page.",
+  "source": "learning/voltis/arch/maintenance-scheduler",
+  "created_at": "2026-11-16T09:04:12.056637+00:00",
+  "updated_at": "2026-11-16T09:04:12.056637+00:00",
+  "timestamp": "2026-11-16T09:04:12.056637+00:00"
+ },
+ {
+  "id": 126,
+  "text": "fuel-card-integrator data model: key-value in Stripe. Schema version 21.",
+  "source": "claude-code/voltis/arch/fuel-card-integrator",
+  "created_at": "2026-11-16T09:04:12.056645+00:00",
+  "updated_at": "2026-11-16T09:04:12.056645+00:00",
+  "timestamp": "2026-11-16T09:04:12.056645+00:00"
+ },
+ {
+  "id": 127,
+  "text": "fleet-api data model: time-series in Istio. Schema version 3.",
+  "source": "learning/voltis/arch/fleet-api",
+  "created_at": "2026-11-16T09:04:12.056653+00:00",
+  "updated_at": "2026-11-16T09:04:12.056653+00:00",
+  "timestamp": "2026-11-16T09:04:12.056653+00:00"
+ },
+ {
+  "id": 128,
+  "text": "fuel-card-integrator architecture: request-response with Terraform. Internal API on port 4050.",
+  "source": "claude-code/voltis/arch/fuel-card-integrator",
+  "created_at": "2026-11-16T09:04:12.056661+00:00",
+  "updated_at": "2026-11-16T09:04:12.056661+00:00",
+  "timestamp": "2026-11-16T09:04:12.056661+00:00"
+ },
+ {
+  "id": 129,
+  "text": "notification-hub data model: time-series in React Native. Schema version 46.",
+  "source": "learning/voltis/arch/notification-hub",
+  "created_at": "2026-11-16T09:04:12.056670+00:00",
+  "updated_at": "2026-11-16T09:04:12.056670+00:00",
+  "timestamp": "2026-11-16T09:04:12.056670+00:00"
+ },
+ {
+  "id": 130,
+  "text": "billing-engine deployment: 6 replicas. Resource limits: 614m CPU, 1239Mi memory. HPA target 80% CPU.",
+  "source": "learning/voltis/arch/billing-engine",
+  "created_at": "2026-11-16T09:04:12.056678+00:00",
+  "updated_at": "2026-11-16T09:04:12.056678+00:00",
+  "timestamp": "2026-11-16T09:04:12.056678+00:00"
+ },
+ {
+  "id": 131,
+  "text": "maintenance-scheduler API contract: GraphQL schema spec at docs/api/maintenance-scheduler.yaml. Breaking changes require ADR.",
+  "source": "eval/graph/synth/arch/maintenance-scheduler",
+  "created_at": "2026-11-16T09:04:12.056686+00:00",
+  "updated_at": "2026-11-16T09:04:12.056686+00:00",
+  "timestamp": "2026-11-16T09:04:12.056686+00:00"
+ },
+ {
+  "id": 132,
+  "text": "Evaluating Stripe alternatives. James Park running POC with open-source option. Decision by EOQ.",
+  "source": "claude-code/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.056694+00:00",
+  "updated_at": "2026-11-16T09:04:12.056694+00:00",
+  "timestamp": "2026-11-16T09:04:12.056694+00:00"
+ },
+ {
+  "id": 133,
+  "text": "Auth0 contract: identity. Annual cost $18,000/yr. Renewal date 2026-05. Contact: Lily Zhang (lily.zhang@voltis.io).",
+  "source": "codex/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.056702+00:00",
+  "updated_at": "2026-11-16T09:04:12.056702+00:00",
+  "timestamp": "2026-11-16T09:04:12.056702+00:00"
+ },
+ {
+  "id": 134,
+  "text": "TaxJar contract: tax calculation. Annual cost $4,800/yr. Renewal date 2026-01. Contact: Ben Crawford (ben.crawford@voltis.io).",
+  "source": "claude-code/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057026+00:00",
+  "updated_at": "2026-11-16T09:04:12.057026+00:00",
+  "timestamp": "2026-11-16T09:04:12.057026+00:00"
+ },
+ {
+  "id": 135,
+  "text": "Twilio outage on 2026-06-19 affected SMS/voice. Duration: 97 minutes. Workaround: queue and retry.",
+  "source": "wip/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057041+00:00",
+  "updated_at": "2026-11-16T09:04:12.057041+00:00",
+  "timestamp": "2026-11-16T09:04:12.057041+00:00"
+ },
+ {
+  "id": 136,
+  "text": "SendGrid outage on 2025-01-13 affected email. Duration: 19 minutes. Workaround: failover to backup.",
+  "source": "codex/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057051+00:00",
+  "updated_at": "2026-11-16T09:04:12.057051+00:00",
+  "timestamp": "2026-11-16T09:04:12.057051+00:00"
+ },
+ {
+  "id": 137,
+  "text": "Segment API key stored in Vault at secret/vendors/segment. Rate limit: 9961 calls/minute. Support tier: Enterprise.",
+  "source": "learning/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057061+00:00",
+  "updated_at": "2026-11-16T09:04:12.057061+00:00",
+  "timestamp": "2026-11-16T09:04:12.057061+00:00"
+ },
+ {
+  "id": 138,
+  "text": "EMQX Cloud outage on 2025-02-10 affected MQTT broker. Duration: 103 minutes. Workaround: queue and retry.",
+  "source": "codex/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057070+00:00",
+  "updated_at": "2026-11-16T09:04:12.057070+00:00",
+  "timestamp": "2026-11-16T09:04:12.057070+00:00"
+ },
+ {
+  "id": 139,
+  "text": "Datadog integration: used by geofence-engine for monitoring. SDK version 4.15.7. Last updated 2025-08.",
+  "source": "claude-code/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057079+00:00",
+  "updated_at": "2026-11-16T09:04:12.057079+00:00",
+  "timestamp": "2026-11-16T09:04:12.057079+00:00"
+ },
+ {
+  "id": 140,
+  "text": "PagerDuty contract: alerting. Annual cost $2,400/yr. Renewal date 2026-11. Contact: Marcus Lee (marcus.lee@voltis.io).",
+  "source": "eval/graph/synth/vendors",
+  "created_at": "2026-11-16T09:04:12.057088+00:00",
+  "updated_at": "2026-11-16T09:04:12.057088+00:00",
+  "timestamp": "2026-11-16T09:04:12.057088+00:00"
+ },
+ {
+  "id": 141,
+  "text": "Cloudflare outage on 2025-08-20 affected CDN/DNS. Duration: 87 minutes. Workaround: manual process.",
+  "source": "codex/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057095+00:00",
+  "updated_at": "2026-11-16T09:04:12.845628+00:00",
+  "timestamp": "2026-11-16T09:04:12.057095+00:00",
+  "links": [
+   {
+    "to_id": 176,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.725928+00:00"
+   }
+  ],
+  "pinned": true
+ },
+ {
+  "id": 142,
+  "text": "Sentry integration: used by admin-dashboard for error tracking. SDK version 4.7.8. Last updated 2025-10.",
+  "source": "wip/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057103+00:00",
+  "updated_at": "2026-11-16T09:04:12.057103+00:00",
+  "timestamp": "2026-11-16T09:04:12.057103+00:00",
+  "links": [
+   {
+    "to_id": 42,
+    "type": "blocked_by",
+    "created_at": "2026-11-16T09:04:12.669642+00:00"
+   }
+  ]
+ },
+ {
+  "id": 143,
+  "text": "LaunchDarkly API key stored in Vault at secret/vendors/launchdarkly. Rate limit: 6002 calls/minute. Support tier: Professional.",
+  "source": "codex/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057111+00:00",
+  "updated_at": "2026-11-16T09:04:12.057111+00:00",
+  "timestamp": "2026-11-16T09:04:12.057111+00:00"
+ },
+ {
+  "id": 144,
+  "text": "Evaluating Confluent alternatives. Sam O'Brien running POC with competitor A. Decision by EOQ.",
+  "source": "learning/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057130+00:00",
+  "updated_at": "2026-11-16T09:04:12.057130+00:00",
+  "timestamp": "2026-11-16T09:04:12.057130+00:00"
+ },
+ {
+  "id": 145,
+  "text": "MongoDB Atlas integration: used by charging-manager for document DB. SDK version 2.3.8. Last updated 2025-08.",
+  "source": "eval/graph/synth/vendors",
+  "created_at": "2026-11-16T09:04:12.057140+00:00",
+  "updated_at": "2026-11-16T09:04:12.862010+00:00",
+  "timestamp": "2026-11-16T09:04:12.057140+00:00",
+  "pinned": true
+ },
+ {
+  "id": 146,
+  "text": "Elastic Cloud contract: search. Annual cost $14,400/yr. Renewal date 2028-09. Contact: Chen Wei (chen.wei@voltis.io).",
+  "source": "claude-code/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057148+00:00",
+  "updated_at": "2026-11-16T09:04:12.057148+00:00",
+  "timestamp": "2026-11-16T09:04:12.057148+00:00"
+ },
+ {
+  "id": 147,
+  "text": "Stripe outage on 2026-06-27 affected payments. Duration: 22 minutes. Workaround: failover to backup.",
+  "source": "eval/graph/synth/vendors",
+  "created_at": "2026-11-16T09:04:12.057158+00:00",
+  "updated_at": "2026-11-16T09:04:12.057158+00:00",
+  "timestamp": "2026-11-16T09:04:12.057158+00:00"
+ },
+ {
+  "id": 148,
+  "text": "Evaluating Auth0 alternatives. David Kim running POC with competitor A. Decision by EOQ.",
+  "source": "wip/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057166+00:00",
+  "updated_at": "2026-11-16T09:04:12.057166+00:00",
+  "timestamp": "2026-11-16T09:04:12.057166+00:00"
+ },
+ {
+  "id": 149,
+  "text": "TaxJar integration: used by compliance-reporter for tax calculation. SDK version 4.14.8. Last updated 2026-01.",
+  "source": "learning/voltis/vendors",
+  "created_at": "2026-11-16T09:04:12.057175+00:00",
+  "updated_at": "2026-11-16T09:04:12.057175+00:00",
+  "timestamp": "2026-11-16T09:04:12.057175+00:00"
+ },
+ {
+  "id": 150,
+  "text": "Twilio integration: used by notification-hub for SMS/voice. SDK version 1.20.2. Last updated 2025-11.",
+  "source": "eval/graph/synth/vendors",
+  "created_at": "2026-11-16T09:04:12.057183+00:00",
+  "updated_at": "2026-11-16T09:04:12.057183+00:00",
+  "timestamp": "2026-11-16T09:04:12.057183+00:00"
+ },
+ {
+  "id": 151,
+  "text": "Capacity planning for compliance-reporter: reviewed quarterly by Yuki Tanaka. Current utilization 64%. Scaling event triggers at 89%.",
+  "source": "learning/voltis/process/compliance-reporter",
+  "created_at": "2026-11-16T09:04:12.057191+00:00",
+  "updated_at": "2026-11-16T09:04:12.057191+00:00",
+  "timestamp": "2026-11-16T09:04:12.057191+00:00"
+ },
+ {
+  "id": 152,
+  "text": "Release process: tag v5.10.24 -> changelog generated -> release notes by Omar Hassan -> deploy to staging -> 24hr bake -> prod.",
+  "source": "wip/voltis/process/trip-recorder",
+  "created_at": "2026-11-16T09:04:12.057198+00:00",
+  "updated_at": "2026-11-16T09:04:12.057198+00:00",
+  "timestamp": "2026-11-16T09:04:12.057198+00:00"
+ },
+ {
+  "id": 153,
+  "text": "Deploy process for analytics-pipeline: merge to main -> CI builds image -> ArgoCD syncs to staging -> smoke test -> manual promote to prod. Approver: Jake Wilson.",
+  "source": "claude-code/voltis/process/analytics-pipeline",
+  "created_at": "2026-11-16T09:04:12.057206+00:00",
+  "updated_at": "2026-11-16T09:04:12.057206+00:00",
+  "timestamp": "2026-11-16T09:04:12.057206+00:00"
+ },
+ {
+  "id": 154,
+  "text": "Code review for fuel-card-integrator: 2 approvals required. Yuki Tanaka is mandatory reviewer for infrastructure.",
+  "source": "learning/voltis/process/fuel-card-integrator",
+  "created_at": "2026-11-16T09:04:12.057213+00:00",
+  "updated_at": "2026-11-16T09:04:12.057213+00:00",
+  "timestamp": "2026-11-16T09:04:12.057213+00:00"
+ },
+ {
+  "id": 155,
+  "text": "Code review for trip-recorder: 2 approvals required. Nina Patel is mandatory reviewer for schema changes.",
+  "source": "wip/voltis/process/trip-recorder",
+  "created_at": "2026-11-16T09:04:12.057221+00:00",
+  "updated_at": "2026-11-16T09:04:12.057221+00:00",
+  "timestamp": "2026-11-16T09:04:12.057221+00:00"
+ },
+ {
+  "id": 156,
+  "text": "Capacity planning for vehicle-telemetry: reviewed quarterly by Jake Wilson. Current utilization 75%. Scaling event triggers at 83%.",
+  "source": "learning/voltis/process/vehicle-telemetry",
+  "created_at": "2026-11-16T09:04:12.057228+00:00",
+  "updated_at": "2026-11-16T09:04:12.057228+00:00",
+  "timestamp": "2026-11-16T09:04:12.057228+00:00",
+  "links": [
+   {
+    "to_id": 60,
+    "type": "reinforces",
+    "created_at": "2026-11-16T09:04:12.664066+00:00"
+   }
+  ]
+ },
+ {
+  "id": 157,
+  "text": "Security review for compliance-reporter: annual penetration test by Trail of Bits. Last review: 2026-05. 4 findings.",
+  "source": "claude-code/voltis/process/compliance-reporter",
+  "created_at": "2026-11-16T09:04:12.057238+00:00",
+  "updated_at": "2026-11-16T09:04:12.057238+00:00",
+  "timestamp": "2026-11-16T09:04:12.057238+00:00",
+  "links": [
+   {
+    "to_id": 19,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.697356+00:00"
+   }
+  ]
+ },
+ {
+  "id": 158,
+  "text": "Database migration for maintenance-scheduler: create migration file -> review by David Kim -> apply to staging -> verify -> apply to prod during maintenance window (Wednesday 3am UTC).",
+  "source": "eval/graph/synth/process/maintenance-scheduler",
+  "created_at": "2026-11-16T09:04:12.057254+00:00",
+  "updated_at": "2026-11-16T09:04:12.057254+00:00",
+  "timestamp": "2026-11-16T09:04:12.057254+00:00",
+  "links": [
+   {
+    "to_id": 176,
+    "type": "caused_by",
+    "created_at": "2026-11-16T09:04:12.675513+00:00"
+   }
+  ]
+ },
+ {
+  "id": 159,
+  "text": "Release process: tag v2.17.23 -> changelog generated -> release notes by Omar Hassan -> deploy to staging -> 24hr bake -> prod.",
+  "source": "learning/voltis/process/geofence-engine",
+  "created_at": "2026-11-16T09:04:12.057268+00:00",
+  "updated_at": "2026-11-16T09:04:12.057268+00:00",
+  "timestamp": "2026-11-16T09:04:12.057268+00:00"
+ },
+ {
+  "id": 160,
+  "text": "Deploy process for fleet-api: merge to main -> CI builds image -> ArgoCD syncs to staging -> smoke test -> manual promote to prod. Approver: Lily Zhang.",
+  "source": "claude-code/voltis/process/fleet-api",
+  "created_at": "2026-11-16T09:04:12.456141+00:00",
+  "updated_at": "2026-11-16T09:04:12.456141+00:00",
+  "timestamp": "2026-11-16T09:04:12.456141+00:00"
+ },
+ {
+  "id": 161,
+  "text": "Release process: tag v4.0.7 -> changelog generated -> release notes by Emma Thompson -> deploy to staging -> 24hr bake -> prod.",
+  "source": "eval/graph/synth/process/compliance-reporter",
+  "created_at": "2026-11-16T09:04:12.456190+00:00",
+  "updated_at": "2026-11-16T09:04:12.456190+00:00",
+  "timestamp": "2026-11-16T09:04:12.456190+00:00"
+ },
+ {
+  "id": 162,
+  "text": "On-call handoff for charging-manager: Wednesday at 10am Pacific. Outgoing writes summary in #oncall-charging Slack channel.",
+  "source": "codex/voltis/process/charging-manager",
+  "created_at": "2026-11-16T09:04:12.456205+00:00",
+  "updated_at": "2026-11-16T09:04:12.456205+00:00",
+  "timestamp": "2026-11-16T09:04:12.456205+00:00",
+  "links": [
+   {
+    "to_id": 88,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.752096+00:00"
+   }
+  ]
+ },
+ {
+  "id": 163,
+  "text": "Database migration for fuel-card-integrator: create migration file -> review by Jake Wilson -> apply to staging -> verify -> apply to prod during maintenance window (Tuesday 2am UTC).",
+  "source": "learning/voltis/process/fuel-card-integrator",
+  "created_at": "2026-11-16T09:04:12.456218+00:00",
+  "updated_at": "2026-11-16T09:04:12.456218+00:00",
+  "timestamp": "2026-11-16T09:04:12.456218+00:00"
+ },
+ {
+  "id": 164,
+  "text": "Code review for fuel-card-integrator: 2 approvals required. Ana Rodriguez is mandatory reviewer for infrastructure.",
+  "source": "claude-code/voltis/process/fuel-card-integrator",
+  "created_at": "2026-11-16T09:04:12.456233+00:00",
+  "updated_at": "2026-11-16T09:04:12.456233+00:00",
+  "timestamp": "2026-11-16T09:04:12.456233+00:00"
+ },
+ {
+  "id": 165,
+  "text": "Incident response for trip-recorder: Tom Anderson is incident commander. Communication via #incident-381 Slack channel. Status page updated every 15 minutes.",
+  "source": "claude-code/voltis/process/trip-recorder",
+  "created_at": "2026-11-16T09:04:12.456245+00:00",
+  "updated_at": "2026-11-16T09:04:12.456245+00:00",
+  "timestamp": "2026-11-16T09:04:12.456245+00:00"
+ },
+ {
+  "id": 166,
+  "text": "Database migration for notification-hub: create migration file -> review by Nina Patel -> apply to staging -> verify -> apply to prod during maintenance window (Tuesday 2am UTC).",
+  "source": "codex/voltis/process/notification-hub",
+  "created_at": "2026-11-16T09:04:12.456256+00:00",
+  "updated_at": "2026-11-16T09:04:12.456256+00:00",
+  "timestamp": "2026-11-16T09:04:12.456256+00:00"
+ },
+ {
+  "id": 167,
+  "text": "Incident response for vehicle-telemetry: Ben Crawford is incident commander. Communication via #incident-191 Slack channel. Status page updated every 15 minutes.",
+  "source": "learning/voltis/process/vehicle-telemetry",
+  "created_at": "2026-11-16T09:04:12.456293+00:00",
+  "updated_at": "2026-11-16T09:04:12.456293+00:00",
+  "timestamp": "2026-11-16T09:04:12.456293+00:00"
+ },
+ {
+  "id": 168,
+  "text": "Code review for route-optimizer: 2 approvals required. Marcus Lee is mandatory reviewer for infrastructure.",
+  "source": "claude-code/voltis/process/route-optimizer",
+  "created_at": "2026-11-16T09:04:12.456307+00:00",
+  "updated_at": "2026-11-16T09:04:12.456307+00:00",
+  "timestamp": "2026-11-16T09:04:12.456307+00:00",
+  "links": [
+   {
+    "to_id": 49,
+    "type": "blocked_by",
+    "created_at": "2026-11-16T09:04:12.682602+00:00"
+   }
+  ]
+ },
+ {
+  "id": 169,
+  "text": "Database migration for billing-engine: create migration file -> review by Sam O'Brien -> apply to staging -> verify -> apply to prod during maintenance window (Saturday 1am UTC).",
+  "source": "wip/voltis/process/billing-engine",
+  "created_at": "2026-11-16T09:04:12.456320+00:00",
+  "updated_at": "2026-11-16T09:04:12.456320+00:00",
+  "timestamp": "2026-11-16T09:04:12.456320+00:00"
+ },
+ {
+  "id": 170,
+  "text": "Capacity planning for auth-service: reviewed quarterly by Marcus Lee. Current utilization 73%. Scaling event triggers at 73%.",
+  "source": "eval/graph/synth/process/auth-service",
+  "created_at": "2026-11-16T09:04:12.456330+00:00",
+  "updated_at": "2026-11-16T09:04:13.024322+00:00",
+  "timestamp": "2026-11-16T09:04:12.456330+00:00",
+  "links": [
+   {
+    "to_id": 137,
+    "type": "blocked_by",
+    "created_at": "2026-11-16T09:04:12.649951+00:00"
+   }
+  ],
+  "archived": true
+ },
+ {
+  "id": 171,
+  "text": "Deploy process for auth-service: merge to main -> CI builds image -> ArgoCD syncs to staging -> smoke test -> manual promote to prod. Approver: James Park.",
+  "source": "wip/voltis/process/auth-service",
+  "created_at": "2026-11-16T09:04:12.456342+00:00",
+  "updated_at": "2026-11-16T09:04:12.456342+00:00",
+  "timestamp": "2026-11-16T09:04:12.456342+00:00"
+ },
+ {
+  "id": 172,
+  "text": "Code review for fleet-api: 2 approvals required. Maria Santos is mandatory reviewer for schema changes.",
+  "source": "claude-code/voltis/process/fleet-api",
+  "created_at": "2026-11-16T09:04:12.456352+00:00",
+  "updated_at": "2026-11-16T09:04:12.456352+00:00",
+  "timestamp": "2026-11-16T09:04:12.456352+00:00"
+ },
+ {
+  "id": 173,
+  "text": "Release process: tag v5.18.4 -> changelog generated -> release notes by Lily Zhang -> deploy to staging -> 24hr bake -> prod.",
+  "source": "claude-code/voltis/process/charging-manager",
+  "created_at": "2026-11-16T09:04:12.456363+00:00",
+  "updated_at": "2026-11-16T09:04:12.456363+00:00",
+  "timestamp": "2026-11-16T09:04:12.456363+00:00"
+ },
+ {
+  "id": 174,
+  "text": "Incident response for compliance-reporter: David Kim is incident commander. Communication via #incident-870 Slack channel. Status page updated every 15 minutes.",
+  "source": "eval/graph/synth/process/compliance-reporter",
+  "created_at": "2026-11-16T09:04:12.456372+00:00",
+  "updated_at": "2026-11-16T09:04:12.456372+00:00",
+  "timestamp": "2026-11-16T09:04:12.456372+00:00"
+ },
+ {
+  "id": 175,
+  "text": "Security review for billing-engine: annual penetration test by NCC Group. Last review: 2025-07. 4 findings.",
+  "source": "wip/voltis/process/billing-engine",
+  "created_at": "2026-11-16T09:04:12.456380+00:00",
+  "updated_at": "2026-11-16T09:04:12.456380+00:00",
+  "timestamp": "2026-11-16T09:04:12.456380+00:00"
+ },
+ {
+  "id": 176,
+  "text": "Capacity planning for trip-recorder: reviewed quarterly by Alex Rivera. Current utilization 73%. Scaling event triggers at 73%.",
+  "source": "wip/voltis/process/trip-recorder",
+  "created_at": "2026-11-16T09:04:12.456394+00:00",
+  "updated_at": "2026-11-16T09:04:12.456394+00:00",
+  "timestamp": "2026-11-16T09:04:12.456394+00:00",
+  "links": [
+   {
+    "to_id": 78,
+    "type": "supersedes",
+    "created_at": "2026-11-16T09:04:12.776889+00:00"
+   }
+  ]
+ },
+ {
+  "id": 177,
+  "text": "Release process: tag v2.14.0 -> changelog generated -> release notes by Marcus Lee -> deploy to staging -> 24hr bake -> prod.",
+  "source": "learning/voltis/process/route-optimizer",
+  "created_at": "2026-11-16T09:04:12.456407+00:00",
+  "updated_at": "2026-11-16T09:04:12.456407+00:00",
+  "timestamp": "2026-11-16T09:04:12.456407+00:00"
+ },
+ {
+  "id": 178,
+  "text": "Capacity planning for trip-recorder: reviewed quarterly by Sofia Martinez. Current utilization 75%. Scaling event triggers at 89%.",
+  "source": "codex/voltis/process/trip-recorder",
+  "created_at": "2026-11-16T09:04:12.456415+00:00",
+  "updated_at": "2026-11-16T09:04:12.456415+00:00",
+  "timestamp": "2026-11-16T09:04:12.456415+00:00"
+ },
+ {
+  "id": 179,
+  "text": "Planning poker 2026-03-18: charging-manager stories estimated. Largest: 9 points for monitoring overhaul.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456424+00:00",
+  "updated_at": "2026-11-16T09:04:12.456424+00:00",
+  "timestamp": "2026-11-16T09:04:12.456424+00:00"
+ },
+ {
+  "id": 180,
+  "text": "Architecture review 2026-04-28: discussed geofence-engine scaling. Sofia Martinez proposed event sourcing. Decision: try in staging first.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456432+00:00",
+  "updated_at": "2026-11-16T09:04:12.456432+00:00",
+  "timestamp": "2026-11-16T09:04:12.456432+00:00"
+ },
+ {
+  "id": 181,
+  "text": "1:1 David Kim and Sam O'Brien (2025-11-17): discussed driver-portal roadmap. Priority: performance. Next step: write RFC.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456441+00:00",
+  "updated_at": "2026-11-16T09:04:12.456441+00:00",
+  "timestamp": "2026-11-16T09:04:12.456441+00:00"
+ },
+ {
+  "id": 182,
+  "text": "Sprint retro 2025-07-07: admin-dashboard team. Good: better test coverage. Improve: documentation.",
+  "source": "eval/graph/synth/meetings",
+  "created_at": "2026-11-16T09:04:12.456449+00:00",
+  "updated_at": "2026-11-16T09:04:12.456449+00:00",
+  "timestamp": "2026-11-16T09:04:12.456449+00:00"
+ },
+ {
+  "id": 183,
+  "text": "Sprint retro 2025-11-21: driver-portal team. Good: fewer incidents. Improve: code review turnaround.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456459+00:00",
+  "updated_at": "2026-11-16T09:04:12.456459+00:00",
+  "timestamp": "2026-11-16T09:04:12.456459+00:00"
+ },
+ {
+  "id": 184,
+  "text": "Planning poker 2026-01-27: billing-engine stories estimated. Largest: 8 points for auth integration.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456473+00:00",
+  "updated_at": "2026-11-16T09:04:12.456473+00:00",
+  "timestamp": "2026-11-16T09:04:12.456473+00:00"
+ },
+ {
+  "id": 185,
+  "text": "Standup 2025-07-11: Lisa Chen working on fleet-api feature. Blocker: waiting on James Park for API spec.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456482+00:00",
+  "updated_at": "2026-11-16T09:04:12.456482+00:00",
+  "timestamp": "2026-11-16T09:04:12.456482+00:00"
+ },
+ {
+  "id": 186,
+  "text": "1:1 Priya Sharma and Ben Crawford (2026-07-13): discussed fleet-api roadmap. Priority: reliability. Next step: write RFC.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456501+00:00",
+  "updated_at": "2026-11-16T09:04:12.456501+00:00",
+  "timestamp": "2026-11-16T09:04:12.456501+00:00",
+  "last_reinforced_at": "2026-11-16T09:04:13.222445+00:00"
+ },
+ {
+  "id": 187,
+  "text": "Planning poker 2025-08-17: admin-dashboard stories estimated. Largest: 7 points for database migration.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456510+00:00",
+  "updated_at": "2026-11-16T09:04:12.456510+00:00",
+  "timestamp": "2026-11-16T09:04:12.456510+00:00"
+ },
+ {
+  "id": 188,
+  "text": "Architecture review 2026-07-16: discussed driver-portal scaling. Chen Wei proposed caching layer. Decision: try in staging first.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456519+00:00",
+  "updated_at": "2026-11-16T09:04:12.456519+00:00",
+  "timestamp": "2026-11-16T09:04:12.456519+00:00"
+ },
+ {
+  "id": 189,
+  "text": "Architecture review 2026-05-19: discussed analytics-pipeline scaling. Nina Patel proposed read replica. Decision: try in staging first.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456528+00:00",
+  "updated_at": "2026-11-16T09:04:12.456528+00:00",
+  "timestamp": "2026-11-16T09:04:12.456528+00:00"
+ },
+ {
+  "id": 190,
+  "text": "Architecture review 2025-01-08: discussed charging-manager scaling. Marcus Lee proposed caching layer. Decision: try in staging first.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456537+00:00",
+  "updated_at": "2026-11-16T09:04:12.456537+00:00",
+  "timestamp": "2026-11-16T09:04:12.456537+00:00"
+ },
+ {
+  "id": 191,
+  "text": "1:1 Omar Hassan and Tom Anderson (2026-10-23): discussed geofence-engine roadmap. Priority: new features. Next step: write RFC.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456546+00:00",
+  "updated_at": "2026-11-16T09:04:12.456546+00:00",
+  "timestamp": "2026-11-16T09:04:12.456546+00:00"
+ },
+ {
+  "id": 192,
+  "text": "Sprint retro 2025-11-08: billing-engine team. Good: better test coverage. Improve: documentation.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456640+00:00",
+  "updated_at": "2026-11-16T09:04:12.456640+00:00",
+  "timestamp": "2026-11-16T09:04:12.456640+00:00"
+ },
+ {
+  "id": 193,
+  "text": "Sprint retro 2025-06-01: fuel-card-integrator team. Good: deployment speed improved. Improve: on-call handoff.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456672+00:00",
+  "updated_at": "2026-11-16T09:04:12.962016+00:00",
+  "timestamp": "2026-11-16T09:04:12.456672+00:00",
+  "archived": true
+ },
+ {
+  "id": 194,
+  "text": "Sprint retro 2025-04-07: fleet-api team. Good: deployment speed improved. Improve: code review turnaround.",
+  "source": "claude-code/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456687+00:00",
+  "updated_at": "2026-11-16T09:04:12.456687+00:00",
+  "timestamp": "2026-11-16T09:04:12.456687+00:00"
+ },
+ {
+  "id": 195,
+  "text": "Sprint retro 2026-02-01: fuel-card-integrator team. Good: better test coverage. Improve: documentation.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456698+00:00",
+  "updated_at": "2026-11-16T09:04:12.456698+00:00",
+  "timestamp": "2026-11-16T09:04:12.456698+00:00"
+ },
+ {
+  "id": 196,
+  "text": "Sprint retro 2025-09-26: maintenance-scheduler team. Good: better test coverage. Improve: documentation.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456707+00:00",
+  "updated_at": "2026-11-16T09:04:12.456707+00:00",
+  "timestamp": "2026-11-16T09:04:12.456707+00:00"
+ },
+ {
+  "id": 197,
+  "text": "Architecture review 2026-06-20: discussed geofence-engine scaling. Ben Crawford proposed CQRS. Decision: try in staging first.",
+  "source": "eval/graph/synth/meetings",
+  "created_at": "2026-11-16T09:04:12.456716+00:00",
+  "updated_at": "2026-11-16T09:04:12.456716+00:00",
+  "timestamp": "2026-11-16T09:04:12.456716+00:00"
+ },
+ {
+  "id": 198,
+  "text": "Planning poker 2026-03-28: maintenance-scheduler stories estimated. Largest: 7 points for database migration.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456725+00:00",
+  "updated_at": "2026-11-16T09:04:12.456725+00:00",
+  "timestamp": "2026-11-16T09:04:12.456725+00:00"
+ },
+ {
+  "id": 199,
+  "text": "Architecture review 2026-09-15: discussed admin-dashboard scaling. Alex Rivera proposed CQRS. Decision: try in staging first.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456734+00:00",
+  "updated_at": "2026-11-16T09:04:12.456734+00:00",
+  "timestamp": "2026-11-16T09:04:12.456734+00:00"
+ },
+ {
+  "id": 200,
+  "text": "Planning poker 2025-04-08: maintenance-scheduler stories estimated. Largest: 18 points for auth integration.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456742+00:00",
+  "updated_at": "2026-11-16T09:04:12.456742+00:00",
+  "timestamp": "2026-11-16T09:04:12.456742+00:00"
+ },
+ {
+  "id": 201,
+  "text": "Planning poker 2025-03-25: driver-portal stories estimated. Largest: 6 points for auth integration.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456753+00:00",
+  "updated_at": "2026-11-16T09:04:12.456753+00:00",
+  "timestamp": "2026-11-16T09:04:12.456753+00:00"
+ },
+ {
+  "id": 202,
+  "text": "1:1 Sam O'Brien and Jake Wilson (2026-08-14): discussed notification-hub roadmap. Priority: tech debt. Next step: write RFC.",
+  "source": "claude-code/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456761+00:00",
+  "updated_at": "2026-11-16T09:04:12.456761+00:00",
+  "timestamp": "2026-11-16T09:04:12.456761+00:00"
+ },
+ {
+  "id": 203,
+  "text": "Standup 2025-06-03: Sofia Martinez working on maintenance-scheduler refactor. Blocker: waiting on Raj Patel for review.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456768+00:00",
+  "updated_at": "2026-11-16T09:04:12.456768+00:00",
+  "timestamp": "2026-11-16T09:04:12.456768+00:00"
+ },
+ {
+  "id": 204,
+  "text": "Standup 2025-11-11: Ben Crawford working on admin-dashboard refactor. Blocker: waiting on Omar Hassan for design.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456776+00:00",
+  "updated_at": "2026-11-16T09:04:12.456776+00:00",
+  "timestamp": "2026-11-16T09:04:12.456776+00:00"
+ },
+ {
+  "id": 205,
+  "text": "Sprint retro 2026-07-13: fuel-card-integrator team. Good: fewer incidents. Improve: on-call handoff.",
+  "source": "eval/graph/synth/meetings",
+  "created_at": "2026-11-16T09:04:12.456828+00:00",
+  "updated_at": "2026-11-16T09:04:12.456828+00:00",
+  "timestamp": "2026-11-16T09:04:12.456828+00:00"
+ },
+ {
+  "id": 206,
+  "text": "1:1 Omar Hassan and Tom Anderson (2026-12-27): discussed billing-engine roadmap. Priority: tech debt. Next step: write RFC.",
+  "source": "claude-code/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456842+00:00",
+  "updated_at": "2026-11-16T09:04:12.456842+00:00",
+  "timestamp": "2026-11-16T09:04:12.456842+00:00"
+ },
+ {
+  "id": 207,
+  "text": "1:1 Maria Santos and Ben Crawford (2026-03-19): discussed fleet-api roadmap. Priority: new features. Next step: write RFC.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456852+00:00",
+  "updated_at": "2026-11-16T09:04:12.456852+00:00",
+  "timestamp": "2026-11-16T09:04:12.456852+00:00",
+  "last_reinforced_at": "2026-11-16T09:04:13.222396+00:00"
+ },
+ {
+  "id": 208,
+  "text": "Sprint retro 2026-06-19: trip-recorder team. Good: deployment speed improved. Improve: documentation.",
+  "source": "claude-code/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456861+00:00",
+  "updated_at": "2026-11-16T09:04:12.456861+00:00",
+  "timestamp": "2026-11-16T09:04:12.456861+00:00"
+ },
+ {
+  "id": 209,
+  "text": "Planning poker 2026-04-16: analytics-pipeline stories estimated. Largest: 10 points for API redesign.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456871+00:00",
+  "updated_at": "2026-11-16T09:04:12.456871+00:00",
+  "timestamp": "2026-11-16T09:04:12.456871+00:00"
+ },
+ {
+  "id": 210,
+  "text": "1:1 Ana Rodriguez and Priya Sharma (2026-01-06): discussed fuel-card-integrator roadmap. Priority: performance. Next step: write RFC.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456880+00:00",
+  "updated_at": "2026-11-16T09:04:12.456880+00:00",
+  "timestamp": "2026-11-16T09:04:12.456880+00:00"
+ },
+ {
+  "id": 211,
+  "text": "Standup 2025-03-11: Priya Sharma working on analytics-pipeline test coverage. Blocker: waiting on Yuki Tanaka for test data.",
+  "source": "eval/graph/synth/meetings",
+  "created_at": "2026-11-16T09:04:12.456889+00:00",
+  "updated_at": "2026-11-16T09:04:12.893478+00:00",
+  "timestamp": "2026-11-16T09:04:12.456889+00:00",
+  "pinned": true
+ },
+ {
+  "id": 212,
+  "text": "Architecture review 2025-05-14: discussed route-optimizer scaling. Alex Rivera proposed read replica. Decision: try in staging first.",
+  "source": "claude-code/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456897+00:00",
+  "updated_at": "2026-11-16T09:04:12.456897+00:00",
+  "timestamp": "2026-11-16T09:04:12.456897+00:00"
+ },
+ {
+  "id": 213,
+  "text": "Planning poker 2026-02-27: route-optimizer stories estimated. Largest: 19 points for auth integration.",
+  "source": "claude-code/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456907+00:00",
+  "updated_at": "2026-11-16T09:04:12.456907+00:00",
+  "timestamp": "2026-11-16T09:04:12.456907+00:00"
+ },
+ {
+  "id": 214,
+  "text": "1:1 Priya Sharma and James Park (2026-06-23): discussed driver-portal roadmap. Priority: performance. Next step: write RFC.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456915+00:00",
+  "updated_at": "2026-11-16T09:04:12.456915+00:00",
+  "timestamp": "2026-11-16T09:04:12.456915+00:00"
+ },
+ {
+  "id": 215,
+  "text": "1:1 Alex Rivera and Ana Rodriguez (2025-07-23): discussed geofence-engine roadmap. Priority: new features. Next step: write RFC.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456924+00:00",
+  "updated_at": "2026-11-16T09:04:12.456924+00:00",
+  "timestamp": "2026-11-16T09:04:12.456924+00:00"
+ },
+ {
+  "id": 216,
+  "text": "1:1 David Kim and Ben Crawford (2026-02-25): discussed vehicle-telemetry roadmap. Priority: new features. Next step: write RFC.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456931+00:00",
+  "updated_at": "2026-11-16T09:04:12.456931+00:00",
+  "timestamp": "2026-11-16T09:04:12.456931+00:00"
+ },
+ {
+  "id": 217,
+  "text": "Architecture review 2026-07-11: discussed maintenance-scheduler scaling. Marcus Lee proposed horizontal scaling. Decision: try in staging first.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456939+00:00",
+  "updated_at": "2026-11-16T09:04:12.456939+00:00",
+  "timestamp": "2026-11-16T09:04:12.456939+00:00"
+ },
+ {
+  "id": 218,
+  "text": "Planning poker 2025-02-18: auth-service stories estimated. Largest: 10 points for API redesign.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456948+00:00",
+  "updated_at": "2026-11-16T09:04:12.456948+00:00",
+  "timestamp": "2026-11-16T09:04:12.456948+00:00",
+  "links": [
+   {
+    "to_id": 42,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.746566+00:00"
+   }
+  ]
+ },
+ {
+  "id": 219,
+  "text": "Architecture review 2025-09-24: discussed driver-portal scaling. Lisa Chen proposed horizontal scaling. Decision: try in staging first.",
+  "source": "eval/graph/synth/meetings",
+  "created_at": "2026-11-16T09:04:12.456955+00:00",
+  "updated_at": "2026-11-16T09:04:12.456955+00:00",
+  "timestamp": "2026-11-16T09:04:12.456955+00:00",
+  "links": [
+   {
+    "to_id": 37,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.592039+00:00"
+   }
+  ]
+ },
+ {
+  "id": 220,
+  "text": "1:1 Ana Rodriguez and Omar Hassan (2025-11-18): discussed geofence-engine roadmap. Priority: reliability. Next step: write RFC.",
+  "source": "eval/graph/synth/meetings",
+  "created_at": "2026-11-16T09:04:12.456963+00:00",
+  "updated_at": "2026-11-16T09:04:12.456963+00:00",
+  "timestamp": "2026-11-16T09:04:12.456963+00:00"
+ },
+ {
+  "id": 221,
+  "text": "Architecture review 2026-04-08: discussed fleet-api scaling. Priya Sharma proposed horizontal scaling. Decision: try in staging first.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456971+00:00",
+  "updated_at": "2026-11-16T09:04:12.456971+00:00",
+  "timestamp": "2026-11-16T09:04:12.456971+00:00",
+  "last_reinforced_at": "2026-11-16T09:04:13.222371+00:00"
+ },
+ {
+  "id": 222,
+  "text": "Planning poker 2025-11-06: billing-engine stories estimated. Largest: 15 points for database migration.",
+  "source": "claude-code/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456981+00:00",
+  "updated_at": "2026-11-16T09:04:12.456981+00:00",
+  "timestamp": "2026-11-16T09:04:12.456981+00:00"
+ },
+ {
+  "id": 223,
+  "text": "Standup 2026-02-08: Omar Hassan working on notification-hub bugfix. Blocker: waiting on Ben Crawford for review.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.456991+00:00",
+  "updated_at": "2026-11-16T09:04:12.456991+00:00",
+  "timestamp": "2026-11-16T09:04:12.456991+00:00"
+ },
+ {
+  "id": 224,
+  "text": "Standup 2025-02-22: Alex Rivera working on auth-service refactor. Blocker: waiting on Omar Hassan for design.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457001+00:00",
+  "updated_at": "2026-11-16T09:04:12.457001+00:00",
+  "timestamp": "2026-11-16T09:04:12.457001+00:00"
+ },
+ {
+  "id": 225,
+  "text": "1:1 Ben Crawford and Nina Patel (2026-02-20): discussed route-optimizer roadmap. Priority: new features. Next step: write RFC.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457010+00:00",
+  "updated_at": "2026-11-16T09:04:12.457010+00:00",
+  "timestamp": "2026-11-16T09:04:12.457010+00:00"
+ },
+ {
+  "id": 226,
+  "text": "1:1 James Park and Jake Wilson (2026-07-17): discussed fleet-api roadmap. Priority: reliability. Next step: write RFC.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457018+00:00",
+  "updated_at": "2026-11-16T09:04:12.457018+00:00",
+  "timestamp": "2026-11-16T09:04:12.457018+00:00",
+  "last_reinforced_at": "2026-11-16T09:04:13.222477+00:00"
+ },
+ {
+  "id": 227,
+  "text": "Architecture review 2025-06-16: discussed fleet-api scaling. Sofia Martinez proposed caching layer. Decision: try in staging first.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457376+00:00",
+  "updated_at": "2026-11-16T09:04:12.457376+00:00",
+  "timestamp": "2026-11-16T09:04:12.457376+00:00",
+  "last_reinforced_at": "2026-11-16T09:04:13.222498+00:00"
+ },
+ {
+  "id": 228,
+  "text": "Planning poker 2025-09-26: admin-dashboard stories estimated. Largest: 12 points for database migration.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457390+00:00",
+  "updated_at": "2026-11-16T09:04:12.457390+00:00",
+  "timestamp": "2026-11-16T09:04:12.457390+00:00",
+  "links": [
+   {
+    "to_id": 138,
+    "type": "related_to",
+    "created_at": "2026-11-16T09:04:12.657691+00:00"
+   }
+  ]
+ },
+ {
+  "id": 229,
+  "text": "Sprint retro 2025-10-28: trip-recorder team. Good: deployment speed improved. Improve: code review turnaround.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457400+00:00",
+  "updated_at": "2026-11-16T09:04:12.457400+00:00",
+  "timestamp": "2026-11-16T09:04:12.457400+00:00"
+ },
+ {
+  "id": 230,
+  "text": "Sprint retro 2025-02-06: billing-engine team. Good: deployment speed improved. Improve: on-call handoff.",
+  "source": "claude-code/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457410+00:00",
+  "updated_at": "2026-11-16T09:04:12.457410+00:00",
+  "timestamp": "2026-11-16T09:04:12.457410+00:00"
+ },
+ {
+  "id": 231,
+  "text": "Architecture review 2025-10-08: discussed notification-hub scaling. Omar Hassan proposed caching layer. Decision: try in staging first.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457419+00:00",
+  "updated_at": "2026-11-16T09:04:12.830059+00:00",
+  "timestamp": "2026-11-16T09:04:12.457419+00:00",
+  "pinned": true
+ },
+ {
+  "id": 232,
+  "text": "Architecture review 2026-08-14: discussed route-optimizer scaling. Alex Rivera proposed horizontal scaling. Decision: try in staging first.",
+  "source": "claude-code/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457427+00:00",
+  "updated_at": "2026-11-16T09:04:12.457427+00:00",
+  "timestamp": "2026-11-16T09:04:12.457427+00:00"
+ },
+ {
+  "id": 233,
+  "text": "Architecture review 2025-05-13: discussed route-optimizer scaling. Sam O'Brien proposed event sourcing. Decision: try in staging first.",
+  "source": "claude-code/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457437+00:00",
+  "updated_at": "2026-11-16T09:04:12.457437+00:00",
+  "timestamp": "2026-11-16T09:04:12.457437+00:00"
+ },
+ {
+  "id": 234,
+  "text": "1:1 Chen Wei and Tom Anderson (2025-04-01): discussed billing-engine roadmap. Priority: tech debt. Next step: write RFC.",
+  "source": "learning/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457445+00:00",
+  "updated_at": "2026-11-16T09:04:12.457445+00:00",
+  "timestamp": "2026-11-16T09:04:12.457445+00:00"
+ },
+ {
+  "id": 235,
+  "text": "Architecture review 2026-01-04: discussed vehicle-telemetry scaling. Emma Thompson proposed read replica. Decision: try in staging first.",
+  "source": "eval/graph/synth/meetings",
+  "created_at": "2026-11-16T09:04:12.457453+00:00",
+  "updated_at": "2026-11-16T09:04:12.457453+00:00",
+  "timestamp": "2026-11-16T09:04:12.457453+00:00",
+  "links": [
+   {
+    "to_id": 130,
+    "type": "caused_by",
+    "created_at": "2026-11-16T09:04:12.635574+00:00"
+   }
+  ]
+ },
+ {
+  "id": 236,
+  "text": "Sprint retro 2026-12-08: compliance-reporter team. Good: deployment speed improved. Improve: code review turnaround.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457461+00:00",
+  "updated_at": "2026-11-16T09:04:12.457461+00:00",
+  "timestamp": "2026-11-16T09:04:12.457461+00:00"
+ },
+ {
+  "id": 237,
+  "text": "1:1 Raj Patel and Sofia Martinez (2025-01-04): discussed charging-manager roadmap. Priority: reliability. Next step: write RFC.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457470+00:00",
+  "updated_at": "2026-11-16T09:04:12.457470+00:00",
+  "timestamp": "2026-11-16T09:04:12.457470+00:00"
+ },
+ {
+  "id": 238,
+  "text": "Architecture review 2026-09-18: discussed driver-portal scaling. Ana Rodriguez proposed horizontal scaling. Decision: try in staging first.",
+  "source": "wip/voltis/meetings",
+  "created_at": "2026-11-16T09:04:12.457479+00:00",
+  "updated_at": "2026-11-16T09:04:12.457479+00:00",
+  "timestamp": "2026-11-16T09:04:12.457479+00:00"
+ },
+ {
+  "id": 239,
+  "text": "Correction 0: Architecture review 2026-05-19: discussed analytics-pipeline scaling. Nina Patel proposed read replica. Decision: try in staging first. This changed in 2026.",
+  "source": "codex/voltis/meetings",
+  "created_at": "2026-11-16T09:04:13.083778+00:00",
+  "updated_at": "2026-11-16T09:04:13.083778+00:00",
+  "timestamp": "2026-11-16T09:04:13.083778+00:00",
+  "conflicts_with": 189
+ },
+ {
+  "id": 240,
+  "text": "Correction 1: analytics-pipeline uses TimescaleDB with pool size 20. Config in scripts/analytics_pipeline.sh. Health check interval 10s. This changed in 2026.",
+  "source": "claude-code/voltis/conflicts",
+  "created_at": "2026-11-16T09:04:13.099268+00:00",
+  "updated_at": "2026-11-16T09:04:13.099268+00:00",
+  "timestamp": "2026-11-16T09:04:13.099268+00:00",
+  "conflicts_with": 0
+ },
+ {
+  "id": 241,
+  "text": "Correction 2: Lisa Chen specializes in REST. Joined the team in 2025. Previously at Uber. This changed in 2026.",
+  "source": "claude-code/voltis/team",
+  "created_at": "2026-11-16T09:04:13.116391+00:00",
+  "updated_at": "2026-11-16T09:04:13.116391+00:00",
+  "timestamp": "2026-11-16T09:04:13.116391+00:00",
+  "conflicts_with": 59
+ },
+ {
+  "id": 242,
+  "text": "Correction 3: Architecture review 2025-05-14: discussed route-optimizer scaling. Alex Rivera proposed read replica. Decision: try in staging first. This changed in 2026.",
+  "source": "claude-code/voltis/conflicts",
+  "created_at": "2026-11-16T09:04:13.131583+00:00",
+  "updated_at": "2026-11-16T09:04:13.131583+00:00",
+  "timestamp": "2026-11-16T09:04:13.131583+00:00",
+  "conflicts_with": 212
+ },
+ {
+  "id": 243,
+  "text": "Correction 4: Bug in admin-dashboard: off-by-one in admin-dashboard pagination causing MQTT to be skipped. Discovered during load test. Fix: added timeout. This changed in 2026.",
+  "source": "learning/voltis/incidents/admin-dashboard",
+  "created_at": "2026-11-16T09:04:13.153564+00:00",
+  "updated_at": "2026-11-16T09:04:13.153564+00:00",
+  "timestamp": "2026-11-16T09:04:13.153564+00:00",
+  "conflicts_with": 72
+ },
+ {
+  "id": 244,
+  "text": "Correction 5: Incident P3-764 (2025-04-23): geofence-engine connection pool size spiked to 333% of baseline. Root cause: dbt timeout. Fixed by Marcus Lee. This changed in 2026.",
+  "source": "claude-code/voltis/conflicts",
+  "created_at": "2026-11-16T09:04:13.174409+00:00",
+  "updated_at": "2026-11-16T09:04:13.174409+00:00",
+  "timestamp": "2026-11-16T09:04:13.174409+00:00",
+  "conflicts_with": 66
+ },
+ {
+  "id": 245,
+  "text": "Parity usage probe record.",
+  "source": "codex/voltis/usage",
+  "created_at": "2026-11-16T09:04:13.230351+00:00",
+  "updated_at": "2026-11-16T09:04:13.230351+00:00",
+  "timestamp": "2026-11-16T09:04:13.230351+00:00"
+ }
+]

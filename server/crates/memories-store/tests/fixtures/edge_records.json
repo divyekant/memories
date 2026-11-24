@@ -1,0 +1,7 @@
+[
+ {"id": 900, "text": "Ünïcode ✓ text with \"quotes\"", "source": "claude-code/edge", "created_at": "2026-01-02T03:04:05.123456+00:00", "updated_at": "2026-01-02T03:04:05.123456+00:00", "timestamp": "2026-01-02T03:04:05.123456+00:00", "document_at": "2025-12-31", "entity_key": "default:claude-code/edge", "is_latest": true, "supersedes": 899, "links": [{"to_id": 899, "type": "supersedes", "created_at": "2026-01-02T03:04:06+00:00"}]},
+ {"id": 899, "text": "old fact", "source": "claude-code/edge", "created_at": "2025-01-01T00:00:00", "is_latest": false, "superseded_by": 900, "archived": null, "pinned": false},
+ {"id": 901, "text": "", "source": "", "custom_fields": {"nested": {"a": [1, 2.5, "x", null, true]}, "empty": {}}, "score": 1.0, "ratio": 0.1, "neg": -7, "big": 9007199254740993},
+ {"id": 902, "text": "odd types", "source": "wip/edge", "created_at": 12345, "last_reinforced_at": "", "conflicts_with": "17", "pinned": "yes", "links": [{"to_id": 1, "type": "related_to", "note": "extra key"}], "author": {"kind": "agent"}, "contributors": ["a", "b"], "origin_client": "codex", "source_memory_ids": [1, 2], "promotion": {"state": "proposed"}},
+ {"id": 903, "source": "learning/edge", "links": [], "metadata": {"k": "v"}, "updated_at": null}
+]

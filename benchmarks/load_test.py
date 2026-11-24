@@ -26,7 +26,7 @@ import statistics
 import sys
 import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List
 
@@ -120,6 +120,7 @@ class BenchmarkReport:
             "total_requests": self.total_requests,
             "successful": self.successful,
             "failed": self.failed,
+            "by_status": {str(k): v for k, v in sorted(Counter(r.status for r in self.results).items())},
             "rps": round(self.rps, 1),
             "latency_ms": _lat_stats(lats),
             "by_operation": op_stats,
@@ -214,8 +215,11 @@ class LoadRunner:
             if not self._benchmark_ids:
                 # Nothing to delete — search for benchmark memories instead
                 return self._request("POST", "/search", {"query": "benchmark load test", "k": 1, "hybrid": True})
-            target_id = random.choice(self._benchmark_ids)
-        return self._request("DELETE", f"/memory/{target_id}")
+            # Pop the ID: a second delete of the same ID gives 404.
+            target_id = self._benchmark_ids.pop(random.randrange(len(self._benchmark_ids)))
+        result = self._request("DELETE", f"/memory/{target_id}")
+        result.operation = "DELETE /memory/{id}"
+        return result
 
     def extract(self) -> RequestResult:
         text = " ".join(random.sample(SAMPLE_TEXTS, min(3, len(SAMPLE_TEXTS))))

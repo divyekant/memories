@@ -1,0 +1,192 @@
+//! A stored record as the server reads it: `MemoryEngine._enrich_with_confidence`
+//! of v5.19.0 adds `confidence`, calculated at each read.
+
+use memories_types::Record;
+use serde_json::Value;
+
+use crate::rank::{PyDateTime, RecordFields};
+
+/// Python gives a truthy value that is not a string to `fromisoformat`,
+/// which fails. A string that does not parse gives the same result.
+const NOT_A_DATE: &str = "not a date";
+
+/// Python `bool(v)` of a JSON value.
+pub fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64() != Some(0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
+/// Python `str(v)` of a JSON value that is not a string.
+// shortcut: lists and maps use the JSON text, not the Python repr; a source of
+// that type is not known in the field.
+pub fn py_str(v: &Value) -> String {
+    match v {
+        Value::Null => "None".into(),
+        Value::Bool(true) => "True".into(),
+        Value::Bool(false) => "False".into(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Python `float(text)`: white space, `_` between digits, `inf` and `nan`.
+pub fn py_float(text: &str) -> Option<f64> {
+    let t = text.trim();
+    let b = t.as_bytes();
+    for (i, &c) in b.iter().enumerate() {
+        if c == b'_' {
+            let ok =
+                i > 0 && i + 1 < b.len() && b[i - 1].is_ascii_digit() && b[i + 1].is_ascii_digit();
+            if !ok {
+                return None;
+            }
+        }
+    }
+    let t = t.replace('_', "");
+    let lower = t.to_ascii_lowercase();
+    let body = lower.trim_start_matches(['+', '-']);
+    if matches!(body, "inf" | "infinity" | "nan") {
+        return lower.parse().ok();
+    }
+    if body.is_empty()
+        || !body
+            .bytes()
+            .all(|c| c.is_ascii_digit() || matches!(c, b'.' | b'e' | b'+' | b'-'))
+    {
+        return None;
+    }
+    t.parse().ok()
+}
+
+/// A typed date field, or a stand-in for a truthy value of another type.
+fn date<'a>(typed: &'a Option<String>, record: &Record, key: &str) -> Option<&'a str> {
+    match typed {
+        Some(s) => Some(s),
+        None => record
+            .extra
+            .get(key)
+            .filter(|v| truthy(v))
+            .map(|_| NOT_A_DATE),
+    }
+}
+
+/// The fields of `record` that the rank rules read.
+pub fn rank_fields(record: &Record, confidence_half_life_days: Option<f64>) -> RecordFields<'_> {
+    RecordFields {
+        document_at: date(&record.document_at, record, "document_at"),
+        created_at: date(&record.created_at, record, "created_at"),
+        timestamp: date(&record.timestamp, record, "timestamp"),
+        updated_at: date(&record.updated_at, record, "updated_at"),
+        last_reinforced_at: date(&record.last_reinforced_at, record, "last_reinforced_at"),
+        confidence_half_life_days,
+    }
+}
+
+/// The record as a read returns it: all stored fields plus `confidence`.
+/// `confidence_half_life_days` comes from the extraction profile of the source.
+pub fn with_confidence(
+    record: &Record,
+    confidence_half_life_days: Option<f64>,
+    now: &PyDateTime,
+) -> Value {
+    let confidence = rank_fields(record, confidence_half_life_days).confidence(now);
+    let mut value = record.to_json();
+    value["confidence"] = confidence.into();
+    value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn now() -> PyDateTime {
+        PyDateTime::fromisoformat("2026-11-16T00:00:00+00:00").unwrap()
+    }
+
+    fn confidence(value: Value, half_life: Option<f64>) -> f64 {
+        let r = Record::from_json(value).unwrap();
+        with_confidence(&r, half_life, &now())["confidence"]
+            .as_f64()
+            .unwrap()
+    }
+
+    // Expected values: MemoryEngine.compute_confidence at the same `now`, with
+    // round(_, 4).
+    #[test]
+    fn confidence_follows_python() {
+        let base = json!({"id": 1, "created_at": "2026-08-18T00:00:00+00:00"});
+        assert_eq!(confidence(base.clone(), None), 0.5);
+        assert_eq!(confidence(base, Some(45.0)), 0.25);
+        // last_reinforced_at comes first; an empty string falls through.
+        assert_eq!(
+            confidence(
+                json!({"id": 1, "last_reinforced_at": "2026-11-16T00:00:00",
+                              "updated_at": "2020-01-01T00:00:00"}),
+                None
+            ),
+            1.0
+        );
+        assert_eq!(
+            confidence(
+                json!({"id": 1, "last_reinforced_at": "",
+                              "updated_at": "2026-08-18T00:00:00+00:00"}),
+                None
+            ),
+            0.5
+        );
+        assert_eq!(confidence(json!({"id": 1}), None), 0.0);
+        assert_eq!(
+            confidence(json!({"id": 1, "created_at": "2027-01-01"}), None),
+            1.0
+        );
+        assert_eq!(confidence(json!({"id": 1, "created_at": "bad"}), None), 0.0);
+        // A truthy value that is not a string stops the chain with 0.0;
+        // a falsy one falls through.
+        assert_eq!(
+            confidence(
+                json!({"id": 1, "updated_at": 5, "created_at": "2026-11-16T00:00:00"}),
+                None
+            ),
+            0.0
+        );
+        assert_eq!(
+            confidence(
+                json!({"id": 1, "updated_at": 0, "created_at": "2026-11-16T00:00:00"}),
+                None
+            ),
+            1.0
+        );
+    }
+
+    #[test]
+    fn the_read_keeps_each_stored_field() {
+        let value = json!({"id": 3, "text": "t", "source": "s", "x": [1, null],
+                           "created_at": "2026-11-16T00:00:00+00:00"});
+        let r = Record::from_json(value.clone()).unwrap();
+        let mut want = value;
+        want["confidence"] = json!(1.0);
+        assert_eq!(with_confidence(&r, None, &now()), want);
+    }
+}
+
+#[cfg(test)]
+mod py_float_tests {
+    use super::py_float;
+
+    #[test]
+    fn py_float_follows_python() {
+        assert_eq!(py_float(" 0.6 "), Some(0.6));
+        assert_eq!(py_float("1_0"), Some(10.0));
+        assert_eq!(py_float("x"), None);
+        assert_eq!(py_float("1__0"), None);
+        assert_eq!(py_float("0x1"), None);
+        assert!(py_float("-inf").is_some_and(f64::is_infinite));
+    }
+}
