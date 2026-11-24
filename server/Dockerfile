@@ -62,10 +62,12 @@ RUN groupadd -r -g 999 memories && \
     mkdir -p /data/backups /data/model-cache && \
     chown -R memories:memories /data
 
+# ORT_DISABLE_TELEMETRY: a second guard next to with_telemetry(false) in the embedder.
 ENV DATA_DIR=/data \
     UI_DIR=/app/webui \
     MODEL_CACHE_DIR=/data/model-cache \
-    ORT_DYLIB_PATH=/opt/onnxruntime/lib/libonnxruntime.so
+    ORT_DYLIB_PATH=/opt/onnxruntime/lib/libonnxruntime.so \
+    ORT_DISABLE_TELEMETRY=1
 
 USER memories
 WORKDIR /data

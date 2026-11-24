@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The image sets `ORT_DISABLE_TELEMETRY=1`. This is a second guard next to the explicit telemetry disable in the server code.
+
 ## [6.0.0] - 2026-11-24
 
 Memories 6.0.0 replaces the Python server with a Rust server that has the
