@@ -43,6 +43,8 @@ Python v5.19.0 against Rust 6.0.0:
 - Added `LICENSE` (MIT) in the repository and in the npm package. The license was declared in `package.json` and `Cargo.toml`, but the file was missing.
 - `THIRD_PARTY_NOTICES.md` now lists every Rust crate and npm package with its license, and the image components. `scripts/third_party_notices.py` makes the file. CI checks that the file is current and that each license is on the allow list.
 - Added `SECURITY.md` and `CONTRIBUTING.md`.
+- The server turns off ONNX Runtime telemetry explicitly. The `ort` crate turns it on by default, and the Linux build of ONNX Runtime 1.31.0 contains a Microsoft telemetry client.
+- `url` is 2.5.9 (RUSTSEC-2026-0592).
 - The image and CI get ONNX Runtime 1.31.0 from the NuGet package `Microsoft.ML.OnnxRuntime`, pinned by sha256. The GitHub release downloads return 404 since 2026-11-17. The linux-x64 library is byte-identical to the library of the GitHub archive. Decision record: `docs/decisions/2026-11-24-onnxruntime-from-nuget.md`.
 
 ### Upgrade notes
