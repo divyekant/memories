@@ -261,6 +261,8 @@ fn environment() -> Result<&'static Environment> {
         ort::init_from(&path)
             .map_err(|e| e.to_string())?
             .with_name("memories")
+            // ort turns ONNX Runtime telemetry on by default; Memories sends none.
+            .with_telemetry(false)
             .build()
             .map_err(|e| e.to_string())
     })
