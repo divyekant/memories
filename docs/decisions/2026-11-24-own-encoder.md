@@ -158,8 +158,56 @@ on the Mac (32 passed, 0 failed, 3 ignored).
 
 Known limit: on this ARM CPU, one query with the own encoder takes about 1.7
 times the time of ONNX Runtime at p50 (0.7 to 0.8 ms more) and about 2.1
-times at p95. A list of 1,000 texts takes 12% to 21% less time. The cause of
-the query difference is not known.
+times at p95. A list of 1,000 texts takes 12% to 21% less time.
+
+Cause of the query difference: on macOS on this CPU, ONNX Runtime does the
+dense layers with KleidiAI (the kernel library of Arm). The M4 Pro has the SME
+matrix unit (`FEAT_SME` and `FEAT_SME2`). The use of SME by KleidiAI is an
+inference from the speed. It is not traced. The session option
+`mlas.disable_kleidiai` turns KleidiAI off, and most of the difference goes
+away. The thread pool is not the cause: the difference is largest on 1 thread.
+
+One query of 12 words, p50 and p95 in ms (a copy of each example with a
+thread setting, 400 calls, 3 rounds in turns):
+
+| Threads | Own encoder, NEON kernels | ONNX Runtime 1.31.0 |
+|---|---|---|
+| 1 | 4.94 to 4.98 and 11.24 to 11.42 | 1.31 to 1.40 and 2.49 to 2.61 |
+| 2 | 2.77 to 2.85 and 6.24 to 6.39 | 1.10 to 1.14 and 1.99 to 2.10 |
+| 4 | 1.59 to 1.70 and 3.42 to 3.63 | 1.01 to 1.05 and 1.73 to 1.85 |
+| 8 | 1.73 to 2.11 and 3.40 to 4.12 | 0.89 to 0.94 and 1.57 to 1.65 |
+
+One query by length, p50 in ms:
+
+| Threads | Words (mean tokens) | Own encoder, NEON kernels | ONNX Runtime | ONNX Runtime, KleidiAI off |
+|---|---|---|---|---|
+| 1 | 12 (17.6) | 4.66 to 4.73 | 1.27 to 1.43 | 4.01 to 4.18 |
+| 1 | 40 (51.0) | 14.7 to 14.8 | 2.80 to 3.12 | 10.8 to 11.4 |
+| 1 | 190 (224.5) | 76.7 to 77.3 | 12.4 to 12.8 | 53.3 to 53.8 |
+| 4 | 12 (17.6) | 1.53 to 1.66 | 1.00 to 1.04 | 1.43 to 1.62 |
+| 4 | 40 (51.0) | 4.44 to 4.59 | 1.92 to 2.03 | 3.51 to 3.62 |
+| 4 | 190 (224.5) | 22.4 to 23.0 | 5.87 to 6.07 | 15.4 to 15.6 |
+
+- With KleidiAI, the difference increases with the text length: about 6 times
+  at 190 words on 1 thread, and 3.8 times on 4 threads.
+- With KleidiAI off, ONNX Runtime is still faster. On 1 thread the own encoder
+  takes 14% more time at 12 words and 44% more time at 190 words. This part of
+  the difference is in the NEON kernels of the own encoder.
+- In the own encoder, the packed dense kernel takes 92% of the time of a
+  12-word query on 1 thread. The tokenizer takes 0.4%.
+
+The list result needs this context: v6.0.0 embeds a list in batches of 16 and
+pads each batch. ONNX Runtime embeds the same 1,000 texts one at a time in 2.0
+to 2.1 s (own encoder: 6.2 to 6.5 s), and as one list in 6.4 to 6.7 s (own
+encoder: 5.4 to 5.8 s). So the faster list of the new server comes from the
+method (no padding, one text for each thread), not from faster kernels on
+this CPU.
+
+The Docker image on the same Mac: a Linux container in the OrbStack VM does
+not see SME (`/proc/cpuinfo` has `asimd`, `i8mm` and `bf16`, and no `sme` or
+`sve`). So ONNX Runtime cannot use SME kernels in the ARM64 image on this Mac.
+The speed in the container is not measured. The nearest values are the
+columns "KleidiAI off".
 
 ## Checks
 
@@ -233,9 +281,11 @@ the query difference is not known.
   not known.
 - A SIMD `exp` for the softmax, and faster AVX-512 kernels for a list of long
   texts (see the bulk add table).
-- A faster query on ARM. On an Apple M4 Pro, one query takes about 1.7 times
-  the time of ONNX Runtime (see "Evidence on Apple silicon"). The speed on an
-  ARM server CPU (for example AWS Graviton) and in the ARM64 Docker image is
-  not measured.
+- A faster query on ARM (see "Evidence on Apple silicon"). Two parts are
+  open: an SME kernel for a CPU and an operating system that show SME (native
+  macOS on an Apple M4 and later), and faster NEON dense kernels (14% to 44%
+  behind ONNX Runtime with KleidiAI off, on 1 thread).
+- The speed on an ARM server CPU (for example AWS Graviton) and in the ARM64
+  Docker image.
 - A local build of the image. The build container of the work session cannot
   get crates. The `rust-image` job of CI builds the image for amd64 and arm64.
