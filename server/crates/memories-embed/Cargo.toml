@@ -7,7 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-ort.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -18,5 +17,12 @@ tracing.workspace = true
 [dev-dependencies]
 tokio.workspace = true
 
-[lints]
-workspace = true
+# The workspace forbids unsafe code. This crate has the SIMD kernels and the
+# thread pool of the encoder, so it denies unsafe code and permits it in those
+# two modules only (`kernel.rs`, `pool.rs`). Cargo has no part override of the
+# workspace lints: keep the clippy list the same as in `server/Cargo.toml`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -2,7 +2,7 @@
 //! a write makes the same Qdrant calls at each corpus size, and it changes
 //! only the points of the records that it affects.
 //!
-//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=.../libonnxruntime.so \
+//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 \
 //!   cargo test -p memories-engine --test writes -- --ignored
 
 // The step macro updates the counters after the last step too.
@@ -376,7 +376,7 @@ async fn run(n: usize) -> Vec<(&'static str, BTreeMap<&'static str, u64>)> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a Qdrant server (QDRANT_TEST_URL) and ONNX Runtime (ORT_DYLIB_PATH)"]
+#[ignore = "needs a Qdrant server (QDRANT_TEST_URL) and the model"]
 async fn writes_touch_only_their_records_and_cost_the_same_at_each_size() {
     let small = run(20).await;
     let large = run(200).await;

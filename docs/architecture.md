@@ -15,7 +15,7 @@ decision record in `docs/decisions/2026-11-16-rust-*.md` says otherwise.
 | Crate | v5 modules |
 |---|---|
 | `memories-types` | Request and response models of `app.py`, the environment variables |
-| `memories-embed` | `onnx_embedder.py` (ONNX only) |
+| `memories-embed` | `onnx_embedder.py`. The crate has its own BERT encoder and does not use ONNX Runtime (`docs/decisions/2026-11-24-own-encoder.md`) |
 | `memories-store` | `qdrant_store.py`, `key_store.py`, `audit_log.py`, `usage_tracker.py`, the migration |
 | `memories-engine` | `memory_engine.py` (search, rank, writes, links, maintenance), `entity_locks.py` |
 | `memories-extract` | `llm_extract.py`, `llm_provider.py`, `transcript_hygiene.py` |
@@ -34,7 +34,8 @@ Main differences from v5:
 - **Concurrency.** Reads take the catalog read lock. All writes go through
   one write lock. The `related_to` graph and its archive-filtered copy stay
   in memory until a write changes a link or an archive state (PRs #163 and
-  #164). The ONNX embedder runs on its own thread.
+  #164). The embedder runs on its own thread and splits each job over a
+  pool of 4 threads or less.
 - **Crash safety.** A write with two steps (for example a supersede) writes a
   journal entry first. At start, the server completes or drops each entry
   (`docs/decisions/2026-11-16-rust-write-safety.md`).

@@ -23,8 +23,8 @@
 #
 # Usage, from the repository root:
 #   QDRANT_URL=http://127.0.0.1:6333 server/scripts/parity_usage.sh <rust binary>
-# Needs the Python environment in .venv (uv sync --frozen), a Qdrant server
-# and ORT_DYLIB_PATH. The Rust server uses a new collection, which the script
+# Needs the Python environment in .venv (uv sync --frozen) and a Qdrant
+# server. The Rust server uses a new collection, which the script
 # deletes at the end. Set KEEP_WORK=<dir> (a new directory) to keep the
 # replies, the logs and usage.db after the run.
 set -euo pipefail

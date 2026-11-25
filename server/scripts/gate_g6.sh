@@ -5,7 +5,7 @@
 # Usage, from the repository root:
 #   QDRANT_URL=http://127.0.0.1:6333 server/scripts/gate_g6.sh <rust binary> [suites]
 # Needs the Python environment in .venv (uv sync --frozen), mcp-server/node_modules
-# (npm ci), jq (the hooks use it), a Qdrant server and ORT_DYLIB_PATH. Each server uses a new
+# (npm ci), jq (the hooks use it) and a Qdrant server. Each server uses a new
 # collection, and the script deletes the two collections at the end. Set KEEP_WORK=<dir> (a new directory) to keep the records and logs.
 set -euo pipefail
 rust_bin="$(realpath "$1")"

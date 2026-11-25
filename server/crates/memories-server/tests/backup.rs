@@ -1,7 +1,7 @@
 //! Task P5-4 against a Qdrant server and the real embedder: export, import,
 //! backup, restore and snapshot routes.
 //!
-//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=.../libonnxruntime.so \
+//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 \
 //!   cargo test -p memories-server --test backup -- --ignored
 
 #[allow(dead_code)]
@@ -162,7 +162,7 @@ fn links(export: &[Value]) -> usize {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL"]
 async fn export_and_import_follow_the_python_routes() {
     let t = setup("io").await;
     let (s, r) = t.import("?no_backup=true", ADMIN, &seed()).await;
@@ -281,7 +281,7 @@ async fn export_and_import_follow_the_python_routes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL"]
 async fn backup_and_restore_give_back_the_counts_and_the_links() {
     let t = setup("br").await;
     t.import("?no_backup=true", ADMIN, &seed()).await;
@@ -410,7 +410,7 @@ async fn backup_and_restore_give_back_the_counts_and_the_links() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL"]
 async fn snapshot_create_list_and_restore() {
     let t = setup("snap").await;
     t.import("?no_backup=true", ADMIN, &seed()).await;
@@ -470,7 +470,7 @@ async fn snapshot_create_list_and_restore() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL"]
 async fn a_restore_keeps_its_source_when_the_cleanup_runs() {
     // MAX_BACKUPS=3. The restore source is the third newest manual folder:
     // the new pre_restore folder pushes it out of the 3 newest, and it is not
@@ -510,7 +510,7 @@ async fn a_restore_keeps_its_source_when_the_cleanup_runs() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL"]
 async fn smart_import_keeps_the_newer_record_of_a_borderline_match() {
     let t = setup("smart").await;
     let old = ndjson(&[

@@ -2,7 +2,7 @@
 //! records, and the search latency with and without a constant write load.
 //!
 //! Run, from `server/`:
-//!   QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=.../libonnxruntime.so \
+//!   QDRANT_TEST_URL=http://127.0.0.1:6333 \
 //!     cargo bench -p memories-engine --bench write_load
 //!
 //! `BENCH_SIZES` (default `100000,300000`) sets the corpus sizes and

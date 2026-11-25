@@ -4,7 +4,11 @@
 
 ### Changed
 
-- The image sets `ORT_DISABLE_TELEMETRY=1`. This is a second guard next to the explicit telemetry disable in the server code.
+- The server runs the embedding model on its own encoder (crate `memories-embed`) and no longer uses ONNX Runtime. The image has no ONNX Runtime library, and the `ort` crate is removed. The search results do not change: gate G2 gives a lowest cosine of 0.9999996 against the Python reference. Decision record: `docs/decisions/2026-11-24-own-encoder.md`.
+- On a 4 vCPU machine with AVX-512, one query takes the same time as before (p50 2.3 ms). A list of 1,000 texts takes 6 s (before: 22 s). The embedder memory peak is 130 MB (before: 390 MB).
+- The first start after the upgrade from 6.0.0 downloads `model.safetensors` (91 MB) and `config.json` from the Hugging Face Hub into the model cache. A host with no access to the Hub needs these two files in the cache before the upgrade (`docs/rust-rewrite/cutover-runbook.md`, section 5).
+- `EMBED_MODEL` must name a BERT model that has `model.safetensors` on the Hugging Face Hub. The server stops at start with an error for another model type. `EMBED_PROVIDER=onnx` stays the name of the local embedder.
+- The image does not set `ORT_DYLIB_PATH` and `ORT_DISABLE_TELEMETRY`. (6.0.0 plus PR #171 set `ORT_DISABLE_TELEMETRY=1` as a second telemetry guard. That guard has no function now.)
 
 ## [6.0.0] - 2026-11-24
 

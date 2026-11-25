@@ -11,7 +11,6 @@ after a dependency change. CI runs it with `--check`.
 
 | Component | Version | License | Source |
 |---|---|---|---|
-| ONNX Runtime (`libonnxruntime.so`) | 1.31.0 | MIT | NuGet package `Microsoft.ML.OnnxRuntime`, https://github.com/microsoft/onnxruntime |
 | Debian base image (`debian:trixie-slim`) and `ca-certificates` | trixie | Several free licenses, see `/usr/share/doc/*/copyright` in the image | https://www.debian.org |
 | Embedding model `sentence-transformers/all-MiniLM-L6-v2` (downloaded at the first start, not in the image) | Hub revision of the first start | Apache-2.0 | https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 |
 | Qdrant (separate container, not in the image) | 1.15.4 | Apache-2.0 | https://github.com/qdrant/qdrant |
@@ -43,7 +42,6 @@ uv run pip-licenses --from=mixed --format=markdown
 | arrayvec | 0.7.8 | MIT OR Apache-2.0 | https://github.com/bluss/arrayvec |
 | async-trait | 0.1.92 | MIT OR Apache-2.0 | https://github.com/dtolnay/async-trait |
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT | https://github.com/smol-rs/atomic-waker |
-| autocfg | 1.5.1 | Apache-2.0 OR MIT | https://github.com/cuviper/autocfg |
 | aws-lc-rs | 1.19.0 | ISC AND (Apache-2.0 OR ISC) | https://github.com/aws/aws-lc-rs |
 | aws-lc-sys | 0.47.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) | https://github.com/aws/aws-lc-rs |
 | axum | 0.8.9 | MIT | https://github.com/tokio-rs/axum |
@@ -150,7 +148,6 @@ uv run pip-licenses --from=mixed --format=markdown
 | lexical-parse-integer | 1.0.6 | MIT/Apache-2.0 | https://github.com/Alexhuszagh/rust-lexical |
 | lexical-util | 1.0.7 | MIT/Apache-2.0 | https://github.com/Alexhuszagh/rust-lexical |
 | libc | 0.2.191 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |
-| libloading | 0.9.1 | ISC | https://github.com/nagisa/rust_libloading/ |
 | libsqlite3-sys | 0.40.0 | MIT | https://github.com/rusqlite/rusqlite |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/sunfishcode/linux-raw-sys |
 | litemap | 0.8.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
@@ -161,7 +158,6 @@ uv run pip-licenses --from=mixed --format=markdown
 | macro_rules_attribute-proc_macro | 0.2.3 | Apache-2.0 OR MIT OR Zlib | https://github.com/danielhenrymantilla/macro_rules_attribute-rs |
 | matchers | 0.2.0 | MIT | https://github.com/hawkw/matchers |
 | matchit | 0.8.4 | MIT AND BSD-3-Clause | https://github.com/ibraheemdev/matchit |
-| matrixmultiply | 0.3.11 | MIT/Apache-2.0 | https://github.com/bluss/matrixmultiply/ |
 | memchr | 2.8.3 | Unlicense OR MIT | https://github.com/BurntSushi/memchr |
 | mime | 0.3.18 | MIT OR Apache-2.0 | https://github.com/hyperium/mime |
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 | https://github.com/Alexhuszagh/minimal-lexical |
@@ -169,19 +165,13 @@ uv run pip-licenses --from=mixed --format=markdown
 | mio | 1.2.5 | MIT | https://github.com/tokio-rs/mio |
 | monostate | 0.1.18 | MIT OR Apache-2.0 | https://github.com/dtolnay/monostate |
 | monostate-impl | 0.1.18 | MIT OR Apache-2.0 | https://github.com/dtolnay/monostate |
-| ndarray | 0.17.2 | MIT OR Apache-2.0 | https://github.com/rust-ndarray/ndarray |
 | nom | 7.1.3 | MIT | https://github.com/Geal/nom |
 | nu-ansi-term | 0.50.3 | MIT | https://github.com/nushell/nu-ansi-term |
-| num-complex | 0.4.6 | MIT OR Apache-2.0 | https://github.com/rust-num/num-complex |
-| num-integer | 0.1.47 | MIT OR Apache-2.0 | https://github.com/rust-num/num-integer |
-| num-traits | 0.2.19 | MIT OR Apache-2.0 | https://github.com/rust-num/num-traits |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 | https://github.com/matklad/once_cell |
 | once_cell_polyfill | 1.70.2 | MIT OR Apache-2.0 | https://github.com/polyfill-rs/once_cell_polyfill |
 | onig | 6.5.3 | MIT | https://github.com/iwillspeak/rust-onig |
 | onig_sys | 69.9.3 | MIT | https://github.com/rust-onig/rust-onig |
 | openssl-probe | 0.2.2 | MIT OR Apache-2.0 | https://github.com/rustls/openssl-probe |
-| ort | 2.0.0-rc.15 | MIT OR Apache-2.0 | https://github.com/pykeio/ort |
-| ort-sys | 2.0.0-rc.15 | MIT OR Apache-2.0 | https://github.com/pykeio/ort |
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
 | paste | 1.0.15 | MIT OR Apache-2.0 | https://github.com/dtolnay/paste |
@@ -191,8 +181,6 @@ uv run pip-licenses --from=mixed --format=markdown
 | pin-project-internal | 1.1.13 | Apache-2.0 OR MIT | https://github.com/taiki-e/pin-project |
 | pin-project-lite | 0.2.17 | Apache-2.0 OR MIT | https://github.com/taiki-e/pin-project-lite |
 | pkg-config | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/pkg-config-rs |
-| portable-atomic | 1.15.0 | Apache-2.0 OR MIT | https://github.com/taiki-e/portable-atomic |
-| portable-atomic-util | 0.2.8 | Apache-2.0 OR MIT | https://github.com/taiki-e/portable-atomic-util |
 | potential_utf | 0.1.6 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 | https://github.com/cryptocorrosion/cryptocorrosion |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 | https://github.com/dtolnay/proc-macro2 |
@@ -212,7 +200,6 @@ uv run pip-licenses --from=mixed --format=markdown
 | rand_core | 0.10.1 | MIT OR Apache-2.0 | https://github.com/rust-random/rand_core |
 | rand_core | 0.9.5 | MIT OR Apache-2.0 | https://github.com/rust-random/rand |
 | rand_pcg | 0.10.2 | MIT OR Apache-2.0 | https://github.com/rust-random/rngs |
-| rawpointer | 0.2.1 | MIT/Apache-2.0 | https://github.com/bluss/rawpointer/ |
 | rayon | 1.12.0 | MIT OR Apache-2.0 | https://github.com/rayon-rs/rayon |
 | rayon-cond | 0.4.0 | Apache-2.0/MIT | https://github.com/cuviper/rayon-cond |
 | rayon-core | 1.13.0 | MIT OR Apache-2.0 | https://github.com/rayon-rs/rayon |

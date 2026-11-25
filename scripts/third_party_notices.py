@@ -34,7 +34,6 @@ after a dependency change. CI runs it with `--check`.
 
 | Component | Version | License | Source |
 |---|---|---|---|
-| ONNX Runtime (`libonnxruntime.so`) | 1.31.0 | MIT | NuGet package `Microsoft.ML.OnnxRuntime`, https://github.com/microsoft/onnxruntime |
 | Debian base image (`debian:trixie-slim`) and `ca-certificates` | trixie | Several free licenses, see `/usr/share/doc/*/copyright` in the image | https://www.debian.org |
 | Embedding model `sentence-transformers/all-MiniLM-L6-v2` (downloaded at the first start, not in the image) | Hub revision of the first start | Apache-2.0 | https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 |
 | Qdrant (separate container, not in the image) | 1.15.4 | Apache-2.0 | https://github.com/qdrant/qdrant |

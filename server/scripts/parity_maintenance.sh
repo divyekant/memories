@@ -14,13 +14,12 @@
 #    500 ms or less.
 #
 # Usage, from the repository root: server/scripts/parity_maintenance.sh <rust binary>
-# Needs: the Python environment in .venv (uv sync --frozen), QDRANT_URL (a
-# Qdrant server) and ORT_DYLIB_PATH (ONNX Runtime).
+# Needs: the Python environment in .venv (uv sync --frozen) and QDRANT_URL (a
+# Qdrant server).
 set -euo pipefail
 rust_bin="$(realpath "$1")"
 cd "$(dirname "$0")/../.."
 : "${QDRANT_URL:?set QDRANT_URL}"
-: "${ORT_DYLIB_PATH:?set ORT_DYLIB_PATH}"
 work="$(mktemp -d)"
 key="parity-admin-key"
 py_port=18131

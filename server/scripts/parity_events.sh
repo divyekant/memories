@@ -15,7 +15,7 @@
 # Usage, from the repository root:
 #   QDRANT_URL=http://127.0.0.1:6333 server/scripts/parity_events.sh <rust binary>
 # Needs the Python environment in .venv (uv sync --frozen), a Qdrant server,
-# ORT_DYLIB_PATH, and the `playwright` Node package with its Chromium
+# and the `playwright` Node package with its Chromium
 # (NODE_PATH). The script uses a new collection and deletes it at the end.
 # Set KEEP_WORK=<dir> (a new directory) to keep the replies and the logs.
 set -euo pipefail

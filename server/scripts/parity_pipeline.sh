@@ -8,7 +8,7 @@
 # extract_corpus (parity/extract_corpus.py, golden file corpus.ndjson).
 #
 # Usage, from the repository root:
-#   server/scripts/parity_pipeline.sh <rust binary>   (needs QDRANT_URL and ORT_DYLIB_PATH)
+#   server/scripts/parity_pipeline.sh <rust binary>   (needs QDRANT_URL)
 #   server/scripts/parity_pipeline.sh python          (the Python reference server)
 #   server/scripts/parity_pipeline.sh python --record (write the golden file again)
 #   server/scripts/parity_pipeline.sh <target> --check extract_corpus
@@ -50,7 +50,6 @@ if [ "$target" = python ]; then
     .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port "$port" > "$work/server.log" 2>&1 &
 else
   : "${QDRANT_URL:?set QDRANT_URL}"
-  : "${ORT_DYLIB_PATH:?set ORT_DYLIB_PATH}"
   QDRANT_COLLECTION="$collection" "$target" serve --port "$port" > "$work/server.log" 2>&1 &
 fi
 pid=$!

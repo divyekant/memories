@@ -1,7 +1,7 @@
 //! Task P3-2 against a Qdrant server and the real embedder: the bulk deletes,
 //! merge, links, conflict resolution and deduplicate of `Writer`.
 //!
-//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=.../libonnxruntime.so \
+//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 \
 //!   cargo test -p memories-engine --test bulk -- --ignored
 
 use std::path::PathBuf;
@@ -119,7 +119,7 @@ fn invalid(e: WriteError) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs QDRANT_TEST_URL and the model"]
 async fn bulk_deletes_keep_the_python_match_rules() {
     let s = setup("del").await;
     let w = &s.writer;
@@ -178,7 +178,7 @@ async fn bulk_deletes_keep_the_python_match_rules() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs QDRANT_TEST_URL and the model"]
 async fn links_merge_and_their_errors() {
     let s = setup("links").await;
     let w = &s.writer;
@@ -299,7 +299,7 @@ async fn links_merge_and_their_errors() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs QDRANT_TEST_URL and the model"]
 async fn conflicts_resolve_newest_wins() {
     let s = setup("conf").await;
     let w = &s.writer;
@@ -383,7 +383,7 @@ async fn conflicts_resolve_newest_wins() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs QDRANT_TEST_URL and the model"]
 async fn deduplicate_removes_the_later_record_of_same_source_pairs() {
     let s = setup("dedup").await;
     let w = &s.writer;

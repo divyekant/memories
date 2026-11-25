@@ -2,7 +2,7 @@
 //! as a new memory (`EXTRACT_FOREIGN_TARGET_ADD`), against a Qdrant server and
 //! the real embedder.
 //!
-//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=.../libonnxruntime.so \
+//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 \
 //!   cargo test -p memories-server --test extract_foreign -- --ignored
 
 use std::path::PathBuf;
@@ -66,7 +66,7 @@ fn actions(v: Value) -> Vec<Map<String, Value>> {
 }
 
 #[tokio::test]
-#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs a Qdrant server and the embedder: set QDRANT_TEST_URL"]
 async fn a_foreign_target_keeps_the_fact_as_a_new_memory() {
     let (w, engine, dir) = writer("keep").await;
     let other = add(&w, "The other project deploys on Fridays.", "other/project").await;

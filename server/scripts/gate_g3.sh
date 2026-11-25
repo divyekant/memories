@@ -14,7 +14,7 @@
 # G3_ALLOW_PARTIAL=1 (CI runs corpus,graph). G3_LME_EVERY selects each Nth LongMemEval question (default 5).
 # G3_PORT sets the Python port (default 18131); the Rust port is the next one.
 # Needs .venv (uv sync --frozen), a Qdrant server with no collections
-# memories and memories_v2, and ORT_DYLIB_PATH. The script stops if one of the
+# memories and memories_v2. The script stops if one of the
 # two collections exists, and deletes the two collections at the end.
 set -euo pipefail
 rust_bin="$(realpath "$1")"

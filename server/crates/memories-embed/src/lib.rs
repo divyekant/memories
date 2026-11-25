@@ -1,29 +1,34 @@
-//! ONNX embedding of text, with the same output as the Python `OnnxEmbedder`.
+//! Embedding of text, with the same output as the Python `OnnxEmbedder`.
 //!
-//! One worker thread owns the ONNX session and the tokenizer. Callers send
-//! jobs to that thread, so the model never runs on a request thread.
+//! The model runs on the encoder of this crate (`encoder.rs`), not on ONNX
+//! Runtime. Decision record: `docs/decisions/2026-11-24-own-encoder.md`.
+//!
+//! One worker thread owns the model and the tokenizer. Callers send jobs to
+//! that thread, so the model never runs on a request thread. The worker
+//! splits each job over the threads of `pool.rs`.
 
+mod encoder;
+mod kernel;
 mod model_files;
+mod pool;
+mod weights;
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, mpsc};
+use std::sync::mpsc;
 use std::thread;
 
-use ort::environment::Environment;
-use ort::session::Session;
-use ort::session::builder::GraphOptimizationLevel;
-use ort::value::Tensor;
-use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
+use tokenizers::{Tokenizer, TruncationParams};
 use tokio::sync::oneshot;
+
+use encoder::Encoder;
 
 pub use model_files::{ModelFiles, repo_id, resolve_model_files};
 
 pub const DEFAULT_MODEL: &str = "all-MiniLM-L6-v2";
 /// Same value as `onnx_embedder.py`.
 pub const MAX_TOKENS: usize = 256;
-/// Python uses 64. 16 keeps the bulk peak under 400 MB and is faster on
-/// 4 vCPU; the vectors are the same (gate G5, dk decision 2026-11-16).
-pub const BATCH_SIZE: usize = 16;
+/// The largest number of threads for one job.
 pub const INTRA_THREADS: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
@@ -32,10 +37,8 @@ pub enum EmbedError {
         "EMBED_PROVIDER={0} is not supported: this server has only the onnx embedder; set EMBED_PROVIDER=onnx"
     )]
     UnsupportedProvider(String),
-    #[error("cannot load ONNX Runtime: {0}")]
-    Runtime(String),
-    #[error("ONNX error: {0}")]
-    Onnx(#[from] ort::Error),
+    #[error("model file error: {0}")]
+    Model(String),
     #[error("tokenizer error: {0}")]
     Tokenizer(String),
     #[error("model download failed: {0}")]
@@ -48,8 +51,8 @@ pub enum EmbedError {
         actual: usize,
         model: String,
     },
-    #[error("unexpected model output shape {0:?}")]
-    OutputShape(Vec<i64>),
+    #[error("embedder internal error: {0}")]
+    Internal(String),
     #[error("embedder is closed")]
     Closed,
 }
@@ -181,7 +184,7 @@ impl Embedder {
         thread::Builder::new()
             .name("memories-embed".into())
             .spawn(move || {
-                let mut model = match Model::open(&files) {
+                let model = match contain(|| Model::open(&files)) {
                     Ok(m) => m,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
@@ -189,14 +192,15 @@ impl Embedder {
                     }
                 };
                 // Same as Python `_get_dim`: one test encode.
-                let dim = model.encode(&["test".to_string()]).map(|v| v[0].len());
+                let dim = contain(|| model.encode(&["test".to_string()])).map(|v| v[0].len());
                 if ready_tx.send(dim).is_err() {
                     return;
                 }
                 while let Ok((texts, reply)) = rx.recv() {
                     // The caller has gone (timeout or disconnect): skip the work.
                     if !reply.is_closed() {
-                        let _ = reply.send(model.encode(&texts));
+                        // A panic of the encoder is an error for this job, and the worker continues.
+                        let _ = reply.send(contain(|| model.encode(&texts)));
                     }
                 }
             })?;
@@ -210,7 +214,12 @@ impl Embedder {
                 model: config.model.clone(),
             });
         }
-        tracing::info!("ONNX embedder loaded: model={}, dim={dim}", config.model);
+        tracing::info!(
+            "Embedder loaded: model={}, dim={dim}, kernels={:?}, threads={}",
+            config.model,
+            kernel::Simd::detect(),
+            pool::global().threads()
+        );
         Ok(Self {
             jobs,
             config: std::sync::Arc::new(config),
@@ -243,126 +252,80 @@ impl Embedder {
     }
 }
 
-/// ONNX Runtime allows one environment per process. It is made once, so a
-/// reload of the embedder makes a new session in the same environment.
-fn environment() -> Result<&'static Environment> {
-    static ENV: OnceLock<std::result::Result<Environment, String>> = OnceLock::new();
-    ENV.get_or_init(|| {
-        let path = std::env::var("ORT_DYLIB_PATH")
-            .ok()
-            .filter(|p| !p.is_empty())
-            .unwrap_or_else(|| {
-                format!(
-                    "{}onnxruntime{}",
-                    std::env::consts::DLL_PREFIX,
-                    std::env::consts::DLL_SUFFIX
-                )
-            });
-        ort::init_from(&path)
-            .map_err(|e| e.to_string())?
-            .with_name("memories")
-            // ort turns ONNX Runtime telemetry on by default; Memories sends none.
-            .with_telemetry(false)
-            .build()
-            .map_err(|e| e.to_string())
-    })
-    .as_ref()
-    .map_err(|e| EmbedError::Runtime(e.clone()))
-}
-
 struct Model {
-    session: Session,
+    encoder: Encoder,
     tokenizer: Tokenizer,
-    token_type_ids: bool,
 }
 
 impl Model {
     fn open(files: &ModelFiles) -> Result<Self> {
-        let session = Session::builder(environment()?)?
-            .with_optimization_level(GraphOptimizationLevel::All)
-            .map_err(ort::Error::from)?
-            .with_intra_threads(INTRA_THREADS)
-            .map_err(ort::Error::from)?
-            // The CPU arena keeps the peak of each batch (1.27 GB after a batch of
-            // 64 long texts). Without it, memory goes back after the batch.
-            .with_execution_providers([ort::ep::CPU::default().with_arena_allocator(false).build()])
-            .map_err(ort::Error::from)?
-            .commit_from_file(&files.model)?;
+        Self::open_with(files, kernel::Simd::detect())
+    }
+
+    fn open_with(files: &ModelFiles, simd: kernel::Simd) -> Result<Self> {
+        let encoder = Encoder::load(files, simd)?;
         let mut tokenizer = Tokenizer::from_file(&files.tokenizer)
             .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
-        tokenizer.with_padding(Some(PaddingParams::default()));
+        // Each text runs at its own length. `tokenizer.json` can ask for a fixed length.
+        tokenizer.with_padding(None);
         tokenizer
             .with_truncation(Some(TruncationParams {
-                max_length: MAX_TOKENS,
+                max_length: MAX_TOKENS.min(encoder.max_positions()),
                 ..Default::default()
             }))
             .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
-        let token_type_ids = session
-            .inputs()
-            .iter()
-            .any(|i| i.name() == "token_type_ids");
-        Ok(Self {
-            session,
-            tokenizer,
-            token_type_ids,
-        })
-    }
-
-    fn encode(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut out = Vec::with_capacity(texts.len());
-        for batch in texts.chunks(BATCH_SIZE) {
-            self.encode_batch(batch, &mut out)?;
+        let known = tokenizer.get_vocab_size(true);
+        if known > encoder.vocab() {
+            return Err(EmbedError::Model(format!(
+                "the tokenizer has {known} tokens, but the model has {}; the two files are not from the same model",
+                encoder.vocab()
+            )));
         }
-        Ok(out)
+        Ok(Self { encoder, tokenizer })
     }
 
-    fn encode_batch(&mut self, batch: &[String], out: &mut Vec<Vec<f32>>) -> Result<()> {
-        let encodings = self
+    /// One text alone uses the pool for its steps. In a list, each pool
+    /// thread takes one text at a time and runs it with no more threads.
+    fn encode(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let pool = pool::global();
+        match texts {
+            [text] => Ok(vec![self.encode_one(Some(pool), text)?]),
+            _ => pool
+                .map(texts.len(), |i| self.encode_one(None, &texts[i]))
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn encode_one(&self, pool: Option<&pool::Pool>, text: &str) -> Result<Vec<f32>> {
+        let encoding = self
             .tokenizer
-            .encode_batch(batch.to_vec(), true)
+            .encode(text, true)
             .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
-        let rows = encodings.len();
-        let seq = encodings.first().map_or(0, |e| e.get_ids().len());
-        let mut ids = Vec::with_capacity(rows * seq);
-        let mut mask = Vec::with_capacity(rows * seq);
-        for e in &encodings {
-            ids.extend(e.get_ids().iter().map(|&v| i64::from(v)));
-            mask.extend(e.get_attention_mask().iter().map(|&v| i64::from(v)));
-        }
-        if ids.len() != rows * seq {
-            return Err(EmbedError::Tokenizer(
-                "batch is not padded to one length".into(),
-            ));
-        }
-        let shape = [rows, seq];
-        let mut inputs = ort::inputs![
-            "input_ids" => Tensor::from_array((shape, ids))?,
-            "attention_mask" => Tensor::from_array((shape, mask.clone()))?, // mask is read again for the pool
-        ];
-        if self.token_type_ids {
-            inputs.push((
-                "token_type_ids".into(),
-                Tensor::from_array((shape, vec![0i64; rows * seq]))?.into(),
-            ));
-        }
-        let outputs = self.session.run(inputs)?;
-        let (shape, hidden) = outputs[0].try_extract_tensor::<f32>()?;
-        let dims: Vec<i64> = shape.iter().copied().collect();
-        if dims.len() != 3 || dims[0] as usize != rows || dims[1] as usize != seq || dims[2] <= 0 {
-            return Err(EmbedError::OutputShape(dims));
-        }
-        let dim = dims[2] as usize;
-        for r in 0..rows {
-            out.push(mean_pool_normalize(
-                (0..seq).map(|c| {
-                    let at = (r * seq + c) * dim;
-                    (mask[r * seq + c] as f32, &hidden[at..at + dim])
-                }),
-                dim,
-            ));
-        }
-        Ok(())
+        let dim = self.encoder.dim();
+        let hidden = self.encoder.hidden_states(pool, encoding.get_ids())?;
+        Ok(mean_pool_normalize(
+            encoding
+                .get_attention_mask()
+                .iter()
+                .map(|m| *m as f32)
+                .zip(hidden.chunks_exact(dim)),
+            dim,
+        ))
     }
+}
+
+/// Runs `job`. A panic in it becomes [`EmbedError::Internal`].
+fn contain<T>(job: impl FnOnce() -> Result<T>) -> Result<T> {
+    catch_unwind(AssertUnwindSafe(job)).unwrap_or_else(|panic| {
+        let message = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".into());
+        tracing::error!("the embedder panicked: {message}");
+        Err(EmbedError::Internal(message))
+    })
 }
 
 /// Mean pool over the tokens with the attention mask, then L2 normalize.
@@ -451,6 +414,215 @@ mod tests {
         assert_eq!(
             mean_pool_normalize([(0.0, &[0.0f32, 0.0][..])].into_iter(), 2),
             vec![0.0, 0.0]
+        );
+    }
+
+    /// A WordPiece tokenizer for the small model of the encoder tests. It
+    /// asks for a fixed length of 16, which the embedder must ignore.
+    fn tiny_tokenizer(extra_tokens: usize) -> String {
+        let mut vocab = serde_json::Map::new();
+        for (id, token) in [
+            "[PAD]", "[UNK]", "[CLS]", "[SEP]", "alpha", "beta", "gamma", "delta",
+        ]
+        .into_iter()
+        .map(String::from)
+        .chain((0..extra_tokens).map(|i| format!("extra{i}")))
+        .enumerate()
+        {
+            vocab.insert(token, id.into());
+        }
+        serde_json::json!({
+            "version": "1.0",
+            "truncation": null,
+            "padding": {"strategy": {"Fixed": 16}, "direction": "Right", "pad_to_multiple_of": null,
+                "pad_id": 0, "pad_type_id": 0, "pad_token": "[PAD]"},
+            "added_tokens": [],
+            "normalizer": {"type": "Lowercase"},
+            "pre_tokenizer": {"type": "Whitespace"},
+            "post_processor": {"type": "BertProcessing", "sep": ["[SEP]", 3], "cls": ["[CLS]", 2]},
+            "decoder": null,
+            "model": {"type": "WordPiece", "unk_token": "[UNK]", "continuing_subword_prefix": "##",
+                "max_input_chars_per_word": 100, "vocab": vocab},
+        })
+        .to_string()
+    }
+
+    /// A model cache in the Hugging Face layout with the small model as `tiny/model`.
+    fn tiny_cache(name: &str, extra_tokens: usize) -> PathBuf {
+        let cache = weights::tests::temp_dir(name);
+        let snapshot = cache.join("models--tiny--model/snapshots/abc");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        std::fs::create_dir_all(cache.join("models--tiny--model/refs")).unwrap();
+        std::fs::write(cache.join("models--tiny--model/refs/main"), "abc").unwrap();
+        let files = encoder::tests::write_tiny(&snapshot, &encoder::tests::tiny_tensors(""));
+        std::fs::write(files.tokenizer, tiny_tokenizer(extra_tokens)).unwrap();
+        cache
+    }
+
+    fn tiny_config(cache: &Path) -> EmbedConfig {
+        EmbedConfig {
+            model: "tiny/model".into(),
+            cache_dir: Some(cache.to_path_buf()),
+            ..EmbedConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn embedder_gives_the_same_vector_alone_and_in_a_list() {
+        let cache = tiny_cache("embedder", 0);
+        let embedder = Embedder::load(tiny_config(&cache)).await.unwrap();
+        assert_eq!(embedder.dim(), encoder::tests::HIDDEN);
+
+        // 200 words: more than the 70 positions of the model, so it is cut.
+        let long = "alpha beta ".repeat(100);
+        let texts: Vec<String> = ["alpha", "beta gamma delta", "", "unknown words here", &long]
+            .into_iter()
+            .chain(std::iter::repeat_n("gamma alpha", 40))
+            .map(String::from)
+            .collect();
+        let list = embedder
+            .embed(texts.clone(), TextKind::Document)
+            .await
+            .unwrap();
+        assert_eq!(list.len(), texts.len());
+        for (text, in_list) in texts.iter().zip(&list).take(6) {
+            let norm = in_list.iter().map(|v| v * v).sum::<f32>().sqrt();
+            assert!((norm - 1.0).abs() < 1e-5, "{text:?}: norm {norm}");
+            // The same arithmetic with threads in the text or threads over the texts.
+            let alone = embedder
+                .embed(vec![text.clone()], TextKind::Query)
+                .await
+                .unwrap();
+            assert!(
+                &alone[0] == in_list,
+                "{text:?}: the vector changed in a list"
+            );
+        }
+        assert!(list[0] != list[1] && list[5] == list[44]);
+        assert!(
+            embedder
+                .embed(vec![], TextKind::Query)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Many callers at the same time share the one worker.
+        let jobs: Vec<_> = (0..8)
+            .map(|_| {
+                let e = embedder.clone();
+                tokio::spawn(async move {
+                    e.embed(vec!["beta gamma delta".into()], TextKind::Query)
+                        .await
+                })
+            })
+            .collect();
+        for job in jobs {
+            assert!(job.await.unwrap().unwrap()[0] == list[1]);
+        }
+
+        let wrong = EmbedConfig {
+            declared_dim: Some(384),
+            ..tiny_config(&cache)
+        };
+        assert!(matches!(
+            Embedder::load(wrong).await,
+            Err(EmbedError::DimensionMismatch {
+                declared: 384,
+                actual: 104,
+                ..
+            })
+        ));
+        std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[tokio::test]
+    async fn embedder_refuses_a_tokenizer_of_another_model() {
+        // 8 + 43 tokens, and the model has 50.
+        let cache = tiny_cache("embedder-vocab", 43);
+        let err = Embedder::load(tiny_config(&cache))
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            err.contains("the tokenizer has 51 tokens, but the model has 50"),
+            "{err}"
+        );
+        std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    /// Gate G2 for each kernel family that this CPU can run, not only for
+    /// the fastest one. Run: `cargo test -p memories-embed --lib -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "needs the model"]
+    async fn g2_holds_on_each_cpu_path() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("embed_texts.json")).unwrap()).unwrap();
+        let texts: Vec<String> = fixture["texts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap().to_owned())
+            .collect();
+        let raw = std::fs::read(dir.join("embed_vectors.f32")).unwrap();
+        let want: Vec<f32> = raw
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect();
+        let cache = std::env::var("MEMORIES_TEST_MODEL_CACHE")
+            .ok()
+            .map(PathBuf::from);
+        let files = resolve_model_files(DEFAULT_MODEL, cache.as_deref())
+            .await
+            .unwrap();
+        for simd in kernel::Simd::available() {
+            let model = Model::open_with(&files, simd).unwrap();
+            let start = std::time::Instant::now();
+            let got = model.encode(&texts).unwrap();
+            let seconds = start.elapsed().as_secs_f64();
+            let mut times: Vec<f64> = texts
+                .iter()
+                .take(100)
+                .map(|text| {
+                    let query = text
+                        .split_whitespace()
+                        .take(12)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let start = std::time::Instant::now();
+                    model.encode(&[query]).unwrap();
+                    start.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            times.sort_by(f64::total_cmp);
+            let lowest = got
+                .iter()
+                .zip(want.as_chunks::<384>().0)
+                .map(|(g, w)| g.iter().zip(w).map(|(a, b)| a * b).sum::<f32>())
+                .fold(1.0f32, f32::min);
+            println!(
+                "{simd:?}: lowest cosine {lowest:.7}, {} texts in {seconds:.1} s, query p50 {:.2} ms",
+                texts.len(),
+                times[50]
+            );
+            assert!(lowest >= 0.9999, "{simd:?}: cosine {lowest}");
+        }
+    }
+
+    #[test]
+    fn a_panic_in_a_job_becomes_an_error() {
+        assert_eq!(contain(|| Ok(1)).unwrap(), 1);
+        let err = contain::<()>(|| panic!("index {} out of range", 7)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "embedder internal error: index 7 out of range"
+        );
+        assert!(
+            matches!(contain::<()>(|| panic!("fixed")), Err(EmbedError::Internal(m)) if m == "fixed")
         );
     }
 

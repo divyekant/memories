@@ -2,7 +2,7 @@
 //! vector pass changes only the keyword vectors, continues after a forced
 //! stop, and does not hold up adds.
 //!
-//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=.../libonnxruntime.so \
+//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 \
 //!   cargo test -p memories-engine --test keyword_refresh -- --ignored --nocapture
 
 use std::collections::BTreeMap;

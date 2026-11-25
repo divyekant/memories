@@ -19,13 +19,12 @@
 # place of the seed corpus. DRILL_DATA is a folder with metadata.json,
 # config.json and points.ndjson.gz (see the load command of rollback_drill.py).
 # Set DRILL_WAIT_SEC (default 240) for the time a server can take to start.
-# Needs: the Python environment in .venv (uv sync --frozen), QDRANT_URL (a
-# Qdrant server) and ORT_DYLIB_PATH (ONNX Runtime).
+# Needs: the Python environment in .venv (uv sync --frozen) and QDRANT_URL (a
+# Qdrant server).
 set -euo pipefail
 rust_bin="$(realpath "$1")"
 cd "$(dirname "$0")/../.."
 : "${QDRANT_URL:?set QDRANT_URL}"
-: "${ORT_DYLIB_PATH:?set ORT_DYLIB_PATH}"
 work="$(mktemp -d)"
 key="parity-admin-key"
 py_port=18120

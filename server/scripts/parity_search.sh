@@ -13,7 +13,7 @@
 # Usage, from the repository root:
 #   QDRANT_URL=http://127.0.0.1:6333 server/scripts/parity_search.sh <rust binary>
 # Needs the Python environment in .venv (uv sync --frozen), a Qdrant server
-# with no collection memories_v2, and ORT_DYLIB_PATH.
+# with no collection memories_v2.
 set -euo pipefail
 rust_bin="$(realpath "$1")"
 : "${QDRANT_URL:?set QDRANT_URL}"

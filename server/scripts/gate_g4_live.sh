@@ -5,7 +5,7 @@
 #
 # Usage, from the repository root:
 #   EXTRACT_PROVIDER=openai EXTRACT_MODEL=gpt-4o-mini OPENAI_API_KEY=... \
-#   QDRANT_URL=... ORT_DYLIB_PATH=... \
+#   QDRANT_URL=... \
 #     server/scripts/gate_g4_live.sh <rust binary> [--rounds N] [--out FILE]
 # Needs the Python environment in .venv (uv sync --frozen).
 set -euo pipefail
@@ -15,7 +15,6 @@ cd "$(dirname "$0")/../.."
 : "${EXTRACT_PROVIDER:?set EXTRACT_PROVIDER}"
 : "${EXTRACT_MODEL:?set EXTRACT_MODEL}"
 : "${QDRANT_URL:?set QDRANT_URL}"
-: "${ORT_DYLIB_PATH:?set ORT_DYLIB_PATH}"
 work="$(mktemp -d)"
 collection="gate_g4_live_$$"
 pids=()
