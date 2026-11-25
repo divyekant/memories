@@ -187,7 +187,11 @@ For one text of 256 tokens on one thread, the softmax takes 14% of the time
 - A panic in the encoder becomes the error `embedder internal error` for that
   request. The embedder thread continues.
 - The debug build optimizes `memories-embed` (`profile.dev.package`), because
-  the parity jobs of CI run the debug server.
+  the parity jobs of CI run the debug server. The debug build also turns off
+  the debug assertions for this crate and builds it as one codegen unit. With
+  debug assertions, the AVX2 kernels had 40% of their speed, and the test with
+  100 forced stops failed on a CI machine with no AVX-512: the server made too
+  few writes, and no stop fell between two steps of a write.
 - The Python server v5.19.0 (rollback reference) still uses the Python
   package `onnxruntime` until task P7-3 removes it.
 - The team owns the encoder: a new model family needs new code.
