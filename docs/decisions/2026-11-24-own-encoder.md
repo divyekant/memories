@@ -137,13 +137,37 @@ there. In the production copy, 0.6% of the records have 190 words or more.
 For one text of 256 tokens on one thread, the softmax takes 14% of the time
 (it calls `exp` for each score).
 
+## Evidence on Apple silicon (NEON on real hardware)
+
+Date: 2026-11-25. dk approved this run. Machine: Mac Mini with an Apple M4 Pro
+(8 performance cores and 4 efficiency cores), macOS, native build (not the
+Docker image). The Mac was in normal use (load average 5 to 10). The texts,
+the queries and the benchmark code are the same as in the section "Evidence".
+Each encoder used 4 threads. The encoders ran in turns, and each value is the
+range of the runs.
+
+| Measure | ONNX Runtime 1.31.0 (v6.0.0) | Own encoder, NEON kernels | Own encoder, plain Rust kernels |
+|---|---|---|---|
+| One query, p50 | 1.00 to 1.06 ms | 1.71 to 1.86 ms | 4.69 to 5.06 ms |
+| One query, p95 | 1.74 to 1.84 ms | 3.72 to 3.90 ms | not measured |
+| List of 1,000 texts | 6.57 to 6.86 s | 5.33 to 5.82 s | 17.6 to 19.8 s |
+| Gate G2, lowest cosine against Python v5.19.0 | 0.9999996 | 0.9999990 | 0.9999991 |
+
+Gate G2 holds on real NEON hardware. The unit tests of `memories-embed` pass
+on the Mac (32 passed, 0 failed, 3 ignored).
+
+Known limit: on this ARM CPU, one query with the own encoder takes about 1.7
+times the time of ONNX Runtime at p50 (0.7 to 0.8 ms more) and about 2.1
+times at p95. A list of 1,000 texts takes 12% to 21% less time. The cause of
+the query difference is not known.
+
 ## Checks
 
 - Each kernel family agrees with plain `f64` loops. The encoder agrees with a
   reference that is written from the BERT definition, on each kernel family,
   with and without the thread pool.
 - Gate G2 holds on each kernel family (AVX-512, AVX2 with FMA, plain Rust on
-  the machine above; NEON under QEMU).
+  the machine above; NEON under QEMU and on an Apple M4 Pro).
 - Miri (the Rust interpreter that finds undefined behavior) finds no error in
   the tests of `pool.rs` and in the tests of `kernel.rs`. The default Miri run
   reports no AVX2 and no AVX-512, so a second run turns them on
@@ -209,6 +233,9 @@ For one text of 256 tokens on one thread, the softmax takes 14% of the time
   not known.
 - A SIMD `exp` for the softmax, and faster AVX-512 kernels for a list of long
   texts (see the bulk add table).
-- NEON speed on real ARM hardware. The NEON kernels pass the tests under QEMU.
+- A faster query on ARM. On an Apple M4 Pro, one query takes about 1.7 times
+  the time of ONNX Runtime (see "Evidence on Apple silicon"). The speed on an
+  ARM server CPU (for example AWS Graviton) and in the ARM64 Docker image is
+  not measured.
 - A local build of the image. The build container of the work session cannot
   get crates. The `rust-image` job of CI builds the image for amd64 and arm64.
