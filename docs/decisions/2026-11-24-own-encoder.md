@@ -81,9 +81,11 @@ its records again.
 - Gate G2 holds on each kernel family (AVX-512, AVX2 with FMA, plain Rust on
   the machine above; NEON under QEMU).
 - Miri (the Rust interpreter that finds undefined behavior) finds no error in
-  the tests of `pool.rs` and in the tests of `kernel.rs`. In the default Miri
-  run, only the plain Rust kernels and the aligned buffer run: Miri does not
-  report AVX2, AVX-512 or NEON.
+  the tests of `pool.rs` and in the tests of `kernel.rs`. The default Miri run
+  reports no AVX2 and no AVX-512, so a second run turns them on
+  (`RUSTFLAGS="-C target-feature=+avx,+avx2,+fma,+avx512f"`). That run has the
+  AVX-512, AVX2 and plain Rust kernels. A third run for the target
+  `aarch64-unknown-linux-gnu` has the NEON kernels.
 - Upgrade drill with the v6.0.0 binary: the v6.0.0 server writes 200 records.
   The new server opens the same data and the same model cache, downloads only
   `model.safetensors` and `config.json`, and gives the same search results
