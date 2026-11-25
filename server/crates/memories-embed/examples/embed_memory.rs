@@ -1,4 +1,5 @@
-//! Prints the memory of the embedder (VmRSS and VmHWM from /proc, Linux only).
+//! Prints the speed and the memory of the embedder (VmRSS and VmHWM from
+//! /proc, Linux only).
 //! Run: `cargo run --release -p memories-embed --example embed_memory`
 
 use memories_embed::{EmbedConfig, Embedder, TextKind};
@@ -36,13 +37,25 @@ async fn main() {
     .await
     .unwrap();
     println!("loaded: {}", mem());
-    for _ in 0..200 {
-        embedder
-            .embed(vec!["a short search query".into()], TextKind::Query)
-            .await
-            .unwrap();
+    let mut times: Vec<f64> = Vec::new();
+    for text in texts.iter().cycle().take(400) {
+        // The first 12 words: the length of a search query.
+        let query = text
+            .split_whitespace()
+            .take(12)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let t = std::time::Instant::now();
+        embedder.embed(vec![query], TextKind::Query).await.unwrap();
+        times.push(t.elapsed().as_secs_f64() * 1000.0);
     }
-    println!("after 200 single queries: {}", mem());
+    times.sort_by(f64::total_cmp);
+    println!(
+        "after 400 single queries (p50 {:.2} ms, p95 {:.2} ms): {}",
+        times[200],
+        times[380],
+        mem()
+    );
     for round in 1..=2 {
         let t = std::time::Instant::now();
         embedder

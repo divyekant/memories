@@ -54,7 +54,7 @@ that v6 does not use, is in `docs/rust-rewrite/configuration.md`.
 | `ANTHROPIC_AUTH` | API key when set | `api_key` or `oauth`. Selects the Anthropic credential |
 | `ANTHROPIC_WORKSPACE_ID` | (none) | Workspace ID (`wrkspc_…`). Required for an API key that is not scoped to a workspace (for example `sk-ant-usr-`). Sent as the `anthropic-workspace-id` header |
 | `OPENAI_API_KEY` | — | Required if EXTRACT_PROVIDER=openai |
-| `MODEL_NAME` | `all-MiniLM-L6-v2` | ONNX embedding model |
+| `MODEL_NAME` | `all-MiniLM-L6-v2` | Embedding model (a BERT model with `model.safetensors` on the Hugging Face Hub) |
 | `MAX_EXTRACT_MESSAGE_CHARS` | `120000` | Max chars accepted for extraction |
 | `EXTRACT_MAX_INFLIGHT` | `2` | Extraction workers |
 | `EXTRACT_FOREIGN_TARGET_ADD` | `true` (Rust server only) | If an extract decision updates or conflicts with a memory of another source, add the fact as a new memory (`fallback_add`, with `foreign_old_id`). Set `false` to get the error action of the Python server |

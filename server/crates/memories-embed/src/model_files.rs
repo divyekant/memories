@@ -7,12 +7,15 @@ use std::path::{Path, PathBuf};
 
 use crate::{EmbedError, Result};
 
-const MODEL_FILE: &str = "onnx/model.onnx";
+const MODEL_FILE: &str = "model.safetensors";
+const CONFIG_FILE: &str = "config.json";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelFiles {
+    /// The weights, in the safetensors format.
     pub model: PathBuf,
+    pub config: PathBuf,
     pub tokenizer: PathBuf,
 }
 
@@ -42,18 +45,28 @@ fn repo_dir(cache: &Path, repo: &str) -> PathBuf {
     cache.join(format!("models--{}", repo.replace('/', "--")))
 }
 
-fn cached(repo_dir: &Path) -> Option<ModelFiles> {
+/// The commit in `refs/main`, if it is a plain name (no path parts).
+fn cached_commit(repo_dir: &Path) -> Option<String> {
     let commit = std::fs::read_to_string(repo_dir.join("refs/main")).ok()?;
-    let snapshot = repo_dir.join("snapshots").join(commit.trim());
-    let files = ModelFiles {
-        model: snapshot.join(MODEL_FILE),
-        tokenizer: snapshot.join(TOKENIZER_FILE),
-    };
-    (files.model.is_file() && files.tokenizer.is_file()).then_some(files)
+    let commit = commit.trim();
+    (!commit.is_empty() && commit.chars().all(|c| c.is_ascii_alphanumeric()))
+        .then(|| commit.to_string())
 }
 
-/// Returns the cached files of `model`. If they are not in the cache,
-/// downloads them from the Hugging Face Hub.
+fn cached(repo_dir: &Path) -> Option<ModelFiles> {
+    let snapshot = repo_dir.join("snapshots").join(cached_commit(repo_dir)?);
+    let files = ModelFiles {
+        model: snapshot.join(MODEL_FILE),
+        config: snapshot.join(CONFIG_FILE),
+        tokenizer: snapshot.join(TOKENIZER_FILE),
+    };
+    (files.model.is_file() && files.config.is_file() && files.tokenizer.is_file()).then_some(files)
+}
+
+/// Returns the cached files of `model`. Downloads each file that is not in
+/// the cache from the Hugging Face Hub. A cache of version 6.0.0 or older has
+/// `onnx/model.onnx` and no `model.safetensors`, so the first start after an
+/// upgrade downloads the weights again.
 pub async fn resolve_model_files(model: &str, cache_dir: Option<&Path>) -> Result<ModelFiles> {
     let cache = cache_dir.map_or_else(default_hub_cache, Path::to_path_buf);
     resolve_with(&Hub::from_env()?, repo_id(model), &cache).await
@@ -66,7 +79,7 @@ async fn resolve_with(hub: &Hub, repo: &str, cache: &Path) -> Result<ModelFiles>
     }
     if hub.offline {
         return Err(EmbedError::Download(format!(
-            "{repo}: not in the cache {} and HF_HUB_OFFLINE is set",
+            "{repo}: {MODEL_FILE}, {CONFIG_FILE} or {TOKENIZER_FILE} is not in the cache {} and HF_HUB_OFFLINE is set",
             cache.display()
         )));
     }
@@ -127,6 +140,17 @@ impl Hub {
     }
 
     async fn download(&self, repo: &str, dir: &Path) -> Result<()> {
+        // A cache with a commit keeps that commit: the server does not move an
+        // install to a newer model revision, and the files that an older
+        // server version put in that snapshot stay in use (rollback).
+        if let Some(commit) = cached_commit(dir) {
+            match self.download_at(repo, dir, &commit).await {
+                Ok(()) => return Ok(()),
+                Err(e) => tracing::warn!(
+                    "cannot complete the cached revision {commit} of {repo}: {e}; trying the current revision"
+                ),
+            }
+        }
         let info = self
             .get(&format!("api/models/{repo}/revision/main"))
             .await?
@@ -140,15 +164,30 @@ impl Hub {
             .ok_or_else(|| {
                 EmbedError::Download(format!("{repo}: no commit in the revision reply"))
             })?;
+        self.download_at(repo, dir, &commit).await
+    }
+
+    /// Downloads each model file that `snapshots/<commit>` does not have,
+    /// then points `refs/main` to that commit.
+    async fn download_at(&self, repo: &str, dir: &Path, commit: &str) -> Result<()> {
         tracing::info!("Downloading model {repo} at commit {commit}");
 
-        let snapshot = dir.join("snapshots").join(&commit);
-        for file in [MODEL_FILE, TOKENIZER_FILE] {
+        let snapshot = dir.join("snapshots").join(commit);
+        for file in [MODEL_FILE, CONFIG_FILE, TOKENIZER_FILE] {
             let target = snapshot.join(file);
             if target.is_file() {
                 continue;
             }
-            let resp = self.get(&format!("{repo}/resolve/{commit}/{file}")).await?;
+            let resp = self
+                .get(&format!("{repo}/resolve/{commit}/{file}"))
+                .await
+                .map_err(|e| match e {
+                    // A model with no safetensors weights gives 404 here.
+                    EmbedError::Download(e) => EmbedError::Download(format!(
+                        "{e}; this server needs {MODEL_FILE}, {CONFIG_FILE} and {TOKENIZER_FILE} of the model"
+                    )),
+                    other => other,
+                })?;
             write_atomic(&target, Body::Stream(resp)).await?;
         }
         write_atomic(&dir.join("refs/main"), Body::Bytes(commit.as_bytes())).await
@@ -260,24 +299,34 @@ mod tests {
         assert_eq!(cached(&dir), None);
 
         let snap = dir.join("snapshots/abc123");
+        // The cache of version 6.0.0: the ONNX file and the tokenizer.
         std::fs::create_dir_all(snap.join("onnx")).unwrap();
         std::fs::create_dir_all(dir.join("refs")).unwrap();
         std::fs::write(dir.join("refs/main"), "abc123").unwrap();
         std::fs::write(snap.join("onnx/model.onnx"), b"m").unwrap();
-        assert_eq!(cached(&dir), None, "tokenizer missing");
         std::fs::write(snap.join("tokenizer.json"), b"t").unwrap();
+        assert_eq!(cached(&dir), None, "weights and config missing");
+        std::fs::write(snap.join("model.safetensors"), b"m").unwrap();
+        assert_eq!(cached(&dir), None, "config missing");
+        std::fs::write(snap.join("config.json"), b"c").unwrap();
         assert_eq!(
             cached(&dir),
             Some(ModelFiles {
-                model: snap.join("onnx/model.onnx"),
+                model: snap.join("model.safetensors"),
+                config: snap.join("config.json"),
                 tokenizer: snap.join("tokenizer.json"),
             })
         );
         std::fs::remove_dir_all(&cache).unwrap();
     }
 
-    /// A local stub of the Hub: the revision reply, then the two files.
-    async fn stub_hub(sha: &'static str) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    /// A local stub of the Hub: the revision reply, then `files` files. A
+    /// path that contains `missing` gets the status 404.
+    async fn stub_hub(
+        sha: &'static str,
+        files: usize,
+        missing: &'static str,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -297,13 +346,18 @@ mod tests {
                 } else {
                     format!("content of {path}")
                 };
+                let status = if !missing.is_empty() && path.contains(missing) {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                };
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 sock.write_all(reply.as_bytes()).await.unwrap();
                 paths.push(path);
-                if paths.len() == 3 {
+                if paths.len() == 1 + files {
                     break;
                 }
             }
@@ -325,7 +379,7 @@ mod tests {
     async fn download_writes_the_python_layout() {
         let cache = std::env::temp_dir().join(format!("memories-embed-dl-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&cache);
-        let (url, server) = stub_hub("abc123").await;
+        let (url, server) = stub_hub("abc123", 3, "").await;
         let files = resolve_with(&stub(url, false), "org/model", &cache)
             .await
             .unwrap();
@@ -334,7 +388,8 @@ mod tests {
             paths,
             [
                 "/api/models/org/model/revision/main",
-                "/org/model/resolve/abc123/onnx/model.onnx",
+                "/org/model/resolve/abc123/model.safetensors",
+                "/org/model/resolve/abc123/config.json",
                 "/org/model/resolve/abc123/tokenizer.json",
             ]
         );
@@ -343,10 +398,10 @@ mod tests {
             std::fs::read_to_string(dir.join("refs/main")).unwrap(),
             "abc123"
         );
-        assert_eq!(files.model, dir.join("snapshots/abc123/onnx/model.onnx"));
+        assert_eq!(files.model, dir.join("snapshots/abc123/model.safetensors"));
         assert_eq!(
             std::fs::read_to_string(&files.model).unwrap(),
-            "content of /org/model/resolve/abc123/onnx/model.onnx"
+            "content of /org/model/resolve/abc123/model.safetensors"
         );
         let leftovers = std::fs::read_dir(dir.join("snapshots/abc123"))
             .unwrap()
@@ -373,11 +428,100 @@ mod tests {
         std::fs::remove_dir_all(&cache).unwrap();
     }
 
+    /// The upgrade from 6.0.0: the tokenizer is in the cache, the weights and
+    /// the config are not.
+    #[tokio::test]
+    async fn download_gets_only_the_files_that_the_cache_does_not_have() {
+        let cache = std::env::temp_dir().join(format!("memories-embed-up-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        let snap = cache.join("models--org--model/snapshots/abc123");
+        std::fs::create_dir_all(snap.join("onnx")).unwrap();
+        std::fs::create_dir_all(cache.join("models--org--model/refs")).unwrap();
+        std::fs::write(cache.join("models--org--model/refs/main"), "abc123").unwrap();
+        std::fs::write(snap.join("onnx/model.onnx"), b"old").unwrap();
+        std::fs::write(snap.join("tokenizer.json"), b"old tokenizer").unwrap();
+
+        let offline = resolve_with(
+            &stub("http://127.0.0.1:1".into(), true),
+            "org/model",
+            &cache,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            offline
+                .contains("model.safetensors, config.json or tokenizer.json is not in the cache"),
+            "{offline}"
+        );
+
+        // The Hub is at a newer commit. The cache keeps its commit, and the
+        // server does not ask for the current revision.
+        let (url, server) = stub_hub("fff999", 1, "").await;
+        let files = resolve_with(&stub(url, false), "org/model", &cache)
+            .await
+            .unwrap();
+        assert_eq!(
+            server.await.unwrap(),
+            [
+                "/org/model/resolve/abc123/model.safetensors",
+                "/org/model/resolve/abc123/config.json",
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(cache.join("models--org--model/refs/main")).unwrap(),
+            "abc123"
+        );
+        assert_eq!(std::fs::read(&files.tokenizer).unwrap(), b"old tokenizer");
+        assert_eq!(std::fs::read(snap.join("onnx/model.onnx")).unwrap(), b"old");
+        std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[tokio::test]
+    async fn download_uses_the_current_revision_if_the_cached_one_has_no_weights() {
+        let cache =
+            std::env::temp_dir().join(format!("memories-embed-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        let dir = cache.join("models--org--model");
+        std::fs::create_dir_all(dir.join("refs")).unwrap();
+        std::fs::write(dir.join("refs/main"), "abc123\n").unwrap();
+        // 404 for the cached commit, then the revision reply and 3 files.
+        let (url, server) = stub_hub("def456", 4, "abc123").await;
+        let files = resolve_with(&stub(url, false), "org/model", &cache)
+            .await
+            .unwrap();
+        let paths = server.await.unwrap();
+        assert_eq!(paths[0], "/org/model/resolve/abc123/model.safetensors");
+        assert_eq!(paths[1], "/api/models/org/model/revision/main");
+        assert_eq!(files.model, dir.join("snapshots/def456/model.safetensors"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("refs/main")).unwrap(),
+            "def456"
+        );
+        std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[tokio::test]
+    async fn download_names_the_needed_files_if_the_model_has_no_safetensors() {
+        let cache = std::env::temp_dir().join(format!("memories-embed-404-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        let (url, _server) = stub_hub("abc123", 1, "model.safetensors").await;
+        let err = resolve_with(&stub(url, false), "org/model", &cache)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("404") && err.contains("this server needs model.safetensors"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
     #[tokio::test]
     async fn download_refuses_a_bad_commit_and_offline_mode() {
         let cache = std::env::temp_dir().join(format!("memories-embed-bad-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&cache);
-        let (url, _server) = stub_hub("../../etc").await;
+        let (url, _server) = stub_hub("../../etc", 0, "").await;
         let err = resolve_with(&stub(url, false), "org/model", &cache)
             .await
             .unwrap_err();

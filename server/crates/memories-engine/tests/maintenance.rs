@@ -1,7 +1,7 @@
 //! Task P5-3 against a Qdrant server and the real embedder: the maintenance
 //! jobs of `Writer`.
 //!
-//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=.../libonnxruntime.so \
+//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 \
 //!   cargo test -p memories-engine --test maintenance -- --ignored
 
 use std::collections::HashSet;
@@ -90,7 +90,7 @@ impl Setup {
 const OLD: &str = "2025-01-01T00:00:00+00:00";
 
 #[tokio::test]
-#[ignore = "needs QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs QDRANT_TEST_URL and the model"]
 async fn enforce_policies_archives_with_evidence() {
     let s = setup("enforce").await;
     let ids = s
@@ -159,7 +159,7 @@ async fn enforce_policies_archives_with_evidence() {
 }
 
 #[tokio::test]
-#[ignore = "needs QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs QDRANT_TEST_URL and the model"]
 async fn consolidation_finds_clusters_and_replaces_them() {
     let s = setup("consolidate").await;
     let ids = s
@@ -232,7 +232,7 @@ async fn consolidation_finds_clusters_and_replaces_them() {
 }
 
 #[tokio::test]
-#[ignore = "needs QDRANT_TEST_URL and ORT_DYLIB_PATH"]
+#[ignore = "needs QDRANT_TEST_URL and the model"]
 async fn compact_prune_and_reembed() {
     let s = setup("compact").await;
     let ids = s

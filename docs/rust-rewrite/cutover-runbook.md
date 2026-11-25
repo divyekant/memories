@@ -149,9 +149,27 @@ If v6.0.0 fails after the release, withdraw it:
 | No training data | `EXTRACT_TRAINING_DATA_DIR` is not used. | None. |
 | Project promotion only in the `off` mode | `PROJECT_PROMOTION_MODE=shadow` or `auto` stops the start. | Production uses `off`. |
 | No `/docs` page | FastAPI served Swagger UI at `/docs`. Rust serves only `/openapi.json`. | Open `/openapi.json` in an OpenAPI viewer. |
-| Many nonstop writers | With 10 or more nonstop writers, the add p95 is 0.8 to 1.4 s. All writes use one write lock, and the ONNX embedder uses most of the CPU. | Real traffic is a few requests each second. |
+| Many nonstop writers | With 10 or more nonstop writers, the add p95 is 0.8 to 1.4 s. All writes use one write lock, and the embedder uses most of the CPU. | Real traffic is a few requests each second. |
 
-## 5. Production droplet record
+## 5. Upgrade from v6.0.0: the model files
+
+Versions after v6.0.0 run the model on the encoder of the server, not on ONNX
+Runtime (`docs/decisions/2026-11-24-own-encoder.md`). The encoder reads
+`model.safetensors` and `config.json`. The model cache of v6.0.0 has only
+`onnx/model.onnx` and `tokenizer.json`.
+
+- At the first start, the server downloads `model.safetensors` (91 MB) and
+  `config.json` from `huggingface.co` into `MODEL_CACHE_DIR`. The start takes
+  some seconds more, one time.
+- If the host cannot get to `huggingface.co`, the start fails with the error
+  `model download failed`. Before the upgrade, copy the two files into the
+  snapshot folder of the cache, next to `tokenizer.json`:
+  `<MODEL_CACHE_DIR>/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/<commit>/`.
+- The server keeps `onnx/model.onnx`. A return to the v6.0.0 image needs no
+  download.
+- The stored vectors stay valid. The server does not embed the records again.
+
+## 6. Production droplet record
 
 Droplet `dk-services-sfo3`. Compose folder `/opt/dk-services/compose/memories`.
 Data: `/opt/dk-services/data/memories` (bind mount `/data`) and

@@ -1202,8 +1202,8 @@ The Rust server reads the variables of the v5 Python server, with the same names
 | `API_KEY` | (empty) | API key for auth. Empty = no auth. |
 | `QDRANT_URL` | (unset; compose sets `http://qdrant:6333`) | Qdrant server. Without it, the memory routes (search, reads and writes) give 503. |
 | `QDRANT_COLLECTION` | `memories` | Base name. v6 stores records in `<name>_v2`. |
-| `EMBED_PROVIDER` | `onnx` | Only `onnx` on v6. Other values stop the start. |
-| `MODEL_NAME` / `EMBED_MODEL` | `all-MiniLM-L6-v2` / (unset) | ONNX embedding model |
+| `EMBED_PROVIDER` | `onnx` | Only `onnx` on v6: the local embedder. The server does not use ONNX Runtime; the name stays from v5. Other values stop the start. |
+| `MODEL_NAME` / `EMBED_MODEL` | `all-MiniLM-L6-v2` / (unset) | Embedding model. It must be a BERT model with `model.safetensors` on the Hugging Face Hub. |
 | `EMBED_QUERY_PREFIX` / `EMBED_DOC_PREFIX` | (unset) | Asymmetric prefixes for prefix-trained models |
 | `MODEL_CACHE_DIR` | (image sets `/data/model-cache`) | Writable cache for downloaded model files |
 | `MAX_BACKUPS` | `10` | Number of backups to keep |
@@ -1463,7 +1463,7 @@ v6 has one image, `ghcr.io/divyekant/memories:<version>`, for linux/amd64 and li
 docker build --build-context webui=webui -t memories:rust server
 ```
 
-The image downloads the model weights into `MODEL_CACHE_DIR` (`/data/model-cache`) at the first run. Later restarts reuse the volume cache.
+The image downloads the model files (`model.safetensors`, `config.json`, `tokenizer.json`) into `MODEL_CACHE_DIR` (`/data/model-cache`) at the first run. Later restarts reuse the volume cache. The first start after an upgrade from v6.0.0 downloads `model.safetensors` (91 MB) one time.
 
 The root `Dockerfile` still builds the v5 Python server (`--target core` or `--target extract`). It is the rollback reference until the v5 code is removed (task P7-3).
 
@@ -1809,7 +1809,7 @@ Results are saved as JSON in `eval/results/` and printed as a human-readable sum
 | Memory footprint | ~180-260MB baseline; higher during extraction bursts |
 | Index size | ~1.5KB per memory |
 
-Uses **ONNX Runtime** for inference instead of PyTorch — same model (all-MiniLM-L6-v2), same embeddings, 68% smaller image.
+The v6 server runs the embedding model (all-MiniLM-L6-v2) on its own encoder. It does not use ONNX Runtime or PyTorch. The embeddings are the same as in v5 (`docs/decisions/2026-11-24-own-encoder.md`).
 
 Tested on Mac mini M4 Pro, 16GB RAM.
 

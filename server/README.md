@@ -25,19 +25,11 @@ python3 -m unittest discover -s scripts -v
 python3 scripts/check_crate_age.py Cargo.lock --days 2
 ```
 
-The embedding parity test (gate G2) needs ONNX Runtime 1.31.0. It downloads
-the model if the model is not in the Hugging Face cache. Get the library from
-the NuGet package, as CI does (`.github/workflows/ci.yml`):
+The embedding parity test (gate G2) downloads the model if the model is not
+in the Hugging Face cache:
 
 ```bash
-curl -sSfLo ort.nupkg https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg
-echo "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b  ort.nupkg" | sha256sum -c -
-unzip -j ort.nupkg runtimes/linux-x64/native/libonnxruntime.so -d /path/to
-```
-
-```bash
-ORT_DYLIB_PATH=/path/to/libonnxruntime.so \
-  cargo test --locked -p memories-embed --test parity -- --ignored --nocapture
+cargo test --locked -p memories-embed --test parity -- --ignored --nocapture
 ```
 
 The record store tests (task P1-3) need a Qdrant server, version 1.15.4 or
@@ -136,7 +128,7 @@ docker build -f server/rollback/Dockerfile --build-arg BASE_IMAGE=memories-pytho
 The rollback drill (task P7-1) runs the two cases of a return:
 
 ```bash
-QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+QDRANT_URL=http://127.0.0.1:6333 \
   server/scripts/rollback_drill.sh server/target/debug/memories-server
 ```
 
@@ -213,13 +205,13 @@ it. Run them from the repository root after `uv sync --frozen`:
 ```bash
 server/scripts/parity_auth.sh server/target/debug/memories-server
 server/scripts/parity_keys_audit.sh server/target/debug/memories-server
-QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+QDRANT_URL=http://127.0.0.1:6333 \
   server/scripts/parity_writes.sh server/target/debug/memories-server
-QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+QDRANT_URL=http://127.0.0.1:6333 \
   server/scripts/parity_bulk.sh server/target/debug/memories-server
-QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+QDRANT_URL=http://127.0.0.1:6333 \
   server/scripts/parity_promotions.sh server/target/debug/memories-server
-QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+QDRANT_URL=http://127.0.0.1:6333 \
   NODE_PATH=<node_modules with playwright> \
   server/scripts/parity_events.sh server/target/debug/memories-server
 ```
@@ -240,10 +232,10 @@ compares the replies.
 the `off` mode). It also makes sure that `PROJECT_PROMOTION_MODE=shadow`
 stops the start.
 
-The Qdrant call test of the writes needs Qdrant and ONNX Runtime:
+The Qdrant call test of the writes needs Qdrant and the model:
 
 ```bash
-QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=<path to libonnxruntime.so> \
+QDRANT_TEST_URL=http://127.0.0.1:6333 \
   cargo test --locked -p memories-engine --test writes -- --ignored
   cargo test --locked -p memories-engine --test bulk -- --ignored
 ```
@@ -280,7 +272,7 @@ runs on the same machine, stop the install before you run the script.
 | Crate | Content |
 |---|---|
 | `memories-types` | Record model, request and response types, configuration, errors |
-| `memories-embed` | ONNX embedding |
+| `memories-embed` | Embedding: the BERT encoder, its SIMD kernels and thread pool, the model files |
 | `memories-store` | Qdrant store, SQLite stores, ID counter, migration |
 | `memories-engine` | Rank logic, search, writes, links, maintenance |
 | `memories-extract` | Transcript cleanup, prompts, LLM providers, queue workers |

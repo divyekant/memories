@@ -2,7 +2,7 @@
 //! each write of two steps that a stop interrupted after its first step, and
 //! two writes to the same key run one after the other.
 //!
-//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=.../libonnxruntime.so \
+//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 \
 //!   cargo test -p memories-engine --test write_safety -- --ignored
 
 use std::path::PathBuf;

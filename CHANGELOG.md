@@ -4,7 +4,15 @@
 
 ### Changed
 
-- The image sets `ORT_DISABLE_TELEMETRY=1`. This is a second guard next to the explicit telemetry disable in the server code.
+- The server runs the embedding model on its own encoder (crate `memories-embed`) and no longer uses ONNX Runtime. The image has no ONNX Runtime library, and the `ort` crate is removed. The search results do not change: gate G2 gives a lowest cosine of 0.9999996 against the Python reference. Decision record: `docs/decisions/2026-11-24-own-encoder.md`.
+- On a 4 vCPU machine with AVX-512, one query takes the same time as before (p50 2.3 ms). A list of 1,000 texts takes 6 s (before: 22 s). The embedder memory peak is 130 MB (before: 390 MB).
+- On a copy of the production data (93,017 records), the new server gives the same 10 results in the same order as 6.0.0 for 315 of 315 queries. In the load test of gate G5 with 5 workers and AVX2 kernels, the search p95 is 35 to 39 ms (6.0.0: 54 to 58 ms) and the memory peak of the server is 317 MB (6.0.0: 442 MB). A bulk add of 1,920 production records takes 12.6 s (6.0.0: 27.6 s).
+- A list in which each text is at the 256-token limit is slower than in 6.0.0 on a CPU with AVX-512: 64 texts take 1.6 to 1.9 s (6.0.0: 1.2 to 1.6 s).
+- On an Apple M4 Pro (ARM64, NEON kernels), one query takes 1.7 to 1.9 ms (6.0.0: 1.0 to 1.1 ms). A list of 1,000 texts takes 5.3 to 5.8 s (6.0.0: 6.6 to 6.9 s). These values are from a native macOS build, where ONNX Runtime uses the KleidiAI library. A Linux container on the same Mac does not see the SME unit, and the speed in the ARM64 image is not measured.
+- The encoder selects its kernels at start (AVX-512, AVX2 with FMA, NEON, or plain Rust for each other CPU). The log line `Embedder loaded` names the kernels.
+- The first start after the upgrade from 6.0.0 downloads `model.safetensors` (91 MB) and `config.json` from the Hugging Face Hub into the model cache. A host with no access to the Hub needs these two files in the cache before the upgrade (`docs/rust-rewrite/cutover-runbook.md`, section 5).
+- `EMBED_MODEL` must name a BERT model that has `model.safetensors` on the Hugging Face Hub. The server stops at start with an error for another model type. `EMBED_PROVIDER=onnx` stays the name of the local embedder.
+- The image does not set `ORT_DYLIB_PATH` and `ORT_DISABLE_TELEMETRY`. (6.0.0 plus PR #171 set `ORT_DISABLE_TELEMETRY=1` as a second telemetry guard. That guard has no function now.)
 
 ## [6.0.0] - 2026-11-24
 

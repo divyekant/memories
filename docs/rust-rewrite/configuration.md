@@ -20,7 +20,7 @@ Each variable has one of three states:
 | Server | `PORT`, `DATA_DIR`, `FORWARDED_ALLOW_IPS`, `MAX_BACKUPS` | `PORT` default 8000. `--port` has priority. |
 | Auth | `API_KEY`, `AUTH_RATE_LIMIT` | Managed keys stay in `$DATA_DIR/keys.db`. |
 | Qdrant | `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION`, `QDRANT_WAIT`, `QDRANT_WRITE_ORDERING`, `QDRANT_READ_CONSISTENCY`, `QDRANT_REPLICATION_FACTOR`, `QDRANT_WRITE_CONSISTENCY_FACTOR` | The server writes to `<QDRANT_COLLECTION>_v2`. Without `QDRANT_URL`, the memory routes (search, reads and writes) give HTTP 503. |
-| Embedder | `EMBED_PROVIDER`, `EMBED_MODEL`, `MODEL_NAME`, `EMBED_DIMENSION`, `EMBED_QUERY_PREFIX`, `EMBED_DOC_PREFIX`, `MODEL_CACHE_DIR`, `PRELOADED_MODEL_CACHE_DIR` | `EMBED_PROVIDER` accepts only `onnx`. Any other value stops the start. |
+| Embedder | `EMBED_PROVIDER`, `EMBED_MODEL`, `MODEL_NAME`, `EMBED_DIMENSION`, `EMBED_QUERY_PREFIX`, `EMBED_DOC_PREFIX`, `MODEL_CACHE_DIR`, `PRELOADED_MODEL_CACHE_DIR` | `EMBED_PROVIDER` accepts only `onnx`, the local embedder (the server does not use ONNX Runtime). Any other value stops the start. `EMBED_MODEL` must be a BERT model with `model.safetensors` on the Hugging Face Hub. |
 | Extraction | `EXTRACT_PROVIDER`, `EXTRACT_MODEL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_AUTH`, `ANTHROPIC_WORKSPACE_ID`, `OPENAI_API_KEY`, `OLLAMA_URL`, `OMLX_URL`, `OMLX_API_KEY` | Providers: `anthropic`, `openai`, `ollama`, `omlx`. `chatgpt-subscription` stops the start. |
 | Extraction tuning | `EXTRACT_MAX_INFLIGHT`, `EXTRACT_QUEUE_MAX`, `EXTRACT_JOBS_MAX`, `EXTRACT_JOB_RETENTION_SEC`, `MAX_EXTRACT_MESSAGE_CHARS`, `EXTRACT_MAX_FACT_CHARS`, `EXTRACT_MAX_LINKS`, `EXTRACT_MIN_LINK_SCORE`, `EXTRACT_NOVELTY_GATE`, `EXTRACT_NOVELTY_THRESHOLD`, `EXTRACT_REDACT_SECRETS`, `EXTRACT_SIMILAR_PER_FACT`, `EXTRACT_SIMILAR_TEXT_CHARS`, `EXTRACT_FOREIGN_TARGET_ADD` | The job queue is on disk. `EXTRACT_FOREIGN_TARGET_ADD` (default `true`) is new in v6 and is not in `VARS`: it adds a fact as a new memory when the AUDN target belongs to another source. |
 | Extraction fallback | `EXTRACT_FALLBACK_ADD`, `EXTRACT_FALLBACK_MAX_FACTS`, `EXTRACT_FALLBACK_MIN_FACT_CHARS`, `EXTRACT_FALLBACK_MAX_FACT_CHARS`, `EXTRACT_FALLBACK_NOVELTY_THRESHOLD` | |
@@ -30,8 +30,9 @@ Each variable has one of three states:
 | Promotion | `PROJECT_PROMOTION_MODE`, `PROJECT_PROMOTION_REJECTED_RETENTION_DAYS` | Only the `off` mode. `shadow` or `auto` stops the start. |
 | Metrics and logs | `METRICS_LATENCY_SAMPLES`, `METRICS_TREND_SAMPLES`, `USAGE_TRACKING`, `AUDIT_LOG` | `AUDIT_LOG=true` opens `$DATA_DIR/audit.db`. |
 
-The image also sets `UI_DIR` (default `/app/webui`) and `ORT_DYLIB_PATH` (the
-ONNX Runtime library). Do not change these two in the image.
+The image also sets `UI_DIR` (default `/app/webui`). Do not change it in the
+image. The server does not read `ORT_DYLIB_PATH` and `ORT_DISABLE_TELEMETRY`,
+which the image of v6.0.0 set.
 
 ## Not used
 

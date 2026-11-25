@@ -164,65 +164,50 @@ jobs:
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ~/.cache/huggingface/hub
-          key: hf-all-MiniLM-L6-v2-1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+          key: hf-all-MiniLM-L6-v2-safetensors-1110a243fdf4706b3f48f1d95db1a4f5529b4d41
 
       - name: Embedding parity with Python (gate G2)
-        # Same ONNX Runtime package and hash as server/Dockerfile (stage ort-nupkg).
         # With no cache, the test downloads the model from the Hub.
-        run: |
-          curl -sSfLo "$RUNNER_TEMP/ort.nupkg" https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg
-          echo "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b  $RUNNER_TEMP/ort.nupkg" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
-          unzip -j -o "$RUNNER_TEMP/ort.nupkg" runtimes/linux-x64/native/libonnxruntime.so -d "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
-          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
-            cargo test --locked -p memories-embed --test parity -- --ignored --nocapture
+        run: cargo test --locked -p memories-embed --test parity -- --ignored --nocapture
 
       - name: Core writes against Qdrant 1.15.4 and the embedder (task P3-1)
         env:
           QDRANT_TEST_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: cargo test --locked -p memories-engine --test writes -- --ignored --nocapture
 
       - name: Backup, export and import routes against Qdrant 1.15.4 (task P5-4)
         env:
           QDRANT_TEST_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: cargo test --locked -p memories-server --test backup -- --ignored --nocapture
 
       - name: Bulk writes and relation writes against Qdrant 1.15.4 and the embedder (task P3-2)
         env:
           QDRANT_TEST_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: cargo test --locked -p memories-engine --test bulk -- --ignored --nocapture
 
       - name: Write journal and same-key writes against Qdrant 1.15.4 and the embedder (task P3-3)
         env:
           QDRANT_TEST_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: cargo test --locked -p memories-engine --test write_safety -- --ignored --nocapture
 
       - name: Extract decisions with a target of another source against Qdrant 1.15.4 and the embedder
         env:
           QDRANT_TEST_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: cargo test --locked -p memories-server --test extract_foreign -- --ignored --nocapture
 
       - name: Keyword vector pass against Qdrant 1.15.4 and the embedder (task P3-4)
         env:
           QDRANT_TEST_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: cargo test --locked -p memories-engine --test keyword_refresh -- --ignored --nocapture
 
       - name: 100 forced stops during writes (exit check of task P3-3)
         env:
           QDRANT_TEST_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: cargo test --locked -p memories-server --test write_crash -- --ignored --nocapture
 
       - name: Maintenance jobs against Qdrant 1.15.4 and the embedder (task P5-3)
         env:
           QDRANT_TEST_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: cargo test --locked -p memories-engine --test maintenance -- --ignored --nocapture
 
       - name: Script tests
@@ -285,19 +270,12 @@ jobs:
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ~/.cache/huggingface/hub
-          key: hf-all-MiniLM-L6-v2-1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+          key: hf-all-MiniLM-L6-v2-safetensors-1110a243fdf4706b3f48f1d95db1a4f5529b4d41
 
       - name: P2-2 search routes with hybrid false, and the search p95
-        # Same ONNX Runtime package and hash as server/Dockerfile (stage ort-nupkg).
         run: |
-          curl -sSfLo "$RUNNER_TEMP/ort.nupkg" https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg
-          echo "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b  $RUNNER_TEMP/ort.nupkg" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
-          unzip -j -o "$RUNNER_TEMP/ort.nupkg" runtimes/linux-x64/native/libonnxruntime.so -d "$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib"
-          echo "ORT_DYLIB_PATH=$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" >> "$GITHUB_ENV"
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
           QDRANT_URL=http://127.0.0.1:6333 \
-          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
             server/scripts/parity_search.sh server/target/debug/memories-server
 
       - name: P2-3 read routes (golden cases and more requests to both servers)
@@ -311,7 +289,6 @@ jobs:
       - name: P3-1 core write routes
         env:
           QDRANT_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: |
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/readyz && break; sleep 2; done
           server/scripts/parity_writes.sh server/target/debug/memories-server
@@ -319,38 +296,31 @@ jobs:
       - name: P5-4 export and import across the two servers, backup and restore
         env:
           QDRANT_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_backup.sh server/target/debug/memories-server
 
       - name: P5-1 usage, metrics and feedback routes, and usage.db across the two servers
-        # Uses the ONNX Runtime that the P2-2 step unpacked.
         run: |
           QDRANT_URL=http://127.0.0.1:6333 \
-          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
             server/scripts/parity_usage.sh server/target/debug/memories-server
 
       - name: P3-2 bulk writes and relation writes (golden replay and a live Python run)
         env:
           QDRANT_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_bulk.sh server/target/debug/memories-server
 
       - name: P4-3 extraction pipeline with recorded LLM replies
         env:
           QDRANT_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_pipeline.sh server/target/debug/memories-server
 
       - name: P5-3 maintenance jobs (live Python run with fixed LLM replies, and the search p95)
         env:
           QDRANT_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_maintenance.sh server/target/debug/memories-server
 
       - name: P5-6 promotion routes and the promotion part of metrics (off mode)
         env:
           QDRANT_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_promotions.sh server/target/debug/memories-server
 
       - name: P5-7 sync routes and the embedder setting (production configuration)
@@ -359,13 +329,11 @@ jobs:
       - name: P7-1 rollback drill (export-legacy, rollback entrypoint, migrate --merge)
         env:
           QDRANT_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/rollback_drill.sh server/target/debug/memories-server
 
       - name: P4-4 gate G4 part a, eval corpus with recorded LLM replies
         env:
           QDRANT_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: server/scripts/parity_pipeline.sh server/target/debug/memories-server --check extract_corpus
 
       - name: P5-5 event, webhook and web UI routes, and the browser check of each page
@@ -373,7 +341,6 @@ jobs:
         # uses the Chrome of the runner image.
         env:
           QDRANT_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: |
           mkdir -p "$RUNNER_TEMP/pw"
           npm install --prefix "$RUNNER_TEMP/pw" --no-save --ignore-scripts playwright@1.56.1
@@ -385,7 +352,6 @@ jobs:
       - name: P6-1 gate G6, the real clients against a Python server and the Rust server
         env:
           QDRANT_URL: http://127.0.0.1:6333
-          ORT_DYLIB_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
         run: |
           (cd mcp-server && npm ci --ignore-scripts)
           server/scripts/gate_g6.sh server/target/debug/memories-server
@@ -397,7 +363,6 @@ jobs:
           curl -s -X DELETE http://127.0.0.1:6333/collections/memories > /dev/null
           G3_PARTS=corpus,graph G3_ALLOW_PARTIAL=1 \
           QDRANT_URL=http://127.0.0.1:6333 \
-          ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so" \
             server/scripts/gate_g3.sh server/target/debug/memories-server
 
   rollback-image:

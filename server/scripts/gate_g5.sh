@@ -20,7 +20,7 @@
 # Each process has an RSS sample (rss-*.json, MB).
 #
 # Usage, from the repository root:
-#   QDRANT_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=... \
+#   QDRANT_URL=http://127.0.0.1:6333 \
 #     server/scripts/gate_g5.sh <rust binary> <out dir>
 # G5_COUNT (default 1000000), G5_EMBED_COUNT (default 10000), G5_SHORT
 # (default 60), G5_MIXED (default 1800), G5_CONC (workers, default 5),

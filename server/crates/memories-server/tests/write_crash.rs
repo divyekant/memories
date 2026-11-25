@@ -3,7 +3,7 @@
 //! two steps. The test runs the real binary on one `DATA_DIR` and one Qdrant
 //! collection, and checks the store after each start.
 //!
-//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 ORT_DYLIB_PATH=.../libonnxruntime.so \
+//! Run: QDRANT_TEST_URL=http://127.0.0.1:6333 \
 //!   cargo test -p memories-server --test write_crash -- --ignored --nocapture
 
 use std::collections::{BTreeMap, HashMap};

@@ -1,8 +1,7 @@
 //! Gate G2: the Rust embedder gives the vectors of the Python reference
 //! (v5.19.0) for 1,000 fixed texts, with a cosine similarity of 0.9999 or more.
 //!
-//! These tests need ONNX Runtime (`ORT_DYLIB_PATH`) and the model (in the
-//! cache, or a download). Run them with:
+//! These tests need the model (in the cache, or a download). Run them with:
 //! `cargo test --locked -p memories-embed --test parity -- --ignored`
 
 use std::path::PathBuf;
@@ -32,7 +31,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 
 #[tokio::test]
-#[ignore = "needs ONNX Runtime and the model"]
+#[ignore = "needs the model"]
 async fn g2_vectors_match_python_reference() {
     let fixture: serde_json::Value =
         serde_json::from_slice(&std::fs::read(fixture_dir().join("embed_texts.json")).unwrap())
@@ -86,7 +85,7 @@ async fn g2_vectors_match_python_reference() {
 }
 
 #[tokio::test]
-#[ignore = "needs ONNX Runtime and the model"]
+#[ignore = "needs the model"]
 async fn prefixes_batches_and_reload() {
     let embedder = Embedder::load(EmbedConfig {
         query_prefix: "search_query: ".into(),
@@ -120,7 +119,8 @@ async fn prefixes_batches_and_reload() {
         "the prefixes must change the vector"
     );
 
-    // Padding to the longest text of a batch must not change a vector.
+    // The other texts of a list must not change a vector. The long text has
+    // more than the 256 tokens that the embedder keeps.
     let long = "word ".repeat(300);
     let batch = plain
         .embed(
